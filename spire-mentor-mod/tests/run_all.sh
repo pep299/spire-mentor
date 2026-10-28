@@ -13,10 +13,24 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 versions=("$@")
 [[ ${#versions[@]} -gt 0 ]] || versions=(v0.107.1 v0.111.0)
+# The versions build in parallel (each writes only tests/compile/.build/<ver>/);
+# each one's output is buffered and printed whole, in order, once all finish.
+logs="$(mktemp -d)"
+trap 'rm -rf "$logs"' EXIT
+pids=()
 for v in "${versions[@]}"; do
-  echo "=== SpireMentor for $v: build + binding + wire test"
-  "$HERE/compile/build_mod.sh" "$v" --wire
+  "$HERE/compile/build_mod.sh" "$v" --wire >"$logs/$v.log" 2>&1 &
+  pids+=($!)
 done
+failed=()
+for i in "${!versions[@]}"; do
+  v="${versions[$i]}"
+  rc=0; wait "${pids[$i]}" || rc=$?
+  echo "=== SpireMentor for $v: build + binding + wire test"
+  cat "$logs/$v.log"
+  [[ "$rc" -eq 0 ]] || failed+=("$v")
+done
+[[ ${#failed[@]} -eq 0 ]] || { echo "run_all.sh: FAILED for ${failed[*]}" >&2; exit 1; }
 echo "=== SpireMentor unit tests"
 "$HERE/unit/run_unit_tests.sh"
 echo "run_all.sh: OK (${versions[*]})"

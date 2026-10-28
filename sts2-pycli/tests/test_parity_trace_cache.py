@@ -233,7 +233,7 @@ def test_cache_writes_under_namespace_dir_atomically(tmp_path, monkeypatch) -> N
     assert files[0].suffix == ".json"
     assert not any(p.name.endswith(".tmp") for p in files)  # no leftover temp
     # the persisted file is valid JSON with the format stamp
-    with open(files[0]) as f:
+    with open(files[0], encoding="utf-8") as f:
         assert json.load(f)["v"] == pa._TRACE_FORMAT
 
 
@@ -243,7 +243,7 @@ def test_cache_rerecords_on_format_mismatch(tmp_path, monkeypatch) -> None:
     sc = _sc()
     path = os.path.join(str(tmp_path), "vNS", pa._trial_key(2, 6, sc) + ".json")
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         json.dump({"v": pa._TRACE_FORMAT + 999, "init": {}, "steps": []}, f)
     _, status = cache.get_or_record(2, 6, sc)
     assert status == "miss"  # stale-format trace ignored + re-recorded
@@ -256,7 +256,7 @@ def test_cache_rerecords_on_corrupt_file(tmp_path, monkeypatch) -> None:
     sc = _sc()
     path = os.path.join(str(tmp_path), "vNS", pa._trial_key(9, 6, sc) + ".json")
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         f.write("{ this is not json")
     _, status = cache.get_or_record(9, 6, sc)
     assert status == "miss"

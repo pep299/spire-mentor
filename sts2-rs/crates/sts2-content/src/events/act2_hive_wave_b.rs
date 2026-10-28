@@ -490,7 +490,7 @@ fn slippery_bridge_options(state: &RunState, spec: &EventSpec) -> Vec<EventOptio
 pub const SLIPPERY_BRIDGE: EventSpec = EventSpec {
     id: EventId::SlipperyBridge,
     python_name: "SlipperyBridge",
-    // C# `TotalFloor > 6 && deck.Any(IsRemovable)` (Rust total_floor + 1).
+    // C# `TotalFloor > 6 && deck.Any(IsRemovable)` (pick-time floor, GH #806).
     is_allowed: slippery_bridge_allowed,
     generate_options: slippery_bridge_options,
     options: SLIPPERY_BRIDGE_OPTIONS,
@@ -755,7 +755,10 @@ fn symbiote_kill_fire(state: &mut RunState) -> EventOutcome {
             ) {
                 if let Some(card) = crate::cards::spec_index::card_pod_from_id(new_id, false) {
                     state.master_deck.remove(0);
-                    state.master_deck.push(card);
+                    state.add_card_to_deck_with_hooks(
+                        card,
+                        sts2_core::relic_effects::AddSource::EventGain,
+                    );
                 }
             }
         }
@@ -1519,7 +1522,10 @@ fn whispering_hug(state: &mut RunState) -> EventOutcome {
             ) {
                 if let Some(card) = crate::cards::spec_index::card_pod_from_id(new_id, false) {
                     state.master_deck.remove(0);
-                    state.master_deck.push(card);
+                    state.add_card_to_deck_with_hooks(
+                        card,
+                        sts2_core::relic_effects::AddSource::EventGain,
+                    );
                 }
             }
         }

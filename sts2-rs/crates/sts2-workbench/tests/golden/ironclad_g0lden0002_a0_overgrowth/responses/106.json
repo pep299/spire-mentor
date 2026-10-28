@@ -13,6 +13,7 @@
   {
    "action": "Defend",
    "hp_n": 16,
+   "hp_sd": 9.4222,
    "is_best": true,
    "losses": 2,
    "low_confidence": false,
@@ -29,6 +30,7 @@
   {
    "action": "Strike",
    "hp_n": 16,
+   "hp_sd": 8.522,
    "is_best": false,
    "losses": 3,
    "low_confidence": false,
@@ -45,6 +47,7 @@
   {
    "action": "Strike",
    "hp_n": 11,
+   "hp_sd": 8.0576,
    "is_best": false,
    "losses": 3,
    "low_confidence": false,
@@ -61,6 +64,7 @@
   {
    "action": "end turn",
    "hp_n": 5,
+   "hp_sd": 11.0707,
    "is_best": false,
    "losses": 3,
    "low_confidence": false,

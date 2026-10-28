@@ -17,6 +17,7 @@
  */
 
 const MASK = (1n << 64n) - 1n;
+const U32 = 0xffffffffn;
 const TWO_POW_53 = 9007199254740992; // 2^53, the divisor behind `_incrDouble`
 
 function rotl(x: bigint, k: bigint): bigint {
@@ -40,9 +41,10 @@ export class MegaRng {
   private s2: bigint;
   private s3: bigint;
 
-  /** `new Rng(uint seed)`. The seed is taken modulo 2^32, as the C# type is. */
-  constructor(seed: number) {
-    let state = BigInt(Math.floor(seed) >>> 0);
+  /** `new Rng(seed)`. A `number` is a v0.107.1 `uint` seed, taken modulo
+   *  2^32 as the C# type is; a `bigint` is a v0.111.0 `ulong`, taken modulo 2^64. */
+  constructor(seed: number | bigint) {
+    let state = typeof seed === "bigint" ? seed & MASK : BigInt(Math.floor(seed) >>> 0);
     const words: bigint[] = [];
     for (let i = 0; i < 4; i++) {
       const [next, out] = splitmix64(state);
@@ -94,9 +96,24 @@ export class MegaRng {
  * offset by the map node the fight stands on, so every node in a run draws its
  * own room and re-entering one draws the same room again.
  *
- * `new Rng(state.Rng.Seed + row + col * 747)`, in uint arithmetic — which wraps
- * rather than throwing, so the `>>> 0` is load-bearing on a big seed.
+ * `new Rng(state.Rng.Seed + (uint)(row + col * 747))`. On v0.107.1 `Seed` is a
+ * `uint`, so the sum wraps at 2^32; on v0.111.0 it is a `ulong` (XxHash64
+ * seeding) and wraps at 2^64 (`v0.111.0/…/NCombatRoom.cs:385`). The width is the
+ * build's, not the seed's: a v0.107.1 seed near 2^32 must still wrap.
+ *
+ * `runSeed` is a decimal string when the producer's seed is past 2^53, where a
+ * JSON number would already have been rounded (GH #878).
  */
-export function backgroundRng(runSeed: number, row: number, col: number): MegaRng {
-  return new MegaRng((runSeed + row + col * 747) >>> 0);
+export function backgroundRng(
+  runSeed: number | string,
+  row: number,
+  col: number,
+  gameVersion?: string | null,
+): MegaRng {
+  const seed = BigInt(runSeed);
+  const sum = seed + (BigInt(row + col * 747) & U32);
+  // A seed past 2^32 can only be a `ulong` one, which covers a replayed log
+  // that never named its build.
+  const wide = (gameVersion != null && gameVersion !== "v0.107.1") || seed > U32;
+  return wide ? new MegaRng(sum & MASK) : new MegaRng(Number(sum & U32));
 }

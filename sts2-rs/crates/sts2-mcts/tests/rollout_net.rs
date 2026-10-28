@@ -5,10 +5,10 @@
 
 mod common;
 
-use common::{build_vertical_slice_hp, heuristic_mirror_net};
+use common::build_vertical_slice_hp;
 use sts2_core::{legal_actions, Action, CharacterId, CombatState};
 use sts2_mcts::rollout_net::{
-    builtin_net, export_features, net_for, playout_trajectories, ActionKey,
+    builtin_net, export_features, heuristic_mirror_net, net_for, playout_trajectories, ActionKey,
 };
 use sts2_mcts::{Mcts, MctsConfig, RolloutPolicyKind};
 
@@ -35,49 +35,46 @@ fn root_stats(state: &CombatState, policy: RolloutPolicyKind) -> String {
     format!("{:?}", mcts.root_outcomes())
 }
 
-/// The deployed dialect selects `Net` for every character. A fight whose
-/// character has no net must search exactly as under `Heuristic`, with the
-/// same random draws and the same root statistics.
+/// The deployed dialect selects `Net` for every character. A fight with no
+/// character has no built-in net (every character has one since GH #823 and
+/// #824), so it must search exactly as under `Heuristic`, with the same random draws and the same
+/// root statistics.
 #[test]
 fn net_policy_without_a_net_is_the_heuristic() {
-    let base = build_vertical_slice_hp(5, 80, 40);
-    for character in [
-        None,
-        Some(CharacterId::Silent),
-        Some(CharacterId::Necrobinder),
+    let mut state = build_vertical_slice_hp(5, 80, 40);
+    state.player.character = None;
+    no_experiment_net();
+    assert!(net_for(&state).is_none(), "no character, no net");
+    assert_eq!(
+        root_stats(&state, RolloutPolicyKind::Net),
+        root_stats(&state, RolloutPolicyKind::Heuristic)
+    );
+}
+
+/// A character has a built-in net exactly when its file
+/// `data/rollout_nets/<character>.json` is in the checkout, and every
+/// compiled-in net parses.
+#[test]
+fn built_in_nets_load() {
+    for (c, name) in [
+        (CharacterId::Ironclad, "ironclad"),
+        (CharacterId::Silent, "silent"),
+        (CharacterId::Defect, "defect"),
+        (CharacterId::Regent, "regent"),
+        (CharacterId::Necrobinder, "necrobinder"),
     ] {
-        let mut state = base.clone();
-        state.player.character = character;
-        no_experiment_net();
-        assert!(net_for(&state).is_none(), "{character:?} has no net");
-        assert_eq!(
-            root_stats(&state, RolloutPolicyKind::Net),
-            root_stats(&state, RolloutPolicyKind::Heuristic),
-            "{character:?}"
-        );
+        let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("../../data/rollout_nets/{name}.json"));
+        assert_eq!(builtin_net(c).is_some(), file.is_file(), "{c:?}");
     }
 }
 
-/// Only Ironclad has a built-in net, so the other four never get one.
-#[test]
-fn only_ironclad_can_have_a_built_in_net() {
-    for c in [
-        CharacterId::Silent,
-        CharacterId::Defect,
-        CharacterId::Regent,
-        CharacterId::Necrobinder,
-    ] {
-        assert!(builtin_net(c).is_none(), "{c:?}");
-    }
-}
-
-/// The built-in Ironclad net loads at the temperature the full-run gate
-/// measured (T = 1; the trainer writes 0.25 by default, the GH #777
-/// gotcha), and Ironclad searches under `Net` actually use it.
-#[cfg(rollout_net_ironclad)]
-#[test]
-fn ironclad_searches_use_the_built_in_net() {
-    let net = builtin_net(CharacterId::Ironclad).expect("built-in Ironclad net");
+/// A built-in net loads at the temperature its full-run gate measured
+/// (T = 1; the trainer once wrote 0.25 by default, the GH #777 gotcha), and
+/// that character's searches under `Net` actually use it.
+#[allow(dead_code)]
+fn searches_use_the_built_in_net(character: CharacterId) {
+    let net = builtin_net(character).expect("built-in net");
     assert!(
         (net.temperature - 1.0).abs() < f32::EPSILON,
         "T = {}",
@@ -85,13 +82,45 @@ fn ironclad_searches_use_the_built_in_net() {
     );
     assert!(net.rows > 100, "{} embedding rows", net.rows);
     let mut state = build_vertical_slice_hp(5, 80, 40);
-    state.player.character = Some(CharacterId::Ironclad);
+    state.player.character = Some(character);
     no_experiment_net();
     assert!(net_for(&state).is_some());
     assert_ne!(
         root_stats(&state, RolloutPolicyKind::Net),
         root_stats(&state, RolloutPolicyKind::Heuristic)
     );
+}
+
+#[cfg(rollout_net_ironclad)]
+#[test]
+fn ironclad_searches_use_the_built_in_net() {
+    searches_use_the_built_in_net(CharacterId::Ironclad);
+}
+
+#[cfg(rollout_net_silent)]
+#[test]
+fn silent_searches_use_the_built_in_net() {
+    searches_use_the_built_in_net(CharacterId::Silent);
+}
+
+#[cfg(rollout_net_defect)]
+#[test]
+fn defect_searches_use_the_built_in_net() {
+    searches_use_the_built_in_net(CharacterId::Defect);
+}
+
+#[cfg(rollout_net_necrobinder)]
+#[test]
+fn necrobinder_searches_use_the_built_in_net() {
+    searches_use_the_built_in_net(CharacterId::Necrobinder);
+}
+
+/// GH #822: shipped on the owner's call despite a NULL gate (A0 +8.5pp,
+/// A9 read +3.5pp; neither significant at p < 0.01).
+#[cfg(rollout_net_regent)]
+#[test]
+fn regent_searches_use_the_built_in_net() {
+    searches_use_the_built_in_net(CharacterId::Regent);
 }
 
 #[test]

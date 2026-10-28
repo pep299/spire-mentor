@@ -123,7 +123,9 @@ class CsTrace:
 
 class RustTrace:
     def __init__(self) -> None:
-        self._tmp = tempfile.NamedTemporaryFile(mode="w+", suffix=".rusttrace", delete=False)
+        self._tmp = tempfile.NamedTemporaryFile(
+            encoding="utf-8", mode="w+", suffix=".rusttrace", delete=False
+        )
         self._saved_fd2 = os.dup(2)
         os.dup2(self._tmp.fileno(), 2)
 

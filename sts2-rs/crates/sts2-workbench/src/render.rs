@@ -163,7 +163,7 @@ pub(crate) mod py {
                 let int_len = exp as usize + 1;
                 if digits.len() <= int_len {
                     out.push_str(&digits);
-                    out.extend(std::iter::repeat('0').take(int_len - digits.len()));
+                    out.extend(std::iter::repeat_n('0', int_len - digits.len()));
                     out.push_str(".0");
                 } else {
                     out.push_str(&digits[..int_len]);
@@ -172,7 +172,7 @@ pub(crate) mod py {
                 }
             } else {
                 out.push_str("0.");
-                out.extend(std::iter::repeat('0').take((-exp - 1) as usize));
+                out.extend(std::iter::repeat_n('0', (-exp - 1) as usize));
                 out.push_str(&digits);
             }
         } else {
@@ -865,6 +865,40 @@ fn named(items: Option<&Value>, idx: Option<&Value>, kind: &str) -> String {
     }
 }
 
+/// [`named`] for an enemy target: the enemy's label among `items` — its name
+/// plus `" #k"` when several enemies share it ([`crate::enemy_labels`]), so
+/// "Play Strike → Two-Tailed Rat #2" says WHICH rat.
+///
+/// Unlike [`find`], the positional fallback applies only to a list with no
+/// stable `index` at all: when the view carries indices, a missing one is a
+/// slot that is not on the board, and its list position names a DIFFERENT
+/// enemy.
+fn enemy_named(items: Option<&Value>, idx: Option<&Value>) -> String {
+    let fallback = || format!("enemy {}", py::opt_str(idx));
+    let list = py::list(items);
+    let Some(want) = idx.filter(|v| !v.is_null()) else {
+        return fallback();
+    };
+    let pos = list
+        .iter()
+        .position(|e| e.is_object() && py::get_raw(e, "index").is_some_and(|v| py::eq(v, want)))
+        .or_else(|| {
+            let indexed = list
+                .iter()
+                .any(|e| e.is_object() && py::get_raw(e, "index").is_some());
+            let i = py::as_int(want)?;
+            usize::try_from(i)
+                .ok()
+                .filter(|&i| !indexed && i < list.len())
+        });
+    match pos {
+        Some(pos) if py::get_raw(&list[pos], "name").is_some() => {
+            crate::enemy_labels::enemy_labels(list).swap_remove(pos)
+        }
+        _ => fallback(),
+    }
+}
+
 /// Like [`named`] but marks upgraded cards with a trailing `+`.
 fn card_name(cards: Option<&Value>, idx: Option<&Value>) -> String {
     let Some(it) = find(cards, idx) else {
@@ -961,7 +995,7 @@ pub fn describe_action(state: Option<&Value>, action: Option<&Value>) -> String 
                 Some(target) => {
                     format!(
                         "Play {name} → {}",
-                        named(py::get(state, "enemies"), Some(target), "enemy")
+                        enemy_named(py::get(state, "enemies"), Some(target))
                     )
                 }
                 None => format!("Play {name}"),
@@ -984,7 +1018,7 @@ pub fn describe_action(state: Option<&Value>, action: Option<&Value>) -> String 
                 Some(target) => {
                     format!(
                         "Drink {name} → {}",
-                        named(py::get(state, "enemies"), Some(target), "enemy")
+                        enemy_named(py::get(state, "enemies"), Some(target))
                     )
                 }
                 None => format!("Drink {name}"),
@@ -1485,6 +1519,52 @@ mod tests {
         assert_eq!(
             describe_action(Some(&state), Some(&action)),
             "Play Strike → enemy 1"
+        );
+    }
+
+    #[test]
+    fn test_describe_target_numbers_a_duplicated_enemy_name() {
+        // Slot 2 died, so the view lists slots 0, 1, 3, 4: rats #1..#3 + Louse.
+        let state = json!({
+            "hand": [{"index": 0, "name": "Strike"}],
+            "player": {"potions": [{"index": 0, "name": "Fire Potion"}]},
+            "enemies": [
+                {"index": 0, "name": "Two-Tailed Rat"},
+                {"index": 1, "name": "Louse"},
+                {"index": 3, "name": "Two-Tailed Rat"},
+                {"index": 4, "name": "Two-Tailed Rat"},
+            ],
+        });
+        let play = |t: i64| {
+            describe_action(
+                Some(&state),
+                Some(&json!({"cmd": "action", "action": "play_card",
+                             "args": {"card_index": 0, "target_index": t}})),
+            )
+        };
+        assert_eq!(play(0), "Play Strike → Two-Tailed Rat #1");
+        assert_eq!(play(1), "Play Strike → Louse");
+        assert_eq!(play(3), "Play Strike → Two-Tailed Rat #2");
+        assert_eq!(play(4), "Play Strike → Two-Tailed Rat #3");
+        let drink = json!({"cmd": "action", "action": "use_potion",
+                           "args": {"potion_index": 0, "target_index": 4}});
+        assert_eq!(
+            describe_action(Some(&state), Some(&drink)),
+            "Drink Fire Potion → Two-Tailed Rat #3"
+        );
+        // Slot 2 is not on the board: no label, not the slot-3 rat at list
+        // position 2.
+        assert_eq!(play(2), "Play Strike → enemy 2");
+        // Without stable indices the list position still resolves.
+        let bare = json!({
+            "hand": [{"index": 0, "name": "Strike"}],
+            "enemies": [{"name": "Two-Tailed Rat"}, {"name": "Two-Tailed Rat"}],
+        });
+        let act = json!({"cmd": "action", "action": "play_card",
+                         "args": {"card_index": 0, "target_index": 1}});
+        assert_eq!(
+            describe_action(Some(&bare), Some(&act)),
+            "Play Strike → Two-Tailed Rat #2"
         );
     }
 

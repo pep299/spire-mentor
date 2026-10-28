@@ -155,7 +155,11 @@ const ACT1_NORMAL_TWO_TAILED_RATS_MEMBERS: &[EncounterMember] = &[
     },
 ];
 
-const ACT1_NORMAL: &[EncounterSpec] = &[
+// The pools are `static`, not `const`: callers identify an entry by address
+// (`std::ptr::eq(spec, &pool[i])`), and a `const` has no guaranteed single
+// address. Built with `opt-level = 1` (the dev profile below), 9 such
+// assertions in sts2-content failed against a `const` pool.
+static ACT1_NORMAL: &[EncounterSpec] = &[
     // `nibbit_solo` MUST stay at index 0: `run_bridge` tests and
     // `select_first(act1_normal_pool())` callers pin the canonical
     // first entry to Nibbit@45.
@@ -209,7 +213,7 @@ const ACT1_BOSS_VANTOM_MEMBERS: &[EncounterMember] = &[EncounterMember {
     hp: 173,
 }];
 
-const ACT1_BOSS: &[EncounterSpec] = &[EncounterSpec {
+static ACT1_BOSS: &[EncounterSpec] = &[EncounterSpec {
     name: "vantom",
     members: ACT1_BOSS_VANTOM_MEMBERS,
 }];
@@ -306,7 +310,7 @@ const ACT2_NORMAL_TUNNELER_MEMBERS: &[EncounterMember] = &[
     },
 ];
 
-const ACT2_NORMAL: &[EncounterSpec] = &[
+static ACT2_NORMAL: &[EncounterSpec] = &[
     EncounterSpec {
         name: "bowlbugs_normal",
         members: ACT2_NORMAL_BOWLBUGS_MEMBERS,
@@ -381,7 +385,7 @@ const ACT2_ELITE_INFESTED_PRISMS_MEMBERS: &[EncounterMember] = &[EncounterMember
     hp: 200,
 }];
 
-const ACT2_ELITE: &[EncounterSpec] = &[
+static ACT2_ELITE: &[EncounterSpec] = &[
     EncounterSpec {
         name: "decimillipede_elite",
         members: ACT2_ELITE_DECIMILLIPEDE_MEMBERS,
@@ -430,7 +434,7 @@ const ACT2_BOSS_KAISER_CRAB_MEMBERS: &[EncounterMember] = &[
     },
 ];
 
-const ACT2_BOSS: &[EncounterSpec] = &[
+static ACT2_BOSS: &[EncounterSpec] = &[
     EncounterSpec {
         name: "the_insatiable_boss",
         members: ACT2_BOSS_THE_INSATIABLE_MEMBERS,
@@ -521,7 +525,7 @@ const ACT3_NORMAL_LOST_AND_FORGOTTEN_MEMBERS: &[EncounterMember] = &[
     },
 ];
 
-const ACT3_NORMAL: &[EncounterSpec] = &[
+static ACT3_NORMAL: &[EncounterSpec] = &[
     EncounterSpec {
         name: "axebots_normal",
         members: ACT3_NORMAL_AXEBOTS_MEMBERS,
@@ -588,7 +592,7 @@ const ACT3_ELITE_SOUL_NEXUS_MEMBERS: &[EncounterMember] = &[EncounterMember {
     hp: 234,
 }];
 
-const ACT3_ELITE: &[EncounterSpec] = &[
+static ACT3_ELITE: &[EncounterSpec] = &[
     EncounterSpec {
         name: "knights_elite",
         members: ACT3_ELITE_KNIGHTS_MEMBERS,
@@ -637,7 +641,7 @@ const ACT3_BOSS_AEONGLASS_MEMBERS: &[EncounterMember] = &[EncounterMember {
     hp: 512,
 }];
 
-const ACT3_BOSS: &[EncounterSpec] = &[
+static ACT3_BOSS: &[EncounterSpec] = &[
     EncounterSpec {
         name: "queen_boss",
         members: ACT3_BOSS_QUEEN_MEMBERS,

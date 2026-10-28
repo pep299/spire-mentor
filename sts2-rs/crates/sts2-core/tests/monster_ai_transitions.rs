@@ -108,6 +108,165 @@ fn must_perform_once_move_is_held_on_the_combat_path() {
     assert_eq!(ai.roll_move_with_combat(&mut rng, &combat).id, "X");
 }
 
+/// The performed flag belongs to the state that was current when the move
+/// STARTED. C# `MoveState.PerformMove` sets `_performedAtLeastOnce` before the
+/// body (`MoveState.cs:55-60`); a `SetMoveImmediate` from inside the body
+/// (the Waterfall Giant killed by thorns during STOMP is forced onto
+/// ABOUT_TO_BLOW) leaves that state through `OnExitState` (`:62-65`) and enters
+/// a state that has not performed; `OnMovePerformed` afterwards only sets
+/// `_performedFirstMove` (`MonsterMoveStateMachine.cs:51-54`). So the forced
+/// `must_perform_once` state is held for the next turn.
+///
+/// The post-move half is `on_move_performed_state(<the move that ran>)` (#894),
+/// which the combat walk calls right after each move; it flags only a move
+/// that is still current.
+#[test]
+fn a_must_perform_once_state_forced_mid_move_is_held() {
+    let mut states = BTreeMap::new();
+    states.insert("X", move_state("X", 1, "X", false));
+    states.insert("Y", move_state("Y", 2, "Z", true));
+    states.insert("Z", move_state("Z", 3, "Z", false));
+    let mut ai = MonsterAi::new(states, "X");
+    let mut rng = DotNetRng::new(7);
+
+    ai.begin_move(); // X's body starts...
+    ai.force_current_state("Y"); // ...and forces Y,
+    ai.on_move_performed_state("X"); // then X's move completes.
+    assert_eq!(ai.roll_move(&mut rng).id, "Y", "Y has not performed: held");
+
+    ai.begin_move();
+    ai.on_move_performed_state("Y");
+    assert_eq!(ai.roll_move(&mut rng).id, "Z", "performing Y releases it");
+}
+
+/// The STUNNED analogue: a `SetMoveImmediate(stun)` (`MonsterModel.cs:562-575`)
+/// whose `CanTransitionAway` guard (`:564`) reads the move that is still
+/// running.
+fn stun_self(state: &mut CombatState, owner: CreatureUid) {
+    sts2_core::hooks::apply_effects(
+        state,
+        &[sts2_core::hooks::Effect::StunMonster {
+            target: owner,
+            state_id: "S",
+            next_move: None,
+        }],
+    );
+}
+
+/// #830 (#862) x #806 (#894): the case neither side covered alone. A monster
+/// whose FIRST must-perform move stuns itself inside its own body (the shape
+/// of Shriek tripping on Thorns mid-Thrash, or a Ravenous devour inside the
+/// slug's own turn). C# has already marked that move performed when the body
+/// runs (`_performedAtLeastOnce = true`, `MoveState.cs:57`, then `await
+/// _onPerform`, `:59`), so `SetMoveImmediate`'s `CanTransitionAway` guard
+/// (`MonsterModel.cs:564`) lets the stun in; the stun is a fresh, unperformed
+/// must-perform state, so the boundary roll holds it and the monster serves
+/// it next turn, then resumes. #894 alone refused the stun (no pre-body mark:
+/// the guard saw an unperformed must-perform move); #862 alone had no stun
+/// guard at all. Driven through the real enemy walk.
+#[test]
+fn a_self_stun_inside_a_first_must_perform_move_lands_and_is_held() {
+    let mut states = BTreeMap::new();
+    states.insert(
+        "A",
+        MonsterState::Move(MoveState {
+            id: "A",
+            effect: stun_self,
+            intents: smallvec![Intent::Buff {
+                kind: sts2_core::PowerKind::Strength,
+                amount: 0
+            }],
+            follow_up: Some("B"),
+            must_perform_once: true,
+        }),
+    );
+    states.insert(
+        "S",
+        MonsterState::Move(MoveState {
+            id: "S",
+            effect: noop_effect,
+            intents: smallvec![Intent::Stun],
+            follow_up: Some("B"),
+            must_perform_once: true,
+        }),
+    );
+    states.insert("B", move_state("B", 0, "B", false));
+    let mut ai = MonsterAi::new(states, "A");
+
+    let mut state = CombatState::default();
+    state.player.current_hp = 50;
+    state.player.max_hp = 50;
+    let _ = state.init_player_creature();
+    let uid = state.spawn_enemy(sts2_core::MonsterKind::Nibbit);
+    ai.set_owner(uid);
+    let intent = ai.current_move().intents.first().copied();
+    state.set_creature_ai(uid, ai);
+    let c = state
+        .creatures
+        .iter_mut()
+        .find(|c| c.id == uid.0)
+        .expect("enemy");
+    c.current_hp = 30;
+    c.max_hp = 30;
+    c.intent = intent;
+    state.round = 1;
+    let current = |s: &CombatState| {
+        s.creatures
+            .iter()
+            .find(|c| c.id == uid.0)
+            .and_then(|c| c.ai.as_ref())
+            .map(MonsterAi::current_state_id)
+    };
+    let telegraph = |s: &CombatState| {
+        s.creatures
+            .iter()
+            .find(|c| c.id == uid.0)
+            .and_then(|c| c.intent)
+    };
+
+    state.phase = sts2_core::CombatPhase::EnemyTurnExec;
+    let _ = sts2_core::combat_loop::enemy_turn_exec(&mut state);
+    assert_eq!(
+        current(&state),
+        Some("S"),
+        "the stun landed inside A's body"
+    );
+    let _ = sts2_core::combat_loop::enemy_turn_end(&mut state);
+    assert_eq!(
+        current(&state),
+        Some("S"),
+        "the fresh stun is unserved, so the boundary roll holds it"
+    );
+    assert_eq!(telegraph(&state), Some(Intent::Stun));
+
+    // Next enemy turn: the stun is served, then the machine resumes at the
+    // move it was stunned out of (`StateLog.Last()`, Creature.cs:532-535).
+    state.phase = sts2_core::CombatPhase::EnemyTurnExec;
+    let _ = sts2_core::combat_loop::enemy_turn_exec(&mut state);
+    let _ = sts2_core::combat_loop::enemy_turn_end(&mut state);
+    assert_eq!(current(&state), Some("A"));
+}
+
+/// The same force landing between two turns (on the player's turn, after the
+/// enemy's move completed) is held too, and `on_move_performed` (the atomic
+/// begin + complete) still releases it — the pre-existing contract.
+#[test]
+fn a_must_perform_once_state_forced_between_turns_is_held_until_performed() {
+    let mut states = BTreeMap::new();
+    states.insert("X", move_state("X", 1, "X", false));
+    states.insert("Y", move_state("Y", 2, "Z", true));
+    states.insert("Z", move_state("Z", 3, "Z", false));
+    let mut ai = MonsterAi::new(states, "X");
+    let mut rng = DotNetRng::new(7);
+
+    ai.on_move_performed();
+    assert_eq!(ai.roll_move(&mut rng).id, "X");
+    ai.force_current_state("Y");
+    assert_eq!(ai.roll_move(&mut rng).id, "Y");
+    ai.on_move_performed();
+    assert_eq!(ai.roll_move(&mut rng).id, "Z");
+}
+
 // ── ConditionalBranch dead ends ────────────────────────────────────────
 
 /// C# `ConditionalBranchState.GetNextState` throws when every branch

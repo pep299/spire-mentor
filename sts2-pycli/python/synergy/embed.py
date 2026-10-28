@@ -98,8 +98,8 @@ def embed_catalog(
     """
     import umap  # local import — only needed when running embedding
 
-    obs_raw = json.loads(obs_path.read_text())
-    catalog = json.loads(catalog_path.read_text())
+    obs_raw = json.loads(obs_path.read_text(encoding="utf-8"))
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
 
     obs_pairs = obs_raw.get("pairs", [])
     tok2idx, pmi_mat = build_pmi_matrix(obs_pairs)
@@ -117,7 +117,7 @@ def embed_catalog(
         )
 
     if len(nodes) < 2:
-        out_path.write_text(json.dumps(catalog, indent=2))
+        out_path.write_text(json.dumps(catalog, indent=2), encoding="utf-8")
         return
 
     n_dense = len(tok2idx)
@@ -170,4 +170,4 @@ def embed_catalog(
         angle = math.atan2(y_n - 0.5, x_n - 0.5)
         node["hue"] = round((math.degrees(angle) + 360) % 360, 1)
 
-    out_path.write_text(json.dumps(catalog, indent=2))
+    out_path.write_text(json.dumps(catalog, indent=2), encoding="utf-8")

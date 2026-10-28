@@ -68,8 +68,10 @@ internal static class SimStateCopy
     /// Preference order matches what the importer can do most with: the combat
     /// board (the only state that rebuilds a fight bit-exact), then the open
     /// screen, then a bare run snapshot. Every branch carries the same envelope
-    /// (`SimStateExtractor.ApplyEnvelope`) -- seed, act, floor, run_state, map
-    /// and the RNG cursors -- which is what the run-level rebuild needs.
+    /// (`SimStateExtractor.ApplyEnvelope`) -- seed, act, floor, run_state and
+    /// the RNG cursors -- plus the map graph, which `WithMap` adds because the
+    /// envelope leaves it off `combat_action` and `run_snapshot`. Without it the
+    /// importer cannot place the run and restarts it at the act entrance.
     /// </summary>
     private static Dictionary<string, object>? BuildState()
     {
@@ -87,7 +89,7 @@ internal static class SimStateCopy
             {
                 combat["type"] = "advice_request";
                 combat["advice_for"] = "combat_action";
-                return combat;
+                return WithMap(combat, runState);
             }
         }
 
@@ -99,12 +101,28 @@ internal static class SimStateCopy
                 ["type"] = "advice_request",
                 ["advice_for"] = screen.AdviceFor,
             };
-            return msg;
+            return WithMap(msg, runState);
         }
 
         var snapshot = new Dictionary<string, object> { ["type"] = RunSnapshotType };
         SimStateExtractor.ApplyEnvelope(snapshot, runState, player);
-        return snapshot;
+        return WithMap(snapshot, runState);
+    }
+
+    /// <summary>
+    /// Add the act map graph (and with it the current node) when the builder
+    /// left it off. `ApplyEnvelope` omits it from `combat_action` on purpose --
+    /// that message goes out ~4x/s and the graph walk is not free -- but a copy
+    /// is one-shot, and the map is what places the imported run where it was.
+    /// </summary>
+    private static Dictionary<string, object> WithMap(Dictionary<string, object> msg, RunState runState)
+    {
+        if (!msg.ContainsKey("map"))
+        {
+            try { msg["map"] = SimStateExtractor.SerializeMapGraph(runState); }
+            catch (Exception ex) { Logger.Log($"[SimStateCopy] Map not copied: {ex.Message}"); }
+        }
+        return msg;
     }
 
     /// <summary>

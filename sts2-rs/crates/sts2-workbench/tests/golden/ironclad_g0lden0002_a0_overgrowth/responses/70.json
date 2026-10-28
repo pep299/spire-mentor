@@ -13,6 +13,7 @@
   {
    "action": "Strike",
    "hp_n": 10,
+   "hp_sd": 2.4187,
    "is_best": true,
    "losses": 0,
    "low_confidence": false,
@@ -29,6 +30,7 @@
   {
    "action": "Strike",
    "hp_n": 10,
+   "hp_sd": 1.4697,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
@@ -45,6 +47,7 @@
   {
    "action": "Slimed",
    "hp_n": 10,
+   "hp_sd": 2.2113,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
@@ -61,6 +64,7 @@
   {
    "action": "Defend",
    "hp_n": 9,
+   "hp_sd": 2.3623,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
@@ -77,6 +81,7 @@
   {
    "action": "end turn",
    "hp_n": 9,
+   "hp_sd": 2.7487,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,

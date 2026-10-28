@@ -24,6 +24,12 @@ dependencies = [
 
 [tool.uv]
 package = false
+# Build the editable sts2_rs (see [tool.uv.sources]) with the thin-LTO
+# `pyext` cargo profile instead of `release`. uv rebuilds it after every Rust
+# edit, so this is on every pytest gate's path: the fat-LTO link alone took
+# 208 s, `pyext` takes ~48 s. Explicit `maturin --release` builds (Dockerfile,
+# setup.sh, wheel-venv.sh) are unaffected.
+config-settings-package = { sts2-rs = { "build-args" = "--profile pyext" } }
 
 [tool.uv.sources]
 # sts2_rs — Rust MCTS hint backend, lives in the sibling sts2-rs repo.
@@ -32,9 +38,9 @@ package = false
 # Listed in [project.dependencies] so `uv sync` keeps it installed
 # instead of uninstalling it on every sync. uv builds it through
 # maturin's PEP 517 hooks (`build_editable`), which default to the
-# RELEASE cargo profile — verified: the resulting extension is byte-
-# for-byte the size of `maturin develop --release` (~3.4 MB), not a
-# debug build. (The debug-build concern that previously kept this out
+# RELEASE cargo profile (overridden to the thin-LTO `pyext` profile by
+# `config-settings-package` above), not a debug build. (The debug-build
+# concern that previously kept this out
 # of dependencies was a conflation with the `maturin develop` *command*,
 # which defaults to debug; uv never invokes that command.)
 #
@@ -104,7 +110,11 @@ pythonpath = ["python"]
 # a 4-8 core machine they dominate and push the suite past 45 minutes.
 # Run them explicitly with `just test-slow` (or `pytest -m slow`), and the whole
 # suite with `just test-all`.
-addopts = "-ra -n auto -m 'not slow'"
+# `--dist worksteal`: the test durations are very uneven (a few run-length
+# walks of 10-28 s among ~3400 sub-second tests). The default `load` hands
+# each worker its share up front, so a long test drawn late ran on past the
+# rest; worksteal rebalances as workers drain (~65 s -> ~57 s, 32 cores).
+addopts = "-ra -n auto --dist worksteal -m 'not slow'"
 # Tests spawn the C# headless game process via subprocess; cap runaway tests.
 timeout = 600
 markers = [
@@ -132,6 +142,7 @@ select = [
   "E",   # pycodestyle errors
   "F",   # pyflakes
   "I",   # isort
+  "PLW1514", # open/read_text/write_text without encoding= (locale-dependent: cp1252 on Windows)
   "PTH", # pathlib over os.path
   "RUF", # ruff-specific rules
   "SIM", # flake8-simplify
@@ -253,6 +264,8 @@ known_first_party = [
   "run_setup_parity",
   "run_stepper",
   "combat_mirror",
+  "coop_coordination",
+  "coop_replay",
   "diag_leaf_saturation",
   "encoder_combat_surrogate",
   "eval_combat_surrogate_net",

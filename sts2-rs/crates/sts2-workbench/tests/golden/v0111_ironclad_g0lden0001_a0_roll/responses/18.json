@@ -13,7 +13,7 @@
    "act_name": "Overgrowth",
    "bg_col": 0,
    "bg_row": 2,
-   "bg_seed": 11180935036767329045,
+   "bg_seed": "11180935036767329045",
    "floor": 2,
    "step_no": 0,
    "turn": null
@@ -28,7 +28,7 @@
    "ascension": 0,
    "bg_col": 0,
    "bg_row": 2,
-   "bg_seed": 11180935036767329045,
+   "bg_seed": "11180935036767329045",
    "can_skip": false,
    "cards": [
     {

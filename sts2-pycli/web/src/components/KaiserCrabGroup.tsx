@@ -13,6 +13,8 @@ export interface CrabArm {
   c: Enemy;
   part: string; // "left" | "right"
   dataIndex: number;
+  /** The board label (`enemyLabeller`) — see `<Combatant label>`. */
+  label?: string;
   hotkey?: number;
   onClick?: () => void;
   onHoverChange?: (hovering: boolean) => void;
@@ -154,6 +156,7 @@ export default function KaiserCrabGroup({
               c={arm.c}
               isEnemy
               dataIndex={arm.dataIndex}
+              label={arm.label}
               noSprite={{ w: OVERLAY_W, h: spacerH }}
               hotkey={arm.hotkey}
               onClick={arm.onClick}

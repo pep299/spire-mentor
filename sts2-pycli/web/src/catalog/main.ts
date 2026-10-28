@@ -1,6 +1,7 @@
 import type { Catalog, CatalogEdge, QuadrantSet, SortKey, SortDir } from "./data";
 import { filterByQuadrant, sortRows } from "./data";
 import { renderHeatmap } from "./heatmap";
+import { versionedPublicPath } from "../gameVersion";
 import type { CardTextEntry } from "./heatmap";
 
 type Quadrant = CatalogEdge["quadrant"];
@@ -353,14 +354,25 @@ async function loadCharacter(character: string): Promise<void> {
 async function init(): Promise<void> {
   setStatus("Loading…");
 
-  // Card text is shared across characters — fetch once.
-  try {
-    const cardTextRes = await fetch("./card_text.json");
-    if (cardTextRes.ok) {
-      cardText = (await cardTextRes.json()) as Record<string, CardTextEntry>;
+  // Card text is shared across characters — fetch once. Per game build
+  // (GH #877): the workbench opens this page with `?game_version=<ver>` for a
+  // non-default build's run, whose own text lives at `./<ver>/card_text.json`;
+  // a build without one (the public snapshot) reads the default build's.
+  // The synergy catalogs themselves are the default build's only: they come
+  // from a scraped v0.107 run corpus, so a card new in a later build simply
+  // has no pairs here.
+  const gameVersion = new URLSearchParams(window.location.search).get("game_version");
+  const cardTextUrls = [versionedPublicPath("card_text.json", gameVersion), "/card_text.json"];
+  for (const url of new Set(cardTextUrls)) {
+    try {
+      const cardTextRes = await fetch(`.${url}`);
+      if (cardTextRes.ok) {
+        cardText = (await cardTextRes.json()) as Record<string, CardTextEntry>;
+        break;
+      }
+    } catch {
+      // card text is optional; tooltips fall back to tokens
     }
-  } catch {
-    // card text is optional; tooltips fall back to tokens
   }
 
   // Static chrome that doesn't depend on the catalog.

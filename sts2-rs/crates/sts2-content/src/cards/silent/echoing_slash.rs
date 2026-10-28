@@ -25,44 +25,21 @@ pub(crate) fn play_echoing_slash(state: &mut CombatState, _t: Option<CreatureUid
     while attack_count > 0 {
         attack_count -= 1;
         // C# counts `DamageResult.WasTargetKilled` for THIS wave's hits
-        // (`attackCount += enumerable.Count(r => r.WasTargetKilled)`), so the
-        // rewave count is the number of *targeted* enemies that died — NOT the
-        // net change in the alive-enemy count. Snapshot the wave's targets up
-        // front and tally how many of THEM are dead afterward. A net-delta
-        // (`alive_before - alive_after`) underflows to 0 when a kill SPAWNS
-        // more enemies — e.g. killing a PHROG_PARASITE triggers
-        // `InfestedPower.AfterDeath` (spawns 4 Wrigglers), so alive goes 1 -> 4
-        // and the prior `saturating_sub` reported 0 kills, skipping the rewave
-        // that C# lands on the freshly-spawned Wrigglers (Silent fuzz seed 19:
-        // monsters[*].hp uniformly +10 in Rust). Bead `sts2-rs-5tetc` follow-up.
-        let targets: smallvec::SmallVec<[sts2_core::CreatureUid; 8]> = state
-            .enemy_uids
-            .iter()
-            .copied()
-            .filter(|uid| {
-                state
-                    .creatures
-                    .iter()
-                    .any(|c| c.id == uid.0 && c.current_hp > 0)
-            })
-            .collect();
-        let _ = deal_damage_to_all_alive_enemies(
+        // (`EchoingSlash.cs:34`: `attackCount += enumerable.Count(r =>
+        // r.WasTargetKilled)`), so the rewave count is the number of hits that
+        // killed their target — NOT the net change in the alive-enemy count
+        // (a kill that SPAWNS enemies, PHROG_PARASITE's `InfestedPower`
+        // Wrigglers, made a net delta underflow to 0; Silent fuzz seed 19,
+        // bead `sts2-rs-5tetc`) and NOT "dead afterwards" either: a target
+        // revived inside the hit (the pressurized Waterfall Giant, back at
+        // 999,999,999 before the damage call returns) was still killed by it
+        // (`Creature.cs:447`), so C# lands another wave on it.
+        let (_, kills) = sts2_core::card_effects::deal_damage_to_all_alive_enemies_counting_kills(
             state,
             base,
             ValueProps::MOVE,
             Some(CardId::EchoingSlash),
         );
-        // A targeted enemy counts as killed when it is now absent from
-        // `creatures` (removed on death) or present at <= 0 HP.
-        let kills = targets
-            .iter()
-            .filter(|uid| {
-                !state
-                    .creatures
-                    .iter()
-                    .any(|c| c.id == uid.0 && c.current_hp > 0)
-            })
-            .count();
         attack_count = attack_count.saturating_add(i32::try_from(kills).unwrap_or(i32::MAX));
     }
     EffectResult::Resolved

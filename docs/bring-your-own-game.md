@@ -27,12 +27,15 @@ source the extractors and the mechanics work read plus real art
   refuses any other build unless you pass `--allow-version-mismatch` (the
   oracle and the extracted data would then describe a different game). A
   v0.111.0 install gets only its version-keyed outputs — its oracle
-  (`sts2-pycli/lib/v0.111.0/`, `just build-cs v0.111.0`) and
-  `sts2-wiki/{extracted,decompiled,data}/v0.111.0/`; the shared trees
-  (`localization_eng/`, the art, the card db, the workbench bundle) keep
-  describing v0.107.1. Select the oracle build with `STS2_GAME_VERSION`.
+  (`sts2-pycli/lib/v0.111.0/`, `just build-cs v0.111.0`),
+  `sts2-wiki/{extracted,decompiled,data}/v0.111.0/`, its workbench bundle
+  and its art overlay (`sts2-wiki/site/public/images/v0.111.0/`: the art the
+  shared tree lacks); the shared trees (`localization_eng/`, the art, the
+  card db, the default workbench bundle) keep describing v0.107.1. Select the
+  oracle build with `STS2_GAME_VERSION`. Steam installs one branch at a
+  time; to get both builds on one machine, use `--download` (below).
 - [`just`](https://just.systems), [`uv`](https://docs.astral.sh/uv/), Python 3.13.
-- Rust 1.96 (pinned by `sts2-rs/rust-toolchain.toml`; rustup installs it on
+- Rust 1.99 (pinned by `sts2-rs/rust-toolchain.toml`; rustup installs it on
   first use) and `cargo-nextest`. `sccache` is optional
   (`export RUSTC_WRAPPER=sccache`).
 - **oracle tier:** the [.NET 9 SDK](https://dotnet.microsoft.com/download).
@@ -73,6 +76,7 @@ source the extractors and the mechanics work read plus real art
 ## Run it
 
 ```sh
+just import-game --download --steam-user NAME   # downloads BOTH builds, imports each
 just import-game                       # finds the game through Steam; every tier
 just import-game --tier oracle         # just the C# oracle
 just import-game --tier workbench      # everything but sound
@@ -87,6 +91,24 @@ install folder (the one holding `SlayTheSpire2.pck`), the macOS `.app`, or the
 argument (on Unix shells; on Windows the path's spaces do not survive the
 recipe, so use `STS2_GAME_DIR`, e.g.
 `$env:STS2_GAME_DIR = "D:\SteamLibrary\steamapps\common\Slay the Spire 2"`).
+
+### Download the builds instead (`--download`)
+
+`--download` fetches every supported build from Steam (`--download v0.111.0`
+fetches just one) with [DepotDownloader](https://github.com/SteamRE/DepotDownloader/releases)
+— on PATH, at `$DEPOTDOWNLOADER`, or `--depotdownloader PATH` — into
+`sts2_binaries/<version>/`, then imports each one, the default build first
+(a later build's art overlay is what the default build's art lacks). It
+needs an account that owns the game: `--steam-user NAME` (DepotDownloader
+asks for the password and the Steam Guard code itself; `-remember-password`
+keeps its login token for the next build) or `--steam-qr` (scan a QR code
+in the Steam app). The script never sees your password. Each build is pinned
+to its depot manifest (`DEPOT_MANIFESTS` in `scripts/import_game.py`), not a
+branch, because Steam's `public` and `public-beta` branches move on to newer
+builds; only the files the import reads are downloaded (the pck and the data
+folder: about 1.2 GB to download and 2.1 GB on disk per build, not the executable). Steam now and then refuses a manifest it serves a minute later, so a failed download is retried. The Windows depot is used on
+every OS: the pck and the .NET DLLs are the same everywhere. A build already
+in `sts2_binaries/<version>/` is not downloaded again.
 
 The driver stages the build under `sts2_binaries/<version>/` — symlinks; on
 Windows without Developer Mode a hard link for the pck and a junction for the
@@ -108,9 +130,19 @@ directly (no bash, so the same on every platform):
    and room rig), `render_portraits` (renders each creature rig's idle pose
    to the still `monsters/*.png` and `character_sprites/*.png` the game does
    not ship, through `tools/spine-renderer`), and `build_sfx_map`.
+   A non-default build (v0.111.0) runs none of these art steps; it gets an
+   art overlay instead: its sprite atlases, kept where the shared tree has
+   no file (new cards, relics, potions and powers, and the final art of cards
+   v0.107.1 ships only as `beta/` sketches), into `images/<version>/`, which
+   that build's runs read before the shared tree. It does get its own
+   `build_sfx_map` (into `sts2-pycli/web/public/<version>/sfx_map.json`).
 4. `sts2-pycli`: `synergy.gen_card_text`, `workbench.build_card_db`,
    `scripts/build_asset_manifest.py`, `scripts/bundle_workbench_data.py`
-   (= `just workbench-data`, the bundle the browser workbench embeds).
+   (= `just workbench-data`, the bundle the browser workbench embeds). A
+   non-default build gets its own card text and card db too
+   (`web/public/<version>/card_text.json`,
+   `python/workbench/data/<version>/card_db.json`), but not the asset
+   manifest.
 5. `sound`: `extract_sfx` (renders the ~570 sound-effect events of the
    game's FMOD banks to WAV — music and ambience are not extracted) +
    `encode_sfx` (trims and encodes them to Opus/WebM).

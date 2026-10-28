@@ -35,7 +35,10 @@ PY = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "python"))
 # Enough seeds to walk past act 1 on several runs under random play. A
 # 40-seed sweep of this same walk yields ~3.6 event decisions per run, ~2.6 of
 # them non-Neow, so six seeds clear every "at least" assertion below by a wide
-# margin; the walks dominate runtime, hence not more.
+# margin; the walks dominate runtime, hence not more. Each walk is its own
+# test so xdist spreads them over workers: as one module fixture the six ran
+# back to back (~40 s) on every worker that drew a test from this file, the
+# pytest gate's long pole.
 SEEDS = range(1000, 1006)
 
 
@@ -59,42 +62,50 @@ def _walk(seed: int):
     return events, env.resolution_log
 
 
-@pytest.fixture(scope="module")
-def walks():
-    return [_walk(s) for s in SEEDS]
+@pytest.fixture(scope="module", params=SEEDS, ids=lambda s: f"seed{s}")
+def walk(request):
+    return _walk(request.param)
 
 
-def test_no_event_room_is_auto_resolved(walks) -> None:
+def test_no_event_room_is_auto_resolved(walk) -> None:
     """The bug, stated directly: an event must never be `single-option-auto`.
 
     This is the assertion that fails against the pre-fix env — every ordinary
     event room took exactly this branch.
     """
+    _, log = walk
     swallowed = [
         (phase, surface, klass)
-        for _, log in walks
         for _, phase, surface, klass in log
         if phase == "event" and klass == "single-option-auto"
     ]
     assert not swallowed, f"{len(swallowed)} event rooms auto-resolved without a decision"
 
 
-def test_ordinary_events_reach_the_policy(walks) -> None:
-    """Not just Neow. Pre-fix this set was exactly {'Neow'}."""
-    names = {name for events, _ in walks for name, _ in events}
+def test_ordinary_events_reach_the_policy() -> None:
+    """Not just Neow. Pre-fix this set was exactly {'Neow'}.
+
+    Across SEEDS, as before, but walked lazily: the first seed that reaches an
+    ordinary event settles it (today that is the first seed)."""
+    names: set = set()
+    for seed in SEEDS:
+        events, _ = _walk(seed)
+        names |= {name for name, _ in events}
+        if "Neow" in names and names - {"Neow"}:
+            break
     assert "Neow" in names, "Neow is pre-bound by neow_start and must still surface"
     assert names - {"Neow"}, "no ordinary event room ever became a decision"
 
 
-def test_every_event_decision_carries_a_resolvable_identity(walks) -> None:
+def test_every_event_decision_carries_a_resolvable_identity(walk) -> None:
     """An unbound event yields `event_name=None` -> the encoder's pad row, and
     a name outside the registry yields the shared OOV row. Both make the
     decision anonymous to the net; neither may happen."""
     from ppo import vocab
 
     reg = vocab.events()
-    for events, _ in walks:
-        for name, n_actions in events:
-            assert name, "event decision with no bound event id"
-            assert reg.index(name) != reg.oov, f"event id {name!r} lands on the OOV row"
-            assert n_actions > 1, f"{name} yielded a decision with {n_actions} action(s)"
+    events, _ = walk
+    for name, n_actions in events:
+        assert name, "event decision with no bound event id"
+        assert reg.index(name) != reg.oov, f"event id {name!r} lands on the OOV row"
+        assert n_actions > 1, f"{name} yielded a decision with {n_actions} action(s)"

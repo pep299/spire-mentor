@@ -9,10 +9,17 @@ trusts for card type / rarity).
 
 Run from the repo root::
 
-    python -m workbench.build_card_db [--manifest <path>] [--out <path>]
+    python -m workbench.build_card_db [--version <ver>] [--manifest <path>] [--out <path>]
 
 The output is checked in at ``workbench/data/card_db.json`` so the analyzer never
 depends on the wiki sibling being present at runtime.
+
+**One table per game build (GH #877).** The default build's table is
+``workbench/data/card_db.json``; every other supported build's is
+``workbench/data/<ver>/card_db.json`` (``deck_analysis.data_dir_for``), built
+from that build's own wiki manifest (``sts2-wiki/data/<ver>/cards.json``) —
+never another build's, which would score the cards the build changed with the
+wrong numbers. ``--version`` picks the build; the default is the default build.
 """
 
 from __future__ import annotations
@@ -23,7 +30,9 @@ import re
 from pathlib import Path
 from typing import Any
 
-from workbench import localization
+from sts2_client import DEFAULT_GAME_VERSION, SUPPORTED_GAME_VERSIONS
+
+from workbench import deck_analysis, localization
 
 # target strings the manifest uses that hit more than one enemy.
 _AOE_TARGETS = {"AllEnemies"}
@@ -121,7 +130,7 @@ def build(manifest_path: Path) -> dict[str, dict[str, Any]]:
     return db
 
 
-def _default_manifest(repo_root: Path) -> Path | None:
+def _default_manifest(repo_root: Path, version: str | None = None) -> Path | None:
     """Locate the engine-pinned sibling wiki ``cards.json`` manifest, if any.
 
     Delegates to ``localization._engine_manifest`` so the generated table is
@@ -133,17 +142,25 @@ def _default_manifest(repo_root: Path) -> Path | None:
     data_dir = repo_root.parent / "sts2-wiki" / "data"
     if not data_dir.is_dir():
         return None
-    return localization._engine_manifest(data_dir)
+    return localization._engine_manifest(data_dir, version)
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     repo_root = Path(__file__).resolve().parents[2]
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--manifest", type=Path, default=_default_manifest(repo_root))
     ap.add_argument(
-        "--out", type=Path, default=Path(__file__).resolve().parent / "data" / "card_db.json"
+        "--version",
+        choices=SUPPORTED_GAME_VERSIONS,
+        default=DEFAULT_GAME_VERSION,
+        help="game build whose table to write (default: the default build)",
     )
-    args = ap.parse_args()
+    ap.add_argument("--manifest", type=Path, default=None)
+    ap.add_argument("--out", type=Path, default=None)
+    args = ap.parse_args(argv)
+    if args.manifest is None:
+        args.manifest = _default_manifest(repo_root, args.version)
+    if args.out is None:
+        args.out = deck_analysis.data_dir_for(args.version) / "card_db.json"
     if not args.manifest or not args.manifest.is_file():
         raise SystemExit(f"manifest not found: {args.manifest!r} (pass --manifest)")
     db = build(args.manifest)

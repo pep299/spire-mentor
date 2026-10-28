@@ -119,6 +119,13 @@ describe("Board (interactive)", () => {
     expect(onHint).toHaveBeenCalled();
   });
 
+  it("'p' peeks, in either style (it is press-first)", () => {
+    const onPeek = vi.fn();
+    render(<Board step={combatStep()} onPlayCard={() => {}} onEndTurn={() => {}} onPeek={onPeek} />);
+    press("p");
+    expect(onPeek).toHaveBeenCalledTimes(1);
+  });
+
   it("does not react to keys when read-only (no handlers)", () => {
     const onPlayCard = vi.fn();
     render(<Board step={combatStep()} />);
@@ -197,7 +204,7 @@ describe("Board (interactive)", () => {
       onAutoplayToEnd={() => {}} onSearch={() => {}} onToggleHints={() => {}} />);
     expect(screen.getByRole("button", { name: /play best/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^search/i })).toBeInTheDocument();
-    expect(screen.getByText(/^hints:/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "🎓 coach" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /autoplay/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /play to end/i })).toBeInTheDocument();
   });

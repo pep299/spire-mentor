@@ -208,7 +208,11 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> PyResult<CoreCombatState> {
 }
 
 /// Decode a public generated-card template through the combat card decoder.
-pub fn card_from_dict(d: &Bound<'_, PyDict>, uid: sts2_core::CardUid, path: &str) -> PyResult<sts2_core::cards::Card> {
+pub fn card_from_dict(
+    d: &Bound<'_, PyDict>,
+    uid: sts2_core::CardUid,
+    path: &str,
+) -> PyResult<sts2_core::cards::Card> {
     sts2_wire::state_dict::card_from_wire(&PyWire::from_dict(d), uid, path).map_err(wire_err)
 }
 
@@ -368,16 +372,23 @@ mod tests {
         Python::with_gil(|py| {
             let template: serde_json::Value = serde_json::from_str(include_str!(
                 "../../sts2-wire/tests/fixtures/combat_action_ironclad.json"
-            )).unwrap();
+            ))
+            .unwrap();
             for id in CardId::V0111_ONLY {
                 let mut value = template.clone();
                 value["game_version"] = serde_json::json!("0.111.0");
                 value["deck"]["hand"] = serde_json::json!([{
                     "id": id.to_python_name(), "kind": "card", "stable_idx": 4, "upgraded": false
                 }]);
-                let d = pythonize::pythonize(py, &value).unwrap().downcast_into::<PyDict>().unwrap();
+                let d = pythonize::pythonize(py, &value)
+                    .unwrap()
+                    .downcast_into::<PyDict>()
+                    .unwrap();
                 let state = state_from_dict(&d).unwrap();
-                assert_eq!(state.cards[state.player.hand[0].get() as usize - 1].card_id, id);
+                assert_eq!(
+                    state.cards[state.player.hand[0].get() as usize - 1].card_id,
+                    id
+                );
             }
         });
     }
@@ -388,12 +399,16 @@ mod tests {
         Python::with_gil(|py| {
             let mut value: serde_json::Value = serde_json::from_str(include_str!(
                 "../../sts2-wire/tests/fixtures/combat_action_ironclad.json"
-            )).unwrap();
+            ))
+            .unwrap();
             value["player"]["cards_played_this_turn"] = serde_json::json!([0, 0, 0, 0, 0]);
             value["player"]["cards_started_this_turn"] = serde_json::json!([0, 0, 0, 0, 0]);
             value["player"]["block_gained_card_plays_this_turn"] = serde_json::json!([]);
             value["player"]["next_card_play"] = serde_json::json!(0);
-            let d = pythonize::pythonize(py, &value).unwrap().downcast_into::<PyDict>().unwrap();
+            let d = pythonize::pythonize(py, &value)
+                .unwrap()
+                .downcast_into::<PyDict>()
+                .unwrap();
             let inner = state_from_dict(&d).unwrap();
             let mut fresh = crate::PyCombatState::from_inner(inner.clone(), 0);
             let mut carried = crate::PyCombatState::from_inner(inner, 0);
@@ -402,7 +417,9 @@ mod tests {
             carried.inner.combat_log.card_plays_finished_this_turn = 2;
             carried.inner.combat_log.unmovable_card_block_plays.push(0);
             carried.inner.combat_log.next_card_play = 3;
-            fresh.transplant_hidden(&carried, None, false, None, None).unwrap();
+            fresh
+                .transplant_hidden(&carried, None, false, None, None)
+                .unwrap();
             assert_eq!(fresh.inner.player.card_plays_started_this_turn, 0);
             assert_eq!(fresh.inner.combat_log.cards_started_this_turn, [0; 5]);
             assert_eq!(fresh.inner.combat_log.card_plays_finished_this_turn, 0);
@@ -1127,7 +1144,10 @@ mod tests {
                 sloth.amount, 2,
                 "`amount` stays the threshold — the count must NOT overwrite it"
             );
-            assert_eq!(sloth.counter, 2, "Sloth retains only the plays since its own application");
+            assert_eq!(
+                sloth.counter, 2,
+                "Sloth retains only the plays since its own application"
+            );
         });
     }
 

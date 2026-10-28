@@ -452,6 +452,16 @@ export interface Particle {
    *  plus accumulated spin (`ppm451.cpp:1074-1081`). The 2D transform Godot
    *  builds from it is `[cos, -sin; sin, cos]` (`:1090-1092`). */
   angle: number;
+  /** The unit direction `particle_flag_align_y` points the particle's local
+   *  +Y along, in the emitter's own (Y-down) space: Godot's
+   *  `TRANSFORM[1] = normalize(final_velocity)` (`ppm451.cpp:1085-1092`).
+   *  Tracked for every particle, but only an emitter that sets the flag draws
+   *  with it — and then INSTEAD of `angle`, which that branch never reads.
+   *  It is history, not a function of the current velocity: a frame whose
+   *  `final_velocity` is exactly zero (linear damping clamps it there) keeps
+   *  the previous frame's direction, and a particle that has never moved holds
+   *  the spawn identity `(0, 1)`. */
+  heading: [number, number];
   /** `false` before spawn, `false` again once retired — `true` only while
    *  live and rendered. */
   alive: boolean;
@@ -497,6 +507,9 @@ interface InternalParticle {
   angleBase: number;
   /** Godot's `dynamic_params.angular_velocity`, DEGREES/SECOND. */
   angularVelocity: number;
+  /** `Particle.heading` — carried frame to frame because Godot's zero-velocity
+   *  branch re-reads the previous `TRANSFORM[1]`. */
+  heading: [number, number];
   /** Post-sign-clamp base scale drawn at spawn, before lifetime curves. */
   baseScale: number;
   /** Godot's `CUSTOM.y`: age as a fraction of the *system* `lifetime`. */
@@ -840,6 +853,9 @@ function spawnParticle(
   // invariance in real Godot; a config-fixed draw count per particle here).
   p.radialFallbackDir = getRandomDirectionFromSpread(360, spec, rng);
 
+  // `RESTART_ROT_SCALE` resets the basis to identity (`ppm451.cpp:878-882`),
+  // so a respawned particle does not inherit its previous life's heading.
+  p.heading = [0, 1];
   p.ageFraction = 0;
   p.spawned = true;
   p.alive = true;
@@ -997,6 +1013,13 @@ function stepParticle(
   p.y += finalVelocity[1] * dt;
   p.z += finalVelocity[2] * dt;
 
+  // `particle_flag_align_y` (`ppm451.cpp:1085-1092`): the post-limit,
+  // Z-flattened `final_velocity` — radial displacement included, which a
+  // heading taken from `VELOCITY` alone would miss — or, when that is zero,
+  // the previous direction re-normalized.
+  const headingLen = Math.hypot(finalVelocity[0], finalVelocity[1]);
+  if (headingLen > 0) p.heading = [finalVelocity[0] / headingLen, finalVelocity[1] / headingLen];
+
   // process_display_param (lines 47-72 of the source, called at line 221):
   // only the scale curve is modeled — color/hue/animation are a rendering
   // concern, out of this integrator's scope (see module doc).
@@ -1081,6 +1104,7 @@ export function createSimState(spec: ParticleSystemSpec, rng: () => number): Sim
     radialVelocityDraw: 0,
     turbInfluenceDraw: 0,
     radialFallbackDir: [0, 0, 0],
+    heading: [0, 1],
   }));
 
   return {
@@ -1183,6 +1207,7 @@ export function readout(state: SimState, opts?: SimulateOpts): SimResult {
       // params.animation_speed` (`:1147`).
       animOffset: p.animOffset + lifetimeFraction * animSpeed,
       angle: (baseAngleDeg * Math.PI) / 180,
+      heading: [p.heading[0], p.heading[1]],
       alive: p.spawned && p.alive,
     };
   });

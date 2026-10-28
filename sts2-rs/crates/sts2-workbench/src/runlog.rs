@@ -305,11 +305,95 @@ fn graft_path_plan(state: &mut Value, advice: &Value) {
     );
 }
 
+/// The live coach's records in a run log (`type: "coach"` lines,
+/// `realgame_coach`), collected the way `TimelineStore.load_jsonl` does.
+///
+/// Records attach to the step their `log_idx` names, never to the preceding
+/// `state` line: a turn's grade lands after later states, the autopsy after
+/// the terminal one. A `withdraw {ids}` drops those ids wherever it sits; an
+/// id emitted again after it comes back.
+#[derive(Debug, Clone, Default)]
+struct CoachCollector {
+    /// `(id, record)` in file order; a re-emitted id keeps its slot.
+    records: Vec<(String, Value)>,
+    autopsy: Option<Value>,
+    anon: usize,
+}
+
+impl CoachCollector {
+    fn push(&mut self, data: Value) {
+        let kind = data.get("kind").and_then(Value::as_str).unwrap_or("");
+        match kind {
+            "withdraw" => {
+                let ids: Vec<&str> = data
+                    .get("ids")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect();
+                self.records.retain(|(id, _)| !ids.contains(&id.as_str()));
+                if self.autopsy.as_ref().is_some_and(|a| {
+                    a.get("id")
+                        .and_then(Value::as_str)
+                        .is_some_and(|id| ids.contains(&id))
+                }) {
+                    self.autopsy = None;
+                }
+            }
+            "autopsy" => self.autopsy = Some(data),
+            "turn" | "choice" | "recap" => {
+                let id = if let Some(id) = data.get("id").and_then(Value::as_str) {
+                    id.to_string()
+                } else {
+                    self.anon += 1;
+                    format!("anon:{}", self.anon)
+                };
+                match self.records.iter_mut().find(|(k, _)| *k == id) {
+                    Some(slot) => slot.1 = data,
+                    None => self.records.push((id, data)),
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// `{records, by_step, autopsy}`: `by_step` maps a step index to the ids
+    /// of the graded records on it (an `ungraded` turn is listed, not stepped).
+    fn to_value(&self) -> Value {
+        let mut by_step: BTreeMap<u64, Vec<Value>> = BTreeMap::new();
+        for (id, r) in &self.records {
+            if r.get("verdict").and_then(Value::as_str) == Some("ungraded") {
+                continue;
+            }
+            if let Some(idx) = r.get("log_idx").and_then(Value::as_u64) {
+                by_step.entry(idx).or_default().push(json!(id));
+            }
+        }
+        let by_step: Map<String, Value> = by_step
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), Value::Array(v)))
+            .collect();
+        json!({
+            "records": self.records.iter().map(|(_, r)| r.clone()).collect::<Vec<_>>(),
+            "by_step": by_step,
+            "autopsy": self.autopsy.clone().unwrap_or(Value::Null),
+        })
+    }
+}
+
+/// `GET /api/coach` with no run loaded.
+#[must_use]
+pub fn empty_coach() -> Value {
+    CoachCollector::default().to_value()
+}
+
 /// `TimelineStore`: the parsed run.
 #[derive(Debug, Clone)]
 pub struct ReplayStore {
     steps: Vec<Step>,
     head: Map<String, Value>,
+    coach: Value,
     /// The log's identity for the host (`/api/load`'s `path`).
     pub path: String,
 }
@@ -323,6 +407,7 @@ impl ReplayStore {
         let mut mcts: BTreeMap<usize, Value> = BTreeMap::new();
         let mut wpa: BTreeMap<usize, Value> = BTreeMap::new();
         let mut clog: BTreeMap<usize, Value> = BTreeMap::new();
+        let mut coach = CoachCollector::default();
         let mut head = Map::new();
         for (lineno, raw) in text.lines().enumerate() {
             let raw = raw.trim();
@@ -367,6 +452,7 @@ impl ReplayStore {
                         );
                     }
                 }
+                "coach" => coach.push(data),
                 "meta" => {
                     if let Some(d) = data.as_object() {
                         if !d.get("summary").is_some_and(crate::render::py::truthy) {
@@ -410,7 +496,7 @@ impl ReplayStore {
                 .and_then(|r| r.get("run_seed"))
                 .filter(|v| v.is_i64() || v.is_u64())
             {
-                run_seed = s.clone();
+                run_seed = s.as_u64().map_or_else(|| s.clone(), crate::game::seed_json);
             }
             let node = if floor.is_null() {
                 None
@@ -437,7 +523,7 @@ impl ReplayStore {
                     // is only a proxy for it, and re-deriving would quietly
                     // regrade the agent's own numbers.
                     let recorded_wp = r.get("win_prob").and_then(Value::as_f64);
-                    json!({
+                    let mut row = json!({
                         "stable_idx": r.get("stable_idx").cloned().unwrap_or(Value::Null),
                         "action": r
                             .get("action")
@@ -454,7 +540,15 @@ impl ReplayStore {
                         "wins": r.get("wins").cloned().unwrap_or(json!(0)),
                         "losses": r.get("losses").cloned().unwrap_or(json!(0)),
                         "ties": r.get("ties").cloned().unwrap_or(json!(0)),
-                    })
+                    });
+                    // The HP-aware grade (`assess_decision`) needs these;
+                    // only the live writers record them (#850).
+                    for k in ["mean_final_hp", "hp_n"] {
+                        if let Some(v) = r.get(k) {
+                            row[k] = v.clone();
+                        }
+                    }
+                    row
                 })
                 .collect();
             let pv = match m.get("pv") {
@@ -494,8 +588,15 @@ impl ReplayStore {
         Ok(Self {
             steps,
             head,
+            coach: coach.to_value(),
             path: path.to_string(),
         })
+    }
+
+    /// `GET /api/coach`: the log's coach records (`CoachCollector`).
+    #[must_use]
+    pub fn coach(&self) -> Value {
+        self.coach.clone()
     }
 
     #[must_use]
@@ -887,6 +988,13 @@ mod tests {
         assert_eq!(store.len(), 2);
         let s0 = store.get(0).unwrap();
         assert_eq!(s0.meta["bg_seed"], json!(7));
+        // GH #878: a v0.111.0 `ulong` seed past 2^53 goes out as a string.
+        let wide = text.replace(r#""run_seed":7"#, r#""run_seed":18000000000000000123"#);
+        let store = ReplayStore::parse("x.jsonl", &wide).unwrap();
+        assert_eq!(
+            store.get(0).unwrap().meta["bg_seed"],
+            json!("18000000000000000123")
+        );
         assert_eq!(s0.meta["bg_col"], json!(1));
         assert_eq!(s0.wpa["value"], json!(0.5));
         assert_eq!(s0.chosen_action["label"], json!("go"));
@@ -956,6 +1064,89 @@ mod tests {
                 "step {idx}"
             );
         }
+    }
+
+    fn coach_log(lines: &[&str]) -> ReplayStore {
+        let mut text = vec![
+            r#"{"step":0,"ts":"t","type":"meta","data":{"character":"Ironclad","seed":"S","ascension":0,"source":"realgame_advisor","live":true}}"#,
+        ];
+        text.extend_from_slice(lines);
+        text.push("");
+        ReplayStore::parse("live.jsonl", &text.join("\n")).unwrap()
+    }
+
+    #[test]
+    fn coach_records_keyed_by_log_idx() {
+        let store = coach_log(&[
+            r#"{"step":1,"ts":"t","type":"state","data":{"decision":"combat_play","round":1}}"#,
+            r#"{"step":2,"ts":"t","type":"state","data":{"decision":"combat_play","round":2}}"#,
+            r#"{"step":2,"ts":"t","type":"coach","data":{"kind":"turn","id":"turn:7","verdict":"slip","log_idx":0}}"#,
+        ]);
+        let coach = store.coach();
+        assert_eq!(coach["by_step"], json!({"0": ["turn:7"]}));
+        assert_eq!(coach["records"][0]["verdict"], json!("slip"));
+        assert_eq!(coach["autopsy"], Value::Null);
+    }
+
+    #[test]
+    fn withdraw_removes_record_everywhere() {
+        let store = coach_log(&[
+            r#"{"step":1,"ts":"t","type":"state","data":{"decision":"combat_play","round":1}}"#,
+            r#"{"step":1,"ts":"t","type":"coach","data":{"kind":"turn","id":"turn:1","verdict":"slip","log_idx":0}}"#,
+            r#"{"step":1,"ts":"t","type":"coach","data":{"kind":"choice","id":"choice:2","verdict":"agree","log_idx":0}}"#,
+            r#"{"step":1,"ts":"t","type":"coach","data":{"kind":"withdraw","ids":["turn:1"]}}"#,
+        ]);
+        let coach = store.coach();
+        assert_eq!(coach["records"].as_array().unwrap().len(), 1);
+        assert_eq!(coach["by_step"], json!({"0": ["choice:2"]}));
+        // Re-emitted after the withdraw: back again.
+        let store = coach_log(&[
+            r#"{"step":1,"ts":"t","type":"state","data":{"decision":"combat_play","round":1}}"#,
+            r#"{"step":1,"ts":"t","type":"coach","data":{"kind":"withdraw","ids":["turn:1"]}}"#,
+            r#"{"step":1,"ts":"t","type":"coach","data":{"kind":"turn","id":"turn:1","verdict":"best","log_idx":0}}"#,
+        ]);
+        assert_eq!(store.coach()["by_step"], json!({"0": ["turn:1"]}));
+    }
+
+    #[test]
+    fn ungraded_turn_listed_not_stepped() {
+        let store = coach_log(&[
+            r#"{"step":1,"ts":"t","type":"state","data":{"decision":"combat_play","round":1}}"#,
+            r#"{"step":1,"ts":"t","type":"coach","data":{"kind":"turn","id":"turn:1","verdict":"ungraded","log_idx":0}}"#,
+            r#"{"step":1,"ts":"t","type":"coach","data":{"kind":"turn","id":"turn:x1","verdict":"best"}}"#,
+        ]);
+        let coach = store.coach();
+        assert_eq!(coach["records"].as_array().unwrap().len(), 2);
+        assert_eq!(coach["by_step"], json!({}));
+    }
+
+    #[test]
+    fn autopsy_after_terminal_state() {
+        let store = coach_log(&[
+            r#"{"step":1,"ts":"t","type":"state","data":{"decision":"combat_play","round":1}}"#,
+            r#"{"step":2,"ts":"t","type":"state","data":{"decision":"game_over"}}"#,
+            r#"{"step":2,"ts":"t","type":"meta","data":{"summary":true,"final_won":false}}"#,
+            r#"{"step":2,"ts":"t","type":"coach","data":{"kind":"autopsy","id":"autopsy","items":[{"id":"turn:1","log_idx":0}]}}"#,
+        ]);
+        let coach = store.coach();
+        assert_eq!(coach["autopsy"]["items"][0]["id"], json!("turn:1"));
+        assert_eq!(coach["records"], json!([]));
+        assert_eq!(
+            empty_coach(),
+            json!({"records": [], "by_step": {}, "autopsy": null})
+        );
+    }
+
+    #[test]
+    fn root_outcomes_scores_keep_hp_stats() {
+        let store = coach_log(&[
+            r#"{"step":1,"ts":"t","type":"state","data":{"decision":"combat_play","round":1}}"#,
+            r#"{"step":1,"ts":"t","type":"mcts","data":{"root_outcomes":[{"stable_idx":0,"action":"Strike","win_prob":0.6,"visits":40,"mean_final_hp":31.5,"hp_n":38},{"stable_idx":-1,"action":"end turn","win_prob":0.4,"visits":10}]}}"#,
+        ]);
+        let s0 = store.get(0).unwrap();
+        assert_eq!(s0.scores[0]["mean_final_hp"], json!(31.5));
+        assert_eq!(s0.scores[0]["hp_n"], json!(38));
+        assert!(s0.scores[1].get("mean_final_hp").is_none());
     }
 
     /// The live agent's own rows carry `action` and the search's `win_prob`.

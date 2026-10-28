@@ -94,7 +94,10 @@ fn neows_blessing_transform_card(state: &mut RunState) -> EventOutcome {
         ) {
             if let Some(card) = crate::cards::spec_index::card_pod_from_id(new_id, false) {
                 state.master_deck.remove(0);
-                state.master_deck.push(card);
+                state.add_card_to_deck_with_hooks(
+                    card,
+                    sts2_core::relic_effects::AddSource::EventGain,
+                );
             }
         }
     }

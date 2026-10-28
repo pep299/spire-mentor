@@ -28,16 +28,46 @@
 //! ## Where "lower enemy HP is better" is false (decompiled v0.107.1)
 //!
 //! [`enemy_hp_not_monotone`] disables pruning outright when an enemy's
-//! behaviour reads its own HP or an ally's:
+//! behaviour reads its own HP or an ally's. The set of monsters and powers
+//! with HP or death hooks is the same in v0.111.0.
 //!
 //! * HP-threshold events: `Monsters/FrogKnight.cs`, `Powers/ShriekPower.cs`
 //!   (TerrorEel), `Powers/PlowPower.cs` (CeremonialBeast).
 //! * Death triggers, which a lower-HP line reaches sooner:
 //!   `Powers/{CrabRage,SteamEruption,Infested,Stock,Surprise,Adaptable,
-//!   Reattach,Illusion}Power.cs`.
-//! * Ally-dependent AI: `Monsters/{Nibbit,LivingShield,Queen,Toadpole}.cs`.
+//!   Reattach,Illusion,Ravenous}Power.cs`. Ravenous (CorpseSlug) stuns
+//!   every surviving slug and gives it permanent Strength when an ally
+//!   dies, the same shape as CrabRage.
+//! * Ally-dependent AI: `Monsters/{Nibbit,LivingShield,Queen,Toadpole}.cs`,
+//!   and the summoners whose next move counts living allies or a free
+//!   slot: `Monsters/Fabricator.cs` (`CanFabricate`),
+//!   `Monsters/Ovicopter.cs` (`CanLay`), `Monsters/TwoTailedRat.cs`
+//!   (`CanSummon`). A kill that lands sooner turns an attack into a summon.
+//! * `Monsters/WaterfallGiant.cs` is listed by monster as well as by its
+//!   SteamEruption, because the power comes from PRESSURIZE, the giant's
+//!   opening move, not from the spawn: the power entry alone misses player
+//!   turn 1. The monster entry also covers the turn after ABOUT_TO_BLOW,
+//!   where the power is gone and pruning would be sound; that is accepted
+//!   to keep the guard a plain list.
 //! * `Orbs/DarkOrb.cs` evokes on the lowest-HP enemy, so with two or more
 //!   enemies a per-enemy HP change can retarget it.
+//!
+//! ### Known limitation: player-side kill rewards
+//!
+//! The guard reads enemy behaviour only. Some player content pays out when
+//! a particular hit kills, and a lower-HP line can lose that payout: an
+//! unrelated hit (forced damage, or a block or draw card that also deals
+//! damage) kills the enemy before the reward card lands.
+//!
+//! * Cards that check `DamageResult.WasTargetKilled` on their own attack:
+//!   `Cards/{Feed,Sunder,HandOfGreed,TheHunt,KnockoutBlow,EchoingSlash}.cs`.
+//! * Relics that fire on a death: `Relics/GremlinHorn.cs` (energy and a
+//!   draw on any enemy death, so the payout moves with the kill) and
+//!   `Relics/BookRepairKnife.cs` (heal on a Doom kill).
+//!
+//! These are not listed, so a pair where the lower-HP line forfeits such a
+//! reward can still be pruned. The effect has not been measured; measure
+//! it before adding a player-side guard.
 //!
 //! ## Relaxed equality
 //!
@@ -84,6 +114,13 @@ const HP_EVENT_MONSTERS: &[&str] = &[
     "LivingShield",
     "Queen",
     "Toadpole",
+    // Summon branches gated on living allies or a free slot.
+    "Fabricator",   // Fabricator.cs:51 CanFabricate = alive teammates < 4
+    "Ovicopter",    // Ovicopter.cs:46 CanLay = alive teammates <= 3
+    "TwoTailedRat", // TwoTailedRat.cs:194 CanSummon = a free slot
+    // SteamEruption arrives with PRESSURIZE (WaterfallGiant.cs:221-228), not
+    // on spawn, so the power entry alone misses the turn before it.
+    "WaterfallGiant",
 ];
 
 const HP_EVENT_POWERS: &[PowerKind] = &[
@@ -97,6 +134,9 @@ const HP_EVENT_POWERS: &[PowerKind] = &[
     PowerKind::Adaptable,
     PowerKind::Reattach,
     PowerKind::Illusion,
+    // RavenousPower.cs:24-36: an ally's death stuns each CorpseSlug and
+    // gives it Strength.
+    PowerKind::Ravenous,
 ];
 
 const ORDER_READER_CARDS: &[CardId] = &[

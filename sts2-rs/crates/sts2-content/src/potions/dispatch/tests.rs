@@ -1151,22 +1151,20 @@ fn reptile_trinket_after_distilled_chaos_select(version: sts2_core::GameVersion)
     player_strength_and_trinket(&state).1
 }
 
-/// v0.107.1 Rust: the auto-play resume returns before the parked
-/// AfterPotionUsed dispatch, so ReptileTrinket never fires.
+/// `Hook.AfterPotionUsed` runs once `await OnUse` (the whole auto-play batch)
+/// returns (v0.111.0 PotionModel.cs:349, v0.107.1 :338). Both builds
+/// (GH #806).
 #[test]
-fn reptile_trinket_after_distilled_chaos_select_v0107() {
-    assert!(!reptile_trinket_after_distilled_chaos_select(
-        sts2_core::GameVersion::V0_107_1
-    ));
-}
-
-/// v0.111.0: `Hook.AfterPotionUsed` runs once `await OnUse` (the whole
-/// auto-play batch) returns (PotionModel.cs:338).
-#[test]
-fn reptile_trinket_after_distilled_chaos_select_v0111() {
-    assert!(reptile_trinket_after_distilled_chaos_select(
-        sts2_core::GameVersion::V0_111_0
-    ));
+fn reptile_trinket_after_distilled_chaos_select_both_versions() {
+    for version in [
+        sts2_core::GameVersion::V0_107_1,
+        sts2_core::GameVersion::V0_111_0,
+    ] {
+        assert!(
+            reptile_trinket_after_distilled_chaos_select(version),
+            "{version:?}"
+        );
+    }
 }
 
 /// `REPTILE_TRINKET_STRENGTH` (sts2-content `relics::uncommon`) — kept as a

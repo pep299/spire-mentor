@@ -31,7 +31,7 @@ BUCKETS = ((0, 15), (16, 20), (21, 25), (26, 30), (31, 999))
 def load(paths: list[str], source: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     rewards, runs = [], []
     for p in paths:
-        with open(p) as f:
+        with open(p, encoding="utf-8") as f:
             for line in f:
                 r = json.loads(line)
                 r["source"] = source

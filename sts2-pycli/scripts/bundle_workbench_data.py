@@ -23,8 +23,12 @@ from that build's vendored loc dir (``localization_eng_<ver>/``) and wiki
 aggregates (``sts2-wiki/data/<ver>/``). The art tree is shared — the wiki
 serves ONE extracted art set — so a card new in a later build has no art of its
 own and the resolver falls back to the placeholder; the per-version asset
-manifest records exactly what the art store holds. ``card_db.json`` (the deck
-analyzer's stats) is likewise a single table, copied into each set.
+manifest records exactly what the art store holds. The deck analyzer's tables
+are per build too (GH #877): each set gets its build's ``card_db.json``
+(``python/workbench/data/[<ver>/]card_db.json``; a build with none of its own
+gets the default build's), and a non-default set also carries that build's
+curated ``card_tags.json`` OVERLAY when it has one — the curated default table
+stays at the top level, shared.
 
 Usage:
     python scripts/bundle_workbench_data.py [-o OUT_DIR] [--version VER]
@@ -315,16 +319,24 @@ def _build_version(out_dir: Path, version: str) -> dict[str, int]:
     scales = json.loads(scales_src.read_text(encoding="utf-8"))
 
     # The deck analyzer's two tables (`workbench/deck_analysis.py`), copied
-    # as-is: the Rust twin reads the same keys off the same JSON.
-    tables = [("card_db.json", game_out)]
+    # as-is: the Rust twin reads the same keys off the same JSON. Per build
+    # (GH #877, `deck_analysis.data_dir_for`): the default build's sit in
+    # `python/workbench/data/`, another build's in `python/workbench/data/<ver>/`.
+    tables_dir = _REPO_ROOT / "python" / "workbench" / "data"
+    own_dir = tables_dir if version == _ENGINE_WIKI_VERSION else tables_dir / version
+    tables: list[tuple[Path, Path]] = []
+    db_src = own_dir / "card_db.json"
+    tables.append((db_src if db_src.is_file() else tables_dir / "card_db.json", game_out))
     if version == _ENGINE_WIKI_VERSION:
-        tables.append(("card_tags.json", out_dir))
-    for name, dst_dir in tables:
-        src = _REPO_ROOT / "python" / "workbench" / "data" / name
+        tables.append((tables_dir / "card_tags.json", out_dir))
+    elif (own_dir / "card_tags.json").is_file():
+        # The build's overlay over the shared curated tags (`data.rs` merges).
+        tables.append((own_dir / "card_tags.json", game_out))
+    for src, dst_dir in tables:
         if not src.is_file():
             raise SystemExit(f"error: {src} not found")
-        shutil.copyfile(src, dst_dir / name)
-        sizes[rel(dst_dir / name)] = (dst_dir / name).stat().st_size
+        shutil.copyfile(src, dst_dir / src.name)
+        sizes[rel(dst_dir / src.name)] = (dst_dir / src.name).stat().st_size
 
     for name, obj in (
         ("wiki_cards.json", trimmed_cards),

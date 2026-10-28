@@ -17,6 +17,16 @@ Two static tables drive this, both committed under ``workbench/data/``:
 Both are keyed by loc-key, which equals the runtime ``card.id``, so the analyzer
 works on every screen — including card-reward / map views where the engine ships
 deck cards without numeric ``stats``.
+
+**Per game build (GH #877).** The tables above describe the default build
+(v0.107.1). Every other supported build has its own under
+``workbench/data/<ver>/`` (:func:`data_dir_for`): a full ``card_db.json`` built
+from that build's wiki manifest, and a ``card_tags.json`` OVERLAY merged over the
+default tags (an entry replaces the default's whole entry; ``null`` drops a card
+the build removed). A checkout without a build's tables (the public snapshot)
+grades that build's decks with the default tables. Every entry point takes
+``game_version`` (``None`` = the default); the Rust twin is
+``sts2-workbench/src/deck.rs`` (``deck::tables_for``).
 """
 
 from __future__ import annotations
@@ -25,9 +35,11 @@ import json
 import math
 import random
 from dataclasses import dataclass
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
 from typing import Any
+
+from sts2_client import DEFAULT_GAME_VERSION, SUPPORTED_GAME_VERSIONS
 
 _DATA = Path(__file__).resolve().parent / "data"
 
@@ -74,16 +86,59 @@ _LENSES: dict[str, tuple[float, float, float]] = {
 _DEAD_TYPES = {"Curse", "Status"}
 
 
-@lru_cache(maxsize=1)
-def _card_db() -> dict[str, Any]:
-    return json.loads((_DATA / "card_db.json").read_text(encoding="utf-8"))
+def _version_key(version: str | None) -> str:
+    """``version`` validated, ``None`` -> the default build."""
+    key = version or DEFAULT_GAME_VERSION
+    if key not in SUPPORTED_GAME_VERSIONS:
+        raise ValueError(
+            f"unsupported game version {key!r}; supported: {', '.join(SUPPORTED_GAME_VERSIONS)}"
+        )
+    return key
 
 
-@lru_cache(maxsize=1)
-def _card_tags() -> dict[str, Any]:
+def data_dir_for(version: str | None = None) -> Path:
+    """Where game build ``version``'s tables live: ``data/`` for the default
+    build, ``data/<ver>/`` for every other (``build_card_db --version``)."""
+    key = _version_key(version)
+    return _DATA if key == DEFAULT_GAME_VERSION else _DATA / key
+
+
+@cache
+def card_db_for(version: str | None = None) -> dict[str, Any]:
+    """Build ``version``'s ``card_db.json`` (the default build's when that
+    build has no table on disk)."""
+    path = data_dir_for(version) / "card_db.json"
+    if not path.is_file():
+        path = _DATA / "card_db.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+@cache
+def card_tags_for(version: str | None = None) -> dict[str, Any]:
+    """Build ``version``'s curated tags: the default ``card_tags.json`` with
+    that build's overlay (if any) merged over it, ``_meta`` dropped."""
     raw = json.loads((_DATA / "card_tags.json").read_text(encoding="utf-8"))
     raw.pop("_meta", None)
+    overlay_path = data_dir_for(version) / "card_tags.json"
+    if overlay_path.parent != _DATA and overlay_path.is_file():
+        overlay = json.loads(overlay_path.read_text(encoding="utf-8"))
+        overlay.pop("_meta", None)
+        for cid, entry in overlay.items():
+            if entry is None:
+                raw.pop(cid, None)
+            else:
+                raw[cid] = entry
     return raw
+
+
+def _card_db() -> dict[str, Any]:
+    """The default build's stats table."""
+    return card_db_for(None)
+
+
+def _card_tags() -> dict[str, Any]:
+    """The default build's curated tags."""
+    return card_tags_for(None)
 
 
 def _card_id(card: Any) -> str:
@@ -96,11 +151,13 @@ def _card_id(card: Any) -> str:
     return cid.rstrip("+").split("+")[0] if "+" in cid else cid
 
 
-def _resolved(card: Any) -> dict[str, Any]:
-    """Merge a deck entry with its static stats + tags into one flat record."""
+def _resolved(card: Any, version: str | None = None) -> dict[str, Any]:
+    """Merge a deck entry with build ``version``'s static stats + tags into one
+    flat record."""
     cid = _card_id(card)
-    db = _card_db().get(cid, {})
-    tags = _card_tags().get(cid, {})
+    card_db = card_db_for(version)
+    db = card_db.get(cid, {})
+    tags = card_tags_for(version).get(cid, {})
     upgraded = bool(card.get("upgraded")) if isinstance(card, dict) else False
     dmg = db.get("damage", 0)
     blk = db.get("block", 0)
@@ -136,7 +193,7 @@ def _resolved(card: Any) -> dict[str, Any]:
         "unplayable": db.get("unplayable", False),
         "aoe": db.get("aoe", False),
         "upgraded": upgraded,
-        "known": cid in _card_db(),
+        "known": cid in card_db,
         "damage_role": tags.get("damage_role", "none"),
         "block_role": tags.get("block_role", "none"),
         "velocity": tags.get("velocity", []),
@@ -371,15 +428,17 @@ def analyze_deck(
     hand: int = DEFAULT_HAND,
     samples: int = DEFAULT_SAMPLES,
     seed: int = 0,
+    game_version: str | None = None,
 ) -> dict[str, Any]:
     """Grade ``deck`` (list of card dicts/ids) on Damage, Block and Velocity.
 
     Returns a JSON-serialisable report: per-axis 0-100 scores, the overall
     "volume" (geometric mean — a deck weak on one axis can't hide behind the
     others), the raw numbers behind each axis, a composition breakdown, an energy
-    curve, and a list of heuristic warnings.
+    curve, and a list of heuristic warnings. Cards are read from game build
+    ``game_version``'s tables (``None`` = the default build).
     """
-    cards = [_resolved(c) for c in deck]
+    cards = [_resolved(c, game_version) for c in deck]
     n = len(cards)
     if n == 0:
         return {"empty": True}
@@ -543,6 +602,7 @@ def reward_preview(
     *,
     samples: int = DEFAULT_SAMPLES,
     seed: int = 0,
+    game_version: str | None = None,
 ) -> dict[str, Any]:
     """Score the deck, then the deck + each candidate card, and return the deltas.
 
@@ -554,17 +614,17 @@ def reward_preview(
         deck: The current master deck (list of card dicts / ids).
         candidates: Offered cards, each a dict with an ``index`` plus the usual
             ``id`` / ``upgraded`` fields.
-        samples, seed: Forwarded to :func:`analyze_deck`.
+        samples, seed, game_version: Forwarded to :func:`analyze_deck`.
 
     Returns:
         ``{"base": <scores>, "candidates": [{"index", "scores", "delta"}, …]}``.
     """
     zero = {k: 0.0 for k in _AXIS_KEYS}
-    base = analyze_deck(deck, samples=samples, seed=seed)
+    base = analyze_deck(deck, samples=samples, seed=seed, game_version=game_version)
     base_scores = base.get("scores") or dict(zero)
     out: list[dict[str, Any]] = []
     for cand in candidates:
-        r = analyze_deck([*deck, cand], samples=samples, seed=seed)
+        r = analyze_deck([*deck, cand], samples=samples, seed=seed, game_version=game_version)
         sc = r.get("scores") or dict(zero)
         out.append(
             {

@@ -148,7 +148,8 @@ internal static class CoachPanelText
     }
 
     /// <summary>The spec's turn block: position, then both lines, then the
-    /// cost. The first entry is the "Turn N — hand: ..." line.</summary>
+    /// cost, then the reason when there is one. The first entry is the
+    /// "Turn N — hand: ..." line.</summary>
     private static List<string> TurnBlock(JsonObject turn)
     {
         var lines = new List<string>();
@@ -186,6 +187,11 @@ internal static class CoachPanelText
         {
             lines.Add($"win {CoachChipText.Pct(CoachChipText.Num(turn, "win_before"))} → " +
                       $"{CoachChipText.Pct(CoachChipText.Num(turn, "win_after"))}{peeked}");
+        }
+        string why = CoachChipText.Str(turn, "why");
+        if (why.Length > 0)
+        {
+            lines.Add(why);
         }
         return lines;
     }

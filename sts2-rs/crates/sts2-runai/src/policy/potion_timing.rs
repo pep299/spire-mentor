@@ -132,6 +132,7 @@ mod tests {
             value_sum: mean_value * 10.0,
             value_sq_sum: mean_value * mean_value * 10.0,
             hp_sum: 0.0,
+            hp_sq_sum: 0.0,
             hp_n: 0,
             mean_value,
         }

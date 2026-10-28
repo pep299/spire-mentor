@@ -1,3 +1,7 @@
 {
- "detail": "hint only available during combat"
+ "count": 85,
+ "resume": {
+  "kind": "run",
+  "reason": null
+ }
 }

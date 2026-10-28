@@ -13,6 +13,7 @@
   {
    "action": "end turn",
    "hp_n": 48,
+   "hp_sd": 0.0,
    "is_best": true,
    "losses": 48,
    "low_confidence": false,

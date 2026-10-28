@@ -2,10 +2,10 @@
  "act": 1,
  "candidates": [
   {
-   "is_best": false,
+   "is_best": true,
    "key": "choice:0",
    "label": "SUCKER_PUNCH",
-   "q": -1.3152,
+   "q": -1.3141,
    "visits": 12,
    "win_prob": 0.0
   },
@@ -13,7 +13,7 @@
    "is_best": false,
    "key": "choice:1",
    "label": "NEUTRALIZE",
-   "q": -1.3168,
+   "q": -1.3191,
    "visits": 12,
    "win_prob": 0.0
   },
@@ -21,15 +21,15 @@
    "is_best": false,
    "key": "choice:2",
    "label": "DEFEND_SILENT",
-   "q": -1.3123,
+   "q": -1.3152,
    "visits": 12,
    "win_prob": 0.0
   },
   {
-   "is_best": true,
+   "is_best": false,
    "key": "choice:3",
    "label": "SNAKEBITE",
-   "q": -1.3118,
+   "q": -1.3111,
    "visits": 12,
    "win_prob": 0.0
   }

@@ -36,10 +36,11 @@ import sys
 
 sys.path.insert(0, "python")
 
+import sts2_client
 import sts2_rs  # type: ignore[import-not-found]
 from parity_audit import assert_wheel_fresh
 from run_setup_parity import _csharp_paths, _rust_paths, _seed_for
-from sts2_client import Game
+from sts2_client import Game, add_game_version_arg, apply_game_version_arg
 
 ALL_CHARACTERS = ["Ironclad", "Silent", "Defect", "Regent", "Necrobinder"]
 NUM_ACTS = 3
@@ -58,10 +59,21 @@ def _cs_act_maps(character: str, seed: str, ascension: int) -> list[dict]:
     return list(resp.get("acts", []))
 
 
-def _rust_act_maps(character: str, seed: str, ascension: int) -> list[list[dict]]:
-    """Per-act Rust map graphs via `act_map_for(act)` (1-based)."""
+def _rust_act_maps(
+    character: str, seed: str, ascension: int, game_version: str | None = None
+) -> list[list[dict]]:
+    """Per-act Rust map graphs via `act_map_for(act)` (1-based).
+
+    Built for ``game_version`` — by default the build the C# oracle runs
+    (``STS2_GAME_VERSION`` / ``--game-version``), so both sides compare the
+    same game. Without it the Rust side was always v0.107.1 (GH #893).
+    """
     rm = sts2_rs.RunManager(
-        string_seed=seed, character=character, ascension_level=ascension, neow_start=True
+        string_seed=seed,
+        character=character,
+        ascension_level=ascension,
+        neow_start=True,
+        game_version=game_version or sts2_client.GAME_VERSION,
     )
     out: list[list[dict]] = []
     for act in range(1, NUM_ACTS + 1):
@@ -109,7 +121,9 @@ def main() -> int:
     ap.add_argument("--ascension", type=int, default=0)
     ap.add_argument("-n", "--num", type=int, default=100)
     ap.add_argument("--start", type=int, default=0, help="first seed index")
+    add_game_version_arg(ap)
     args = ap.parse_args()
+    apply_game_version_arg(args)
 
     assert_wheel_fresh()
     characters = ALL_CHARACTERS if args.all_characters else [args.character]

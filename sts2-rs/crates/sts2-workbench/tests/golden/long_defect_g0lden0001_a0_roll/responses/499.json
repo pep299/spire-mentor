@@ -3498,8 +3498,8 @@
     "You Block 15→0",
     "Fogmog HP 65→6 (−59)",
     "Lightning orb passive: 3 damage to a random enemy (×2)",
-    "Eye with Teeth +1 Illusion",
-    "Eye with Teeth +1 Minion",
+    "Fogmog +1 Illusion",
+    "Fogmog +1 Minion",
     "Spawned: Fogmog"
    ],
    "floor": 11,
@@ -4399,8 +4399,8 @@
    "combat_log": [],
    "decision": "map_select",
    "details": [
-    "Spawned: Nibbit",
-    "Spawned: Nibbit"
+    "Spawned: Nibbit #1",
+    "Spawned: Nibbit #2"
    ],
    "floor": 11,
    "idx": 105,
@@ -4528,12 +4528,12 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Nibbit HP 42→39 (−3)",
-    "Nibbit +1 Weak"
+    "Nibbit #1 HP 42→39 (−3)",
+    "Nibbit #1 +1 Weak"
    ],
    "floor": 12,
    "idx": 108,
-   "label": "Play Go for the Eyes → Nibbit",
+   "label": "Play Go for the Eyes → Nibbit #1",
    "turn": 1
   },
   {
@@ -4587,12 +4587,12 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Nibbit HP 39→36 (−3)",
-    "Nibbit Weak 1→2"
+    "Nibbit #1 HP 39→36 (−3)",
+    "Nibbit #1 Weak 1→2"
    ],
    "floor": 12,
    "idx": 109,
-   "label": "Play Go for the Eyes → Nibbit",
+   "label": "Play Go for the Eyes → Nibbit #1",
    "turn": 1
   },
   {
@@ -4789,12 +4789,12 @@
    "decision": "combat_play",
    "details": [
     "You Block 10→0",
-    "Nibbit HP 36→33 (−3)",
-    "Nibbit Block 0→5",
-    "Nibbit HP 43→40 (−3)",
+    "Nibbit #1 HP 36→33 (−3)",
+    "Nibbit #1 Block 0→5",
+    "Nibbit #2 HP 43→40 (−3)",
     "Lightning orb passive: 3 damage to a random enemy (×2)",
-    "Nibbit Weak 2→1",
-    "Nibbit +2 Strength"
+    "Nibbit #1 Weak 2→1",
+    "Nibbit #2 +2 Strength"
    ],
    "floor": 12,
    "idx": 111,
@@ -4866,12 +4866,12 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Nibbit HP 33→24 (−9)",
-    "Nibbit Block 5→0"
+    "Nibbit #1 HP 33→24 (−9)",
+    "Nibbit #1 Block 5→0"
    ],
    "floor": 12,
    "idx": 113,
-   "label": "Play Ultimate Strike → Nibbit",
+   "label": "Play Ultimate Strike → Nibbit #1",
    "turn": 2
   },
   {
@@ -4904,11 +4904,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Nibbit HP 24→18 (−6)"
+    "Nibbit #1 HP 24→18 (−6)"
    ],
    "floor": 12,
    "idx": 114,
-   "label": "Play Strike → Nibbit",
+   "label": "Play Strike → Nibbit #1",
    "turn": 2
   },
   {
@@ -5052,11 +5052,11 @@
    "details": [
     "You HP 44→35 (−9)",
     "You Block 5→0",
-    "Nibbit HP 18→15 (−3)",
-    "Nibbit HP 40→37 (−3)",
+    "Nibbit #1 HP 18→15 (−3)",
+    "Nibbit #2 HP 40→37 (−3)",
     "Lightning orb passive: 3 damage to a random enemy (×2)",
-    "Nibbit +2 Strength",
-    "Nibbit −Weak"
+    "Nibbit #1 +2 Strength",
+    "Nibbit #1 −Weak"
    ],
    "floor": 12,
    "idx": 115,
@@ -5184,11 +5184,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Nibbit HP 15→1 (−14)"
+    "Nibbit #1 HP 15→1 (−14)"
    ],
    "floor": 12,
    "idx": 118,
-   "label": "Play Ultimate Strike → Nibbit",
+   "label": "Play Ultimate Strike → Nibbit #1",
    "turn": 3
   },
   {
@@ -5221,11 +5221,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Nibbit HP 1→0  ☠ defeated"
+    "Nibbit #1 HP 1→0  ☠ defeated"
    ],
    "floor": 12,
    "idx": 119,
-   "label": "Play Strike+ → Nibbit",
+   "label": "Play Strike+ → Nibbit #1",
    "turn": 3
   },
   {
@@ -15305,10 +15305,10 @@
    "details": [
     "Ovicopter HP 95→17 (−78)",
     "Lightning orb passive: 3 damage to a random enemy",
-    "Hatchling +1 Hatch",
-    "Hatchling +1 Minion",
-    "Spawned: Hatchling",
-    "Spawned: Hatchling",
+    "Ovicopter +1 Hatch",
+    "Ovicopter +1 Minion",
+    "Spawned: Hatchling #2",
+    "Spawned: Hatchling #3",
     "Spawned: Ovicopter"
    ],
    "floor": 19,
@@ -15381,11 +15381,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 14→1 (−13)"
+    "Hatchling #2 HP 14→1 (−13)"
    ],
    "floor": 19,
    "idx": 312,
-   "label": "Play Rocket Punch → Hatchling",
+   "label": "Play Rocket Punch → Hatchling #2",
    "turn": 2
   },
   {
@@ -15418,11 +15418,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 1→0  ☠ defeated"
+    "Hatchling #2 HP 1→0  ☠ defeated"
    ],
    "floor": 19,
    "idx": 313,
-   "label": "Play Go for the Eyes → Hatchling",
+   "label": "Play Go for the Eyes → Hatchling #2",
    "turn": 2
   },
   {
@@ -15488,11 +15488,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 16→10 (−6)"
+    "Hatchling #2 HP 16→10 (−6)"
    ],
    "floor": 19,
    "idx": 315,
-   "label": "Play Strike → Hatchling",
+   "label": "Play Strike → Hatchling #2",
    "turn": 2
   },
   {
@@ -15525,11 +15525,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 10→4 (−6)"
+    "Hatchling #2 HP 10→4 (−6)"
    ],
    "floor": 19,
    "idx": 316,
-   "label": "Play Strike → Hatchling",
+   "label": "Play Strike → Hatchling #2",
    "turn": 2
   },
   {
@@ -15650,12 +15650,12 @@
    "details": [
     "You HP 62→51 (−11)",
     "You Block 5→0",
-    "Hatchling HP 17→21 (+4)",
-    "Hatchling HP 4→21 (+17)",
+    "Hatchling #1 HP 17→21 (+4)",
+    "Hatchling #2 HP 4→21 (+17)",
     "Ovicopter HP 92→89 (−3)",
     "Lightning orb passive: 3 damage to a random enemy",
-    "Hatchling −Hatch",
-    "Hatchling −Hatch"
+    "Hatchling #1 −Hatch",
+    "Hatchling #2 −Hatch"
    ],
    "floor": 19,
    "idx": 317,
@@ -15839,11 +15839,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 21→15 (−6)"
+    "Hatchling #1 HP 21→15 (−6)"
    ],
    "floor": 19,
    "idx": 321,
-   "label": "Play Cold Snap → Hatchling",
+   "label": "Play Cold Snap → Hatchling #1",
    "turn": 3
   },
   {
@@ -15897,12 +15897,12 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 15→12 (−3)",
-    "Hatchling +1 Vulnerable"
+    "Hatchling #1 HP 15→12 (−3)",
+    "Hatchling #1 +1 Vulnerable"
    ],
    "floor": 19,
    "idx": 322,
-   "label": "Play Beam Cell → Hatchling",
+   "label": "Play Beam Cell → Hatchling #1",
    "turn": 3
   },
   {
@@ -16000,7 +16000,7 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 21→13 (−8)",
+    "Hatchling #2 HP 21→13 (−8)",
     "Ovicopter HP 89→81 (−8)"
    ],
    "floor": 19,
@@ -16192,7 +16192,7 @@
     "You Block 15→0",
     "Frost orb passive: +2 block",
     "You +2 Vulnerable",
-    "Hatchling −Vulnerable"
+    "Hatchling #1 −Vulnerable"
    ],
    "floor": 19,
    "idx": 324,
@@ -16345,8 +16345,8 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 12→6 (−6)",
-    "Hatchling HP 13→7 (−6)",
+    "Hatchling #1 HP 12→6 (−6)",
+    "Hatchling #2 HP 13→7 (−6)",
     "Ovicopter HP 81→75 (−6)"
    ],
    "floor": 19,
@@ -16405,12 +16405,12 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 6→3 (−3)",
-    "Hatchling +1 Weak"
+    "Hatchling #1 HP 6→3 (−3)",
+    "Hatchling #1 +1 Weak"
    ],
    "floor": 19,
    "idx": 328,
-   "label": "Play Go for the Eyes → Hatchling",
+   "label": "Play Go for the Eyes → Hatchling #1",
    "turn": 4
   },
   {
@@ -16689,17 +16689,17 @@
    "decision": "combat_play",
    "details": [
     "You Block 10→0",
-    "Hatchling HP 3→0  ☠ defeated",
-    "Hatchling HP 7→18 (+11)",
+    "Hatchling #1 HP 3→0  ☠ defeated",
+    "Hatchling #2 HP 7→18 (+11)",
     "Ovicopter HP 75→16 (−59)",
     "Frost orb passive: +2 block",
     "Lightning orb passive: 3 damage to a random enemy",
     "You Vulnerable 2→1",
-    "Hatchling +1 Hatch",
-    "Hatchling +1 Hatch",
-    "Hatchling +1 Minion",
-    "Spawned: Hatchling",
-    "Spawned: Hatchling",
+    "Hatchling #2 +1 Hatch",
+    "Ovicopter +1 Hatch",
+    "Ovicopter +1 Minion",
+    "Spawned: Hatchling #3",
+    "Spawned: Hatchling #4",
     "Spawned: Ovicopter"
    ],
    "floor": 19,
@@ -16737,11 +16737,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 7→0  ☠ defeated"
+    "Hatchling #4 HP 7→0  ☠ defeated"
    ],
    "floor": 19,
    "idx": 331,
-   "label": "Play Rocket Punch → Hatchling",
+   "label": "Play Rocket Punch → Hatchling #4",
    "turn": 5
   },
   {
@@ -16774,11 +16774,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 15→1 (−14)"
+    "Hatchling #3 HP 15→1 (−14)"
    ],
    "floor": 19,
    "idx": 332,
-   "label": "Play Ultimate Strike → Hatchling",
+   "label": "Play Ultimate Strike → Hatchling #3",
    "turn": 5
   },
   {
@@ -16811,11 +16811,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 1→0  ☠ defeated"
+    "Hatchling #3 HP 1→0  ☠ defeated"
    ],
    "floor": 19,
    "idx": 333,
-   "label": "Play Strike → Hatchling",
+   "label": "Play Strike → Hatchling #3",
    "turn": 5
   },
   {
@@ -16848,11 +16848,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 16→13 (−3)"
+    "Hatchling #2 HP 16→13 (−3)"
    ],
    "floor": 19,
    "idx": 334,
-   "label": "Play Go for the Eyes → Hatchling",
+   "label": "Play Go for the Eyes → Hatchling #2",
    "turn": 5
   },
   {
@@ -16906,12 +16906,12 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 13→10 (−3)",
-    "Hatchling +1 Vulnerable"
+    "Hatchling #2 HP 13→10 (−3)",
+    "Hatchling #2 +1 Vulnerable"
    ],
    "floor": 19,
    "idx": 335,
-   "label": "Play Beam Cell → Hatchling",
+   "label": "Play Beam Cell → Hatchling #2",
    "turn": 5
   },
   {
@@ -17085,15 +17085,15 @@
    "decision": "combat_play",
    "details": [
     "You HP 51→29 (−22)",
-    "Hatchling HP 18→21 (+3)",
-    "Hatchling HP 10→20 (+10)",
+    "Hatchling #1 HP 18→21 (+3)",
+    "Hatchling #2 HP 10→20 (+10)",
     "Ovicopter HP 75→72 (−3)",
     "Frost orb passive: +2 block",
     "Lightning orb passive: 3 damage to a random enemy",
     "You −Vulnerable",
-    "Hatchling −Hatch",
-    "Hatchling −Hatch",
-    "Hatchling −Vulnerable"
+    "Hatchling #1 −Hatch",
+    "Hatchling #2 −Hatch",
+    "Hatchling #2 −Vulnerable"
    ],
    "floor": 19,
    "idx": 337,
@@ -17221,11 +17221,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 20→7 (−13)"
+    "Hatchling #2 HP 20→7 (−13)"
    ],
    "floor": 19,
    "idx": 340,
-   "label": "Play Rocket Punch → Hatchling",
+   "label": "Play Rocket Punch → Hatchling #2",
    "turn": 6
   },
   {
@@ -17258,11 +17258,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 7→1 (−6)"
+    "Hatchling #2 HP 7→1 (−6)"
    ],
    "floor": 19,
    "idx": 341,
-   "label": "Play Strike → Hatchling",
+   "label": "Play Strike → Hatchling #2",
    "turn": 6
   },
   {
@@ -17316,11 +17316,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 1→0  ☠ defeated"
+    "Hatchling #2 HP 1→0  ☠ defeated"
    ],
    "floor": 19,
    "idx": 342,
-   "label": "Play Cold Snap → Hatchling",
+   "label": "Play Cold Snap → Hatchling #2",
    "turn": 6
   },
   {
@@ -18141,10 +18141,10 @@
     "Ovicopter HP 61→16 (−45)",
     "Frost orb passive: +2 block (×2)",
     "You Vulnerable 2→1",
-    "Hatchling +1 Hatch",
-    "Hatchling +1 Minion",
-    "Spawned: Hatchling",
-    "Spawned: Hatchling",
+    "Ovicopter +1 Hatch",
+    "Ovicopter +1 Minion",
+    "Spawned: Hatchling #2",
+    "Spawned: Hatchling #3",
     "Spawned: Ovicopter"
    ],
    "floor": 19,
@@ -18252,11 +18252,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 15→9 (−6)"
+    "Hatchling #2 HP 15→9 (−6)"
    ],
    "floor": 19,
    "idx": 354,
-   "label": "Play Strike → Hatchling",
+   "label": "Play Strike → Hatchling #2",
    "turn": 8
   },
   {
@@ -18310,12 +18310,12 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 9→6 (−3)",
-    "Hatchling +1 Vulnerable"
+    "Hatchling #2 HP 9→6 (−3)",
+    "Hatchling #2 +1 Vulnerable"
    ],
    "floor": 19,
    "idx": 355,
-   "label": "Play Beam Cell → Hatchling",
+   "label": "Play Beam Cell → Hatchling #2",
    "turn": 8
   },
   {
@@ -18348,11 +18348,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 6→2 (−4)"
+    "Hatchling #2 HP 6→2 (−4)"
    ],
    "floor": 19,
    "idx": 356,
-   "label": "Play Go for the Eyes → Hatchling",
+   "label": "Play Go for the Eyes → Hatchling #2",
    "turn": 8
   },
   {
@@ -18513,15 +18513,15 @@
    "details": [
     "You HP 29→23 (−6)",
     "You Block 14→0",
-    "Hatchling HP 16→20 (+4)",
-    "Hatchling HP 2→21 (+19)",
-    "Hatchling HP 17→19 (+2)",
+    "Hatchling #1 HP 16→20 (+4)",
+    "Hatchling #2 HP 2→21 (+19)",
+    "Hatchling #3 HP 17→19 (+2)",
     "Frost orb passive: +2 block (×2)",
     "You −Vulnerable",
-    "Hatchling −Hatch",
-    "Hatchling −Hatch",
-    "Hatchling −Vulnerable",
-    "Hatchling −Hatch"
+    "Hatchling #1 −Hatch",
+    "Hatchling #2 −Hatch",
+    "Hatchling #2 −Vulnerable",
+    "Hatchling #3 −Hatch"
    ],
    "floor": 19,
    "idx": 357,
@@ -18628,11 +18628,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 19→5 (−14)"
+    "Hatchling #3 HP 19→5 (−14)"
    ],
    "floor": 19,
    "idx": 360,
-   "label": "Play Ultimate Strike → Hatchling",
+   "label": "Play Ultimate Strike → Hatchling #3",
    "turn": 9
   },
   {
@@ -18665,11 +18665,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 5→0  ☠ defeated"
+    "Hatchling #3 HP 5→0  ☠ defeated"
    ],
    "floor": 19,
    "idx": 361,
-   "label": "Play Rocket Punch → Hatchling",
+   "label": "Play Rocket Punch → Hatchling #3",
    "turn": 9
   },
   {
@@ -18702,11 +18702,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 20→7 (−13)"
+    "Hatchling #1 HP 20→7 (−13)"
    ],
    "floor": 19,
    "idx": 362,
-   "label": "Play Rocket Punch → Hatchling",
+   "label": "Play Rocket Punch → Hatchling #1",
    "turn": 9
   },
   {
@@ -19042,8 +19042,8 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 7→1 (−6)",
-    "Hatchling HP 21→15 (−6)",
+    "Hatchling #1 HP 7→1 (−6)",
+    "Hatchling #2 HP 21→15 (−6)",
     "Ovicopter HP 61→55 (−6)"
    ],
    "floor": 19,
@@ -19081,11 +19081,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 1→0  ☠ defeated"
+    "Hatchling #1 HP 1→0  ☠ defeated"
    ],
    "floor": 19,
    "idx": 367,
-   "label": "Play Ultimate Strike → Hatchling",
+   "label": "Play Ultimate Strike → Hatchling #1",
    "turn": 10
   },
   {
@@ -19521,9 +19521,9 @@
     "You Vulnerable 2→1",
     "Hatchling +1 Hatch",
     "Hatchling −Vulnerable",
-    "Hatchling +1 Minion",
-    "Spawned: Hatchling",
-    "Spawned: Hatchling",
+    "Ovicopter +1 Minion",
+    "Spawned: Hatchling #2",
+    "Spawned: Hatchling #4",
     "Spawned: Ovicopter"
    ],
    "floor": 19,
@@ -19561,11 +19561,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 6→0  ☠ defeated"
+    "Hatchling #3 HP 6→0  ☠ defeated"
    ],
    "floor": 19,
    "idx": 373,
-   "label": "Play Rocket Punch → Hatchling",
+   "label": "Play Rocket Punch → Hatchling #3",
    "turn": 11
   },
   {
@@ -19633,11 +19633,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 14→5 (−9)"
+    "Hatchling #1 HP 14→5 (−9)"
    ],
    "floor": 19,
    "idx": 375,
-   "label": "Play Strike+ → Hatchling",
+   "label": "Play Strike+ → Hatchling #1",
    "turn": 11
   },
   {
@@ -19670,11 +19670,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 5→0  ☠ defeated"
+    "Hatchling #1 HP 5→0  ☠ defeated"
    ],
    "floor": 19,
    "idx": 376,
-   "label": "Play Strike → Hatchling",
+   "label": "Play Strike → Hatchling #1",
    "turn": 11
   },
   {
@@ -19707,11 +19707,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 16→13 (−3)"
+    "Hatchling #1 HP 16→13 (−3)"
    ],
    "floor": 19,
    "idx": 377,
-   "label": "Play Go for the Eyes → Hatchling",
+   "label": "Play Go for the Eyes → Hatchling #1",
    "turn": 11
   },
   {
@@ -19744,11 +19744,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 13→10 (−3)"
+    "Hatchling #1 HP 13→10 (−3)"
    ],
    "floor": 19,
    "idx": 378,
-   "label": "Play Go for the Eyes → Hatchling",
+   "label": "Play Go for the Eyes → Hatchling #1",
    "turn": 11
   },
   {
@@ -19988,13 +19988,13 @@
    "details": [
     "You HP 21→14 (−7)",
     "You Block 15→0",
-    "Hatchling HP 10→21 (+11)",
-    "Hatchling HP 18→20 (+2)",
+    "Hatchling #1 HP 10→21 (+11)",
+    "Hatchling #2 HP 18→20 (+2)",
     "Frost orb passive: +2 block",
     "Lightning orb passive: 3 damage to a random enemy",
     "You −Vulnerable",
-    "Hatchling −Hatch",
-    "Hatchling −Hatch"
+    "Hatchling #1 −Hatch",
+    "Hatchling #2 −Hatch"
    ],
    "floor": 19,
    "idx": 380,
@@ -20157,11 +20157,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 20→14 (−6)"
+    "Hatchling #2 HP 20→14 (−6)"
    ],
    "floor": 19,
    "idx": 384,
-   "label": "Play Cold Snap → Hatchling",
+   "label": "Play Cold Snap → Hatchling #2",
    "turn": 12
   },
   {
@@ -20390,7 +20390,7 @@
    "decision": "combat_play",
    "details": [
     "You Block 19→0",
-    "Hatchling HP 14→11 (−3)",
+    "Hatchling #2 HP 14→11 (−3)",
     "Frost orb passive: +2 block (×2)",
     "Lightning orb passive: 3 damage to a random enemy",
     "You +2 Vulnerable"
@@ -20430,11 +20430,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 11→0  ☠ defeated"
+    "Hatchling #2 HP 11→0  ☠ defeated"
    ],
    "floor": 19,
    "idx": 386,
-   "label": "Play Rocket Punch → Hatchling",
+   "label": "Play Rocket Punch → Hatchling #2",
    "turn": 13
   },
   {
@@ -20951,10 +20951,10 @@
     "Lightning orb passive: 3 damage to a random enemy",
     "Frost orb passive: +2 block",
     "You Vulnerable 2→1",
-    "Hatchling +1 Hatch",
-    "Hatchling +1 Minion",
-    "Spawned: Hatchling",
-    "Spawned: Hatchling",
+    "Ovicopter +1 Hatch",
+    "Ovicopter +1 Minion",
+    "Spawned: Hatchling #2",
+    "Spawned: Hatchling #3",
     "Spawned: Ovicopter"
    ],
    "floor": 19,
@@ -21097,11 +21097,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 14→5 (−9)"
+    "Hatchling #2 HP 14→5 (−9)"
    ],
    "floor": 19,
    "idx": 398,
-   "label": "Play Strike+ → Hatchling",
+   "label": "Play Strike+ → Hatchling #2",
    "turn": 14
   },
   {
@@ -21134,11 +21134,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 5→2 (−3)"
+    "Hatchling #2 HP 5→2 (−3)"
    ],
    "floor": 19,
    "idx": 399,
-   "label": "Play Go for the Eyes → Hatchling",
+   "label": "Play Go for the Eyes → Hatchling #2",
    "turn": 14
   },
   {
@@ -21280,14 +21280,14 @@
    "details": [
     "You HP 14→7 (−7)",
     "You Block 15→0",
-    "Hatchling HP 17→20 (+3)",
-    "Hatchling HP 2→0  ☠ defeated",
-    "Hatchling HP 18→20 (+2)",
+    "Hatchling #1 HP 17→20 (+3)",
+    "Hatchling #2 HP 2→0  ☠ defeated",
+    "Hatchling #3 HP 18→20 (+2)",
     "Lightning orb passive: 3 damage to a random enemy",
     "Frost orb passive: +2 block",
     "You −Vulnerable",
-    "Hatchling −Hatch",
-    "Hatchling −Hatch"
+    "Hatchling #1 −Hatch",
+    "Hatchling #3 −Hatch"
    ],
    "floor": 19,
    "idx": 400,
@@ -21380,11 +21380,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 20→14 (−6)"
+    "Hatchling #1 HP 20→14 (−6)"
    ],
    "floor": 19,
    "idx": 402,
-   "label": "Play Cold Snap → Hatchling",
+   "label": "Play Cold Snap → Hatchling #1",
    "turn": 15
   },
   {
@@ -21417,11 +21417,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 14→8 (−6)"
+    "Hatchling #1 HP 14→8 (−6)"
    ],
    "floor": 19,
    "idx": 403,
-   "label": "Play Strike → Hatchling",
+   "label": "Play Strike → Hatchling #1",
    "turn": 15
   },
   {
@@ -21475,12 +21475,12 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 8→5 (−3)",
-    "Hatchling +1 Weak"
+    "Hatchling #1 HP 8→5 (−3)",
+    "Hatchling #1 +1 Weak"
    ],
    "floor": 19,
    "idx": 404,
-   "label": "Play Go for the Eyes → Hatchling",
+   "label": "Play Go for the Eyes → Hatchling #1",
    "turn": 15
   },
   {
@@ -21555,7 +21555,7 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 20→12 (−8)"
+    "Hatchling #2 HP 20→12 (−8)"
    ],
    "floor": 19,
    "idx": 405,
@@ -21826,7 +21826,7 @@
     "Frost orb passive: +2 block (×2)",
     "Lightning orb passive: 3 damage to a random enemy",
     "You +2 Vulnerable",
-    "Hatchling −Weak"
+    "Hatchling #1 −Weak"
    ],
    "floor": 19,
    "idx": 407,
@@ -21863,11 +21863,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 5→0  ☠ defeated"
+    "Hatchling #1 HP 5→0  ☠ defeated"
    ],
    "floor": 19,
    "idx": 408,
-   "label": "Play Strike+ → Hatchling",
+   "label": "Play Strike+ → Hatchling #1",
    "turn": 16
   },
   {
@@ -22375,10 +22375,10 @@
     "You Vulnerable 2→1",
     "Hatchling +1 Hatch",
     "Hatchling −Vulnerable",
-    "Hatchling +1 Hatch",
-    "Hatchling +1 Minion",
-    "Spawned: Hatchling",
-    "Spawned: Hatchling",
+    "Ovicopter +1 Hatch",
+    "Ovicopter +1 Minion",
+    "Spawned: Hatchling #3",
+    "Spawned: Hatchling #4",
     "Spawned: Ovicopter"
    ],
    "floor": 19,
@@ -22416,11 +22416,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 3→0  ☠ defeated"
+    "Hatchling #4 HP 3→0  ☠ defeated"
    ],
    "floor": 19,
    "idx": 414,
-   "label": "Play Ultimate Strike → Hatchling",
+   "label": "Play Ultimate Strike → Hatchling #4",
    "turn": 17
   },
   {
@@ -22488,11 +22488,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 15→2 (−13)"
+    "Hatchling #1 HP 15→2 (−13)"
    ],
    "floor": 19,
    "idx": 416,
-   "label": "Play Rocket Punch → Hatchling",
+   "label": "Play Rocket Punch → Hatchling #1",
    "turn": 17
   },
   {
@@ -22525,11 +22525,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 2→0  ☠ defeated"
+    "Hatchling #1 HP 2→0  ☠ defeated"
    ],
    "floor": 19,
    "idx": 417,
-   "label": "Play Strike → Hatchling",
+   "label": "Play Strike → Hatchling #1",
    "turn": 17
   },
   {
@@ -22562,11 +22562,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Hatchling HP 17→14 (−3)"
+    "Hatchling #1 HP 17→14 (−3)"
    ],
    "floor": 19,
    "idx": 418,
-   "label": "Play Go for the Eyes → Hatchling",
+   "label": "Play Go for the Eyes → Hatchling #1",
    "turn": 17
   },
   {
@@ -22731,8 +22731,8 @@
    "details": [
     "You HP 6→0 (−6)",
     "You Block 5→0",
-    "Hatchling HP 14→0  ☠ defeated",
-    "Hatchling HP 18→0  ☠ defeated",
+    "Hatchling #1 HP 14→0  ☠ defeated",
+    "Hatchling #2 HP 18→0  ☠ defeated",
     "Ovicopter HP 28→0  ☠ defeated",
     "You −Machine Learning",
     "You −Vulnerable"

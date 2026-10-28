@@ -9,6 +9,7 @@
      },
      "bucket": "likely-loss",
      "hp_n": 0,
+     "hp_sd": null,
      "is_best": true,
      "losses": 0,
      "low_confidence": false,
@@ -42,7 +43,7 @@
   "enemies": [
    {
     "block": 0,
-    "hp": 31,
+    "hp": 21,
     "index": 0,
     "intents": [
      {
@@ -84,6 +85,7 @@
    {
     "action": "end turn",
     "hp_n": 0,
+    "hp_sd": null,
     "is_best": true,
     "losses": 0,
     "low_confidence": false,
@@ -187,12 +189,12 @@
     },
     {
      "base_cost": 1,
-     "calculated_value": 2,
+     "calculated_value": 0,
      "can_play": false,
      "color": "blue",
      "cost": 1,
-     "description": "Deal 5 damage for each Channeled Orb.\n(Hits 2 times)",
-     "description_rich": "Deal 5 damage for each [gold]Channeled[/gold] Orb.\n(Hits 2 times)",
+     "description": "Deal 5 damage for each Channeled Orb.\n(Hits 0 times)",
+     "description_rich": "Deal 5 damage for each [gold]Channeled[/gold] Orb.\n(Hits 0 times)",
      "id": "BARRAGE",
      "image": "https://assets.test/card_atlas/defect/barrage.png",
      "index": -1,
@@ -229,18 +231,16 @@
      "can_play": false,
      "color": "blue",
      "cost": 1,
-     "description": "Deal 6 damage.\nChannel 1 Frost.",
-     "description_rich": "Deal 6 damage.\n[gold]Channel[/gold] 1 [gold]Frost[/gold].",
-     "id": "COLD_SNAP",
-     "image": "https://assets.test/card_atlas/defect/cold_snap.png",
+     "description": "Evoke your rightmost Orb twice.",
+     "description_rich": "[gold]Evoke[/gold] your rightmost Orb twice.",
+     "id": "DUALCAST",
+     "image": "https://assets.test/card_atlas/defect/dualcast.png",
      "index": -1,
-     "name": "Cold Snap",
-     "rarity": "Common",
-     "stats": {
-      "damage": 6
-     },
+     "name": "Dualcast",
+     "rarity": "Basic",
+     "stats": {},
      "target_type": "None",
-     "type": "Attack",
+     "type": "Skill",
      "upgraded": false
     },
     {
@@ -286,16 +286,18 @@
      "can_play": false,
      "color": "blue",
      "cost": 1,
-     "description": "Evoke your rightmost Orb twice.",
-     "description_rich": "[gold]Evoke[/gold] your rightmost Orb twice.",
-     "id": "DUALCAST",
-     "image": "https://assets.test/card_atlas/defect/dualcast.png",
+     "description": "Deal 6 damage.\nChannel 1 Frost.",
+     "description_rich": "Deal 6 damage.\n[gold]Channel[/gold] 1 [gold]Frost[/gold].",
+     "id": "COLD_SNAP",
+     "image": "https://assets.test/card_atlas/defect/cold_snap.png",
      "index": -1,
-     "name": "Dualcast",
-     "rarity": "Basic",
-     "stats": {},
+     "name": "Cold Snap",
+     "rarity": "Common",
+     "stats": {
+      "damage": 6
+     },
      "target_type": "None",
-     "type": "Skill",
+     "type": "Attack",
      "upgraded": false
     }
    ],
@@ -305,7 +307,7 @@
    "enemies": [
     {
      "block": 0,
-     "hp": 28,
+     "hp": 21,
      "image": "https://assets.test/monsters/cubex_construct.png",
      "index": 0,
      "intents": [
@@ -486,6 +488,7 @@
       },
       "bucket": "likely-loss",
       "hp_n": 0,
+      "hp_sd": null,
       "is_best": true,
       "losses": 0,
       "low_confidence": false,
@@ -508,24 +511,7 @@
    },
    "options": [],
    "orb_slots": 3,
-   "orbs": [
-    {
-     "evoke": 8,
-     "image": "https://assets.test/orb_atlas/lightning.png",
-     "index": 0,
-     "name": "LIGHTNING_ORB.title",
-     "passive": 3,
-     "type": "Lightning"
-    },
-    {
-     "evoke": 5,
-     "image": "https://assets.test/orb_atlas/frost.png",
-     "index": 1,
-     "name": "FROST_ORB.title",
-     "passive": 2,
-     "type": "Frost"
-    }
-   ],
+   "orbs": [],
    "player": {
     "block": 0,
     "deck": [
@@ -726,7 +712,7 @@
      }
     ],
     "gold": 144,
-    "hp": 7,
+    "hp": 5,
     "image": "https://assets.test/character_sprites/defect.png",
     "max_hp": 75,
     "name": "Defect",

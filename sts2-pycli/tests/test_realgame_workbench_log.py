@@ -411,3 +411,41 @@ class TestLogPosition:
         assert wlog.log_decision(EVENT_MSG, "event") == 0
         assert wlog.log_decision({**EVENT_MSG, "seed": "S2"}, "event") == 0
         wlog.close()
+
+
+def test_log_round_trip_keeps_hp_stats_and_coach(tmp_path: Path) -> None:
+    """#850: what the live advisor writes, the workbench loader reads back."""
+    wlog = WorkbenchRunLogger(str(tmp_path))
+    assert wlog.log_decision(EVENT_MSG, "event") == 0
+    advice = {
+        "options": [
+            {
+                "stable_idx": 0,
+                "label": "Decipher",
+                "p_win": 0.7,
+                "visits": 300,
+                "is_best": True,
+                "mean_final_hp": 55.0,
+                "hp_n": 280,
+            },
+            {
+                "stable_idx": 1,
+                "label": "Smash",
+                "p_win": 0.6,
+                "visits": 100,
+                "mean_final_hp": 48.5,
+                "hp_n": 90,
+            },
+        ]
+    }
+    wlog.log_advice(EVENT_MSG, advice, 0.2)
+    wlog.log_human_action({"detail": "Smash", "action": "choose"})
+    assert wlog.log_decision({**EVENT_MSG, "floor": 4}, "event") == 1
+    wlog.log_coach({"kind": "choice", "id": "choice:1", "verdict": "disagree", "log_idx": 0})
+    path = wlog.path
+    wlog.close()
+    store = TimelineStore.load_jsonl(Path(path or ""))
+    scores = store.get(0)["scores"]
+    assert [s["mean_final_hp"] for s in scores] == pytest.approx([55.0, 48.5])
+    assert [s["hp_n"] for s in scores] == [280, 90]
+    assert store.coach()["by_step"] == {"0": ["choice:1"]}

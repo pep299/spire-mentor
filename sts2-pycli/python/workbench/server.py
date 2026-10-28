@@ -215,11 +215,13 @@ class RewardPreviewRequest(BaseModel):
 
     ``deck`` is the current master deck and ``candidates`` the offered reward
     cards; both are lists of card dicts (only ``id`` / ``upgraded`` are read,
-    plus ``index`` on candidates).
+    plus ``index`` on candidates). ``game_version`` names the build whose card
+    tables grade them (GH #877; absent = the default build).
     """
 
     deck: list[dict[str, Any]] = []
     candidates: list[dict[str, Any]] = []
+    game_version: str | None = None
 
 
 class BugReportRequest(BaseModel):
@@ -1777,9 +1779,10 @@ def create_app(
     def step_deck_analysis(idx: int, session: Session = Depends(get_session)) -> dict[str, Any]:
         """Grade the master deck at step *idx* on Damage / Block / Velocity.
 
-        Returns the :func:`workbench.deck_analysis.analyze_deck` report. The deck
-        persists across the run, so this works on every decision type (combat,
-        reward, map, shop), not just combat.
+        Returns the :func:`workbench.deck_analysis.analyze_deck` report, graded
+        with the recording's own build's card tables. The deck persists across
+        the run, so this works on every decision type (combat, reward, map,
+        shop), not just combat.
         """
         store = session.store
         if store is None:
@@ -1788,7 +1791,9 @@ def create_app(
             s = store.get(idx)
         except IndexError as exc:
             raise HTTPException(404, str(exc)) from exc
-        return deck_analysis.analyze_deck(_deck_of(s.get("state", {})))
+        return deck_analysis.analyze_deck(
+            _deck_of(s.get("state", {})), game_version=replay_version(store)
+        )
 
     @app.get("/api/live/deck-analysis")
     def live_deck_analysis(session: Session = Depends(get_session)) -> dict[str, Any]:
@@ -1796,7 +1801,11 @@ def create_app(
         sess = session.live
         if sess is None:
             raise HTTPException(400, "no live run")
-        return deck_analysis.analyze_deck(_deck_of(sess.state()))
+        version = getattr(sess, "game_version", None)
+        return deck_analysis.analyze_deck(
+            _deck_of(sess.state()),
+            game_version=version if isinstance(version, str) else None,
+        )
 
     @app.post("/api/deck/reward-preview")
     def deck_reward_preview(req: RewardPreviewRequest) -> dict[str, Any]:
@@ -1807,7 +1816,9 @@ def create_app(
         Returns baseline scores plus a per-candidate delta (see
         :func:`workbench.deck_analysis.reward_preview`).
         """
-        return deck_analysis.reward_preview(req.deck, req.candidates)
+        return deck_analysis.reward_preview(
+            req.deck, req.candidates, game_version=_requested_game_version(req.game_version)
+        )
 
     @app.get("/api/deck/trend")
     def deck_trend(session: Session = Depends(get_session)) -> dict[str, Any]:
@@ -1823,6 +1834,7 @@ def create_app(
             raise HTTPException(400, "no run loaded")
         points: list[dict[str, Any]] = []
         last_sig: tuple | None = None
+        version = replay_version(store)
         for s in store.all():
             deck = _deck_of(s.get("state", {}))
             if not deck:
@@ -1834,7 +1846,7 @@ def create_app(
             # Lighter sampling than the on-demand panel — a trend needs the shape,
             # not three-decimal precision, and this re-grades at every deck change
             # over the whole run (each grade is a multi-turn simulation).
-            report = deck_analysis.analyze_deck(deck, samples=60)
+            report = deck_analysis.analyze_deck(deck, samples=60, game_version=version)
             meta = s.get("meta") or {}
             points.append(
                 {

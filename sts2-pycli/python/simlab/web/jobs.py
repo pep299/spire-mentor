@@ -14,6 +14,7 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from simlab.runner import CancelToken, run_sweep, write_spec
 from simlab.specs import SweepSpec
@@ -59,6 +60,24 @@ def _atomic_write_json(path: Path, obj: object) -> None:
                 tmp.unlink(missing_ok=True)
                 raise
             time.sleep(_REPLACE_BACKOFF_S)
+
+
+def _read_json(path: Path) -> Any:
+    """Read a JSON file that `_atomic_write_json` may be swapping right now.
+
+    The reader-side twin of the rename retry: on Windows, opening the
+    destination while a writer's ``os.replace`` is mid-swap raises
+    ``PermissionError`` too (seen in the public CI on the status poll).
+    Retry on the same budget, then raise.
+    """
+    for attempt in range(_REPLACE_RETRIES):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except PermissionError:
+            if attempt == _REPLACE_RETRIES - 1:
+                raise
+            time.sleep(_REPLACE_BACKOFF_S)
+    raise AssertionError("unreachable")
 
 
 # Hard ceiling on a single web sweep's wall-clock. A runaway sweep would
@@ -221,7 +240,7 @@ class JobManager:
                 self._runner(
                     sweep, out_dir=out_dir, jobs=self.jobs, progress=_progress, cancel=cancel
                 )
-                prog = json.loads((out_dir / "progress.json").read_text(encoding="utf-8"))
+                prog = _read_json(out_dir / "progress.json")
                 # run_sweep is status-agnostic: a tripped token means the sweep
                 # was stopped, so the partial result is "cancelled", not "done".
                 # `stopped_reason` says whether it was the user or the runtime cap.
@@ -271,7 +290,7 @@ class JobManager:
             if (sweep_dir / "summary.json").exists():
                 return {"status": "done"}
             return {"status": "unknown"}
-        return json.loads(p.read_text(encoding="utf-8"))
+        return _read_json(p)
 
     def list_sweeps(self) -> list[dict]:
         out = []

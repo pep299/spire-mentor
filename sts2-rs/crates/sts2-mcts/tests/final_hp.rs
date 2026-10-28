@@ -87,6 +87,7 @@ fn final_hp_counts_are_bounded() {
         RootOutcome {
             hp_n: 0,
             hp_sum: 0.0,
+            hp_sq_sum: 0.0,
             ..end.clone()
         }
         .mean_final_hp(),

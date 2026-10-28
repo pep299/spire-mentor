@@ -46,6 +46,7 @@ export interface CommandActions {
   endRun: () => void;
   analyze: () => void;
   regretReview: () => void;
+  coachReview: () => void;
   runReview: () => void;
   searchTree: () => void;
   simlabFromHere: () => void;
@@ -138,6 +139,9 @@ export function buildCommands(c: CommandContext): Command[] {
     out.push({ id: "regret-review", group: "analyze", label: "📉 regret review",
       title: "post-combat regret review: diff every move against the MCTS line and surface the costliest plays",
       disabledReason: started ? undefined : notStarted, run: a.regretReview });
+    out.push({ id: "coach-review", group: "analyze", label: "🎓 coach review",
+      title: "every graded turn and choice — the fight recaps and the death autopsy when the live advisor logged them",
+      disabledReason: started ? undefined : notStarted, run: a.coachReview });
     out.push({ id: "run-review", group: "analyze", label: "📈 run review",
       title: "run review: the AI's outlook curve over the map/card/shop/rest decisions, with the biggest turning points flagged",
       disabledReason: started ? undefined : notStarted, run: a.runReview });

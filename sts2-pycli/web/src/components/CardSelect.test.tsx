@@ -194,6 +194,18 @@ describe("CardSelect choice-ranker chips", () => {
     expect(spy.mock.calls.some(([u]) => String(u).includes("/api/live/choice-ranker"))).toBe(true);
   });
 
+  it("shows no ranker chips in Coach style — that is unprompted advice", async () => {
+    stubFetch(() => RANKING);
+    render(
+      <HintsFixture style="coach">
+        <CardSelect step={step("add_generated_free_to_hand")} onChoose={() => {}} />
+      </HintsFixture>,
+    );
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByText(/61(\.\d)?%/)).toBeNull();
+    expect(screen.queryByText(/44(\.\d)?%/)).toBeNull();
+  });
+
   it("does not fetch for deck-op selects (Smith etc.)", () => {
     const spy = stubFetch(() => RANKING);
     render(<CardSelect step={step("upgrade")} onChoose={() => {}} />);

@@ -11,18 +11,19 @@
      },
      "bucket": "likely-win",
      "hp_n": 2,
+     "hp_sd": 4.5,
      "is_best": true,
      "losses": 0,
      "low_confidence": false,
-     "mean_final_hp": 62.5,
+     "mean_final_hp": 63.5,
      "p_loss": 0.0,
      "p_tie": 0.0,
      "p_win": 1.0,
-     "q": 1.223,
+     "q": 1.2265,
      "q_saturated": false,
      "ties": 0,
      "value": 1.0,
-     "value_sum": 2.4459,
+     "value_sum": 2.4531,
      "visits": 2,
      "wins": 2
     },
@@ -34,18 +35,19 @@
      },
      "bucket": "likely-win",
      "hp_n": 2,
+     "hp_sd": 0.5,
      "is_best": false,
      "losses": 0,
      "low_confidence": false,
-     "mean_final_hp": 59.5,
+     "mean_final_hp": 60.5,
      "p_loss": 0.0,
      "p_tie": 0.0,
      "p_win": 1.0,
-     "q": 1.2123,
+     "q": 1.2158,
      "q_saturated": false,
      "ties": 0,
      "value": 1.0,
-     "value_sum": 2.4245,
+     "value_sum": 2.4316,
      "visits": 2,
      "wins": 2
     },
@@ -56,21 +58,22 @@
       "target_index": 2
      },
      "bucket": "likely-win",
-     "hp_n": 2,
+     "hp_n": 1,
+     "hp_sd": 0.0,
      "is_best": false,
      "losses": 0,
      "low_confidence": false,
-     "mean_final_hp": 58.5,
+     "mean_final_hp": 59.0,
      "p_loss": 0.0,
      "p_tie": 0.0,
      "p_win": 1.0,
-     "q": 1.2087,
+     "q": 1.2105,
      "q_saturated": false,
      "ties": 0,
      "value": 1.0,
-     "value_sum": 2.4174,
-     "visits": 2,
-     "wins": 2
+     "value_sum": 1.2105,
+     "visits": 1,
+     "wins": 1
     },
     {
      "action": {
@@ -79,21 +82,22 @@
       "target_index": null
      },
      "bucket": "likely-win",
-     "hp_n": 1,
+     "hp_n": 2,
+     "hp_sd": 0.0,
      "is_best": false,
      "losses": 0,
      "low_confidence": false,
-     "mean_final_hp": 55.0,
+     "mean_final_hp": 61.0,
      "p_loss": 0.0,
      "p_tie": 0.0,
      "p_win": 1.0,
-     "q": 1.1961,
+     "q": 1.2176,
      "q_saturated": false,
      "ties": 0,
      "value": 1.0,
-     "value_sum": 1.1961,
-     "visits": 1,
-     "wins": 1
+     "value_sum": 2.4353,
+     "visits": 2,
+     "wins": 2
     },
     {
      "action": {
@@ -101,18 +105,19 @@
      },
      "bucket": "likely-win",
      "hp_n": 1,
+     "hp_sd": 0.0,
      "is_best": false,
      "losses": 0,
      "low_confidence": false,
-     "mean_final_hp": 56.0,
+     "mean_final_hp": 60.0,
      "p_loss": 0.0,
      "p_tie": 0.0,
      "p_win": 1.0,
-     "q": 1.1997,
+     "q": 1.214,
      "q_saturated": false,
      "ties": 0,
      "value": 1.0,
-     "value_sum": 1.1997,
+     "value_sum": 1.214,
      "visits": 1,
      "wins": 1
     }
@@ -136,7 +141,7 @@
   "enemies": [
    {
     "block": 0,
-    "hp": 11,
+    "hp": 8,
     "index": 0,
     "intents": [
      {
@@ -147,7 +152,14 @@
     "max_hp": 11,
     "move_state": "GOOP",
     "name": "Leaf Slime (S)",
-    "powers": [],
+    "powers": [
+     {
+      "amount": 1,
+      "display_amount": 1,
+      "id": "WEAK",
+      "name": "Weak"
+     }
+    ],
     "uid": 2
    },
    {
@@ -168,23 +180,11 @@
    },
    {
     "block": 0,
-    "hp": 4,
+    "hp": 7,
     "index": 2,
     "intents": [
      {
-      "base_damage": 4,
-      "damage": 3,
-      "modifiers": [
-       {
-        "kind": "power",
-        "mul": [
-         3,
-         4
-        ],
-        "name": "WEAK",
-        "side": "enemy"
-       }
-      ],
+      "damage": 4,
       "type": "Attack"
      }
     ],
@@ -192,14 +192,7 @@
     "max_hp": 7,
     "move_state": "BUTT",
     "name": "Twig Slime (S)",
-    "powers": [
-     {
-      "amount": 1,
-      "display_amount": 1,
-      "id": "WEAK",
-      "name": "Weak"
-     }
-    ],
+    "powers": [],
     "uid": 4
    }
   ],
@@ -207,11 +200,12 @@
    {
     "action": "Strike",
     "hp_n": 2,
+    "hp_sd": 4.5,
     "is_best": true,
     "losses": 0,
     "low_confidence": false,
-    "mean_final_hp": 62.5,
-    "q": 1.223,
+    "mean_final_hp": 63.5,
+    "q": 1.2265,
     "q_saturated": false,
     "stable_idx": 2,
     "target_index": 0,
@@ -223,11 +217,12 @@
    {
     "action": "Strike",
     "hp_n": 2,
+    "hp_sd": 0.5,
     "is_best": false,
     "losses": 0,
     "low_confidence": false,
-    "mean_final_hp": 59.5,
-    "q": 1.2123,
+    "mean_final_hp": 60.5,
+    "q": 1.2158,
     "q_saturated": false,
     "stable_idx": 2,
     "target_index": 1,
@@ -238,44 +233,47 @@
    },
    {
     "action": "Strike",
-    "hp_n": 2,
+    "hp_n": 1,
+    "hp_sd": 0.0,
     "is_best": false,
     "losses": 0,
     "low_confidence": false,
-    "mean_final_hp": 58.5,
-    "q": 1.2087,
+    "mean_final_hp": 59.0,
+    "q": 1.2105,
     "q_saturated": false,
     "stable_idx": 2,
     "target_index": 2,
-    "ties": 0,
-    "visits": 2,
-    "win_prob": 1.0,
-    "wins": 2
-   },
-   {
-    "action": "Defend",
-    "hp_n": 1,
-    "is_best": false,
-    "losses": 0,
-    "low_confidence": false,
-    "mean_final_hp": 55.0,
-    "q": 1.1961,
-    "q_saturated": false,
-    "stable_idx": 0,
-    "target_index": null,
     "ties": 0,
     "visits": 1,
     "win_prob": 1.0,
     "wins": 1
    },
    {
-    "action": "end turn",
-    "hp_n": 1,
+    "action": "Defend",
+    "hp_n": 2,
+    "hp_sd": 0.0,
     "is_best": false,
     "losses": 0,
     "low_confidence": false,
-    "mean_final_hp": 56.0,
-    "q": 1.1997,
+    "mean_final_hp": 61.0,
+    "q": 1.2176,
+    "q_saturated": false,
+    "stable_idx": 0,
+    "target_index": null,
+    "ties": 0,
+    "visits": 2,
+    "win_prob": 1.0,
+    "wins": 2
+   },
+   {
+    "action": "end turn",
+    "hp_n": 1,
+    "hp_sd": 0.0,
+    "is_best": false,
+    "losses": 0,
+    "low_confidence": false,
+    "mean_final_hp": 60.0,
+    "q": 1.214,
     "q_saturated": false,
     "stable_idx": -1,
     "target_index": null,
@@ -513,7 +511,7 @@
    "enemies": [
     {
      "block": 0,
-     "hp": 5,
+     "hp": 2,
      "image": "https://assets.test/monsters/leaf_slime_s.png",
      "index": 0,
      "intents": [
@@ -526,7 +524,16 @@
      "max_hp": 11,
      "move_state": "GOOP",
      "name": "Leaf Slime (S)",
-     "powers": [],
+     "powers": [
+      {
+       "amount": 1,
+       "display_amount": 1,
+       "id": "WEAK",
+       "image": "https://assets.test/power_atlas/weak_power.png",
+       "image_big": "https://assets.test/power_big/weak_power.png",
+       "name": "Weak"
+      }
+     ],
      "rig": "https://assets.test/monster_rigs/leaf_slime_s/leaf_slime_s",
      "rig_bounds_h": 102.0,
      "rig_bounds_w": 154.0,
@@ -557,27 +564,13 @@
     },
     {
      "block": 0,
-     "hp": 4,
+     "hp": 7,
      "image": "https://assets.test/monsters/twig_slime_s.png",
      "index": 2,
      "intents": [
       {
-       "base_damage": 4,
-       "damage": 3,
+       "damage": 4,
        "intent_image": "https://assets.test/intent_atlas/attack/intent_attack_1.png",
-       "modifiers": [
-        {
-         "image": "https://assets.test/power_atlas/weak_power.png",
-         "kind": "power",
-         "mul": [
-          3,
-          4
-         ],
-         "name": "WEAK",
-         "side": "enemy",
-         "title": "Weak"
-        }
-       ],
        "type": "Attack"
       }
      ],
@@ -585,16 +578,7 @@
      "max_hp": 7,
      "move_state": "BUTT",
      "name": "Twig Slime (S)",
-     "powers": [
-      {
-       "amount": 1,
-       "display_amount": 1,
-       "id": "WEAK",
-       "image": "https://assets.test/power_atlas/weak_power.png",
-       "image_big": "https://assets.test/power_big/weak_power.png",
-       "name": "Weak"
-      }
-     ],
+     "powers": [],
      "rig": "https://assets.test/monster_rigs/twig_slime_s/twig_slime_s",
      "rig_bounds_h": 106.0,
      "rig_bounds_w": 140.0,
@@ -660,18 +644,19 @@
       },
       "bucket": "likely-win",
       "hp_n": 2,
+      "hp_sd": 4.5,
       "is_best": true,
       "losses": 0,
       "low_confidence": false,
-      "mean_final_hp": 62.5,
+      "mean_final_hp": 63.5,
       "p_loss": 0.0,
       "p_tie": 0.0,
       "p_win": 1.0,
-      "q": 1.223,
+      "q": 1.2265,
       "q_saturated": false,
       "ties": 0,
       "value": 1.0,
-      "value_sum": 2.4459,
+      "value_sum": 2.4531,
       "visits": 2,
       "wins": 2
      },
@@ -683,18 +668,19 @@
       },
       "bucket": "likely-win",
       "hp_n": 2,
+      "hp_sd": 0.5,
       "is_best": false,
       "losses": 0,
       "low_confidence": false,
-      "mean_final_hp": 59.5,
+      "mean_final_hp": 60.5,
       "p_loss": 0.0,
       "p_tie": 0.0,
       "p_win": 1.0,
-      "q": 1.2123,
+      "q": 1.2158,
       "q_saturated": false,
       "ties": 0,
       "value": 1.0,
-      "value_sum": 2.4245,
+      "value_sum": 2.4316,
       "visits": 2,
       "wins": 2
      },
@@ -705,21 +691,22 @@
        "target_index": 2
       },
       "bucket": "likely-win",
-      "hp_n": 2,
+      "hp_n": 1,
+      "hp_sd": 0.0,
       "is_best": false,
       "losses": 0,
       "low_confidence": false,
-      "mean_final_hp": 58.5,
+      "mean_final_hp": 59.0,
       "p_loss": 0.0,
       "p_tie": 0.0,
       "p_win": 1.0,
-      "q": 1.2087,
+      "q": 1.2105,
       "q_saturated": false,
       "ties": 0,
       "value": 1.0,
-      "value_sum": 2.4174,
-      "visits": 2,
-      "wins": 2
+      "value_sum": 1.2105,
+      "visits": 1,
+      "wins": 1
      },
      {
       "action": {
@@ -728,21 +715,22 @@
        "target_index": null
       },
       "bucket": "likely-win",
-      "hp_n": 1,
+      "hp_n": 2,
+      "hp_sd": 0.0,
       "is_best": false,
       "losses": 0,
       "low_confidence": false,
-      "mean_final_hp": 55.0,
+      "mean_final_hp": 61.0,
       "p_loss": 0.0,
       "p_tie": 0.0,
       "p_win": 1.0,
-      "q": 1.1961,
+      "q": 1.2176,
       "q_saturated": false,
       "ties": 0,
       "value": 1.0,
-      "value_sum": 1.1961,
-      "visits": 1,
-      "wins": 1
+      "value_sum": 2.4353,
+      "visits": 2,
+      "wins": 2
      },
      {
       "action": {
@@ -750,18 +738,19 @@
       },
       "bucket": "likely-win",
       "hp_n": 1,
+      "hp_sd": 0.0,
       "is_best": false,
       "losses": 0,
       "low_confidence": false,
-      "mean_final_hp": 56.0,
+      "mean_final_hp": 60.0,
       "p_loss": 0.0,
       "p_tie": 0.0,
       "p_win": 1.0,
-      "q": 1.1997,
+      "q": 1.214,
       "q_saturated": false,
       "ties": 0,
       "value": 1.0,
-      "value_sum": 1.1997,
+      "value_sum": 1.214,
       "visits": 1,
       "wins": 1
      }

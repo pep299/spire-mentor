@@ -2,29 +2,41 @@
 
 Spire Mentor rates your options while you play: a score on every card in hand, a ranked list of the moves the AI considered, a win-chance bar, and the map route it likes. Combat advice comes from a Monte Carlo tree search over a full simulation of the fight; map, card-reward, shop, event and rest-site advice comes from a trained run policy. It can also take a single decision for you, or play on by itself until you stop it.
 
+It has two styles, switched with the toolbar's [b]Hints / Coach[/b] button:
+[list]
+[*][b]Coach[/b] (the default): nothing shows before you act, so you play your own game. Press [b]F5[/b] to peek at its pick for the next decision. After a turn that cost HP or win chance, or a choice it clearly disagrees with, a small note shows what it would have done and why.
+[*][b]Hints[/b]: its opinion while you decide: card scores, ranked moves, the win-chance bar and map markers. Each can be switched off in the settings.
+[/list]
+
 [b]The coach switches on when the game starts and never plays for you unless you ask.[/b] Press [b]F8[/b] to switch it off (the game is then vanilla: no HUD, no AI, no changed behaviour), [b]F1[/b] for every key. To keep it off at launch, untick [i]Turn the coach on when the game starts[/i] in the mod settings.
 
 [h2]Requirements[/h2]
 [list]
 [*][b]Windows only.[/b] The AI runs as a bundled Windows program (SimAdvisor.exe). On Mac or Linux the mod loads but the coach cannot start.
-[*][b]Tested on game build v0.107.1.[/b] The mod hooks into game internals, so a game update can break it until a new version is out. If the game has updated and things misbehave, disable the mod and wait for an update.
+[*][b]Game builds v0.107.1 (stable) and v0.111.0 (public beta).[/b] One download supports both. The mod hooks into game internals, so a game update can break it until a new version is out. If the game has updated and things misbehave, disable the mod and wait for an update.
 [*][b]BaseLib[/b] (by Alchyr), which Steam installs alongside this mod as a required item.
 [/list]
 
 [h2]Keys[/h2]
 [list]
 [*][b]F1[/b] help: mode, keys, file locations
-[*][b]F8[/b] AI coach on / off
+[*][b]F8[/b] AI coach on / off (from Autopilot: take the controls back)
+[*][b]F5[/b] Coach style: peek at the AI's pick for just the next decision
 [*][b]F6[/b] let the AI take just this one decision
-[*][b]F7[/b] let the AI keep playing until you press F7 again
+[*][b]F7[/b] let the AI keep playing until you press F7 again. It pauses and hands a decision back to you when it has no real policy for it (F7 resumes).
 [*][b]F4[/b] show / hide the HUD
 [*][b]F3[/b] action log: what was played, and what was advised at the time
 [*][b]F9 / F10[/b] game speed down / up
+[*][b]Ctrl+Z[/b] undo to the start of this combat turn
+[*][b]Ctrl+Shift+Z[/b] rewind to the start of this room
+[*][b]Ctrl+Shift+C[/b] copy this position, to paste into the workbench
 [/list]
-Settings: Main menu → Options → Mod Configuration → SpireMentor.
+The [b]Spire Mentor[/b] strip in the top-left does the same with the mouse: the coach and AI controls, game speed, and the [b]Rewind[/b], [b]Panels[/b] and [b]Workbench[/b] menus.
+
+Settings: [b]Panels → Settings[/b] on the toolbar (works mid-run), or Main menu → Options → Mod Configuration → SpireMentor.
 
 [h2]The workbench[/h2]
-The toolbar's [b]Workbench → Open workbench[/b] opens a page in your browser that follows your run as you play: every decision with what the AI advised at the time, regret reviews and search trees for any past step, the run tree (click a save point to rewind the real game), live search over the board, replays and a combat sandbox. It is served by the coach on [i]127.0.0.1:8079[/i] and runs entirely on your machine.
+The toolbar's [b]Workbench → Open workbench[/b] opens a page in your browser that follows your run as you play: every decision with what the AI advised at the time, regret reviews and search trees for any past step, the run tree (click a save point to rewind the real game), live search over the board, replays and a combat sandbox. [b]Workbench → Copy state[/b] (or Ctrl+Shift+C) puts the current position on the clipboard; paste it into the workbench's [b]Import state[/b] to try other lines. It is served by the coach on [i]127.0.0.1:8079[/i] and runs entirely on your machine.
 
 [h2]What it does on your machine[/h2]
 [list]

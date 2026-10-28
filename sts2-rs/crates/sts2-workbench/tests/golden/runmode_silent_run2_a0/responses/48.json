@@ -1,17 +1,17 @@
 {
  "act": null,
- "best_label": "Survivor",
+ "best_label": "Slice",
  "best_line": [],
  "best_mean_hp": null,
  "best_win_prob": 1.0,
  "drop_pct": 0,
  "floor": null,
  "hp_drop": null,
- "idx": 39,
+ "idx": 42,
  "is_blunder": false,
  "matched_best": false,
- "message": "Turn 1: Strike instead of Survivor dropped P(win) 100%→100% (−0 pts)",
- "n_actions": 7,
+ "message": "Turn 1: Strike instead of Slice dropped P(win) 100%→100% (−0 pts)",
+ "n_actions": 5,
  "node_id": null,
  "played_label": "Strike",
  "played_mean_hp": null,
@@ -21,5 +21,5 @@
  "severity": 0.0,
  "turn": 1,
  "verdict": "uncertain",
- "visits": 4
+ "visits": 5
 }

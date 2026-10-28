@@ -192,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
 
     done: set[int] = set()
     if os.path.exists(args.out):
-        with open(args.out) as f:
+        with open(args.out, encoding="utf-8") as f:
             done = {r["seed"] for r in map(json.loads, f) if r.get("outcome") != "error"}
     jobs = [
         (s, args.ckpt, args.ascension, args.character, args.act1, args.reps, args.arms)
@@ -202,7 +202,10 @@ def main(argv: list[str] | None = None) -> int:
     t0 = time.time()
     n = lost = 0
     flips = dict.fromkeys(args.arms, 0)
-    with get_context("spawn").Pool(args.procs) as pool, open(args.out, "a") as sink:
+    with (
+        get_context("spawn").Pool(args.procs) as pool,
+        open(args.out, "a", encoding="utf-8") as sink,
+    ):
         for row in pool.imap_unordered(play_and_fork, jobs):
             sink.write(json.dumps(row) + "\n")
             sink.flush()

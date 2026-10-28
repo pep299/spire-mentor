@@ -90,8 +90,8 @@
    "combat_log": [],
    "decision": "combat_play",
    "details": [
-    "Spawned: Corpse Slug",
-    "Spawned: Corpse Slug"
+    "Spawned: Corpse Slug #1",
+    "Spawned: Corpse Slug #2"
    ],
    "error": false,
    "floor": 1,
@@ -177,13 +177,13 @@
    "decision": "combat_play",
    "details": [
     "Play Strike",
-    "Corpse Slug HP 25→19 (−6)"
+    "Corpse Slug #1 HP 25→19 (−6)"
    ],
    "error": false,
    "floor": 1,
    "id": 4,
    "idx": 4,
-   "label": "Play Strike → Corpse Slug",
+   "label": "Play Strike → Corpse Slug #1",
    "parent_id": 3,
    "turn": 1,
    "value": null
@@ -375,7 +375,7 @@
    "details": [
     "You HP 75→71 (−4)",
     "You Block 10→0",
-    "Corpse Slug HP 26→23 (−3)",
+    "Corpse Slug #2 HP 26→23 (−3)",
     "Lightning orb passive: 3 damage to a random enemy"
    ],
    "error": false,
@@ -420,13 +420,13 @@
    "decision": "combat_play",
    "details": [
     "Play Strike",
-    "Corpse Slug HP 19→13 (−6)"
+    "Corpse Slug #1 HP 19→13 (−6)"
    ],
    "error": false,
    "floor": 1,
    "id": 7,
    "idx": 7,
-   "label": "Play Strike → Corpse Slug",
+   "label": "Play Strike → Corpse Slug #1",
    "parent_id": 6,
    "turn": 2,
    "value": null
@@ -505,13 +505,13 @@
    "decision": "combat_play",
    "details": [
     "Play Strike",
-    "Corpse Slug HP 13→7 (−6)"
+    "Corpse Slug #1 HP 13→7 (−6)"
    ],
    "error": false,
    "floor": 1,
    "id": 9,
    "idx": 9,
-   "label": "Play Strike → Corpse Slug",
+   "label": "Play Strike → Corpse Slug #1",
    "parent_id": 8,
    "turn": 2,
    "value": null
@@ -658,8 +658,8 @@
    "decision": "combat_play",
    "details": [
     "You HP 71→63 (−8)",
-    "Corpse Slug HP 7→4 (−3)",
-    "Corpse Slug HP 23→20 (−3)",
+    "Corpse Slug #1 HP 7→4 (−3)",
+    "Corpse Slug #2 HP 23→20 (−3)",
     "Lightning orb passive: 3 damage to a random enemy (×2)",
     "You +2 Frail"
    ],
@@ -812,9 +812,9 @@
    "decision": "combat_play",
    "details": [
     "Play Dualcast",
-    "Corpse Slug HP 4→0  ☠ defeated",
-    "Corpse Slug HP 20→12 (−8)",
-    "Corpse Slug +4 Strength"
+    "Corpse Slug #1 HP 4→0  ☠ defeated",
+    "Corpse Slug #2 HP 20→12 (−8)",
+    "Corpse Slug #2 +4 Strength"
    ],
    "error": false,
    "floor": 1,
@@ -2507,9 +2507,9 @@
    "combat_log": [],
    "decision": "combat_play",
    "details": [
-    "Spawned: Corpse Slug",
-    "Spawned: Corpse Slug",
-    "Spawned: Corpse Slug"
+    "Spawned: Corpse Slug #1",
+    "Spawned: Corpse Slug #2",
+    "Spawned: Corpse Slug #3"
    ],
    "error": false,
    "floor": 4,
@@ -2555,7 +2555,7 @@
    "floor": 4,
    "id": 42,
    "idx": 42,
-   "label": "Drink Block Potion → Corpse Slug",
+   "label": "Drink Block Potion → Corpse Slug #1",
    "parent_id": 41,
    "turn": 1,
    "value": null

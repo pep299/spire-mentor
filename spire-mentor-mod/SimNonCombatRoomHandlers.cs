@@ -11,12 +11,14 @@ using Godot;
 using MegaCrit.Sts2.Core.AutoSlay;
 using MegaCrit.Sts2.Core.AutoSlay.Handlers;
 using MegaCrit.Sts2.Core.AutoSlay.Helpers;
+using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Entities.Merchant;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Events;
 using MegaCrit.Sts2.Core.Hooks;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Potions;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using MegaCrit.Sts2.Core.Nodes.Events;
 using MegaCrit.Sts2.Core.Nodes.Events.Custom;
@@ -613,6 +615,8 @@ public class SimEventRoomHandler : IRoomHandler, IHandler
     private static readonly TimeSpan OptionsLoadWait = TimeSpan.FromSeconds(30);
     private const int OptionsWaitReportEveryPolls = 50;
     private static readonly TimeSpan FakeMerchantProceedWait = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan FakeMerchantFightWait = TimeSpan.FromSeconds(30);
+    private const int FakeMerchantSettleMs = 300;
 
     private const string AncientDialogueHitbox = "%DialogueHitbox";
     private const int AncientMaxClicks = 50;
@@ -639,8 +643,7 @@ public class SimEventRoomHandler : IRoomHandler, IHandler
             NFakeMerchant? fakeMerchant = UiHelper.FindFirst<NFakeMerchant>(room);
             if (fakeMerchant != null)
             {
-                // A shop-shaped event with nothing to decide: just leave.
-                await LeaveFakeMerchantAsync(fakeMerchant, ct);
+                await RunFakeMerchantAsync(fakeMerchant, room, random, ct);
                 return;
             }
             await WaitForAnyOptionAsync(room, ct);
@@ -782,16 +785,211 @@ public class SimEventRoomHandler : IRoomHandler, IHandler
         }, ct, OptionsLoadWait, "Event options never appeared");
     }
 
+    /// <summary>
+    /// The Fake Merchant (GH #873): a shopfront in an event room, with no
+    /// event buttons. Asked as an <c>event</c> decision in the headless
+    /// engine's option model (<c>act2_hive.rs</c> <c>FAKE_MERCHANT_OPTIONS</c>),
+    /// because that is how the run policy saw it in training: buy (the first
+    /// stocked relic, 50g), throw a Foul Potion (fight for the Rug plus every
+    /// relic still in stock and 300 gold), or leave. Unlike the engine, the
+    /// event stays open after a purchase, so the agent is asked again until
+    /// it throws or leaves.
+    /// </summary>
+    private static async Task RunFakeMerchantAsync(NFakeMerchant merchant, Node room, Rng random, CancellationToken ct)
+    {
+        Logger.Log("[SimEvent] FakeMerchant event detected");
+        for (int decisions = 0; decisions < MaxDecisionIterations; decisions++)
+        {
+            await WaitForFakeMerchantProceedAsync(merchant, ct);
+
+            Player? me = LocalContext.GetMe(RunManager.Instance.DebugOnlyGetState());
+            NMerchantSlot? buySlot = FakeMerchantBuySlot(merchant);
+            FoulPotion? foul = FakeMerchantFoulPotion(merchant, me);
+            List<Dictionary<string, object?>> options = FakeMerchantOptions(buySlot, foul != null);
+
+            int choice = await SimAgentChoice.AskAsync(
+                (_, player) => new Dictionary<string, object>
+                {
+                    [NonCombatBridgeProtocol.TypeField] = NonCombatBridgeProtocol.EventState,
+                    ["options"] = options,
+                    ["player_gold"] = player?.Gold ?? 0,
+                    ["stock"] = merchant.Inventory.GetAllSlots()
+                        .Select(SimShopRoomHandler.ShopStockRow).ToList(),
+                },
+                options.Count, NonCombatBridgeProtocol.EventState, "SimEvent", ct,
+                rejectAtReply: i => options[i]["enabled"] is true
+                    ? null
+                    : $"index {i} is not enabled ({options[i]["label"]})");
+            Logger.Log($"[SimEvent] Agent chose FakeMerchant option {options[choice]["text_key"]}");
+
+            switch (choice)
+            {
+                case FakeMerchantBuy:
+                    await BuyFromFakeMerchantAsync(merchant, buySlot!, ct);
+                    break;
+                case FakeMerchantThrowFoul:
+                    if (await ThrowFoulPotionAsync(foul!, room, ct))
+                    {
+                        // No-resume fight (shouldResumeAfterCombat: false): the
+                        // event does not come back, its rewards follow the combat.
+                        await ResumeAfterEventCombatAsync(random, ct);
+                        Logger.Log("[SimEvent] Event finished (FakeMerchant fight)");
+                        return;
+                    }
+                    break;
+                default:
+                    await LeaveFakeMerchantAsync(merchant, ct);
+                    return;
+            }
+        }
+        AutoSlayLog.Warn($"[SimEvent] Hit the FakeMerchant decision cap ({MaxDecisionIterations}); leaving");
+        await LeaveFakeMerchantAsync(merchant, ct);
+    }
+
+    // Option positions, in the engine's FAKE_MERCHANT_OPTIONS order. The run
+    // policy reads an event option by POSITION, so a disabled option keeps
+    // its slot (enabled: false) rather than shifting the rest up.
+    internal const int FakeMerchantBuy = 0;
+    internal const int FakeMerchantThrowFoul = 1;
+    internal const int FakeMerchantLeave = 2;
+    internal const string FakeMerchantEventId = "FAKE_MERCHANT";
+
+    /// <summary>
+    /// The three options as sent on the wire. Labels follow the engine's;
+    /// the structured deltas are what <c>preview_option_effect</c> reports
+    /// for the same option in training (the throw's rewards come after the
+    /// fight, so it previews as only losing the potion).
+    /// </summary>
+    internal static List<Dictionary<string, object?>> FakeMerchantOptions(NMerchantSlot? buySlot, bool canThrow)
+    {
+        string relic = buySlot == null ? "" : SimShopRoomHandler.ShopEntryId(buySlot);
+        int cost = buySlot?.Entry.Cost ?? 0;
+        return new List<Dictionary<string, object?>>
+        {
+            FakeMerchantOption(FakeMerchantBuy, "BUY", $"Buy a Relic ({cost}g)",
+                buySlot == null ? "Nothing in stock you can afford." : $"Purchase a fake relic: {relic}.",
+                buySlot != null, relic, goldDelta: -cost, relicsGained: 1, potionsLost: 0),
+            FakeMerchantOption(FakeMerchantThrowFoul, "THROW_FOUL", "Throw Foul Potion",
+                canThrow ? "Fight for real rewards." : "No Foul Potion to throw.",
+                canThrow, "", goldDelta: 0, relicsGained: 0, potionsLost: 1),
+            FakeMerchantOption(FakeMerchantLeave, "LEAVE", "Leave", "Leave the merchant.",
+                true, "", goldDelta: 0, relicsGained: 0, potionsLost: 0),
+        };
+    }
+
+    private static Dictionary<string, object?> FakeMerchantOption(
+        int index, string key, string label, string description, bool enabled, string relicId,
+        int goldDelta, int relicsGained, int potionsLost) => new()
+    {
+        ["index"] = index,
+        ["id"] = NonCombatBridgeProtocol.EventChoiceAction,
+        ["action"] = NonCombatBridgeProtocol.EventChoiceAction,
+        ["label"] = label,
+        ["description"] = description,
+        ["enabled"] = enabled,
+        ["event_id"] = FakeMerchantEventId,
+        ["text_key"] = $"{FakeMerchantEventId}.options.{key}",
+        ["relic_id"] = relicId,
+        ["will_kill_player"] = false,
+        ["gold_delta"] = goldDelta,
+        ["hp_delta"] = 0,
+        ["max_hp_delta"] = 0,
+        ["relics_gained"] = relicsGained,
+        ["potions_lost"] = potionsLost,
+    };
+
+    /// <summary>
+    /// The relic "buy" purchases: the first stocked, affordable one in
+    /// inventory order, which is the event's shuffle order -- the same pick
+    /// the engine's <c>fake_merchant_buy</c> makes. Null once the fight has
+    /// started (the merchant button is hidden and the shopfront cannot open).
+    /// </summary>
+    internal static NMerchantSlot? FakeMerchantBuySlot(NFakeMerchant merchant)
+    {
+        if (merchant.MerchantButton is not { } button || !button.IsVisibleInTree())
+        {
+            return null;
+        }
+        return merchant.Inventory.GetAllSlots()
+            .FirstOrDefault(s => s is NMerchantRelic && s.Entry is { IsStocked: true, EnoughGold: true });
+    }
+
+    /// <summary>
+    /// A held Foul Potion the merchant can be hit with right now: the game's
+    /// own usability check, which needs the shopfront closed
+    /// (<c>FoulPotion.GetFoulPotionMerchantTarget</c>).
+    /// </summary>
+    internal static FoulPotion? FakeMerchantFoulPotion(NFakeMerchant merchant, Player? me)
+    {
+        if (me == null || merchant.MerchantButton is not { } button || !button.IsVisibleInTree())
+        {
+            return null;
+        }
+        return me.Potions.OfType<FoulPotion>().FirstOrDefault(p => p.PassesCustomUsabilityCheck);
+    }
+
+    /// <summary>
+    /// Open the shopfront the way a player does, buy, and close it again so
+    /// the next decision (another buy, the throw, or leaving) starts from the
+    /// same screen. `MerchantOpened` is the signal the button publishes; the
+    /// node's handler does the Proceed bookkeeping a direct `Inventory.Open()`
+    /// would skip (NFakeMerchant.cs:333).
+    /// </summary>
+    internal static async Task BuyFromFakeMerchantAsync(NFakeMerchant merchant, NMerchantSlot slot, CancellationToken ct)
+    {
+        NMerchantInventory inventory = merchant.Inventory;
+        merchant.MerchantButton.EmitSignal(NMerchantButton.SignalName.MerchantOpened, merchant.MerchantButton);
+        await WaitHelper.Until(() => inventory.IsOpen, ct, FakeMerchantProceedWait,
+            "FakeMerchant shopfront did not open");
+
+        Task purchase = slot.Entry.OnTryPurchaseWrapper(inventory.Inventory);
+        await SimAutoSlayer.AwaitWithScreenDrainAsync(purchase, ct,
+            "FakeMerchant purchase of " + SimShopRoomHandler.ShopEntryId(slot));
+        await Task.Delay(FakeMerchantSettleMs, ct);
+
+        NBackButton? back = UiHelper.FindFirst<NBackButton>(merchant);
+        if (back != null && back.IsVisibleInTree())
+        {
+            await UiHelper.Click(back);
+        }
+        await WaitHelper.Until(() => !inventory.IsOpen, ct, FakeMerchantProceedWait,
+            "FakeMerchant shopfront did not close");
+    }
+
+    /// <summary>
+    /// Throw the potion at the merchant: what the game enqueues when the
+    /// potion's target is the merchant button (NPotionHolder.cs:614,
+    /// `EnqueueManualUse(null)`). True once the fight has taken over the room;
+    /// false if nothing happened, so the agent is asked again.
+    /// </summary>
+    internal static async Task<bool> ThrowFoulPotionAsync(FoulPotion potion, Node room, CancellationToken ct)
+    {
+        potion.EnqueueManualUse(null);
+        // The merchant's Foul Potion line plays before the fight starts.
+        DateTime deadline = DateTime.UtcNow + FakeMerchantFightWait;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (!SimRoomNodes.IsLive(room) || CombatManager.Instance.IsInProgress)
+            {
+                return true;
+            }
+            SimAutoSlayer.CurrentWatchdog?.Reset("Waiting for the FakeMerchant fight");
+            await Task.Delay(FakeMerchantSettleMs, ct);
+        }
+        AutoSlayLog.Warn("[SimEvent] Threw the Foul Potion but no fight started; asking again");
+        return false;
+    }
+
+    private static async Task WaitForFakeMerchantProceedAsync(NFakeMerchant merchant, CancellationToken ct) =>
+        await WaitHelper.Until(
+            () => UiHelper.FindAll<NProceedButton>(merchant).Any(b => b.IsEnabled && b.Visible),
+            ct, FakeMerchantProceedWait, "FakeMerchant proceed button never became available");
+
     private static async Task LeaveFakeMerchantAsync(NFakeMerchant merchant, CancellationToken ct)
     {
-        Logger.Log("[SimEvent] FakeMerchant event detected; leaving");
-        NProceedButton? proceed = null;
-        await WaitHelper.Until(() =>
-        {
-            proceed = UiHelper.FindAll<NProceedButton>(merchant).FirstOrDefault(b => b.IsEnabled && b.Visible);
-            return proceed != null;
-        }, ct, FakeMerchantProceedWait, "FakeMerchant proceed button never became available");
-        await UiHelper.Click(proceed!);
+        await WaitForFakeMerchantProceedAsync(merchant, ct);
+        NProceedButton proceed = UiHelper.FindAll<NProceedButton>(merchant).First(b => b.IsEnabled && b.Visible);
+        await UiHelper.Click(proceed);
         Logger.Log("[SimEvent] Event finished (FakeMerchant)");
     }
 

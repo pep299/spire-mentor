@@ -63,8 +63,11 @@ use super::{apply_power_to_player_via_legacy_surface, apply_signed_power_to_play
 /// Bead `sts2-rs-noisebot-shuffle`.
 fn noisebot_noise_effect(state: &mut CombatState, _owner: CreatureUid) {
     use sts2_core::card_effects::PileKind;
-    let _ = crate::cards::status::spawn_dazed(state, PileKind::Discard);
-    let _ = crate::cards::status::spawn_dazed_into_draw_random(state);
+    // Co-op: every player the move targets gets these cards.
+    sts2_core::coop::each_player(state, |state| {
+        let _ = crate::cards::status::spawn_dazed(state, PileKind::Discard);
+        let _ = crate::cards::status::spawn_dazed_into_draw_random(state);
+    });
 }
 
 /// Guardbot GUARD_MOVE: give 15 block to every alive Fabricator on the
@@ -104,9 +107,12 @@ fn guardbot_guard_effect(state: &mut CombatState, _owner: CreatureUid) {
 /// than routing overflow to discard; the card count (4 Burn) is faithful.
 fn mecha_knight_flamethrower_effect(state: &mut CombatState, _owner: CreatureUid) {
     use sts2_core::card_effects::PileKind;
-    for _ in 0..4 {
-        let _ = crate::cards::status::spawn_burn(state, PileKind::Hand);
-    }
+    // Co-op: every player the move targets gets these cards.
+    sts2_core::coop::each_player(state, |state| {
+        for _ in 0..4 {
+            let _ = crate::cards::status::spawn_burn(state, PileKind::Hand);
+        }
+    });
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -142,7 +148,7 @@ fn devoted_sculptor_forbidden_incantation_effect(state: &mut CombatState, owner:
 /// (stock 1) gains `3 * (2 - 1) = 3`, the second (stock 0) gains `3 * 2 = 6`.
 /// `axebot_stock_after_death` overwrites the respawn's Stock to `dead - 1`, so
 /// reading the owner's live Stock amount here matches C#'s `StockAmount`.
-fn axebot_boot_up_effect(state: &mut CombatState, owner: CreatureUid) {
+fn axebot_boot_up_strength(state: &CombatState, owner: CreatureUid) -> i32 {
     use sts2_core::ascension::{get_value_if_ascension, AscensionLevel::DeadlyEnemies};
     // BootUpStrGain (Axebot.cs:68): 4 at A9 DeadlyEnemies, else 3.
     let str_gain = get_value_if_ascension(state.ascension, DeadlyEnemies, 4, 3);
@@ -174,7 +180,12 @@ fn axebot_boot_up_effect(state: &mut CombatState, owner: CreatureUid) {
             })
         })
         .unwrap_or(0);
-    let amount = str_gain * (2 - stock_amount);
+    str_gain * (2 - stock_amount)
+}
+
+/// BOOT_UP's Strength grant; the amount is [`axebot_boot_up_strength`].
+fn axebot_boot_up_effect(state: &mut CombatState, owner: CreatureUid) {
+    let amount = axebot_boot_up_strength(state, owner);
     if amount != 0 {
         sts2_core::card_effects::apply_power_to_creature(state, owner, PowerKind::Strength, amount);
     }
@@ -190,7 +201,8 @@ fn axebot_boot_up_effect(state: &mut CombatState, owner: CreatureUid) {
 /// `StockAmount` override starts its move machine at the BOOT_UP state
 /// (`Axebot.cs:104-108`: `if (_stockOverrideAmount.HasValue) return new
 /// MonsterMoveStateMachine(list, moveState /* BOOT_UP */);`), so the respawn
-/// always opens with BOOT_UP — modeled via `create_axebot_ai(true)`.
+/// always opens with BOOT_UP — modeled via the dispatcher's
+/// `MonsterSpawnArgs::Axebot { start_with_boot_up: true }` (GH #847).
 ///
 /// The respawned bot's own `StockPower` is `dead_amount - 1`: `spawn_enemy`
 /// auto-applies the static `on_spawn_self_buffs` `Stock(2)`, which we then
@@ -267,24 +279,19 @@ pub(crate) fn axebot_stock_after_death(state: &mut CombatState, owner: CreatureU
     } else {
         state.spawn_enemy_at_index_with_taken(sts2_core::MonsterKind::Axebot, dead_index, &taken)
     };
-    // C# `Axebot` with a `StockAmount` override opens on BOOT_UP.
-    let ai = if v0111 {
-        // v0.111.0: build through the versioned dispatch so the respawn carries
-        // the 0.111 One-Two / Hammer Uppercut values (and the A9 ones) like the
-        // encounter's own bots (decomp Axebot.cs:42-46). v0.107.1 keeps the
-        // historical A0 prototype below.
-        crate::monster_dispatch::build_ai_for_version(
-            sts2_core::MonsterKind::Axebot,
-            crate::monster_dispatch::MonsterSpawnArgs::Axebot {
-                start_with_boot_up: true,
-            },
-            crate::monster_dispatch::SpawnPosition::default(),
-            state.ascension,
-            state.game_version,
-        )
-    } else {
-        create_axebot_ai(true)
-    };
+    // C# `Axebot` with a `StockAmount` override opens on BOOT_UP. Built
+    // through the dispatcher on both builds so the respawn carries the same
+    // scaled BOOT_UP block / ONE_TWO / HAMMER_UPPERCUT as the encounter's own
+    // bots: v0.107.1 `Axebot.cs:36-42` and v0.111.0 `:40-46` both read
+    // `GetValueIfAscension(DeadlyEnemies, …)` (GH #847; the v0.107.1 branch
+    // used to keep the A0 prototype).
+    let ai = crate::monster_dispatch::build_spawned_ai(
+        state,
+        sts2_core::MonsterKind::Axebot,
+        crate::monster_dispatch::MonsterSpawnArgs::Axebot {
+            start_with_boot_up: true,
+        },
+    );
     // Telegraph BOOT_UP's intent — but ONLY when the respawn happens during
     // the PLAYER's turn. This mirrors C# `CombatManager.AfterCreatureAdded`
     // (CombatManager.cs:689-696): a mid-combat-added enemy has its move
@@ -351,6 +358,16 @@ pub(crate) fn axebot_stock_after_death(state: &mut CombatState, owner: CreatureU
             }
         }
     }
+    // BOOT_UP grants `BootUpStrGain * (2 - StockAmount)`, which only the
+    // stock just set decides, so telegraph that instead of the factory 0.
+    let boot_up = axebot_boot_up_strength(state, new_uid);
+    crate::monsters::act2_hive::set_buff_intent_amount(
+        state,
+        new_uid,
+        "BOOT_UP",
+        PowerKind::Strength,
+        boot_up,
+    );
 }
 
 /// `TurretOperator.cs:49-54` `ReloadMove`:
@@ -368,15 +385,25 @@ fn turret_operator_reload_effect(state: &mut CombatState, owner: CreatureUid) {
 /// `PowerKind::Hex` stack is tracked here. Behavioral wiring is tracked by
 /// `sts2-rs-l7k3d`.
 fn spectral_knight_hex_effect(state: &mut CombatState, owner: CreatureUid) {
+    // Co-op: each player's Hex records this knight.
+    sts2_core::coop::each_player(state, |state| {
+        spectral_knight_hex_effect_seated(state, owner);
+    });
+}
+
+/// [`spectral_knight_hex_effect`] for the seated player alone.
+fn spectral_knight_hex_effect_seated(state: &mut CombatState, owner: CreatureUid) {
     apply_power_to_player_via_legacy_surface(state, PowerKind::Hex, 2);
     // C# `HexPower.AfterDeath` (`HexPower.cs:37-43`) removes the power when
     // its APPLIER dies — stamp the applier so the death path
     // (`remove_hex_from_dead_applier`) can drop it (sweep seed 4170:
     // killing the SpectralKnight left the player permanently Hexed in Rust).
+    // The seated player's own Hex (co-op: each player has one).
+    let mine = state.player_power_uids();
     if let Some(p) = state
         .powers
         .iter_mut()
-        .filter(|p| p.kind == PowerKind::Hex)
+        .filter(|p| p.kind == PowerKind::Hex && mine.iter().any(|u| u.0 == p.id))
         .last()
     {
         p.applier = Some(owner);
@@ -442,9 +469,12 @@ fn slimed_berserker_leeching_hug_effect(state: &mut CombatState, owner: Creature
 /// Bead `sts2-rs-mq5im`.
 fn slimed_berserker_vomit_ichor_effect(state: &mut CombatState, _owner: CreatureUid) {
     use sts2_core::card_effects::PileKind;
-    for _ in 0..10 {
-        let _ = crate::cards::status::spawn_slimed(state, PileKind::Discard);
-    }
+    // Co-op: every player the move targets gets these cards.
+    sts2_core::coop::each_player(state, |state| {
+        for _ in 0..10 {
+            let _ = crate::cards::status::spawn_slimed(state, PileKind::Discard);
+        }
+    });
 }
 
 /// Stabbot STAB applies `Frail(1)` to the player after its attack.
@@ -619,7 +649,14 @@ fn aeonglass_increasing_intensity_effect(state: &mut CombatState, owner: Creatur
     use sts2_core::card_effects::PileKind;
     use sts2_core::cards::VarKey;
 
-    let base_strength = get_value_if_ascension(state.ascension, DeadlyEnemies, 4, 3);
+    let base_strength = crate::ascension_scaling::scaled_buff(
+        state.ascension,
+        state.game_version,
+        sts2_core::MonsterKind::Aeonglass,
+        "INCREASING_INTENSITY_MOVE",
+        PowerKind::Strength,
+        3,
+    );
     let wither_amount = get_value_if_ascension(state.ascension, DeadlyEnemies, 2, 1);
 
     // AdditionalStrength == WitherUpgradeCount BEFORE this move's increment.
@@ -631,21 +668,33 @@ fn aeonglass_increasing_intensity_effect(state: &mut CombatState, owner: Creatur
     let count_after = count_before + 1;
     aeonglass_set_wither_upgrade_count(state, count_after);
     // 3. Add `wither_amount` Withers, each matched to the new upgrade count.
-    for _ in 0..wither_amount {
-        let card_uid = crate::cards::status::spawn_wither(state, PileKind::Discard);
-        for _ in 0..count_after {
-            if let Some(card) = state.cards.get_mut(card_uid.0.get() as usize - 1) {
-                let next = card.combat_var(VarKey::WitherFakeUpgradeLevel) + 1;
-                card.set_combat_var(VarKey::WitherFakeUpgradeLevel, next);
+    // Co-op: every player the move targets gets these cards.
+    sts2_core::coop::each_player(state, |state| {
+        for _ in 0..wither_amount {
+            let card_uid = crate::cards::status::spawn_wither(state, PileKind::Discard);
+            for _ in 0..count_after {
+                if let Some(card) = state.cards.get_mut(card_uid.0.get() as usize - 1) {
+                    let next = card.combat_var(VarKey::WitherFakeUpgradeLevel) + 1;
+                    card.set_combat_var(VarKey::WitherFakeUpgradeLevel, next);
+                }
             }
         }
-    }
+    });
     // 4. Grant self Strength = base + AdditionalStrength(count_before).
     sts2_core::card_effects::apply_power_to_creature(
         state,
         owner,
         PowerKind::Strength,
         base_strength + count_before,
+    );
+    // The next use grants one more (`AdditionalStrength` is the upgrade
+    // count), so re-telegraph it.
+    crate::monsters::act2_hive::set_buff_intent_amount(
+        state,
+        owner,
+        "INCREASING_INTENSITY_MOVE",
+        PowerKind::Strength,
+        base_strength + count_after,
     );
 }
 
@@ -1125,7 +1174,14 @@ fn fabricator_spawn_bot(
     let slot = state
         .first_free_enemy_slot(FAB_SLOT_COUNT)
         .unwrap_or(LAST_BOT_SLOT);
-    let uid = state.spawn_enemy_in_slot(kind, slot, create_bot_ai(kind));
+    // Scaled like an encounter member at A9+ (GH #847); the dispatcher's bot
+    // arms are this file's per-thread `create_bot_ai` prototypes.
+    let ai = crate::monster_dispatch::build_spawned_ai(
+        state,
+        kind,
+        crate::monster_dispatch::MonsterSpawnArgs::None,
+    );
+    let uid = state.spawn_enemy_in_slot(kind, slot, ai);
     sts2_core::card_effects::apply_power_to_creature(state, uid, PowerKind::Minion, 1);
     // Record _lastSpawned on the Fabricator's own AI.
     if let Some(idx) = state.creatures.iter().position(|c| c.id == owner.0) {
@@ -1675,8 +1731,9 @@ fn the_forgotten_dexterity(state: &CombatState, owner: CreatureUid) -> i32 {
 /// MIASMA: C# `MiasmaMove` — steal 2 Dexterity from the player
 /// (`DexterityPower(-2)` on player), gain 8 block, then `DexterityPower(+2)`
 /// on self. After self-Dex changes, recompute DREAD's stored attack damage
-/// to `13 + self Dexterity` so the next DREAD telegraph/hit reflects it
-/// (C# `DreadDamage` is `() => 13 + GetPowerAmount<DexterityPower>()`; we
+/// to `DreadBase + self Dexterity` (13, or 15 at A9) so the next DREAD
+/// telegraph/hit reflects it (C# `DreadDamage` is
+/// `() => DreadBase + GetPowerAmount<DexterityPower>()`; we
 /// mirror the dynamic value via the stored intent — Rust monster attacks are
 /// not auto-boosted by the attacker's Dexterity, so no double-count). The
 /// block-8 is applied here, not via the `Intent::Defend` telegraph, because
@@ -1694,7 +1751,17 @@ fn the_forgotten_miasma_effect(state: &mut CombatState, owner: CreatureUid) {
         }],
     );
     sts2_core::card_effects::apply_power_to_creature(state, owner, PowerKind::Dexterity, 2);
-    let dread = 13 + the_forgotten_dexterity(state, owner);
+    // `DreadDamage = GetValueIfAscension(DeadlyEnemies, 15, 13) + Dex`
+    // (`TheForgotten.cs:24-29`): the base comes from the same ascension row
+    // that resolved the spawn-time telegraph, not the A0 13.
+    let dread_base = crate::ascension_scaling::scaled_damage(
+        state.ascension,
+        state.game_version,
+        sts2_core::MonsterKind::TheForgotten,
+        "DREAD",
+        13,
+    );
+    let dread = dread_base + the_forgotten_dexterity(state, owner);
     if let Some(idx) = state.creatures.iter().position(|c| c.id == owner.0) {
         if let Some(ai) = state.creatures[idx].ai.as_mut() {
             if let Some(MonsterState::Move(m)) =
@@ -1966,16 +2033,23 @@ pub fn create_magi_knight_ai() -> MonsterAi {
 
 /// MagiKnight FIRST_POWER_SHIELD (`MagiKnight.cs:96-103` `PowerShieldMove`):
 /// after the SingleAttack(6), `CreatureCmd.GainBlock(base.Creature,
-/// PowerShieldBlock=5)`. The engine only performs a move's FIRST intent
+/// PowerShieldBlock)` — `GetValueIfAscension(ToughEnemies, 9, 5)`
+/// (`MagiKnight.cs:49`, GH #858). The engine only performs a move's FIRST intent
 /// (`intents.first()` — the Attack here), so the secondary `Intent::Defend`
 /// is telegraph-only and the block must come from this effect fn, which fires
 /// after the attack lands (bead `sts2-rs-k27e` attack-effect wiring).
 fn magi_knight_power_shield_effect(state: &mut CombatState, owner: CreatureUid) {
+    let amount = crate::ascension_scaling::tough_block(
+        state.ascension,
+        sts2_core::MonsterKind::MagiKnight,
+        "FIRST_POWER_SHIELD",
+        5,
+    );
     sts2_core::hooks::apply_effects(
         state,
         &[sts2_core::hooks::Effect::GainBlockCreature {
             target: sts2_core::hooks::CreatureRef::Enemy(owner),
-            amount: 5,
+            amount,
         }],
     );
 }
@@ -1985,6 +2059,14 @@ fn magi_knight_power_shield_effect(state: &mut CombatState, owner: CreatureUid) 
 /// the registered `after_applied_for_power` hook fires immediately, downgrading
 /// all upgraded cards and marking them for re-upgrade on power removal.
 fn magi_knight_dampen_effect(state: &mut CombatState, owner: CreatureUid) {
+    // Co-op: each player's Dampen records this knight and downgrades their cards.
+    sts2_core::coop::each_player(state, |state| {
+        magi_knight_dampen_effect_seated(state, owner);
+    });
+}
+
+/// [`magi_knight_dampen_effect`] for the seated player alone.
+fn magi_knight_dampen_effect_seated(state: &mut CombatState, owner: CreatureUid) {
     // Ensure the dampen power handlers are registered (idempotent via Once guard).
     static INSTALL: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     let () = INSTALL.get_or_init(|| {
@@ -2614,38 +2696,40 @@ fn test_subject_skull_bash_effect(state: &mut CombatState, _owner: CreatureUid) 
     apply_power_to_player_via_legacy_surface(state, PowerKind::Vulnerable, 1);
 }
 
-/// BURNING_GROWL applies `StrengthPower(BurningGrowlStrengthGain)` to self
-/// (C# `BurningGrowlMove` `PowerCmd.Apply<StrengthPower>(base.Creature,
-/// BurningGrowlStrengthGain, …)`) and adds `BurningGrowlBurnCount` Burn
-/// cards to the player's hand (C# `CardPileCmd.AddToCombatAndPreview<Burn>(
-/// player.PlayerCombatState, PileType.Hand, BurningGrowlBurnCount)`).
-/// Non-ascension: Strength = 2, Burn = 3 (ascension is identity at pin
-/// `01c094d`). Bead `sts2-rs-jnf4a` slice — the BURNING_GROWL_MOVE state
-/// itself is unreachable until the AdaptablePower.AfterDeath → DeadState
-/// → REVIVE_BRANCH pipeline lands; this effect_fn is wired now so the
-/// state-machine scaffold is ready when that infra arrives.
+/// BURNING_GROWL (C# v0.107.1 `TestSubject.BurningGrowlMove`,
+/// `TestSubject.cs:330-337`) first adds `BurningGrowlBurnCount` Burn cards to
+/// the player's DISCARD pile (`:335`, `CardPileCmd.AddToCombatAndPreview<Burn>(
+/// targets, PileType.Discard, BurningGrowlBurnCount, null)`), then applies
+/// `StrengthPower(BurningGrowlStrengthGain)` to itself (`:336`). Both amounts
+/// are `GetValueIfAscension(DeadlyEnemies, …)` (`:102`, `:104`): Burns 5 / 3,
+/// Strength 3 / 2. The Burns sit in the discard and only reach the hand after
+/// the next reshuffle; no version of the decomp puts them in the hand
+/// (v0.103.2 `:329` is `PileType.Discard` too).
 fn test_subject_burning_growl_effect(state: &mut CombatState, owner: CreatureUid) {
     use sts2_core::ascension::{get_value_if_ascension, AscensionLevel::DeadlyEnemies};
     use sts2_core::card_effects::PileKind;
     use sts2_core::monsters::test_subject;
-    // BurningGrowlStrengthGain / BurningGrowlBurnCount — TestSubject.cs:102,104,
-    // both `GetValueIfAscension(DeadlyEnemies, …)`.
-    let strength = get_value_if_ascension(
-        state.ascension,
-        DeadlyEnemies,
-        test_subject::BURNING_GROWL_STRENGTH_DEADLY,
-        test_subject::BURNING_GROWL_STRENGTH,
-    );
-    sts2_core::card_effects::apply_power_to_creature(state, owner, PowerKind::Strength, strength);
     let burns = get_value_if_ascension(
         state.ascension,
         DeadlyEnemies,
         test_subject::BURNING_GROWL_BURN_COUNT_DEADLY,
         test_subject::BURNING_GROWL_BURN_COUNT,
     );
-    for _ in 0..burns {
-        let _ = crate::cards::status::spawn_burn(state, PileKind::Hand);
-    }
+    // Co-op: every player the move targets gets these cards.
+    sts2_core::coop::each_player(state, |state| {
+        for _ in 0..burns {
+            let _ = crate::cards::status::spawn_burn(state, PileKind::Discard);
+        }
+    });
+    let strength = crate::ascension_scaling::scaled_buff(
+        state.ascension,
+        state.game_version,
+        sts2_core::MonsterKind::TestSubject,
+        "BURNING_GROWL",
+        PowerKind::Strength,
+        test_subject::BURNING_GROWL_STRENGTH,
+    );
+    sts2_core::card_effects::apply_power_to_creature(state, owner, PowerKind::Strength, strength);
 }
 
 /// `TestSubject.MultiClawMove` — `ExtraMultiClawCount++` AFTER the attack
@@ -2746,12 +2830,17 @@ pub(crate) fn adaptable_after_death(state: &mut CombatState, owner: CreatureUid)
         p.counter = respawns_after;
     }
 
-    // Determine form HP for this revive.
+    // Determine form HP for this revive. C# `RespawnMove` revives to
+    // `SecondFormHp` / `ThirdFormHp` (`TestSubject.cs:273`, `:277`), which are
+    // `GetValueIfAscension(ToughEnemies, 212, 200)` and `(…, 313, 300)`
+    // (`TestSubject.cs:84`, `:86`), the same A8 scaling as the first form.
     let form_hp = if respawns_after == 1 {
-        test_subject::SECOND_FORM_HP
+        test_subject::second_form_hp(state.ascension)
     } else {
-        test_subject::THIRD_FORM_HP
+        test_subject::third_form_hp(state.ascension)
     };
+    // `Creature.ScaleHpForMultiplayer(baseRespawnHp, …)` (TestSubject.cs:342).
+    let form_hp = sts2_core::coop::scale_for_players(state, form_hp);
 
     // Revive: set max_hp and current_hp to the new form HP, clear block.
     // C# `Revive(baseRespawnHp)`:
@@ -3140,7 +3229,7 @@ mod tests {
     /// * MULTI_CLAW self-loop.
     /// * LACERATE → POUNCE → GROWL → LACERATE chain.
     /// Also verifies BURNING_GROWL's intent payload and effect_fn
-    /// (Strength 2 + 3 Burn cards into hand).
+    /// (Strength 2 + 3 Burn cards into the discard pile).
     #[test]
     fn test_subject_phase3_state_machine_scaffold_shape() {
         use sts2_core::cards::CardId;
@@ -3204,14 +3293,17 @@ mod tests {
             );
         }
 
-        // BURNING_GROWL effect: +2 Strength to self, 3 Burn into hand.
+        // BURNING_GROWL effect: +2 Strength to self, 3 Burns into the DISCARD
+        // pile (C# `TestSubject.cs:335` `PileType.Discard`), none into the hand.
         let mut combat = combat_with_monster(sts2_core::MonsterKind::TestSubject, "TestSubject");
         let owner = sts2_core::CreatureUid::new(1).expect("nz");
         let pre_hand = combat.player.hand.len();
+        let pre_discard = combat.player.discard.len();
         test_subject_burning_growl_effect(&mut combat, owner);
         assert_eq!(self_power(&combat, PowerKind::Strength), 2);
-        assert_eq!(combat.player.hand.len(), pre_hand + 3);
-        for &uid in combat.player.hand.iter().skip(pre_hand) {
+        assert_eq!(combat.player.hand.len(), pre_hand, "no Burn lands in hand");
+        assert_eq!(combat.player.discard.len(), pre_discard + 3);
+        for &uid in combat.player.discard.iter().skip(pre_discard) {
             assert_eq!(
                 combat.cards[uid.0.get() as usize - 1].card_id,
                 CardId::Burn,
@@ -3823,6 +3915,84 @@ mod tests {
             spawned[0], spawned[1],
             "_lastSpawned exclusion alternates consecutive aggro bots, got {spawned:?}"
         );
+    }
+
+    /// GH #847: Fabricator bots fight at the Fabricator's ascension. C#
+    /// `Zapbot.cs:25` `ZapDamage => (DeadlyEnemies, 15, 14)`, `Stabbot.cs:25`
+    /// `StabDamage => (.., 12, 11)`, for the `CreatureCmd.Add` in
+    /// `Fabricator.cs:115`. Guardbot / Noisebot have no DeadlyEnemies
+    /// member; they are pinned to the dispatcher build all the same.
+    #[test]
+    fn fabricator_bots_attack_at_deadly_damage_847() {
+        use crate::monster_dispatch::MonsterSpawnArgs;
+        use crate::monsters::test_util::{
+            ai_move_intent, assert_ai_is_dispatcher_build, enemies_of_kind, SPAWN_ASC_MATRIX,
+        };
+        use sts2_core::monsters::Intent;
+        use sts2_core::{Creature, CreatureUid, IntentHistory, MonsterId, MonsterKind};
+
+        for (version, asc) in SPAWN_ASC_MATRIX {
+            let owner = CreatureUid::new(1).expect("nz");
+            let mut state = CombatState {
+                ascension: asc,
+                game_version: version,
+                ..CombatState::default()
+            };
+            state.creatures.push(Creature {
+                id: owner.0,
+                current_hp: 150,
+                max_hp: 150,
+                block: 0,
+                powers: smallvec::SmallVec::new(),
+                species: Some(MonsterKind::Fabricator),
+                intent: None,
+                intent_history: IntentHistory::default(),
+                monster_id: MonsterId("Fabricator"),
+                ai: Some(create_fabricator_ai()),
+            });
+            state.enemy_uids.push(owner);
+            state.assign_encounter_slots(&[2]);
+            // Single-kind pools pin the pick.
+            for kind in [
+                MonsterKind::Zapbot,
+                MonsterKind::Stabbot,
+                MonsterKind::Guardbot,
+                MonsterKind::Noisebot,
+            ] {
+                fabricator_spawn_bot(&mut state, owner, &[kind]);
+            }
+            let at = format!("A{asc} {version:?}");
+            let deadly = asc >= 9;
+            for (kind, move_id, want) in [
+                (
+                    MonsterKind::Zapbot,
+                    "ZAP",
+                    Some(Intent::Attack {
+                        damage: if deadly { 15 } else { 14 },
+                    }),
+                ),
+                (
+                    MonsterKind::Stabbot,
+                    "STAB",
+                    Some(Intent::Attack {
+                        damage: if deadly { 12 } else { 11 },
+                    }),
+                ),
+                (MonsterKind::Guardbot, "GUARD", None),
+                (MonsterKind::Noisebot, "NOISE", None),
+            ] {
+                let bots = enemies_of_kind(&state, kind);
+                assert_eq!(bots.len(), 1, "{at}: one {kind:?}");
+                if let Some(want) = want {
+                    assert_eq!(
+                        ai_move_intent(&state, bots[0], move_id),
+                        want,
+                        "{at}: {kind:?} {move_id}"
+                    );
+                }
+                assert_ai_is_dispatcher_build(&state, bots[0], kind, MonsterSpawnArgs::None);
+            }
+        }
     }
 
     #[test]
@@ -4586,6 +4756,93 @@ mod tests {
             Some(0),
             "respawn lands at the dead bot's slot"
         );
+    }
+
+    /// GH #847: a StockPower respawn is as strong as the encounter's bots on
+    /// BOTH builds. v0.107.1 `Axebot.cs:36,38,42`: `BootUpBlock =>
+    /// (DeadlyEnemies, 15, 10)`, `OneTwoDamage => (.., 10, 9)`,
+    /// `HammerUppercutDamage => (.., 14, 12)`; v0.111.0 `Axebot.cs:40,42,46`:
+    /// 15/10, 11/10, 18/14. The v0.107.1 respawn kept the A0 prototype, so it
+    /// telegraphed and gained 10 block at A9+ instead of 15.
+    #[test]
+    fn axebot_respawn_scales_at_a9_on_both_builds_847() {
+        use crate::monster_dispatch::MonsterSpawnArgs;
+        use crate::monsters::test_util::{
+            ai_move_intent, assert_ai_is_dispatcher_build_with, SPAWN_ASC_MATRIX,
+        };
+        use sts2_core::card_effects::apply_power_to_creature;
+        use sts2_core::monsters::Intent;
+        use sts2_core::{CreatureUid, GameVersion, MonsterKind};
+
+        for (version, asc) in SPAWN_ASC_MATRIX {
+            let mut combat = combat_with_monster(MonsterKind::Axebot, "Axebot");
+            combat.ascension = asc;
+            combat.game_version = version;
+            combat.side = sts2_core::Side::Player;
+            let dead = CreatureUid::new(1).expect("nz");
+            apply_power_to_creature(&mut combat, dead, PowerKind::Stock, 2);
+            if let Some(c) = combat.creatures.iter_mut().find(|c| c.id == dead.0) {
+                c.current_hp = 0;
+            }
+            axebot_stock_after_death(&mut combat, dead);
+
+            let live: Vec<_> = combat
+                .enemy_uids
+                .iter()
+                .copied()
+                .filter(|u| {
+                    combat.creatures.iter().any(|c| {
+                        c.id == u.0 && c.current_hp > 0 && c.species == Some(MonsterKind::Axebot)
+                    })
+                })
+                .collect();
+            assert_eq!(live.len(), 1, "A{asc} {version:?}: one respawn");
+            let bot = live[0];
+
+            let deadly = asc >= 9;
+            let (block, one_two, uppercut) = match (version, deadly) {
+                (GameVersion::V0_107_1, false) => (10, 9, 12),
+                (GameVersion::V0_107_1, true) => (15, 10, 14),
+                (_, false) => (10, 10, 14),
+                (_, true) => (15, 11, 18),
+            };
+            let at = format!("A{asc} {version:?}");
+            assert_eq!(
+                ai_move_intent(&combat, bot, "BOOT_UP"),
+                Intent::Defend { block },
+                "{at}: BOOT_UP"
+            );
+            assert_eq!(
+                ai_move_intent(&combat, bot, "ONE_TWO"),
+                Intent::MultiAttack {
+                    damage: one_two,
+                    hits: 2
+                },
+                "{at}: ONE_TWO"
+            );
+            assert_eq!(
+                ai_move_intent(&combat, bot, "HAMMER_UPPERCUT"),
+                Intent::Attack { damage: uppercut },
+                "{at}: HAMMER_UPPERCUT"
+            );
+            // BOOT_UP's Strength is `BootUpStrGain (4/3) * (2 - StockAmount)`
+            // and this respawn has stock 1; the death effect re-telegraphs
+            // it (GH #893), the dispatcher build carries the factory 0.
+            let boot_up_str = if deadly { 4 } else { 3 };
+            assert_ai_is_dispatcher_build_with(
+                &combat,
+                bot,
+                MonsterKind::Axebot,
+                MonsterSpawnArgs::Axebot {
+                    start_with_boot_up: true,
+                },
+                |ai| ai.set_buff_amount("BOOT_UP", PowerKind::Strength, boot_up_str),
+            );
+            // A player-turn respawn telegraphs BOOT_UP at once — the block
+            // the player sees, and the block `perform_intent` grants.
+            let c = combat.creatures.iter().find(|c| c.id == bot.0).unwrap();
+            assert_eq!(c.intent, Some(Intent::Defend { block }), "{at}: telegraph");
+        }
     }
 
     /// Bead `sts2-rs-jwb4a`: `PossessStrengthPower.AfterDeath` returns the

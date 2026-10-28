@@ -401,6 +401,13 @@ pub struct ContentCallbacks {
     /// `RunAction::EventChoice { idx }` per option. Bead
     /// `sts2-rs-nzdz1`.
     pub event_option_count: Option<fn(rs: &RunState) -> usize>,
+    /// Whether the active event's option `idx` can be picked. The game
+    /// greys a locked option out and ignores clicks on it, so
+    /// `get_available_actions` leaves a disabled option out (its
+    /// `EventChoice { idx }` keeps the presented position, so the later
+    /// options do not shift). Unwired means every option is enabled
+    /// (GH #885).
+    pub event_option_enabled: Option<fn(rs: &RunState, idx: usize) -> bool>,
     /// Bind the pending event room: roll its event via `pick_event` and
     /// enter it, so [`RunManager::get_available_actions`] offers the
     /// room's real options instead of the single unbound placeholder.
@@ -558,6 +565,7 @@ impl core::fmt::Debug for ContentCallbacks {
             )
             .field("resolve_event_at", &self.resolve_event_at.is_some())
             .field("event_option_count", &self.event_option_count.is_some())
+            .field("event_option_enabled", &self.event_option_enabled.is_some())
             .field("bind_pending_event", &self.bind_pending_event.is_some())
             .field(
                 "generate_shop_inventory",
@@ -869,7 +877,7 @@ impl RunManager {
         }
         // A4 TightBelt: -1 max potion slot, saturating at 0.
         // Pin: sts2-rl-agent@01c094d run_state.py:1517.
-        if ascension_level >= 4 {
+        if ascension_level >= crate::runstate::TIGHT_BELT_ASCENSION_LEVEL {
             run_state.max_potion_slots = (run_state.max_potion_slots - 1).max(0);
         }
         // A5 AscendersBane: append the unplayable+ethereal curse to the
@@ -1586,7 +1594,20 @@ impl RunManager {
                     .map(|f| f(&self.run_state))
                     .filter(|&n| n > 0)
                     .unwrap_or(1);
-                (0..n).map(|idx| RunAction::EventChoice { idx }).collect()
+                // GH #885: a disabled option is not an action. If every
+                // option is disabled, offer them all rather than stall.
+                let enabled: Vec<usize> = match self.callbacks.event_option_enabled {
+                    Some(f) => (0..n).filter(|&idx| f(&self.run_state, idx)).collect(),
+                    None => (0..n).collect(),
+                };
+                let idxs = if enabled.is_empty() {
+                    (0..n).collect()
+                } else {
+                    enabled
+                };
+                idxs.into_iter()
+                    .map(|idx| RunAction::EventChoice { idx })
+                    .collect()
             }
             Phase::Treasure => vec![RunAction::CollectTreasure],
         }
@@ -1995,9 +2016,7 @@ impl RunManager {
         // legacy `select_encounter` + `enter_combat` pinned-spec path.
         if let Some(build) = self.callbacks.build_combat_for_room {
             if let Some(combat) = build(&mut self.run_state, act, room_type) {
-                self.combat = Some(combat);
-                self.phase = Phase::Combat;
-                return ActionResult::Advanced;
+                return self.enter_built_combat(combat);
             }
         }
         let (Some(select), Some(enter)) =
@@ -2007,8 +2026,27 @@ impl RunManager {
         };
         let spec = select(&mut self.run_state, act, room_type);
         let combat = enter(&self.run_state, spec);
+        self.enter_built_combat(combat)
+    }
+
+    /// Install a freshly built combat and enter `Phase::Combat` — or, when the
+    /// fight already ended while it was being set up, settle it at once.
+    ///
+    /// Building a combat runs its start-of-combat and turn-1 effects, and
+    /// those can end it: on Ironclad A0 seed 132,010,135 the 75-HP
+    /// BattlewornDummy (Setting1) was dead before the player's first
+    /// decision. A combat that is over lists no actions (see
+    /// `available_actions`), and nothing else calls
+    /// [`Self::exit_combat_and_transition`], so the run stalled in
+    /// `Phase::Combat` with an empty action list (`no_actions`). The exit
+    /// call settles the fight through the normal combat-end path instead.
+    fn enter_built_combat(&mut self, combat: CombatState) -> ActionResult {
+        let over = combat.is_over;
         self.combat = Some(combat);
         self.phase = Phase::Combat;
+        if over {
+            return self.exit_combat_and_transition();
+        }
         ActionResult::Advanced
     }
 
@@ -2276,13 +2314,12 @@ impl RunManager {
         // heal saturates at max HP in the same combat a max-HP listener
         // fires (a 1-HP skew; revisit if a sweep pins it).
         let _ = crate::run_effects::dispatch_after_combat_end(&mut self.run_state);
-        // v0.111.0: Guilty's own AfterCombatEnd counts the combat and removes
-        // the curse after its fifth (decomp `Models.Cards/Guilty.cs:46`). Deck
-        // cards come after the relics in `IterateHookListeners`, so it runs
-        // after the relic listeners above (FishingRod's random upgrade, …).
-        if self.run_state.game_version >= crate::GameVersion::V0_111_0 {
-            let _ = self.run_state.tick_guilty_after_combat_end();
-        }
+        // Guilty's own AfterCombatEnd counts the combat and removes the curse
+        // after its fifth (decomp `Models.Cards/Guilty.cs:46`, identical in
+        // v0.107.1 and v0.111.0, so both builds: GH #806). Deck cards come
+        // after the relics in `IterateHookListeners`, so it runs after the
+        // relic listeners above (FishingRod's random upgrade, …).
+        let _ = self.run_state.tick_guilty_after_combat_end();
         // Event→combat resume (bead `sts2-rs-ck9z6`, GH #166): if this fight
         // was launched from an event option (`EnterCombatWithoutExitingEvent`),
         // route back through the event instead of the normal combat-reward
@@ -2470,16 +2507,14 @@ impl RunManager {
             // oracle. Without this the relic surfaced one step late, so the
             // card-reward-screen relic-list diff diverged (RP109/RP72).
             self.run_state.drain_relic_rewards_directly();
-            // v0.111.0: BlackStar's `TryModifyRewards` appends one more
+            // BlackStar's `TryModifyRewards` appends one more
             // `RelicReward(player)` to an Elite's set (decomp
             // `Models.Relics/BlackStar.cs:13`), populated after the base
             // rewards (`Rewards/RewardsSet.cs:139-146`): a second rarity roll
             // on `Rewards` and grab-bag pull, auto-collected by the oracle like
-            // the first. v0.107.1 has the same code; its arm still drops the
-            // bonus relic so that build stays bit-identical (tracked for #806).
-            if self.run_state.game_version >= crate::GameVersion::V0_111_0
-                && self.run_state.owns_active_relic(crate::RelicId::BlackStar)
-            {
+            // the first. Identical in v0.107.1 and v0.111.0, so both builds
+            // (GH #806).
+            if self.run_state.owns_active_relic(crate::RelicId::BlackStar) {
                 self.run_state.offer_random_relic_rewards(1, &[None]);
                 self.run_state.drain_relic_rewards_directly();
             }
@@ -2537,7 +2572,7 @@ impl RunManager {
                 Reward::Card(cr) if !cr.options.is_empty() => {
                     for (i, &card_id) in cr.options.iter().enumerate() {
                         let upgraded = cr.upgraded.get(i).copied().unwrap_or(false);
-                        let card = crate::build_card_for_version(
+                        let mut card = crate::build_card_for_version(
                             card_id,
                             upgraded,
                             self.run_state.game_version,
@@ -2548,6 +2583,11 @@ impl RunManager {
                             c.upgraded = upgraded;
                             c
                         });
+                        if let Some(ench) = cr.enchantments.get(i) {
+                            if !ench.is_empty() {
+                                card.enchantments = *ench;
+                            }
+                        }
                         self.run_state.add_card_to_deck_with_hooks(
                             card,
                             crate::relic_effects::AddSource::Reward,
@@ -2784,7 +2824,7 @@ impl RunManager {
             return ActionResult::InvalidForPhase;
         }
         let count = self.run_state.pael_record_sacrifice();
-        if count % 2 == 0 {
+        if count.is_multiple_of(2) {
             if let Some(relic) = self
                 .run_state
                 .pop_relic_from_grab_bag(crate::RelicRarity::Common)
@@ -2804,7 +2844,8 @@ impl RunManager {
         // post-add cards (HeftyTablet's Injury is unconditional in C#).
         if std::mem::take(&mut self.card_offer_choose_screen) {
             let post = std::mem::take(&mut self.pending_choose_screen_post_add);
-            self.run_state.master_deck.extend(post);
+            self.run_state
+                .add_cards_to_deck_with_hooks(post, crate::relic_effects::AddSource::Reward);
         }
         self.advance_after_card_reward();
         ActionResult::Advanced
@@ -2887,7 +2928,11 @@ impl RunManager {
             enum Resolve {
                 Potion(Option<crate::potions::PotionKind>),
                 RemoveCard(u32),
-                SurfaceCard(Vec<crate::cards::CardId>, Vec<bool>),
+                SurfaceCard(
+                    Vec<crate::cards::CardId>,
+                    Vec<bool>,
+                    Vec<crate::cards::CardEnchantments>,
+                ),
             }
             let queued = match &self.run_state.pending_rewards[i] {
                 Reward::Potion(reward) => Some(Resolve::Potion(reward.potion_kind)),
@@ -2900,6 +2945,7 @@ impl RunManager {
                     Some(Resolve::SurfaceCard(
                         reward.options.clone(),
                         reward.upgraded.clone(),
+                        reward.enchantments.clone(),
                     ))
                 }
                 Reward::Card(_) => break, // later drain rolls this one
@@ -2930,7 +2976,7 @@ impl RunManager {
                     // `CardRemovalReward.OnSelect` → `DoLocalCardRemoval` analog.
                     let _ = self.run_state.remove_cards_from_deck(count as usize);
                 }
-                Resolve::SurfaceCard(pre_resolved, pre_upgraded) => {
+                Resolve::SurfaceCard(pre_resolved, pre_upgraded, pre_enchantments) => {
                     if pre_resolved.is_empty() {
                         // Non-combat (`CardCreationSource.Other`) reward: roll
                         // BASE odds, NOT the pity-updating combat roller. These
@@ -2951,10 +2997,13 @@ impl RunManager {
                             std::mem::take(&mut self.run_state.card_reward_enchantments);
                     } else {
                         self.card_reward_options = pre_resolved;
-                        // Empty unless a v0.111.0 caller built the reward
-                        // with `CardReward::from_cards` (BrainLeech Rip).
+                        // Empty unless the caller built the reward with
+                        // `CardReward::from_cards` (v0.111.0 BrainLeech Rip,
+                        // CrystalSphere, …): the offered upgrade flags and
+                        // relic-stamped enchantments (FresnelLens / Glitter /
+                        // WingCharm) travel to the pick. GH #806.
                         self.card_reward_upgraded = pre_upgraded;
-                        self.card_reward_enchantments.clear();
+                        self.card_reward_enchantments = pre_enchantments;
                     }
                     opened = true;
                 }
@@ -3474,8 +3523,14 @@ impl RunManager {
         // offering matched C#. Bead `sts2-rs-1hiht`.
         if self.run_state.pending_deck_removals == 0 {
             if !self.run_state.pending_post_removal_cards.is_empty() {
+                // Each deferred card is a C# `CardPileCmd.Add(.., Deck)`
+                // (`AddCurseToDeck` / `AddCursesToDeck`), so it runs the
+                // deck-add hooks (GH #806).
                 let cards = std::mem::take(&mut self.run_state.pending_post_removal_cards);
-                self.run_state.master_deck.extend(cards);
+                self.run_state.add_cards_to_deck_with_hooks(
+                    cards,
+                    crate::relic_effects::AddSource::EventGain,
+                );
             }
             // Apply any HP damage a "remove-then-damage" relic deferred
             // (PrecariousShears → Damage(16)). C# suspends on the removal pick
@@ -3491,8 +3546,8 @@ impl RunManager {
             if max_hp_gain > 0 {
                 self.run_state.gain_max_hp(max_hp_gain);
             }
-            // v0.111.0 ZenWeaver: `LoseGold(cost)` after its removals (decomp
-            // ZenWeaver.cs:72-73). Always 0 in v0.107.1.
+            // ZenWeaver: `LoseGold(cost)` after its removals (decomp
+            // ZenWeaver.cs:72-73, both builds).
             let gold_loss = std::mem::take(&mut self.run_state.pending_post_removal_gold_loss);
             if gold_loss > 0 {
                 self.run_state.gold = self.run_state.gold.saturating_sub(gold_loss);
@@ -3555,9 +3610,8 @@ impl RunManager {
         let version = self.run_state.game_version;
         self.run_state.master_deck[deck_idx].upgrade_for(version);
         self.run_state.pending_deck_upgrades -= 1;
-        // v0.111.0 SpiritGrafter Rejection: the 10 damage lands after the
-        // upgrade pick returns (decomp SpiritGrafter.cs:47-52). Always 0 in
-        // v0.107.1.
+        // SpiritGrafter Rejection: the 10 damage lands after the upgrade pick
+        // returns (decomp SpiritGrafter.cs:47-52, both builds).
         if self.run_state.pending_deck_upgrades == 0 {
             let hp_loss = std::mem::take(&mut self.run_state.pending_post_upgrade_hp_loss);
             if hp_loss > 0 {
@@ -3681,12 +3735,16 @@ impl RunManager {
         if let Some(roll) = self.callbacks.roll_neows_bones_curse {
             for _ in 0..curses {
                 if let Some(card) = roll(&mut self.run_state) {
-                    self.run_state.master_deck.push(card);
+                    self.run_state.add_card_to_deck_with_hooks(
+                        card,
+                        crate::relic_effects::AddSource::RelicGain,
+                    );
                 }
             }
         }
         let cards = std::mem::take(&mut self.run_state.pending_post_pick_cards);
-        self.run_state.master_deck.extend(cards);
+        self.run_state
+            .add_cards_to_deck_with_hooks(cards, crate::relic_effects::AddSource::RelicGain);
     }
 
     /// Master-deck positions eligible for the FRONT pending interactive
@@ -3780,7 +3838,7 @@ impl RunManager {
                     && (c.cost >= 0 || (allow_x_cost && c.is_x_cost()))
                     && (!requires_block || c.base_block > 0)
                     && restriction
-                        .map_or(true, |t| c.card_type == t || secondary == Some(c.card_type))
+                        .is_none_or(|t| c.card_type == t || secondary == Some(c.card_type))
             })
             .map(|(i, _)| i)
             .collect()
@@ -3806,15 +3864,22 @@ impl RunManager {
             return ActionResult::InvalidForPhase;
         };
         let entry = self.run_state.pending_deck_transforms.remove(0);
+        // The replacement goes through the deck-add hooks, as C#
+        // `CardCmd.Transform` runs `ModifyCardBeingAddedToDeck` and
+        // `AfterCardChangedPiles` on it (`CardCmd.cs:427-447`, GH #806).
         if let Some(replacement) = entry.fixed_target {
             self.run_state.master_deck.remove(deck_idx);
-            self.run_state.master_deck.push(replacement);
+            self.run_state
+                .add_card_to_deck_with_hooks(replacement, crate::relic_effects::AddSource::Other);
         } else if let Some(roll) = self.callbacks.roll_transform_replacement {
             let original = self.run_state.master_deck[deck_idx].card_id;
             if let Some(replacement) = roll(&mut self.run_state, original, entry.event_stream_roll)
             {
                 self.run_state.master_deck.remove(deck_idx);
-                self.run_state.master_deck.push(replacement);
+                self.run_state.add_card_to_deck_with_hooks(
+                    replacement,
+                    crate::relic_effects::AddSource::Other,
+                );
             }
         }
         // C# applies the event's follow-up damage only after the picked
@@ -3926,8 +3991,10 @@ impl RunManager {
         let card = grant.options.remove(idx);
         grant.pick = grant.pick.saturating_sub(1);
         let done = grant.pick == 0 || grant.options.is_empty();
-        // C# `CardPileCmd.Add(card, PileType.Deck)` — default index -1 = tail.
-        self.run_state.master_deck.push(card);
+        // C# `CardPileCmd.Add(card, PileType.Deck)` — default index -1 = tail,
+        // with the deck-add hooks (GH #806).
+        self.run_state
+            .add_card_to_deck_with_hooks(card, crate::relic_effects::AddSource::EventGain);
         if done {
             self.run_state.pending_card_grants.remove(0);
         }
@@ -4006,9 +4073,7 @@ impl RunManager {
                 // stays set on `run_state.event_combat` for the resume path.
                 let req = self.run_state.event_combat.clone().expect("set");
                 let combat = build(&mut self.run_state, &req);
-                self.combat = Some(combat);
-                self.phase = Phase::Combat;
-                return ActionResult::Advanced;
+                return self.enter_built_combat(combat);
             }
             // No builder wired (raw-core tests): fall through to the legacy
             // instant-resolution path — drop the request and grant any
@@ -4817,6 +4882,17 @@ impl RunManager {
         &self.card_reward_upgraded
     }
 
+    /// Per-option enchantments parallel to [`Self::card_reward_options`]
+    /// (a relic stamp such as FresnelLens's Nimble or SilkenTress's Glam,
+    /// GH #806). Same shape rule as [`Self::card_reward_upgraded_flags`]:
+    /// may be shorter than the options list, and a missing entry means "not
+    /// enchanted". Read by the PPO obs (GH #947), which used to featurize a
+    /// stamped option as the bare card.
+    #[must_use]
+    pub fn card_reward_enchantments(&self) -> &[crate::cards::CardEnchantments] {
+        &self.card_reward_enchantments
+    }
+
     /// When the current `CardReward` offering is a Scroll Boxes bundle pick,
     /// returns the packs (`[[CardId; 3]; 2]`-shaped — one inner `Vec` per
     /// selectable pack, aligned with `PickCardReward{Some(i)}`). `None` for an
@@ -5081,6 +5157,43 @@ mod tests {
                 RunAction::EventChoice { idx: 2 },
             ]
         );
+    }
+
+    #[test]
+    fn disabled_event_option_is_not_an_action() {
+        // GH #885: a disabled option is left out, and the options after it
+        // keep their presented idx. All-disabled offers every option.
+        fn count_three(_: &crate::runstate::RunState) -> usize {
+            3
+        }
+        fn middle_off(_: &crate::runstate::RunState, idx: usize) -> bool {
+            idx != 1
+        }
+        fn all_off(_: &crate::runstate::RunState, _: usize) -> bool {
+            false
+        }
+        let rm = RunManager::new(0, CharacterId::Ironclad)
+            .with_content_callbacks(ContentCallbacks {
+                event_option_count: Some(count_three),
+                event_option_enabled: Some(middle_off),
+                ..Default::default()
+            })
+            .with_neow_start();
+        assert_eq!(
+            rm.get_available_actions(),
+            vec![
+                RunAction::EventChoice { idx: 0 },
+                RunAction::EventChoice { idx: 2 },
+            ]
+        );
+        let rm = RunManager::new(0, CharacterId::Ironclad)
+            .with_content_callbacks(ContentCallbacks {
+                event_option_count: Some(count_three),
+                event_option_enabled: Some(all_off),
+                ..Default::default()
+            })
+            .with_neow_start();
+        assert_eq!(rm.get_available_actions().len(), 3);
     }
 
     #[test]
@@ -6037,52 +6150,34 @@ mod tests {
             .collect()
     }
 
-    /// v0.107.1 keeps its pre-port behaviour: only the Elite's own relic.
+    /// BlackStar (`BlackStar.cs:13`, same in both builds) appends a second
+    /// relic reward to an Elite's set; the oracle auto-collects both (GH #806).
     #[test]
-    fn black_star_elite_gives_one_relic() {
-        assert_eq!(
-            black_star_elite_relics(crate::GameVersion::V0_107_1).len(),
-            1
-        );
+    fn black_star_elite_gives_two_relics_both_versions() {
+        for version in [crate::GameVersion::V0_107_1, crate::GameVersion::V0_111_0] {
+            assert_eq!(black_star_elite_relics(version).len(), 2, "{version:?}");
+        }
     }
 
-    /// v0.111.0 BlackStar (`BlackStar.cs:13`) appends a second relic reward
-    /// to an Elite's set; the oracle auto-collects both.
+    /// `Guilty.AfterCombatEnd` (`Guilty.cs:46`, same in both builds): each
+    /// Guilty counts its own combats and removes itself at the end of its
+    /// fifth; a Guilty gained later keeps its own count (GH #806).
     #[test]
-    fn black_star_elite_gives_two_relics_v0111() {
-        assert_eq!(
-            black_star_elite_relics(crate::GameVersion::V0_111_0).len(),
-            2
-        );
-    }
-
-    /// v0.107.1 keeps its pre-port behaviour: the curse never leaves.
-    #[test]
-    fn guilty_stays_in_deck_after_five_combats() {
-        let mut rm = RunManager::new(0, CharacterId::Ironclad);
-        rm.run_state.master_deck.push(guilty_card());
-        win_synthetic_combats(&mut rm, 6);
-        assert_eq!(guilty_count(&rm), 1);
-    }
-
-    /// v0.111.0 `Guilty.AfterCombatEnd` (`Guilty.cs:46`): each Guilty counts
-    /// its own combats and removes itself at the end of its fifth; a Guilty
-    /// gained later keeps its own count.
-    #[test]
-    fn guilty_removes_itself_after_five_combats_v0111() {
-        let mut rm = RunManager::new(0, CharacterId::Ironclad)
-            .with_game_version(crate::GameVersion::V0_111_0);
-        rm.run_state.master_deck.push(guilty_card());
-        win_synthetic_combats(&mut rm, 3);
-        rm.run_state.master_deck.push(guilty_card());
-        win_synthetic_combats(&mut rm, 1);
-        assert_eq!(guilty_count(&rm), 2, "4 and 1 combats seen");
-        win_synthetic_combats(&mut rm, 1);
-        assert_eq!(guilty_count(&rm), 1, "the first leaves after its 5th");
-        win_synthetic_combats(&mut rm, 2);
-        assert_eq!(guilty_count(&rm), 1, "the second has seen 4");
-        win_synthetic_combats(&mut rm, 1);
-        assert_eq!(guilty_count(&rm), 0);
+    fn guilty_removes_itself_after_five_combats_both_versions() {
+        for version in [crate::GameVersion::V0_107_1, crate::GameVersion::V0_111_0] {
+            let mut rm = RunManager::new(0, CharacterId::Ironclad).with_game_version(version);
+            rm.run_state.master_deck.push(guilty_card());
+            win_synthetic_combats(&mut rm, 3);
+            rm.run_state.master_deck.push(guilty_card());
+            win_synthetic_combats(&mut rm, 1);
+            assert_eq!(guilty_count(&rm), 2, "4 and 1 combats seen ({version:?})");
+            win_synthetic_combats(&mut rm, 1);
+            assert_eq!(guilty_count(&rm), 1, "the first leaves after its 5th");
+            win_synthetic_combats(&mut rm, 2);
+            assert_eq!(guilty_count(&rm), 1, "the second has seen 4");
+            win_synthetic_combats(&mut rm, 1);
+            assert_eq!(guilty_count(&rm), 0);
+        }
     }
 
     #[test]
@@ -6984,49 +7079,53 @@ mod tests {
         assert_eq!(rm.run_state.pending_post_removal_hp_loss, 0, "consumed");
     }
 
-    /// v0.111.0 ZenWeaver parks its cost in `pending_post_removal_gold_loss`
-    /// (`ZenWeaver.cs:72-73`); it is spent once, when the removal batch drains.
+    /// ZenWeaver parks its cost in `pending_post_removal_gold_loss`
+    /// (`ZenWeaver.cs:72-73`, both builds); it is spent once, when the removal
+    /// batch drains.
     #[test]
-    fn pending_post_removal_gold_loss_applies_when_removal_batch_drains_v0111() {
-        let mut rm = RunManager::new(0, CharacterId::Ironclad)
-            .with_game_version(crate::GameVersion::V0_111_0);
-        rm.run_state.interactive_card_removal = true;
-        rm.run_state.master_deck = (1..=4)
-            .map(|i| crate::Card {
-                uid: crate::CardUid::new(i).expect("nz"),
-                card_id: crate::cards::CardId::StrikeIronclad,
-                ..crate::Card::pod_defaults()
-            })
-            .collect();
-        rm.run_state.gold = 300;
-        rm.run_state.pending_deck_removals = 2;
-        rm.run_state.pending_post_removal_gold_loss = 250;
-        let _ = rm.take_action(RunAction::RemoveDeckCard { idx: 0 });
-        assert_eq!(rm.run_state.gold, 300, "unpaid mid-batch");
-        let _ = rm.take_action(RunAction::RemoveDeckCard { idx: 0 });
-        assert_eq!(rm.run_state.gold, 50);
-        assert_eq!(rm.run_state.pending_post_removal_gold_loss, 0, "consumed");
+    fn pending_post_removal_gold_loss_applies_when_removal_batch_drains_both_versions() {
+        for version in [crate::GameVersion::V0_107_1, crate::GameVersion::V0_111_0] {
+            let mut rm = RunManager::new(0, CharacterId::Ironclad).with_game_version(version);
+            rm.run_state.interactive_card_removal = true;
+            rm.run_state.master_deck = (1..=4)
+                .map(|i| crate::Card {
+                    uid: crate::CardUid::new(i).expect("nz"),
+                    card_id: crate::cards::CardId::StrikeIronclad,
+                    ..crate::Card::pod_defaults()
+                })
+                .collect();
+            rm.run_state.gold = 300;
+            rm.run_state.pending_deck_removals = 2;
+            rm.run_state.pending_post_removal_gold_loss = 250;
+            let _ = rm.take_action(RunAction::RemoveDeckCard { idx: 0 });
+            assert_eq!(rm.run_state.gold, 300, "unpaid mid-batch");
+            let _ = rm.take_action(RunAction::RemoveDeckCard { idx: 0 });
+            assert_eq!(rm.run_state.gold, 50);
+            assert_eq!(rm.run_state.pending_post_removal_gold_loss, 0, "consumed");
+        }
     }
 
-    /// v0.111.0 SpiritGrafter parks its damage in `pending_post_upgrade_hp_loss`
-    /// (`SpiritGrafter.cs:47-52`); it lands when the upgrade pick drains.
+    /// SpiritGrafter parks its damage in `pending_post_upgrade_hp_loss`
+    /// (`SpiritGrafter.cs:47-52`, both builds); it lands when the upgrade pick
+    /// drains.
     #[test]
-    fn pending_post_upgrade_hp_loss_applies_when_upgrade_pick_drains_v0111() {
-        let mut rm = RunManager::new(0, CharacterId::Ironclad)
-            .with_game_version(crate::GameVersion::V0_111_0);
-        rm.run_state.master_deck = (1..=3)
-            .map(|i| crate::Card {
-                uid: crate::CardUid::new(i).expect("nz"),
-                card_id: crate::cards::CardId::StrikeIronclad,
-                ..crate::Card::pod_defaults()
-            })
-            .collect();
-        let hp0 = rm.run_state.current_hp;
-        rm.run_state.pending_deck_upgrades = 1;
-        rm.run_state.pending_post_upgrade_hp_loss = 10;
-        assert_eq!(rm.do_upgrade_deck_card_at(0), ActionResult::Advanced);
-        assert_eq!(rm.run_state.current_hp, hp0 - 10);
-        assert_eq!(rm.run_state.pending_post_upgrade_hp_loss, 0, "consumed");
+    fn pending_post_upgrade_hp_loss_applies_when_upgrade_pick_drains_both_versions() {
+        for version in [crate::GameVersion::V0_107_1, crate::GameVersion::V0_111_0] {
+            let mut rm = RunManager::new(0, CharacterId::Ironclad).with_game_version(version);
+            rm.run_state.master_deck = (1..=3)
+                .map(|i| crate::Card {
+                    uid: crate::CardUid::new(i).expect("nz"),
+                    card_id: crate::cards::CardId::StrikeIronclad,
+                    ..crate::Card::pod_defaults()
+                })
+                .collect();
+            let hp0 = rm.run_state.current_hp;
+            rm.run_state.pending_deck_upgrades = 1;
+            rm.run_state.pending_post_upgrade_hp_loss = 10;
+            assert_eq!(rm.do_upgrade_deck_card_at(0), ActionResult::Advanced);
+            assert_eq!(rm.run_state.current_hp, hp0 - 10);
+            assert_eq!(rm.run_state.pending_post_upgrade_hp_loss, 0, "consumed");
+        }
     }
 
     /// NeowsBones defers its curse to `pending_post_pick_cards`; it must land in
@@ -9812,6 +9911,49 @@ mod tests {
         assert_eq!(rm.phase(), Phase::MapChoice);
     }
 
+    /// `build_event_combat` test double: a fight that is already won when it
+    /// is built, like the BattlewornDummy that died before the player's first
+    /// decision on Ironclad A0 seed 132,010,135.
+    fn build_combat_won_at_entry(rs: &mut RunState, _req: &EventCombatRequest) -> CombatState {
+        CombatState {
+            run_rng: rs.rng.clone(),
+            is_over: true,
+            player_won: true,
+            ..CombatState::default()
+        }
+    }
+
+    #[test]
+    fn event_combat_won_at_entry_resumes_instead_of_stalling() {
+        let mut rm =
+            RunManager::new(0, CharacterId::Ironclad).with_content_callbacks(ContentCallbacks {
+                build_event_combat: Some(build_combat_won_at_entry),
+                ..bridge_callbacks(resolve_stages_resuming_dummy)
+            });
+        rm.run_state.enter_event_room(EventId::BattlewornDummy);
+        rm.set_phase(Phase::Event);
+        let gold_before = rm.run_state.gold;
+
+        let result = rm.take_action(RunAction::EventChoice { idx: 0 });
+
+        assert_eq!(result, ActionResult::Advanced);
+        assert_eq!(
+            rm.phase(),
+            Phase::MapChoice,
+            "the won fight is settled, not left open"
+        );
+        assert!(
+            !rm.get_available_actions().is_empty(),
+            "no empty action list"
+        );
+        assert_eq!(
+            rm.run_state.gold,
+            gold_before + 7,
+            "resume granted the reward"
+        );
+        assert!(rm.run_state.event_combat.is_none(), "request cleared");
+    }
+
     #[test]
     fn event_combat_player_death_ends_run() {
         let mut rm = RunManager::new(0, CharacterId::Ironclad)
@@ -10272,6 +10414,14 @@ mod tests {
             rm.set_phase(Phase::Combat);
             assert_eq!(rm.exit_combat_and_transition(), ActionResult::Advanced);
             assert_eq!(rm.phase(), Phase::CardReward);
+            // GH #947: the offer-time stamps are visible to a host BEFORE the
+            // pick (the PPO obs reads them to tell a stamped option apart).
+            let offered: Vec<i32> = rm
+                .card_reward_enchantments()
+                .iter()
+                .map(|e| e.get(crate::cards::EnchantmentId::Glam))
+                .collect();
+            assert_eq!(offered, vec![0, 1, 1]);
             let result = rm.take_action(RunAction::PickCardReward { idx: Some(idx) });
             assert_eq!(result, ActionResult::Advanced);
             *rm.run_state.master_deck.last().expect("picked card")
@@ -10285,5 +10435,40 @@ mod tests {
             strike.enchantments.is_empty(),
             "unstamped option stays plain"
         );
+    }
+
+    /// GH #806: a pre-resolved `CardReward::from_cards` slate (BrainLeech Rip,
+    /// ColorfulPhilosophers, CrystalSphere) keeps each option's enchantment
+    /// through the drain to the pick. FresnelLens / Glitter / WingCharm stamp
+    /// those slates (`TryModifyCardRewardOptionsLate`), and C# adds the
+    /// stamped card itself (`CardReward.OnSelect`).
+    #[test]
+    fn pre_resolved_card_reward_keeps_enchantment_on_pick() {
+        use crate::runstate::{CardReward, Reward};
+        for version in [crate::GameVersion::V0_107_1, crate::GameVersion::V0_111_0] {
+            let mut rm = RunManager::new(0, CharacterId::Ironclad);
+            rm.run_state.game_version = version;
+            let mut plain = crate::cards::Card::pod_defaults();
+            plain.card_id = crate::cards::CardId::StrikeIronclad;
+            let mut nimble = crate::cards::Card::pod_defaults();
+            nimble.card_id = crate::cards::CardId::DefendIronclad;
+            nimble
+                .enchantments
+                .set(crate::cards::EnchantmentId::Nimble, 2);
+            let reward = CardReward::from_cards(&[plain, nimble]);
+            assert_eq!(reward.enchantments.len(), 2);
+            rm.run_state.pending_rewards.push(Reward::Card(reward));
+            assert!(rm.drain_pending_rewards());
+            rm.set_phase(Phase::CardReward);
+            let result = rm.take_action(RunAction::PickCardReward { idx: Some(1) });
+            assert_eq!(result, ActionResult::Advanced, "{version}");
+            let picked = *rm.run_state.master_deck.last().expect("picked card");
+            assert_eq!(picked.card_id, crate::cards::CardId::DefendIronclad);
+            assert_eq!(
+                picked.enchantment(crate::cards::EnchantmentId::Nimble),
+                2,
+                "{version}"
+            );
+        }
     }
 }

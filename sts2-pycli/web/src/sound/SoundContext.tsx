@@ -74,10 +74,22 @@ function readVolume(): number {
   } catch { return 0.7; }
 }
 
-export function SoundProvider({ children }: { children: ReactNode }) {
+/** `gameVersion` is the build the shown run plays (GH #877): its own
+ *  `sfx_map.json` is loaded, and a change of build reloads the map. */
+export function SoundProvider({ children, gameVersion }: {
+  children: ReactNode;
+  gameVersion?: string | null;
+}) {
   const [on, setOn] = useState<boolean>(readStored);
   const [volume, setVolume] = useState<number>(readVolume);
   const [map, setMap] = useState<SfxMap | null>(null);
+  // The build `map` was loaded for; a different build drops it so the
+  // effect below fetches that build's map.
+  const [mapVersion, setMapVersion] = useState<string | null>(gameVersion ?? null);
+  if ((gameVersion ?? null) !== mapVersion) {
+    setMapVersion(gameVersion ?? null);
+    setMap(null);
+  }
   const playerRef = useRef<SoundPlayer | null>(null);
   const { mode } = useEffectsMode();
 
@@ -109,7 +121,7 @@ export function SoundProvider({ children }: { children: ReactNode }) {
       // effect does not re-fire on its own. That's deliberate, not a wedge --
       // `loadSfxMap` (Task 5) clears its cached promise on rejection, so
       // toggling sound off and back on retries cleanly.
-      loadSfxMap()
+      loadSfxMap(fetch, mapVersion)
         .then(setMap)
         .catch((err: unknown) => {
           // An audio feature's only symptom of breakage IS silence — there is
@@ -119,7 +131,7 @@ export function SoundProvider({ children }: { children: ReactNode }) {
           setMap(null);
         });
     }
-  }, [on, map]);
+  }, [on, map, mapVersion]);
 
   useEffect(() => {
     try { localStorage.setItem(VOLUME_KEY, String(volume)); } catch { /* storage off */ }

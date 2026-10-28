@@ -62,7 +62,7 @@
 
 import { lutSamplePoint, sampleLut } from "./lut";
 import type { ParticleEmitter, ParticleEmitterProcess, ParticleMaterial } from "../manifest";
-import type { ParticleSystemSpec } from "./simulate";
+import type { Particle, ParticleSystemSpec } from "./simulate";
 
 // ---------------------------------------------------------------------------
 // Vertex colour (CPU-side). This is the `vertex_color` the fragment shader
@@ -656,8 +656,7 @@ export interface TrailQuadGeometry {
  * The rotation is the PATH's, not `particle_flag_align_y`'s — a ribbon follows
  * the trajectory whether or not the emitter also aligns its particles to
  * velocity, so this is correct for a trail-enabled emitter that leaves that
- * flag off. (`particleFlagAlignY` remains unimplemented for the untrailed
- * quads of 14 shipped composites; see `simulateManifestCoverage.test.ts`.)
+ * flag off. The untrailed quads take the flag through `particleDrawAngle`.
  *
  * Returns `null` when there is nothing to stretch — no trail lifetime, or a
  * particle that is not moving and so has no direction to stretch ALONG.
@@ -679,11 +678,28 @@ export function trailQuadGeometry(
     cx: x - backX,
     cy: y - backY,
     h: baseHeight + length,
-    // `appendQuadVertices` rotates local (0, 1) to (-sin, cos) in Godot's
-    // sense (it applies the Y-up chirality flip itself), so putting local +Y
-    // along `(vx, vy)` wants `sin = -vx/speed`, `cos = vy/speed`.
-    angle: Math.atan2(-vx, vy),
+    angle: angleAlongLocalY(vx, vy),
   };
+}
+
+/** The `ParticleQuad.angle` that puts a quad's local +Y axis along `(dx, dy)`,
+ *  a direction in the emitter's own Y-down space. `appendQuadVertices` rotates
+ *  local (0, 1) to (-sin, cos) in Godot's sense (it applies the Y-up
+ *  chirality flip itself), so that wants `sin = -dx/len`, `cos = dy/len`. */
+export function angleAlongLocalY(dx: number, dy: number): number {
+  return Math.atan2(-dx, dy);
+}
+
+/** The rotation one untrailed particle quad is drawn at. With
+ *  `particle_flag_align_y` set, Godot's 2D branch REPLACES the basis with one
+ *  built from the velocity (`ppm451.cpp:1085-1092`) and never reads
+ *  `CUSTOM.x`, so the authored `angle`/`angular_velocity` do not compose with
+ *  it — the flag wins outright. Otherwise it is the particle's own spin. */
+export function particleDrawAngle(
+  process: Pick<ParticleEmitterProcess, "particleFlagAlignY">,
+  particle: Pick<Particle, "angle" | "heading">,
+): number {
+  return process.particleFlagAlignY ? angleAlongLocalY(particle.heading[0], particle.heading[1]) : particle.angle;
 }
 
 /** How one batch of quads is coloured: which LUT (if any) colourises the

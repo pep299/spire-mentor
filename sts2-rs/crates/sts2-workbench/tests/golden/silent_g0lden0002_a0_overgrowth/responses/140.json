@@ -65,7 +65,7 @@
    "parent": null,
    "proven_loss": false,
    "proven_win": false,
-   "q": -1.2563,
+   "q": -1.2548,
    "summary": {
     "enemies": [
      {
@@ -87,7 +87,7 @@
    },
    "target_index": null,
    "ties": 0,
-   "value_sum": -60.3009,
+   "value_sum": -60.2294,
    "visits": 48,
    "wins": 0
   },
@@ -96,14 +96,14 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [
-    6,
+    7,
     9,
     12,
     14
    ],
    "edges": [
     {
-     "child": 6,
+     "child": 7,
      "kind": "choose",
      "label": "Choose 0",
      "outcome_ordinal": null,
@@ -177,14 +177,14 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [
-    7,
-    8,
     5,
+    8,
+    6,
     13
    ],
    "edges": [
     {
-     "child": 7,
+     "child": 5,
      "kind": "play",
      "label": "Survivor",
      "outcome_ordinal": null,
@@ -200,7 +200,7 @@
      "visits": 3
     },
     {
-     "child": 5,
+     "child": 6,
      "kind": "play",
      "label": "StrikeSilent",
      "outcome_ordinal": null,
@@ -227,7 +227,7 @@
    "parent": 0,
    "proven_loss": false,
    "proven_win": false,
-   "q": -1.2413,
+   "q": -1.2354,
    "summary": {
     "enemies": [
      {
@@ -249,7 +249,7 @@
    },
    "target_index": 1,
    "ties": 0,
-   "value_sum": -14.8957,
+   "value_sum": -14.8242,
    "visits": 12,
    "wins": 0
   },
@@ -258,12 +258,12 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [
-    5,
+    6,
     11
    ],
    "edges": [
     {
-     "child": 5,
+     "child": 6,
      "kind": "play",
      "label": "Shiv",
      "outcome_ordinal": null,
@@ -364,6 +364,78 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [
+    16,
+    21,
+    22
+   ],
+   "edges": [
+    {
+     "child": 16,
+     "kind": "choose",
+     "label": "Choose 0",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 21,
+     "kind": "choose",
+     "label": "Choose 1",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 22,
+     "kind": "choose",
+     "label": "Choose 2",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
+   "id": 5,
+   "is_terminal": false,
+   "kind": "play",
+   "label": "Survivor",
+   "losses": 4,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": null,
+   "parent": 2,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": -1.2177,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 0,
+      "max_hp": 38,
+      "uid": 2
+     },
+     {
+      "hp": 35,
+      "max_hp": 56,
+      "uid": 3
+     }
+    ],
+    "energy": 0,
+    "player_block": 8,
+    "player_hp": 12,
+    "player_max_hp": 70,
+    "round": 6
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": -4.871,
+   "visits": 4,
+   "wins": 0
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [
     15,
     19
    ],
@@ -385,7 +457,7 @@
      "visits": 2
     }
    ],
-   "id": 5,
+   "id": 6,
    "is_terminal": false,
    "kind": "play",
    "label": "Shiv",
@@ -427,12 +499,12 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [
-    17,
+    16,
     26
    ],
    "edges": [
     {
-     "child": 17,
+     "child": 16,
      "kind": "play",
      "label": "Shiv",
      "outcome_ordinal": null,
@@ -448,7 +520,7 @@
      "visits": 1
     }
    ],
-   "id": 6,
+   "id": 7,
    "is_terminal": false,
    "kind": "choose",
    "label": "Choose 0",
@@ -483,78 +555,6 @@
    "ties": 0,
    "value_sum": -3.7349,
    "visits": 3,
-   "wins": 0
-  },
-  {
-   "chance_action": null,
-   "chance_closed": false,
-   "chance_draws": 0,
-   "children": [
-    17,
-    22,
-    21
-   ],
-   "edges": [
-    {
-     "child": 17,
-     "kind": "choose",
-     "label": "Choose 0",
-     "outcome_ordinal": null,
-     "target_index": null,
-     "visits": 1
-    },
-    {
-     "child": 22,
-     "kind": "choose",
-     "label": "Choose 1",
-     "outcome_ordinal": null,
-     "target_index": null,
-     "visits": 1
-    },
-    {
-     "child": 21,
-     "kind": "choose",
-     "label": "Choose 2",
-     "outcome_ordinal": null,
-     "target_index": null,
-     "visits": 1
-    }
-   ],
-   "id": 7,
-   "is_terminal": false,
-   "kind": "play",
-   "label": "Survivor",
-   "losses": 4,
-   "node_kind": "decision",
-   "outcome_cap": 0,
-   "outcome_ordinal": null,
-   "parent": 2,
-   "proven_loss": false,
-   "proven_win": false,
-   "q": -1.2254,
-   "summary": {
-    "enemies": [
-     {
-      "hp": 0,
-      "max_hp": 38,
-      "uid": 2
-     },
-     {
-      "hp": 35,
-      "max_hp": 56,
-      "uid": 3
-     }
-    ],
-    "energy": 0,
-    "player_block": 8,
-    "player_hp": 12,
-    "player_max_hp": 70,
-    "round": 6
-   },
-   "target_index": null,
-   "ties": 0,
-   "value_sum": -4.9016,
-   "visits": 4,
    "wins": 0
   },
   {
@@ -679,12 +679,12 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [
-    16,
+    17,
     24
    ],
    "edges": [
     {
-     "child": 16,
+     "child": 17,
      "kind": "play",
      "label": "Shiv",
      "outcome_ordinal": null,
@@ -891,11 +891,11 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [
-    21
+    22
    ],
    "edges": [
     {
-     "child": 21,
+     "child": 22,
      "kind": "play",
      "label": "Shiv",
      "outcome_ordinal": null,
@@ -965,7 +965,7 @@
    "node_kind": "decision",
    "outcome_cap": 0,
    "outcome_ordinal": null,
-   "parent": 5,
+   "parent": 6,
    "proven_loss": true,
    "proven_win": false,
    "q": -1.2424,
@@ -1002,56 +1002,13 @@
    "edges": [],
    "id": 16,
    "is_terminal": false,
-   "kind": "play",
-   "label": "Shiv",
-   "losses": 2,
-   "node_kind": "decision",
-   "outcome_cap": 0,
-   "outcome_ordinal": null,
-   "parent": 10,
-   "proven_loss": false,
-   "proven_win": false,
-   "q": -1.2075,
-   "summary": {
-    "enemies": [
-     {
-      "hp": 0,
-      "max_hp": 38,
-      "uid": 2
-     },
-     {
-      "hp": 23,
-      "max_hp": 56,
-      "uid": 3
-     }
-    ],
-    "energy": 0,
-    "player_block": 8,
-    "player_hp": 12,
-    "player_max_hp": 70,
-    "round": 6
-   },
-   "target_index": 1,
-   "ties": 0,
-   "value_sum": -2.4151,
-   "visits": 2,
-   "wins": 0
-  },
-  {
-   "chance_action": null,
-   "chance_closed": false,
-   "chance_draws": 0,
-   "children": [],
-   "edges": [],
-   "id": 17,
-   "is_terminal": false,
    "kind": "choose",
    "label": "Choose 0",
    "losses": 2,
    "node_kind": "decision",
    "outcome_cap": 0,
    "outcome_ordinal": null,
-   "parent": 7,
+   "parent": 5,
    "proven_loss": false,
    "proven_win": false,
    "q": -1.2382,
@@ -1077,6 +1034,49 @@
    "target_index": null,
    "ties": 0,
    "value_sum": -2.4763,
+   "visits": 2,
+   "wins": 0
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [],
+   "edges": [],
+   "id": 17,
+   "is_terminal": false,
+   "kind": "play",
+   "label": "Shiv",
+   "losses": 2,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": null,
+   "parent": 10,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": -1.1999,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 0,
+      "max_hp": 38,
+      "uid": 2
+     },
+     {
+      "hp": 23,
+      "max_hp": 56,
+      "uid": 3
+     }
+    ],
+    "energy": 0,
+    "player_block": 8,
+    "player_hp": 12,
+    "player_max_hp": 70,
+    "round": 6
+   },
+   "target_index": 1,
+   "ties": 0,
+   "value_sum": -2.3997,
    "visits": 2,
    "wins": 0
   },
@@ -1137,7 +1137,7 @@
    "node_kind": "decision",
    "outcome_cap": 0,
    "outcome_ordinal": null,
-   "parent": 5,
+   "parent": 6,
    "proven_loss": true,
    "proven_win": false,
    "q": -1.2583,
@@ -1210,12 +1210,66 @@
    "wins": 0
   },
   {
+   "chance_action": "Choose 1",
+   "chance_closed": false,
+   "chance_draws": 1,
+   "children": [
+    17
+   ],
+   "edges": [
+    {
+     "child": 17,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 2
+    }
+   ],
+   "id": 21,
+   "is_terminal": false,
+   "kind": "choose",
+   "label": "Choose 1",
+   "losses": 1,
+   "node_kind": "chance",
+   "outcome_cap": 2,
+   "outcome_ordinal": null,
+   "parent": 5,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": -1.1922,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 0,
+      "max_hp": 38,
+      "uid": 2
+     },
+     {
+      "hp": 23,
+      "max_hp": 56,
+      "uid": 3
+     }
+    ],
+    "energy": 0,
+    "player_block": 8,
+    "player_hp": 12,
+    "player_max_hp": 70,
+    "round": 6
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": -1.1922,
+   "visits": 1,
+   "wins": 0
+  },
+  {
    "chance_action": null,
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
    "edges": [],
-   "id": 21,
+   "id": 22,
    "is_terminal": false,
    "kind": "play",
    "label": "Shiv",
@@ -1250,60 +1304,6 @@
    "ties": 0,
    "value_sum": -2.4968,
    "visits": 2,
-   "wins": 0
-  },
-  {
-   "chance_action": "Choose 1",
-   "chance_closed": false,
-   "chance_draws": 1,
-   "children": [
-    16
-   ],
-   "edges": [
-    {
-     "child": 16,
-     "kind": "outcome",
-     "label": "outcome #0",
-     "outcome_ordinal": 0,
-     "target_index": null,
-     "visits": 2
-    }
-   ],
-   "id": 22,
-   "is_terminal": false,
-   "kind": "choose",
-   "label": "Choose 1",
-   "losses": 1,
-   "node_kind": "chance",
-   "outcome_cap": 2,
-   "outcome_ordinal": null,
-   "parent": 7,
-   "proven_loss": false,
-   "proven_win": false,
-   "q": -1.2075,
-   "summary": {
-    "enemies": [
-     {
-      "hp": 0,
-      "max_hp": 38,
-      "uid": 2
-     },
-     {
-      "hp": 23,
-      "max_hp": 56,
-      "uid": 3
-     }
-    ],
-    "energy": 0,
-    "player_block": 8,
-    "player_hp": 12,
-    "player_max_hp": 70,
-    "round": 6
-   },
-   "target_index": null,
-   "ties": 0,
-   "value_sum": -1.2075,
-   "visits": 1,
    "wins": 0
   },
   {
@@ -1471,7 +1471,7 @@
    "node_kind": "chance",
    "outcome_cap": 8,
    "outcome_ordinal": null,
-   "parent": 6,
+   "parent": 7,
    "proven_loss": false,
    "proven_win": false,
    "q": -1.2586,
@@ -1601,6 +1601,11 @@
  "pv": [
   {
    "action": "play",
+   "card_index": 3,
+   "target_index": 1
+  },
+  {
+   "action": "play",
    "card_index": 2,
    "target_index": null
   },
@@ -1610,11 +1615,6 @@
    "selection": [
     1
    ]
-  },
-  {
-   "action": "play",
-   "card_index": 1,
-   "target_index": 1
   }
  ],
  "root": 0,

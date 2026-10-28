@@ -59,7 +59,11 @@ KEYS  (press F1 in game for this list)
   F1   help — mode, keys, file locations
   F8   AI coach on / off. From autopilot: stop the AI and take over
   F6   let the AI take just this one decision
-  F7   let the AI keep playing until you stop it (press again to stop)
+  F7   let the AI keep playing until you stop it (press again to stop).
+       It stops by itself on decisions it has no real policy for (e.g. the
+       Crystal Sphere) and hands them to you; press F7 to carry on. List
+       events you always want to play yourself in "pause_on" in
+       SpireMentor.conf, e.g. "pause_on": "unsupported, Neow".
   F4   show / hide the HUD
   F3   action log — what was played, and what was advised at the time
   F9   game speed down 0.1x

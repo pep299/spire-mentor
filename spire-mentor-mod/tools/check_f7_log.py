@@ -45,6 +45,7 @@ DECISION_RE = re.compile(r"\[SimAdvisor\] Decision up: (\S+) \[(.*)\]$")
 TAKEOVER_RE = re.compile(r"\[SimAdvisor\] Takeover executed on (\S+): (.*)$")
 DESCRIBE_FAIL_RE = re.compile(r"\[SimScreenAdvice\] (\S+) failed: (.*)$")
 RUNAWAY_RE = re.compile(r"\[SimAdvisor\] Takeover: (\S+) has not moved after")
+PAUSE_RE = re.compile(r"\[SimAdvisor\] Paused for the player on (\S+): (.*)$")
 
 # Screens where repeating the same choice is a real defect rather than a
 # legitimately repeated step. The loot screen genuinely claims one reward per
@@ -184,6 +185,27 @@ def check_runaway_guard(lines: list[str]) -> Check:
             sorted(set(hits)),
         )
     return Check("runaway-guard-silent", "PASS", "guard never had to fire")
+
+
+def _pauses(lines: list[str]) -> list[str]:
+    return [f"{m.group(1)}: {m.group(2)}" for line in lines if (m := PAUSE_RE.search(line))]
+
+
+def check_no_pauses(lines: list[str]) -> Check:
+    """`pause_on` handing a decision back is deliberate, not a stall (GH #874)
+    -- but an unattended run has nobody to hand it to, and `advisor_autoplay`
+    forces `pause_on` empty. A pause here means that forcing broke, so it is
+    reported under its own name rather than as a run that went nowhere."""
+    pauses = _pauses(lines)
+    if pauses:
+        return Check(
+            "no-intentional-pause",
+            "FAIL",
+            f"autoplay handed back {len(pauses)} decision(s) ON PURPOSE (pause_on) -- "
+            "not a stall, but an unattended run must never pause",
+            pauses[:5],
+        )
+    return Check("no-intentional-pause", "PASS", "autoplay never handed a decision back")
 
 
 def _decisions(lines: list[str]) -> list[tuple[str, str]]:
@@ -373,10 +395,13 @@ def check_progress(lines: list[str]) -> Check:
             "autoplay was never armed (advisor_autoplay did not fire)",
         )
     if len(floors) < 3:
+        pauses = _pauses(lines)
         return Check(
             "run-progressed",
             "FAIL",
-            f"autoplay armed but only {len(floors)} floor(s) travelled",
+            f"autoplay armed but only {len(floors)} floor(s) travelled"
+            + (" -- it was handed back by pause_on, not stalled" if pauses else ""),
+            pauses[:1],
         )
     return Check("run-progressed", "PASS", f"{len(floors)} floors travelled")
 
@@ -387,6 +412,7 @@ CHECKS = (
     check_no_repeats,
     check_no_cycles,
     check_runaway_guard,
+    check_no_pauses,
     check_card_select_confirms,
     check_treasure,
     check_shop_inventory,

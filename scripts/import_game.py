@@ -9,6 +9,7 @@ paths that are git-ignored in the public repository.
 
 Usage:
     just import-game [GAME_DIR] [--tier oracle|workbench|sound|all]
+    just import-game --download [VERSION|all] (--steam-user NAME | --steam-qr) [--tier ...]
     just import-game --status
     uv run --no-project scripts/import_game.py [GAME_DIR] [--tier ...]
 
@@ -18,6 +19,13 @@ calls its tool directly (`uv run`, `dotnet`, `ilspycmd`) — no bash, no `just`.
 GAME_DIR is the Steam install (the folder holding SlayTheSpire2.pck), the
 macOS .app, or the data_sts2_* folder holding sts2.dll; omitted, the usual
 Steam locations and $STS2_GAME_DIR are tried.
+
+--download fetches the supported builds instead (all of them unless one is
+named) from Steam with DepotDownloader, each pinned to its depot manifest,
+into sts2_binaries/<version>/, and imports each one, the default build first.
+Steam installs one branch at a time; this is how one machine gets both. It
+logs in as you: DepotDownloader asks for your password and Steam Guard code
+itself (or shows a QR code with --steam-qr); this script never sees them.
 
 Tiers (each includes the ones before it):
     engine     nothing to import — the Rust workspace builds and tests as-is
@@ -52,6 +60,8 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -69,11 +79,44 @@ LOG = ROOT / "logs" / "import-game.log"
 # other supported build gets only its version-keyed outputs: its oracle
 # (sts2-pycli/lib/<ver>/ + bin/<ver>/), sts2-wiki/extracted|decompiled|data/<ver>/,
 # its vendored loc (sts2-pycli/localization_eng_<ver>/) and its workbench bundle
-# (sts2-rs/crates/sts2-workbench/data/game/<ver>/) — GH #801.
+# (sts2-rs/crates/sts2-workbench/data/game/<ver>/) — GH #801 — plus its display
+# tables: sts2-pycli/web/public/<ver>/{sfx_map,card_text}.json and
+# sts2-pycli/python/workbench/data/<ver>/card_db.json (GH #877).
 SUPPORTED_VERSIONS = ("v0.107.1", "v0.111.0")
 DEFAULT_VERSION = SUPPORTED_VERSIONS[0]
 
 TIERS = ["engine", "oracle", "workbench", "sound"]
+
+# Where --download gets each supported build: the Steam app, its Windows depot
+# (the pck and the .NET DLLs every step reads are the same on every OS, and the
+# Windows depot also carries the FMOD DLLs the sound tier renders with), and
+# the depot manifest that IS that build. A branch name alone would not do:
+# Steam's `public` and `public-beta` move to newer builds. Steam still wants
+# the branch a manifest was published on (it hands out the manifest's
+# download code per branch), so each build pins both. A new supported build
+# adds its pair here (DepotDownloader prints the manifest;
+# sts2_binaries/<ver>/.DepotDownloader/ keeps it as <depot>_<manifest>.manifest).
+STEAM_APP = "2868840"
+STEAM_DEPOT = "2868841"
+DEPOT_MANIFESTS = {
+    "v0.107.1": "4733892780027453168",
+    "v0.111.0": "5661886308395090154",
+}
+DEPOT_BRANCHES = {
+    "v0.107.1": "public",
+    "v0.111.0": "public-beta",
+}
+# What the import reads from a build; the rest (the ~0.9 GB executable) is skipped.
+DOWNLOAD_FILES = [
+    "release_info.json",
+    "SlayTheSpire2.pck",
+    "fmod.dll",
+    "fmodstudio.dll",
+    r"regex:^data_sts2_windows_x86_64[/\\]",
+]
+DOWNLOAD_ATTEMPTS = 4
+DOWNLOAD_RETRY_S = 20
+DEPOTDOWNLOADER_URL = "https://github.com/SteamRE/DepotDownloader/releases"
 
 # Files the C# harness links against (sts2-pycli/scripts/setup_oracle.py copies + patches).
 GAME_DLLS = [
@@ -311,8 +354,103 @@ def stage(data_dir: Path, pck: Path, release_info: Path, version: str, copy: boo
 
 
 # --------------------------------------------------------------------------
+# Download a build (--download)
+# --------------------------------------------------------------------------
+
+
+def find_depotdownloader(explicit: str | None) -> str:
+    for cand in (explicit, os.environ.get("DEPOTDOWNLOADER")):
+        if cand:
+            if Path(cand).expanduser().is_file():
+                return str(Path(cand).expanduser())
+            raise SystemExit(f"DepotDownloader not found at {cand}")
+    found = which("DepotDownloader") or which("depotdownloader")
+    if found:
+        return found
+    raise SystemExit(
+        f"--download needs DepotDownloader: unpack a release from {DEPOTDOWNLOADER_URL} and put it on PATH, "
+        "or pass --depotdownloader PATH (or set DEPOTDOWNLOADER)."
+    )
+
+
+def downloaded(dest: Path, version: str) -> bool:
+    """Whether `dest` already holds `version`'s pck, data folder and release info."""
+    info = dest / "release_info.json"
+    return (dest / "SlayTheSpire2.pck").is_file() and info.is_file() and read_version(info) == version \
+        and find_data_dir(dest) is not None
+
+
+def depot_command(tool: str, version: str, dest: Path, filelist: Path, steam_user: str | None, qr: bool) -> list[str]:
+    cmd = [tool, "-app", STEAM_APP, "-depot", STEAM_DEPOT, "-manifest", DEPOT_MANIFESTS[version],
+           "-branch", DEPOT_BRANCHES[version], "-os", "windows", "-dir", str(dest), "-filelist", str(filelist)]
+    # -remember-password keeps DepotDownloader's login token (its own store,
+    # not this repo), so the second build does not ask again.
+    return cmd + (["-qr"] if qr else ["-username", steam_user or "", "-remember-password"])
+
+
+def download(version: str, tool: str, steam_user: str | None, qr: bool) -> Path:
+    """Fetch `version` into sts2_binaries/<version>/ (skipped when it is there)."""
+    dest = BINARIES / version
+    if downloaded(dest, version):
+        log(f"skip download (present): {dest.relative_to(ROOT)}/")
+        return dest
+    dest.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        filelist = Path(tmp) / "files.txt"
+        filelist.write_text("\n".join(DOWNLOAD_FILES) + "\n", encoding="utf-8")
+        cmd = depot_command(tool, version, dest, filelist, steam_user, qr)
+        log(f"download {version} (depot {STEAM_DEPOT} manifest {DEPOT_MANIFESTS[version]}) -> {dest.relative_to(ROOT)}/")
+        log("$ " + " ".join("<steam-user>" if steam_user and a == steam_user else a for a in cmd))
+        # Inherits the terminal: DepotDownloader prompts for the password and
+        # the Steam Guard code (or draws the QR code) itself. Steam sometimes
+        # returns no manifest request code ("Encountered 401 for depot
+        # manifest") for a manifest it serves a minute later, so a failed
+        # attempt is retried; the login token makes the retry silent.
+        for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+            rc = subprocess.run(cmd).returncode
+            if rc == 0 and downloaded(dest, version):
+                break
+            if attempt < DOWNLOAD_ATTEMPTS:
+                log(f"download attempt {attempt}/{DOWNLOAD_ATTEMPTS} failed; retrying in {DOWNLOAD_RETRY_S}s")
+                time.sleep(DOWNLOAD_RETRY_S)
+    if rc != 0:
+        raise SystemExit(f"DepotDownloader failed ({rc}) downloading {version}; its output is above")
+    if not downloaded(dest, version):
+        info = dest / "release_info.json"
+        if not info.is_file():
+            # DepotDownloader exits 0 when Steam refuses the manifest (wrong
+            # branch, an account that does not own the game, a manifest Steam
+            # no longer serves); it says why above.
+            raise SystemExit(f"DepotDownloader downloaded nothing for {version} (manifest {DEPOT_MANIFESTS[version]}, "
+                             f"branch {DEPOT_BRANCHES[version]}); its output above says why")
+        raise SystemExit(f"the download into {dest} is {read_version(info)}, not {version}: the pinned manifest is wrong")
+    return dest
+
+
+# --------------------------------------------------------------------------
 # Steps
 # --------------------------------------------------------------------------
+
+
+def copy_new_art(extracted: Path, shared: Path, overlay: Path) -> int:
+    """Copy into `overlay` every file under `extracted` the `shared` tree lacks.
+
+    -> the number copied. A non-default build's art overlay: its new content
+    and the art the default build ships only as a sketch (`beta/`); a file the
+    shared tree has stays shared, even where the build redrew it.
+    """
+    copied = 0
+    for src in sorted(extracted.rglob("*")):
+        if not src.is_file():
+            continue
+        rel = src.relative_to(extracted)
+        dst = overlay / rel
+        if (shared / rel).exists() or dst.exists():
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+        copied += 1
+    return copied
 
 
 def fmod_env(build: Path) -> dict[str, str]:
@@ -438,6 +576,18 @@ def build_steps(build: Path, version: str) -> list[Step]:
         uv_python(["scripts/extract_images.py", pck, f"extracted/{version}", "site/public/images"], WIKI, wiki_env)
         uv_python(["-m", "scripts.extract_vfx", pck, "site/public/images"], WIKI, wiki_env)
 
+    overlay = images / version
+
+    def art_overlay():
+        # images/<version>/ is what a <version> run's art resolver tries before
+        # the shared tree (sts2-workbench assets.rs, workbench/assets.py), and
+        # the bundle step lists it in that build's art manifest. With no shared
+        # tree (only this build was imported) the whole atlas set lands here.
+        with tempfile.TemporaryDirectory() as tmp:
+            uv_python(["scripts/extract_images.py", pck, f"extracted/{version}", tmp], WIKI, wiki_env)
+            n = copy_new_art(Path(tmp), images, overlay)
+        log(f"art overlay: {n} files the shared art tree lacks -> {overlay.relative_to(ROOT)}/")
+
     def scene_art():
         # Rooms, scenes, map, events, HUD chrome, boss icons, orbs, ancients.
         uv_python(["-m", "scripts.extract_rooms", pck, "site/public/images"], WIKI, wiki_env)
@@ -467,15 +617,22 @@ def build_steps(build: Path, version: str) -> list[Step]:
             shutil.copyfile(RS / "crates/sts2-workbench/data/game/creature_scales.json", images / "creature_scales.json")
         log("copied vfx_bindings.json and creature_scales.json into the art tree")
 
-    sfx_map_json = "../sts2-pycli/web/public/sfx_map.json"
+    # Per-build display tables (GH #877): the default build's at today's paths,
+    # another build's under a <version>/ subdir (web/src/gameVersion.ts
+    # versionedPublicPath, workbench/deck_analysis.py data_dir_for).
+    public = PYCLI / "web/public"
+    public_ver = public if is_default else public / version
+    card_db_json = PYCLI / "python/workbench/data" / ("" if is_default else version) / "card_db.json"
+    sfx_map_json = f"../sts2-pycli/web/public/{'' if is_default else version + '/'}sfx_map.json"
 
     def sfx_map():
+        public_ver.mkdir(parents=True, exist_ok=True)
         uv_python(["-m", "scripts.build_sfx_map", f"decompiled/{version}", sfx_map_json], WIKI, wiki_env)
 
     def card_text_and_db():
         py_env = {"PYTHONPATH": str(PYCLI / "python")}
-        sh([sys.executable, "-m", "synergy.gen_card_text"], PYCLI, env=py_env)
-        sh([sys.executable, "-m", "workbench.build_card_db"], PYCLI, env=py_env)
+        sh([sys.executable, "-m", "synergy.gen_card_text", "--version", version], PYCLI, env=py_env)
+        sh([sys.executable, "-m", "workbench.build_card_db", "--version", version], PYCLI, env=py_env)
 
     def workbench_data():
         if is_default:
@@ -493,8 +650,11 @@ def build_steps(build: Path, version: str) -> list[Step]:
         # (the URLs' cache-buster). The committed map carries the maintainers'
         # hash; re-derive it for the audio just encoded. Only that line moves:
         # a full rebuild would also drop every event this render missed.
-        uv_python(["-m", "scripts.build_sfx_map", f"decompiled/{version}", sfx_map_json, "--rev-only"],
-                  WIKI, wiki_env)
+        # The audio tree is shared, so every build's map gets the same rev.
+        for sfx_json in [public / "sfx_map.json", *sorted(public.glob("v*/sfx_map.json"))]:
+            if sfx_json.is_file():
+                uv_python(["-m", "scripts.build_sfx_map", f"decompiled/{version}", str(sfx_json), "--rev-only"],
+                          WIKI, wiki_env)
 
     return [
         Step(f"game DLLs -> sts2-pycli/lib/{version}/ (IL-patched) + C# oracle build", "oracle", has_lib, oracle_lib,
@@ -514,6 +674,11 @@ def build_steps(build: Path, version: str) -> list[Step]:
              and any(images.glob("epoch_atlas/*"))
              # extract_images' ownerless sprites: an older import lacks them.
              and (images / "relic_atlas/yummy_cookie.png").is_file(), atlas_art, ("uv",)),
+        *([] if is_default else [
+            Step(f"{version} art overlay (art the shared tree lacks) -> sts2-wiki/site/public/images/{version}/",
+                 "workbench", lambda: overlay.is_dir() and any(overlay.rglob("*.png")), art_overlay, ("uv",),
+                 versioned=True),
+        ]),
         Step("rooms, scenes, map, HUD + card frames -> sts2-wiki/site/public/images/", "workbench",
              lambda: (images / "rooms").is_dir() and (images / "ui/top_panel").is_dir()
              and (images / "boss_icons").is_dir() and (images / "card_template").is_dir()
@@ -535,11 +700,11 @@ def build_steps(build: Path, version: str) -> list[Step]:
         Step("vfx_bindings.json + creature_scales.json -> the art tree", "workbench",
              lambda: (images / "vfx/vfx_bindings.json").is_file() and (images / "creature_scales.json").is_file(),
              art_tables),
-        Step("sfx map -> sts2-pycli/web/public/sfx_map.json", "workbench",
-             lambda: (PYCLI / "web/public/sfx_map.json").is_file(), sfx_map, ("uv",)),
+        Step(f"sfx map -> {(public_ver / 'sfx_map.json').relative_to(ROOT).as_posix()}", "workbench",
+             lambda: (public_ver / "sfx_map.json").is_file(), sfx_map, ("uv",), versioned=True),
         Step("card text + card db -> sts2-pycli/", "workbench",
-             lambda: (PYCLI / "web/public/card_text.json").is_file() and (PYCLI / "python/workbench/data/card_db.json").is_file(),
-             card_text_and_db),
+             lambda: (public_ver / "card_text.json").is_file() and card_db_json.is_file(),
+             card_text_and_db, versioned=True),
         Step(f"workbench bundle -> {bundle_dir.relative_to(ROOT).as_posix()}/", "workbench",
              lambda: (bundle_dir / "wiki_cards.json").is_file(), workbench_data, versioned=True),
         Step("sound effects -> sts2-wiki/site/public/audio/ (FMOD: the game's own DLLs on Windows, else FMOD_SDK_ROOT)",
@@ -611,6 +776,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--copy", action="store_true", help="copy the pck and DLLs into sts2_binaries/ instead of symlinking")
     parser.add_argument("--allow-version-mismatch", action="store_true",
                         help=f"proceed even if the install is none of {', '.join(SUPPORTED_VERSIONS)} (expect drift)")
+    parser.add_argument("--download", nargs="?", const="all", choices=[*SUPPORTED_VERSIONS, "all"],
+                        help="download the build(s) from Steam (default: all supported) and import each")
+    parser.add_argument("--steam-user", help="--download: your Steam account name (DepotDownloader asks for the password)")
+    parser.add_argument("--steam-qr", action="store_true", help="--download: log in by scanning a QR code in the Steam app")
+    parser.add_argument("--depotdownloader", help="--download: path to the DepotDownloader executable")
     args = parser.parse_args(argv)
     tier = "sound" if args.tier == "all" else args.tier
     for stream in (sys.stdout, sys.stderr):
@@ -629,7 +799,27 @@ def main(argv: list[str] | None = None) -> int:
         print("tier engine: nothing to import — `cd sts2-rs && cargo nextest run --workspace` works as-is.")
         return 0
 
-    data_dir, pck, release_info = locate(args.game_dir)
+    if args.download:
+        if args.game_dir:
+            parser.error("--download fetches the game itself; drop GAME_DIR")
+        if not (args.steam_user or args.steam_qr):
+            parser.error("--download logs in to Steam as you: pass --steam-user NAME or --steam-qr")
+        tool = find_depotdownloader(args.depotdownloader)
+        versions = list(SUPPORTED_VERSIONS) if args.download == "all" else [args.download]
+        # Every download first (the logins happen up front), then the imports,
+        # the default build first: a later build's art overlay is what the
+        # default build's shared art tree lacks.
+        builds = [download(v, tool, args.steam_user, args.steam_qr) for v in versions]
+        for build in builds:
+            import_build(str(build), tier, args)
+        return 0
+    import_build(args.game_dir, tier, args)
+    return 0
+
+
+def import_build(game_dir: str | None, tier: str, args: argparse.Namespace) -> None:
+    """Stage the install at `game_dir` (None: find it) and run `tier`'s steps on it."""
+    data_dir, pck, release_info = locate(game_dir)
     version = read_version(release_info)
     log(f"game install: data={data_dir} pck={pck} version={version}")
     if version not in SUPPORTED_VERSIONS and not args.allow_version_mismatch:
@@ -674,7 +864,6 @@ def main(argv: list[str] | None = None) -> int:
         print("\nnext: the browser workbench -  just workbench-local   (http://127.0.0.1:4173)\n"
               "      the Python workbench  -  just workbench-server  (http://127.0.0.1:8077)\n"
               "      the full test suites  -  see docs/bring-your-own-game.md")
-    return 0
 
 
 if __name__ == "__main__":

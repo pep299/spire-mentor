@@ -91,9 +91,35 @@ fn index_of(x: &Value) -> &Value {
     py::get_raw(x, "index").unwrap_or(&NULL)
 }
 
-/// `e.get("name", f"enemy {idx}")`.
-fn enemy_name(e: &Value) -> String {
-    py::get_raw(e, "name").map_or_else(|| format!("enemy {}", py::to_str(index_of(e))), py::to_str)
+/// The display name of `enemies[pos]`: its board label — the name plus
+/// `" #k"` when several enemies in `enemies` share it
+/// ([`crate::enemy_labels`]) — or `fallback` when it carries no `name`.
+///
+/// A diff spans two states, so each enemy is labelled from ONE of them: an
+/// enemy present before the action by its label in the BEFORE state (the
+/// board the player acted on — so a kill still names the rat that was hit,
+/// even though the after-board's numbers close up), a newly spawned one by
+/// its label in the AFTER state (the only board it is on).
+///
+/// `labels` is `enemy_labels(enemies)`, computed once per state by the caller
+/// rather than once per enemy.
+fn enemy_name_at(
+    enemies: &[Value],
+    labels: &[String],
+    pos: usize,
+    fallback: impl FnOnce() -> String,
+) -> String {
+    if py::get_raw(&enemies[pos], "name").is_none() {
+        return fallback();
+    }
+    labels[pos].clone()
+}
+
+/// `enemy_name_at` with `e.get("name", f"enemy {idx}")`'s fallback.
+fn enemy_name(enemies: &[Value], labels: &[String], pos: usize) -> String {
+    enemy_name_at(enemies, labels, pos, || {
+        format!("enemy {}", py::to_str(index_of(&enemies[pos])))
+    })
 }
 
 /// `d.get(k, 0)`.
@@ -134,8 +160,10 @@ fn enemy_lines(prev: &Value, nxt: &Value, out: &mut Vec<String>) {
     for e in py::get_list(nxt, "enemies") {
         nxt_by_idx.insert(index_of(e), e);
     }
-    for e0 in py::get_list(prev, "enemies") {
-        let name = enemy_name(e0);
+    let prev_es = py::get_list(prev, "enemies");
+    let prev_labels = crate::enemy_labels::enemy_labels(prev_es);
+    for (pos, e0) in prev_es.iter().enumerate() {
+        let name = enemy_name(prev_es, &prev_labels, pos);
         let h0 = get_or_zero(e0, "hp", &zero);
         let Some(e1) = nxt_by_idx.get(index_of(e0)) else {
             // A live enemy vanishing = defeated; an already-0 corpse being
@@ -240,15 +268,18 @@ fn power_lines(prev: &Value, nxt: &Value, out: &mut Vec<String>) {
         py::get(nxt, "player_powers"),
         out,
     );
+    let prev_list = py::get_list(prev, "enemies");
+    let prev_labels = crate::enemy_labels::enemy_labels(prev_list);
     let mut prev_es = PyDict::new();
-    for e in py::get_list(prev, "enemies") {
-        prev_es.insert(index_of(e), e);
+    for (pos, e) in prev_list.iter().enumerate() {
+        prev_es.insert(index_of(e), (pos, e));
     }
     for e1 in py::get_list(nxt, "enemies") {
-        let Some(e0) = prev_es.get(index_of(e1)) else {
+        let Some(&(pos, e0)) = prev_es.get(index_of(e1)) else {
             continue;
         };
-        let name = enemy_name(e1);
+        // Labelled from the BEFORE state, like the HP lines (`enemy_name_at`).
+        let name = enemy_name(prev_list, &prev_labels, pos);
         diff_powers(&name, py::get(e0, "powers"), py::get(e1, "powers"), out);
     }
 }
@@ -258,9 +289,11 @@ fn spawn_lines(prev: &Value, nxt: &Value, out: &mut Vec<String>) {
     for e in py::get_list(prev, "enemies") {
         prev_idx.insert(index_of(e), ());
     }
-    for e in py::get_list(nxt, "enemies") {
+    let nxt_es = py::get_list(nxt, "enemies");
+    let nxt_labels = crate::enemy_labels::enemy_labels(nxt_es);
+    for (pos, e) in nxt_es.iter().enumerate() {
         if !prev_idx.contains(index_of(e)) {
-            let name = py::get_raw(e, "name").map_or_else(|| "enemy".to_string(), py::to_str);
+            let name = enemy_name_at(nxt_es, &nxt_labels, pos, || "enemy".to_string());
             out.push(format!("Spawned: {name}"));
         }
     }
@@ -484,6 +517,41 @@ mod tests {
             vec![enemy(0, "Nibbit", 50), enemy(1, "Spire Growth", 60)],
         );
         assert_eq!(diff_states(&a, &b), lines(&["Spawned: Spire Growth"]));
+    }
+
+    #[test]
+    fn test_duplicated_enemy_names_are_numbered_from_the_board_they_are_on() {
+        let rat = "Two-Tailed Rat";
+        let a = combat(
+            70,
+            0,
+            vec![
+                enemy(0, rat, 20),
+                enemy(1, rat, 20),
+                enemy_with_powers(2, rat, 20, vec![pow("Weak", 1)]),
+            ],
+        );
+        // Rat #1 dies and leaves the list, rat #2 loses HP, rat #3 its Weak,
+        // and a fourth rat spawns into slot 3.
+        let b = combat(
+            70,
+            0,
+            vec![enemy(1, rat, 14), enemy(2, rat, 20), enemy(3, rat, 20)],
+        );
+        assert_eq!(
+            diff_states(&a, &b),
+            lines(&[
+                "Two-Tailed Rat #1 HP 20→0  ☠ defeated",
+                "Two-Tailed Rat #2 HP 20→14 (−6)",
+                "Two-Tailed Rat #3 −Weak",
+                // On the AFTER board it is the third rat.
+                "Spawned: Two-Tailed Rat #3",
+            ])
+        );
+        // A unique name stays bare.
+        let a = combat(70, 0, vec![enemy(0, rat, 20), enemy(1, "Louse", 9)]);
+        let b = combat(70, 0, vec![enemy(0, rat, 20), enemy(1, "Louse", 4)]);
+        assert_eq!(diff_states(&a, &b), lines(&["Louse HP 9→4 (−5)"]));
     }
 
     #[test]

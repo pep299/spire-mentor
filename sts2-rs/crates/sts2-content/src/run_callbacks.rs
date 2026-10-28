@@ -61,6 +61,7 @@ pub fn ironclad_content_callbacks() -> ContentCallbacks {
         generate_treasure_relic_pools: Some(generate_treasure_relic_pools),
         resolve_event_at: Some(crate::events::dispatch::resolve_event_at_callback),
         event_option_count: Some(crate::events::dispatch::event_option_count_callback),
+        event_option_enabled: Some(crate::events::dispatch::event_option_enabled_callback),
         bind_pending_event: Some(crate::events::dispatch::bind_pending_event_callback),
         // Stocked merchant inventory: fills the payload-less slots core's
         // `shop::generate_shop_inventory` rolls (price + rarity only) with
@@ -2770,7 +2771,7 @@ mod tests {
         let spec = select_encounter_act1_to_3(&mut rs, 2, RoomType::Boss);
         let after = rs.rng.run_manager.counter();
         assert!(
-            std::ptr::eq(spec, &act2_boss_pool()[2]),
+            std::ptr::eq(spec, &raw const act2_boss_pool()[2]),
             "matching boss pin must return pool[encounter_index], got {:?}",
             spec.name
         );
@@ -3271,7 +3272,7 @@ mod tests {
             });
             let spec = select_encounter_act1_to_3(&mut rs, act, RoomType::Boss);
             assert!(
-                std::ptr::eq(spec, &pool[idx]),
+                std::ptr::eq(spec, &raw const pool[idx]),
                 "act {act}: matching pin must return that act's boss pool entry {idx}"
             );
         }

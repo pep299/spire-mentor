@@ -103,10 +103,19 @@ encode-sfx:
     uv run python -m scripts.encode_sfx \
       "extracted/{{version}}/audio" "site/public/audio" | tee logs/encode-sfx.log
 
-# Regenerate the workbench's game <-> sound-event map from the decomp
+# Regenerate the workbench's game <-> sound-event map from the decomp. One map
+# per game build (GH #877): the default build's (v0.107.1) at
+# web/public/sfx_map.json, any other build's at web/public/<ver>/sfx_map.json
+# (what web/src/sound/sfxMap.ts fetches for a run of that build).
 build-sfx-map:
-    uv run python -m scripts.build_sfx_map "decompiled/{{version}}" \
-      "../sts2-pycli/web/public/sfx_map.json"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out="../sts2-pycli/web/public/sfx_map.json"
+    if [ "{{version}}" != "v0.107.1" ]; then
+      mkdir -p "../sts2-pycli/web/public/{{version}}"
+      out="../sts2-pycli/web/public/{{version}}/sfx_map.json"
+    fi
+    uv run python -m scripts.build_sfx_map "decompiled/{{version}}" "$out"
 
 # --- Extraction pipeline ---
 

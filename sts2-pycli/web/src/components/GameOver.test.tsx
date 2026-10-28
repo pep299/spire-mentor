@@ -23,6 +23,14 @@ describe("GameOver", () => {
     expect(onReviewReplay).toHaveBeenCalledTimes(1);
   });
 
+  it("offers the Coach review on a death", () => {
+    const onCoachReview = vi.fn();
+    render(<GameOver step={mkStep(false)} onNewRun={() => {}} onCoachReview={onCoachReview} />);
+    fireEvent.click(screen.getByRole("button", { name: /coach review/i }));
+    expect(onCoachReview).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: /review replay/i })).toBeNull();
+  });
+
   it("hides Review replay in Replay mode (no handler)", () => {
     render(<GameOver step={mkStep(false)} />);
     expect(screen.queryByRole("button", { name: /review replay/i })).toBeNull();

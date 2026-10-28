@@ -12,35 +12,37 @@
  "scores": [
   {
    "action": "Strike",
-   "hp_n": 27,
+   "hp_n": 24,
+   "hp_sd": 2.9,
    "is_best": true,
    "losses": 0,
    "low_confidence": false,
-   "mean_final_hp": 14.1111,
-   "q": 1.0502,
+   "mean_final_hp": 21.0833,
+   "q": 1.0751,
    "q_saturated": false,
    "stable_idx": 1,
    "target_index": 0,
    "ties": 0,
-   "visits": 27,
+   "visits": 24,
    "win_prob": 1.0,
-   "wins": 27
+   "wins": 24
   },
   {
    "action": "end turn",
-   "hp_n": 21,
+   "hp_n": 24,
+   "hp_sd": 4.1332,
    "is_best": false,
-   "losses": 1,
+   "losses": 0,
    "low_confidence": false,
-   "mean_final_hp": 7.8095,
-   "q": 0.9201,
+   "mean_final_hp": 17.5,
+   "q": 1.0623,
    "q_saturated": false,
    "stable_idx": -1,
    "target_index": null,
    "ties": 0,
-   "visits": 21,
-   "win_prob": 0.9524,
-   "wins": 20
+   "visits": 24,
+   "win_prob": 1.0,
+   "wins": 24
   }
  ]
 }

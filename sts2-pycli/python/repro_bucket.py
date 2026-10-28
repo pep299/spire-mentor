@@ -48,7 +48,7 @@ def main() -> int:
         _run(_resolve_via_assemble(char, seed), seed)
         return 0
     examples_path = sys.argv[1]
-    d = json.load(open(examples_path))
+    d = json.load(open(examples_path, encoding="utf-8"))
     if sys.argv[2] == "--seed":
         seed = int(sys.argv[3])
         ex = None

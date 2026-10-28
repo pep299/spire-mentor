@@ -28,6 +28,7 @@ import {
   drawPowerFlashQuad,
   flipbookCell,
   maskChannelOf,
+  particleDrawAngle,
   particleVertexColor,
   scalarCurvePathsOf,
   trailQuadGeometry,
@@ -909,7 +910,12 @@ export default function VfxLayer({
                 batch = { tex, material: batchMaterial, verts: [] };
                 particleBatches.set(batchKey, batch);
               }
-              appendQuadVertices(batch.verts, { cx, cy, w, h, color, cell, angle: particle.angle }, canvas.width, canvas.height);
+              // ...and on the ANGLE too: a parent mirror applied after the
+              // particle's own rotation is `M·R(a) = R(-a)·M`, so the negated
+              // width alone mirrors the quad in its LOCAL frame and leaves a
+              // rotated (or velocity-aligned) quad pointing the wrong way.
+              const angle = particleDrawAngle(le.emitter.process, particle) * mirrorSign;
+              appendQuadVertices(batch.verts, { cx, cy, w, h, color, cell, angle }, canvas.width, canvas.height);
             }
           }
           return true;
@@ -1144,7 +1150,7 @@ export default function VfxLayer({
             }
             appendQuadVertices(
               batch.verts,
-              { cx, cy, w, h, color, angle: trail?.angle ?? particle.angle },
+              { cx, cy, w, h, color, angle: trail?.angle ?? particleDrawAngle(em.process, particle) },
               canvas.width,
               canvas.height,
             );

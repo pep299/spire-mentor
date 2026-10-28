@@ -1,3 +1,43 @@
 {
- "detail": "ppo policy only available at a non-combat decision"
+ "error": null,
+ "impl": "rust",
+ "options": [
+  {
+   "action": "select_card_reward",
+   "args": {
+    "card_index": 0
+   },
+   "is_best": false,
+   "label": "Take Deadly Poison",
+   "prob": 0.0567
+  },
+  {
+   "action": "select_card_reward",
+   "args": {
+    "card_index": 1
+   },
+   "is_best": true,
+   "label": "Take Poisoned Stab",
+   "prob": 0.9419
+  },
+  {
+   "action": "select_card_reward",
+   "args": {
+    "card_index": 2
+   },
+   "is_best": false,
+   "label": "Take Leading Strike",
+   "prob": 0.0
+  },
+  {
+   "action": "skip_card_reward",
+   "args": {},
+   "is_best": false,
+   "label": "Skip card reward",
+   "prob": 0.0014
+  }
+ ],
+ "ppo_available": true,
+ "surface": "card-pick",
+ "value": 0.6881
 }

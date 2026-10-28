@@ -165,13 +165,18 @@ fn hash_game_state<E: HashEncoding, H: Hasher>(state: &CombatState, h: &mut H) {
 /// 3; `crates/sts2-mcts`'s `chance_widen_or_sample` / DrawChance
 /// outcome-0 build are the only callers). Identical to [`search_hash`]
 /// (same scalars, RNG-cursor omission, allies, enemies, cards-arena
-/// content, potions, relics, pending choice, Discard/Exhaust/Play piles)
-/// EXCEPT the player's HAND and DRAW piles: instead of `search_hash`'s
-/// per-uid [`pile_mix`] fingerprint, HAND (in full) and DRAW's
-/// unknown-middle segment ([`crate::cards::unknown_middle_uids`] — the
-/// same segment [`crate::cards::shuffle`] permutes) are each folded as a
-/// SORTED list of [`card_observational_key`] values
-/// ([`hash_pile_observational`]).
+/// content, potions, relics, pending choice) EXCEPT the player's card
+/// piles: instead of `search_hash`'s per-uid [`pile_mix`] fingerprint,
+/// HAND, DISCARD, EXHAUST and PLAY (in full) and DRAW's unknown-middle
+/// segment ([`crate::cards::unknown_middle_uids`] — the same segment
+/// [`crate::cards::shuffle`] permutes) are each folded as a SORTED list of
+/// [`card_observational_key`] values ([`hash_pile_observational`]).
+/// Discard/Exhaust/Play joined in GH #785 — see
+/// [`hash_player_chance_dedup`]. The uid-keyed card-arena walk is cut
+/// down to the cards something else names by uid (pinned draw cards, ally
+/// piles); every other card is hashed by content only, so a card's
+/// per-instance state is not re-bound to its uid
+/// ([`chance_dedup_arena_split`]).
 ///
 /// Why HAND too, not just DRAW: under `DrawChance`, two chance outcomes
 /// that drew observationally-identical-but-differently-uid'd duplicate
@@ -206,8 +211,84 @@ pub fn chance_outcome_hash(state: &CombatState) -> u64 {
     for ally in &state.allies {
         hash_player::<FastEncoding, _>(ally, &mut h, state);
     }
-    hash_enemies_cards_items_pending::<FastEncoding, _>(state, &mut h);
+    let (uid_bound, loose) = chance_dedup_arena_split(state);
+    0x0Au8.hash(&mut h);
+    hash_pile_observational(&loose, state, &mut h);
+    hash_enemies_cards_items_pending_skipping::<FastEncoding, _>(state, &mut h, |c| {
+        uid_bound.binary_search(&c.uid.get()).is_err()
+    });
     h.finish()
+}
+
+/// Splits the card arena for [`chance_outcome_hash`] (GH #785): which cards
+/// keep their uid-keyed arena entry, and which are folded by content only.
+///
+/// Returns `(uid_bound, loose)`:
+/// - `uid_bound` (sorted raw uids): the cards some other section of the
+///   hash names BY UID — the player's pinned draw cards (see
+///   [`hash_draw_pile_chance_dedup`]) and every card in an ally's piles
+///   (hashed by uid in the allies section). Their arena entry stays, so
+///   their content stays bound to that uid.
+/// - `loose`: arena cards in none of the player's or allies' piles (e.g.
+///   removed from combat). Nothing observable names them; the caller folds
+///   them by content only ([`hash_pile_observational`]).
+///
+/// Every other card sits in a player pile whose full content
+/// [`hash_player_chance_dedup`] already folds observationally (Hand,
+/// Discard, Exhaust, Play, the draw's unknown middle), so it is left out of
+/// the arena walk. Folding the piles alone was not enough: the walk hashes
+/// each card's mutable fields keyed by its uid, so any per-instance trace
+/// re-bound the outcome to WHICH instance it was. Playing a card leaves
+/// such traces (zero-valued `PendingBatchAutoPlay` / `FreeThisTurn` /
+/// `FreeUntilPlayed` combat vars on the played instance), so Havoc /
+/// Cascade / Mayhem onto identical cards still fanned out one outcome per
+/// instance. [`card_observational_key`] hashes the whole card minus its
+/// uid, a superset of the walk's fields, so no content is lost.
+fn chance_dedup_arena_split(
+    state: &CombatState,
+) -> (
+    smallvec::SmallVec<[u32; 8]>,
+    smallvec::SmallVec<[crate::CardUid; 8]>,
+) {
+    let p = &state.player;
+    let mut uid_bound: smallvec::SmallVec<[u32; 8]> = p
+        .pinned_top
+        .iter()
+        .chain(&p.pinned_bottom)
+        .map(|u| u.get())
+        .collect();
+    for a in &state.allies {
+        uid_bound.extend(
+            a.hand
+                .iter()
+                .chain(&a.draw)
+                .chain(&a.discard)
+                .chain(&a.exhaust)
+                .chain(&a.play)
+                .map(|u| u.get()),
+        );
+    }
+    uid_bound.sort_unstable();
+    let mut in_player_pile: smallvec::SmallVec<[u32; 64]> = p
+        .hand
+        .iter()
+        .chain(&p.draw)
+        .chain(&p.discard)
+        .chain(&p.exhaust)
+        .chain(&p.play)
+        .map(|u| u.get())
+        .collect();
+    in_player_pile.sort_unstable();
+    let loose = state
+        .cards
+        .iter()
+        .map(|c| c.uid)
+        .filter(|u| {
+            uid_bound.binary_search(&u.get()).is_err()
+                && in_player_pile.binary_search(&u.get()).is_err()
+        })
+        .collect();
+    (uid_bound, loose)
 }
 
 /// Top-level scalar fields (phase / round / side / over / ascension …).
@@ -254,9 +335,9 @@ fn hash_scalars<H: Hasher>(state: &CombatState, h: &mut H) {
     let log = &state.combat_log;
     if state.game_version >= crate::GameVersion::V0_111_0
         && (log.cards_started_this_turn.iter().any(|&n| n > 0)
-        || !log.unmovable_card_block_plays.is_empty()
-        || log.current_card_play.is_some()
-        || log.pen_nib_attack_to_double.is_some())
+            || !log.unmovable_card_block_plays.is_empty()
+            || log.current_card_play.is_some()
+            || log.pen_nib_attack_to_double.is_some())
     {
         0x0Fu8.hash(h);
         log.cards_started_this_turn.hash(h);
@@ -265,16 +346,77 @@ fn hash_scalars<H: Hasher>(state: &CombatState, h: &mut H) {
         log.unmovable_card_block_plays.hash(h);
         log.pen_nib_attack_to_double.hash(h);
     }
-    if let Some(continuation) = state.pending_relic_hand_draw_resume
-        .filter(|_| state.game_version >= crate::GameVersion::V0_111_0) {
+    if let Some(continuation) = state
+        .pending_relic_hand_draw_resume
+        .filter(|_| state.game_version >= crate::GameVersion::V0_111_0)
+    {
         0x11u8.hash(h);
         continuation.hash(h);
+    }
+    // GH #806 per-turn Fetch / GangUp tallies: folded in only when non-empty
+    // so every digest of a position without them is unchanged.
+    if !state.combat_log.fetch_played_this_turn.is_empty()
+        || !state
+            .combat_log
+            .osty_powered_hits_by_target_this_turn
+            .is_empty()
+    {
+        0x1Du8.hash(h);
+        state.combat_log.fetch_played_this_turn.as_slice().hash(h);
+        state
+            .combat_log
+            .osty_powered_hits_by_target_this_turn
+            .as_slice()
+            .hash(h);
     }
     // Game build (GH #787). Folded in only when non-default so every
     // v0.107.1 digest — and every golden keyed by one — is byte-identical.
     if !state.game_version.is_default() {
         0x0Eu8.hash(h);
         state.game_version.hash(h);
+    }
+    // Co-op: whether the next enemy turn still lands on the teammates, and
+    // which of them have yet to play. The seat stashes are fixed by the root
+    // (a teammate's relics and log change only while seated, inside one
+    // transition). Folded in only when set so every solo digest is
+    // byte-identical.
+    if let Some(round) = state.coop.threat_round {
+        0x2Eu8.hash(h);
+        round.hash(h);
+        state.coop.to_play.hash(h);
+    }
+    // A whole co-op fight runs the teammates' turns too, so their stashes
+    // change between transitions: fold in what the seated player's own
+    // sections fold in for them (relic ids, the per-turn log flags), plus
+    // which powers are theirs.
+    if state.coop.full {
+        0x30u8.hash(h);
+        state.coop.to_play.hash(h);
+        state.coop.seat_index.hash(h);
+        for seat in &state.coop.stash {
+            seat.seat.hash(h);
+            (seat.relics.len() as u64).hash(h);
+            for r in &seat.relics {
+                r.id.get().hash(h);
+            }
+            seat.powers.as_slice().hash(h);
+            seat.combat_log.chains_bound_card_played_this_turn.hash(h);
+            seat.combat_log.doom_applied_by_player_this_turn.hash(h);
+            seat.combat_log.osty_attacks_this_turn.hash(h);
+        }
+        for (seat, relics) in &state.coop.benched {
+            seat.hash(h);
+            (relics.len() as u64).hash(h);
+        }
+    }
+    // Which seat applied each Strangle / Oblivion: it decides whose cards
+    // tick it and whether the next apply stacks or opens an instance.
+    if !state.coop.power_seat.is_empty() {
+        0x2Fu8.hash(h);
+        for (id, seat) in &state.coop.power_seat {
+            id.hash(h);
+            seat.hash(h);
+        }
     }
 }
 
@@ -308,10 +450,24 @@ fn hash_player_and_allies<E: HashEncoding, H: Hasher>(state: &CombatState, h: &m
 
 /// Enemy / card-arena / potion / relic / pending-choice sections of
 /// [`hash_piles`] (tags `0x05`-`0x09`), split out so
-/// [`chance_outcome_hash`] can reuse this section unmodified — it does not
-/// touch the player's draw pile at all. Pure extraction, same hash calls
-/// in the same order as the pre-split `hash_piles` body.
+/// [`chance_outcome_hash`] can reuse this section — it does not touch the
+/// player's draw pile at all. Pure extraction, same hash calls in the same
+/// order as the pre-split `hash_piles` body.
 fn hash_enemies_cards_items_pending<E: HashEncoding, H: Hasher>(state: &CombatState, h: &mut H) {
+    hash_enemies_cards_items_pending_skipping::<E, H>(state, h, |_| false);
+}
+
+/// [`hash_enemies_cards_items_pending`] with a card-arena filter: cards for
+/// which `skip_card` returns `true` are left out of the uid-keyed arena
+/// walk (the arena LENGTH is still hashed). With the never-skip closure
+/// every caller but [`chance_outcome_hash`] passes, the hash bytes are
+/// exactly the unfiltered walk's. [`chance_outcome_hash`] skips every card
+/// it hashes by content instead (see [`chance_dedup_arena_split`]).
+fn hash_enemies_cards_items_pending_skipping<E: HashEncoding, H: Hasher>(
+    state: &CombatState,
+    h: &mut H,
+    skip_card: impl Fn(&crate::Card) -> bool,
+) {
     // ── Enemies (in canonical enemy_uids order — slot identity matters) ─
     0x05u8.hash(h);
     (state.enemy_uids.len() as u64).hash(h);
@@ -330,7 +486,7 @@ fn hash_enemies_cards_items_pending<E: HashEncoding, H: Hasher>(state: &CombatSt
             c.species.hash(h);
             c.monster_id.0.hash(h);
             c.intent.hash(h);
-            hash_powers(&c.powers, state, h);
+            E::powers(&c.powers, state, h);
         } else {
             0xDEADu16.hash(h);
         }
@@ -345,6 +501,9 @@ fn hash_enemies_cards_items_pending<E: HashEncoding, H: Hasher>(state: &CombatSt
     0x06u8.hash(h);
     (state.cards.len() as u64).hash(h);
     E::for_each_card(state, |c| {
+        if skip_card(c) {
+            return;
+        }
         c.uid.get().hash(h);
         // `card_id` / `card_type` / `target_type` all derive `Hash`; hash
         // the enums directly instead of materializing a Debug string per
@@ -554,6 +713,108 @@ trait HashEncoding {
     fn relic_kind<H: Hasher>(kind: crate::relics::RelicKind, h: &mut H);
     /// Visit every card in the arena in the strategy's canonical order.
     fn for_each_card(state: &CombatState, f: impl FnMut(&crate::Card));
+    /// Fold one creature's powers. Every hash but [`tt_hash_v2`] keys the
+    /// rows on the power's arena uid ([`hash_powers`]).
+    #[inline]
+    fn powers<H: Hasher>(power_uids: &[crate::PowerUid], state: &CombatState, h: &mut H) {
+        hash_powers(power_uids, state, h);
+    }
+    /// Fold a player's powers. Every hash but [`tt_hash_v2`] reads only the
+    /// legacy [`PlayerCombatState::powers`] list.
+    #[inline]
+    fn player_powers<H: Hasher>(p: &PlayerCombatState, state: &CombatState, h: &mut H) {
+        Self::powers(&p.powers, state, h);
+    }
+    /// Per-player fields only [`tt_hash_v2`] reads. Writes nothing for every
+    /// other hash, so their byte streams are unchanged by this hook.
+    #[inline]
+    fn player_extra<H: Hasher>(_p: &PlayerCombatState, _h: &mut H) {}
+}
+
+/// [`tt_hash_v2`]'s encodings: [`FastEncoding`]'s piles, relics and arena
+/// walk, plus the two fixes the v2 key exists for — powers folded without
+/// their arena uid ([`hash_powers_observational`]) and the player's potion
+/// belt ([`hash_potion_belt`]).
+struct TtV2Encoding;
+
+impl HashEncoding for TtV2Encoding {
+    #[inline]
+    fn pile<H: Hasher>(pile: &[crate::CardUid], h: &mut H) {
+        FastEncoding::pile(pile, h);
+    }
+
+    #[inline]
+    fn relic_kind<H: Hasher>(kind: crate::relics::RelicKind, h: &mut H) {
+        FastEncoding::relic_kind(kind, h);
+    }
+
+    #[inline]
+    fn for_each_card(state: &CombatState, f: impl FnMut(&crate::Card)) {
+        FastEncoding::for_each_card(state, f);
+    }
+
+    #[inline]
+    fn powers<H: Hasher>(power_uids: &[crate::PowerUid], state: &CombatState, h: &mut H) {
+        hash_powers_observational(power_uids, state, h);
+    }
+
+    /// The player's powers as the game holds them: the mirror creature's
+    /// list (where card, potion and enemy effects put them) unioned with the
+    /// legacy list, like [`CombatState::player_power_uids`].
+    #[inline]
+    fn player_powers<H: Hasher>(p: &PlayerCombatState, state: &CombatState, h: &mut H) {
+        let mut uids: smallvec::SmallVec<[crate::PowerUid; 8]> = p
+            .creature_uid
+            .and_then(|uid| crate::creature_by_id(&state.creatures, uid.0))
+            .map(|c| c.powers.clone())
+            .unwrap_or_default();
+        for uid in &p.powers {
+            if !uids.contains(uid) {
+                uids.push(*uid);
+            }
+        }
+        hash_powers_observational(&uids, state, h);
+    }
+
+    #[inline]
+    fn player_extra<H: Hasher>(p: &PlayerCombatState, h: &mut H) {
+        hash_potion_belt(p, h);
+    }
+}
+
+/// Transposition key v2 (GH #830): [`search_hash`] with three blind spots
+/// and one over-split removed. Only `sts2-mcts`'s transposition table reads
+/// it, and only under `MctsConfig::tt_hash_v2`; [`search_hash`],
+/// [`chance_outcome_hash`] and every caller of them are untouched.
+///
+/// - **The player's powers.** [`search_hash`] folds the legacy
+///   [`PlayerCombatState::powers`] list, but card, potion and enemy effects
+///   apply player powers to the player's mirror creature
+///   ([`PlayerCombatState::creature_uid`]), which no section of the hash
+///   visits. A Strength potion, Inflame's Strength, an enemy's Weak on the
+///   player: none of them moves [`search_hash`] or [`chance_outcome_hash`].
+///   v2 reads the union [`CombatState::player_power_uids`] reads.
+/// - **The potion belt.** [`search_hash`] hashes the legacy
+///   [`CombatState::potions`] arena, which the potion runtime never writes;
+///   the belt the game plays from is [`PlayerCombatState::potions`]. A
+///   drink that changes nothing else hashed (Strength / Dexterity / Flex
+///   potions, Lucky Tonic, Stable Serum, Fysh Oil, …) therefore leaves the
+///   key unchanged, and the table merges "drank it" into "still holds it".
+///   v2 folds each player's belt (kinds in order, physical slot indices,
+///   slot cap).
+/// - **Power arena uids.** [`hash_powers`] sorts and hashes each power by
+///   its arena uid, which records the ORDER powers were applied in, not
+///   anything observable: Inflame-then-Bash and Bash-then-Inflame reach one
+///   position under two keys. v2 sorts by `(kind, amount, counter,
+///   applier, skip_next_tick)` and leaves the uid out.
+///
+/// Same stability contract as [`search_hash`] (stable within one compiled
+/// binary only).
+#[must_use]
+pub fn tt_hash_v2(state: &CombatState) -> u64 {
+    let mut h = new_hasher();
+    hash_game_state::<TtV2Encoding, _>(state, &mut h);
+    h.finish()
 }
 
 /// Fast-path encodings (fixed-seed ahash hashes, [`state_hash`] /
@@ -673,7 +934,7 @@ fn hash_player<E: HashEncoding, H: Hasher>(p: &PlayerCombatState, h: &mut H, sta
         kind.hash(h);
         E::pile(pile, h);
     }
-    hash_player_tail(p, h, state);
+    hash_player_tail::<E, H>(p, h, state);
 }
 
 /// Scalar / power / orb tail shared by [`hash_player`] and
@@ -681,7 +942,11 @@ fn hash_player<E: HashEncoding, H: Hasher>(p: &PlayerCombatState, h: &mut H, sta
 /// about a [`PlayerCombatState`] EXCEPT the five card piles, which the two
 /// callers encode differently. Pure extraction from [`hash_player`]'s
 /// prior body; same hash calls in the same order.
-fn hash_player_tail<H: Hasher>(p: &PlayerCombatState, h: &mut H, state: &CombatState) {
+fn hash_player_tail<E: HashEncoding, H: Hasher>(
+    p: &PlayerCombatState,
+    h: &mut H,
+    state: &CombatState,
+) {
     p.energy.hash(h);
     p.max_energy.hash(h);
     p.stars.hash(h);
@@ -693,7 +958,7 @@ fn hash_player_tail<H: Hasher>(p: &PlayerCombatState, h: &mut H, state: &CombatS
     // from a uid-only fingerprint (the pre-bead body only hashed
     // `power.id`, masking counter/applier diffs on player-side stacked
     // powers like Unmovable / CrimsonMantle / Inferno).
-    hash_powers(&p.powers, state, h);
+    E::player_powers(p, state, h);
 
     // Defect orb belt. Bead `sts2-rs-jyd15`: the orb belt
     // (Lightning/Frost/Dark passive + evoke payloads) is observable
@@ -728,43 +993,50 @@ fn hash_player_tail<H: Hasher>(p: &PlayerCombatState, h: &mut H, state: &CombatS
             c.current_hp.hash(h);
             c.max_hp.hash(h);
             c.block.hash(h);
-            hash_powers(&c.powers, state, h);
+            E::powers(&c.powers, state, h);
         }
         None => 0u8.hash(h),
     }
+    E::player_extra(p, h);
 }
 
 /// [`chance_outcome_hash`]'s player encoding (bead `sts2-rs-i8bgu`, F1):
 /// identical to [`hash_player`] except the DRAW pile uses
-/// [`hash_draw_pile_chance_dedup`] instead of the uid-based [`pile_mix`].
+/// [`hash_draw_pile_chance_dedup`] instead of the uid-based [`pile_mix`],
+/// and every face-up pile (HAND, DISCARD, EXHAUST, PLAY) is folded
+/// observationally via [`hash_pile_observational`].
 ///
-/// HAND gets the same observational treatment (via
-/// [`hash_pile_observational`]), not just DRAW: the card a draw-chance
-/// outcome adds lands in HAND, so a physically-different-but-
-/// observationally-equal drawn card (two un-upgraded Strikes with
-/// different `uid`s) would still fail to dedup if HAND stayed
-/// `pile_mix`-encoded — that's the exact case this hash exists to
-/// collapse (a starter deck's duplicate Strikes/Defends). Discard/Exhaust/
-/// Play are left exactly as [`FastEncoding::pile`] encodes them in
-/// [`search_hash`] — a plain draw only ever moves a card into Hand (the
-/// `draw` full-hand semantics never redirect to Discard), so those piles
-/// don't carry the ambiguity this hash resolves; scoping the change there
-/// too would only widen dedup further, never break it, but is left for a
-/// follow-up if a redirect-to-discard draw path is found to matter.
+/// HAND: the card a draw-chance outcome adds lands in HAND, so a
+/// physically-different-but-observationally-equal drawn card (two
+/// un-upgraded Strikes with different `uid`s) would still fail to dedup
+/// if HAND stayed `pile_mix`-encoded — that's the exact case this hash
+/// exists to collapse (a starter deck's duplicate Strikes/Defends).
+///
+/// DISCARD / EXHAUST / PLAY (GH #785): the top-of-draw consumers sample a
+/// card from the unknown middle and put it THERE, not in Hand — Havoc and
+/// ToastyMittens exhaust it, Cascade / Distilled Chaos / Mayhem discard it
+/// after the play, and a play suspended on a surfaced choice leaves it in
+/// Play. A random exhaust / discard from Hand (True Grit) has the same
+/// shape. Which instance of identical cards
+/// went there is as unobservable as it is in Hand; hashing those piles by
+/// uid made each instance its own chance outcome (Havoc onto four plain
+/// Defends: four outcomes of one position). Uid-insensitive folding only
+/// ever merges outcomes whose face-up piles hold the same multiset of
+/// observable cards; the pile tag is still hashed, so a card in Discard
+/// vs the same card in Exhaust still differs.
 fn hash_player_chance_dedup<H: Hasher>(p: &PlayerCombatState, h: &mut H, state: &CombatState) {
-    PileKind::Hand.hash(h);
-    hash_pile_observational(&p.hand, state, h);
     for (kind, pile) in [
+        (PileKind::Hand, p.hand.as_slice()),
         (PileKind::Discard, p.discard.as_slice()),
         (PileKind::Exhaust, p.exhaust.as_slice()),
         (PileKind::Play, p.play.as_slice()),
     ] {
         kind.hash(h);
-        FastEncoding::pile(pile, h);
+        hash_pile_observational(pile, state, h);
     }
     PileKind::Draw.hash(h);
     hash_draw_pile_chance_dedup(p, state, h);
-    hash_player_tail(p, h, state);
+    hash_player_tail::<FastEncoding, H>(p, h, state);
 }
 
 /// The DRAW-pile encoding for [`chance_outcome_hash`]: pinned positions
@@ -789,8 +1061,9 @@ fn hash_draw_pile_chance_dedup<H: Hasher>(p: &PlayerCombatState, state: &CombatS
 
 /// Fold `pile` into `h` as a SORTED list of [`card_observational_key`]
 /// values — order- AND instance-uid-insensitive, content-sensitive.
-/// Shared by [`hash_player_chance_dedup`]'s HAND encoding and
-/// [`hash_draw_pile_chance_dedup`]'s unknown-middle encoding. A `uid`
+/// Shared by [`hash_player_chance_dedup`]'s face-up piles (Hand, Discard,
+/// Exhaust, Play) and [`hash_draw_pile_chance_dedup`]'s unknown-middle
+/// encoding. A `uid`
 /// with no matching arena entry is dropped (conservative: it contributes
 /// nothing rather than panicking or aliasing another card's key).
 fn hash_pile_observational<H: Hasher>(pile: &[crate::CardUid], state: &CombatState, h: &mut H) {
@@ -866,6 +1139,42 @@ fn hash_powers<H: Hasher>(power_uids: &[crate::PowerUid], state: &CombatState, h
         counter.hash(h);
         applier_key.hash(h);
     }
+}
+
+/// [`tt_hash_v2`]'s power encoding: [`hash_powers`]' per-instance fields
+/// plus `skip_next_tick` (it decides whether the next turn-end ticks the
+/// power down, so it is real state), sorted by those fields and NOT keyed
+/// on the power's arena uid. The uid only records the order powers were
+/// applied in, so keying on it splits one position into one key per
+/// application order.
+fn hash_powers_observational<H: Hasher>(
+    power_uids: &[crate::PowerUid],
+    state: &CombatState,
+    h: &mut H,
+) {
+    let mut rows: smallvec::SmallVec<[(crate::PowerKind, i32, i32, u32, bool); 16]> = power_uids
+        .iter()
+        .filter_map(|puid| {
+            let p = state.powers.get_by_id(puid.0)?;
+            let applier_key = p.applier.map_or(0u32, |uid| uid.0.get());
+            Some((p.kind, p.amount, p.counter, applier_key, p.skip_next_tick))
+        })
+        .collect();
+    rows.sort_unstable();
+    (rows.len() as u64).hash(h);
+    for row in rows {
+        row.hash(h);
+    }
+}
+
+/// [`tt_hash_v2`]'s potion-belt section: the kinds in belt order, their
+/// physical slot indices (which slot the next potion fills) and the slot
+/// cap. Tagged so an empty belt still writes a distinct byte.
+fn hash_potion_belt<H: Hasher>(p: &PlayerCombatState, h: &mut H) {
+    0x0Eu8.hash(h);
+    p.potions.as_slice().hash(h);
+    p.potion_slot_indices.as_slice().hash(h);
+    p.potion_slots.hash(h);
 }
 
 /// Mix a [`crate::PendingChoice`] (or its absence) into the running
@@ -1316,6 +1625,28 @@ mod tests {
         );
     }
 
+    /// A pinned card is named by uid (not folded into the unknown middle),
+    /// so `chance_outcome_hash` keeps its uid-keyed card-arena entry: its
+    /// CONTENT must still reach the hash (GH #785 cut the arena walk down
+    /// to such uid-named cards).
+    #[test]
+    fn chance_outcome_hash_keeps_a_pinned_cards_content() {
+        use crate::cards::CardId;
+        let mut a = draw_state(&[
+            (CardId::StrikeIronclad, false),
+            (CardId::StrikeIronclad, false),
+            (CardId::Bash, false),
+        ]);
+        crate::cards::pin_top(&mut a.player, CardUid::new(1).unwrap());
+        let mut b = a.clone();
+        b.cards[0].upgraded = true;
+        assert_ne!(
+            chance_outcome_hash(&a),
+            chance_outcome_hash(&b),
+            "the pinned card's content (upgraded or not) must change the hash"
+        );
+    }
+
     #[test]
     fn chance_outcome_hash_ignores_which_hand_instance_is_where() {
         use crate::cards::CardId;
@@ -1351,6 +1682,79 @@ mod tests {
             search_hash(&b),
             "sanity: search_hash DOES distinguish these (uid-based) — \
              that's the ambiguity chance_outcome_hash exists to collapse"
+        );
+    }
+
+    /// GH #785: the top-of-draw consumers take a sampled card out of the
+    /// unknown middle and put it in EXHAUST (Havoc's force-exhaust,
+    /// ToastyMittens), DISCARD (Cascade / Distilled Chaos / Mayhem after the
+    /// play) or, while a surfaced choice suspends the play, PLAY — never in
+    /// HAND. Two outcomes that took different instances of an
+    /// observationally-identical card must dedup in those piles too, or every
+    /// Havoc onto duplicate Defends fans out one outcome per instance.
+    #[test]
+    fn chance_outcome_hash_ignores_which_duplicate_instance_left_for_discard_exhaust_or_play() {
+        use crate::cards::CardId;
+        let base = draw_state(&[
+            (CardId::StrikeIronclad, false),
+            (CardId::StrikeIronclad, false),
+            (CardId::Bash, false),
+        ]);
+        // The moved card also picks up the per-instance trace a PLAY leaves
+        // on it (zero-valued combat vars), which the uid-keyed card-arena
+        // walk used to re-bind to the instance.
+        let take = |n: u32, pile: &str| {
+            let mut s = base.clone();
+            let u = CardUid::new(n).expect("non-zero");
+            s.player.draw.retain(|x| *x != u);
+            let card = &mut s.cards[n as usize - 1];
+            card.set_combat_var(crate::cards::VarKey::FreeThisTurn, 0);
+            assert!(!card.combat_vars.as_slice().is_empty(), "fixture: a trace");
+            match pile {
+                "discard" => s.player.discard.push(u),
+                "exhaust" => s.player.exhaust.push(u),
+                "play" => s.player.play.push(u),
+                other => unreachable!("{other}"),
+            }
+            s
+        };
+        for pile in ["discard", "exhaust", "play"] {
+            let (a, b) = (take(1, pile), take(2, pile));
+            assert_eq!(
+                chance_outcome_hash(&a),
+                chance_outcome_hash(&b),
+                "{pile}: which identical Strike instance moved there is unobservable"
+            );
+            assert_ne!(
+                search_hash(&a),
+                search_hash(&b),
+                "{pile}: sanity — the uid-based search_hash does tell them apart"
+            );
+            assert_ne!(
+                chance_outcome_hash(&a),
+                chance_outcome_hash(&take(3, pile)),
+                "{pile}: a genuinely different card (Bash, not Strike) must not dedup"
+            );
+        }
+        // A card in a face-up pile with genuinely different content (a
+        // non-zero var, not a zeroed trace) must not dedup either.
+        let mut boosted = take(1, "exhaust");
+        boosted.cards[0].set_combat_var(crate::cards::VarKey::FreeThisTurn, 1);
+        assert_ne!(
+            chance_outcome_hash(&take(2, "exhaust")),
+            chance_outcome_hash(&boosted),
+            "a real per-card difference must still change the hash"
+        );
+        // The pile a card went to is still observable.
+        assert_ne!(
+            chance_outcome_hash(&take(1, "discard")),
+            chance_outcome_hash(&take(1, "exhaust")),
+            "discard vs exhaust must not alias"
+        );
+        assert_ne!(
+            chance_outcome_hash(&take(1, "exhaust")),
+            chance_outcome_hash(&take(1, "play")),
+            "exhaust vs play must not alias"
         );
     }
 

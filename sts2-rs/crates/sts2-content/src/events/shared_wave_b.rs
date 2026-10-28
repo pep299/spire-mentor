@@ -56,30 +56,23 @@ fn reflections_touch(state: &mut RunState) -> EventOutcome {
     // the always-immediate primitive, NOT the interactive-aware
     // `upgrade_random_cards` (which would queue a card_select under the
     // workbench/lockstep `interactive_card_upgrade` flag).
-    let (downgraded, upgraded) = if state.game_version >= sts2_core::GameVersion::V0_111_0 {
-        reflections_touch_v0111(state)
-    } else {
-        (
-            state.downgrade_random_cards(2),
-            state.upgrade_random_cards_stable(4),
-        )
-    };
+    let (downgraded, upgraded) = reflections_touch_mirror(state);
     EventOutcome::finished(format!(
         "Touched a mirror — downgraded {downgraded}, upgraded {upgraded} card(s)."
     ))
 }
 
-/// v0.111.0 TouchAMirror: both legs draw `base.Rng.NextItem` over a deck-order
+/// TouchAMirror: both legs draw `base.Rng.NextItem` over a deck-order
 /// candidate list, removing each pick, and the upgradable list is built after
 /// the downgrades:
 ///
 /// [decompiled C# omitted — see the cited path]
 ///
 /// (decomp `Models.Events/Reflections.cs:32`). `base.Rng` is the event's own
-/// `REFLECTIONS` stream. v0.107.1 has the same code, but its arm keeps the
-/// pre-port draws (rewards-stream downgrade, Niche `StableShuffle` upgrade) so
-/// that build stays bit-identical (tracked for #806).
-fn reflections_touch_v0111(state: &mut RunState) -> (usize, usize) {
+/// `REFLECTIONS` stream. Identical in v0.107.1 and v0.111.0, so both builds
+/// draw it; the pre-port draws (rewards-stream downgrade, Niche
+/// `StableShuffle` upgrade) are gone (GH #806).
+fn reflections_touch_mirror(state: &mut RunState) -> (usize, usize) {
     let version = state.game_version;
     let mut rng = state.rng.named(REFLECTIONS_STREAM);
     let mut upgraded_cards: Vec<usize> = (0..state.master_deck.len())
@@ -128,14 +121,19 @@ fn reflections_shatter(state: &mut RunState) -> EventOutcome {
         let seed = state.rng.rewards.next_int_exclusive(0, i32::MAX) as u64;
         clones.push(state.master_deck[i].clone_with_seed(seed));
     }
-    state.master_deck.extend(clones);
-    let gained_curse =
-        if let Some(curse) = crate::cards::spec_index::card_pod_from_id(CardId::BadLuck, false) {
-            state.master_deck.push(curse);
-            true
-        } else {
-            false
-        };
+    // C# Shatter adds each clone with its own `CardPileCmd.Add(card, Deck)`
+    // (`Reflections.cs:67-71`), so each runs the deck-add hooks (GH #806).
+    for clone in clones {
+        state.add_card_to_deck_with_hooks(clone, sts2_core::relic_effects::AddSource::EventGain);
+    }
+    let gained_curse = if let Some(curse) =
+        crate::cards::spec_index::card_pod_from_id(CardId::BadLuck, false)
+    {
+        state.add_card_to_deck_with_hooks(curse, sts2_core::relic_effects::AddSource::EventGain);
+        true
+    } else {
+        false
+    };
     EventOutcome::finished(format!(
         "Shattered a mirror — duplicated {original_len} card(s){}.",
         if gained_curse {
@@ -628,7 +626,7 @@ fn spirit_grafter_let_it_in(state: &mut RunState) -> EventOutcome {
     // add to deck. Unconditional (no player choice, no RNG).
     let healed = state.heal(SPIRIT_GRAFTER_HEAL);
     if let Some(card) = card_pod_from_id(CardId::Metamorphosis, false) {
-        state.master_deck.push(card);
+        state.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::EventGain);
     }
     EventOutcome::finished(format!("Healed {healed} HP, gained Metamorphosis."))
 }
@@ -648,14 +646,11 @@ fn spirit_grafter_rejection(state: &mut RunState) -> EventOutcome {
     // post-select deferral is a separate run-loop surface.
     let queued_before = state.pending_deck_upgrades;
     let _ = state.upgrade_random_cards(1);
-    // v0.111.0: an interactive host's queued pick resolves before C#
-    // damages (`SpiritGrafter.cs:47-52`: `FromDeckForUpgrade`, `Upgrade`,
-    // then `CreatureCmd.Damage`), so park the damage until the pick drains.
-    // v0.107.1 has the same code; its arm keeps damaging up front
-    // (bit-identical, tracked for #806).
-    if state.game_version >= sts2_core::GameVersion::V0_111_0
-        && state.pending_deck_upgrades > queued_before
-    {
+    // An interactive host's queued pick resolves before C# damages
+    // (`SpiritGrafter.cs:47-52`: `FromDeckForUpgrade`, `Upgrade`, then
+    // `CreatureCmd.Damage`), so park the damage until the pick drains. Same
+    // C# in v0.107.1 and v0.111.0, so both builds (GH #806).
+    if state.pending_deck_upgrades > queued_before {
         state.pending_post_upgrade_hp_loss += SPIRIT_GRAFTER_DAMAGE;
         return EventOutcome::finished("Upgrade a card, then take damage.");
     }
@@ -796,7 +791,7 @@ fn sunken_treasury_second_chest(state: &mut RunState) -> EventOutcome {
     // base — `6ynt.4.rng`.)
     state.gain_gold(SUNKEN_TREASURY_LARGE_GOLD);
     if let Some(curse) = card_pod_from_id(CardId::Greed, false) {
-        state.master_deck.push(curse);
+        state.add_card_to_deck_with_hooks(curse, sts2_core::relic_effects::AddSource::EventGain);
     }
     EventOutcome::finished(format!(
         "Gained {SUNKEN_TREASURY_LARGE_GOLD} gold, gained a Greed curse."
@@ -1159,7 +1154,7 @@ pub fn tezcatara_deck_has_basic_strike(state: &RunState) -> bool {
     use sts2_core::cards::CardTag;
     let rank = sts2_core::lookup_card_rarity_rank();
     state.master_deck.iter().any(|c| {
-        c.has_tag(CardTag::Strike) && rank.map_or(true, |f| f(c.card_id, state.game_version) == 1)
+        c.has_tag(CardTag::Strike) && rank.is_none_or(|f| f(c.card_id, state.game_version) == 1)
     })
 }
 
@@ -1447,7 +1442,7 @@ fn this_or_that_ornate(state: &mut RunState) -> EventOutcome {
         state.obtain_relic(id);
     }
     if let Some(curse) = crate::cards::spec_index::card_pod_from_id(CardId::Clumsy, false) {
-        state.master_deck.push(curse);
+        state.add_card_to_deck_with_hooks(curse, sts2_core::relic_effects::AddSource::EventGain);
     }
     EventOutcome::finished(format!(
         "Gained {} and a Clumsy curse.",
@@ -2032,7 +2027,7 @@ fn unrest_site_rest(state: &mut RunState) -> EventOutcome {
     let missing = state.max_hp - state.current_hp;
     let healed = state.heal(missing);
     if let Some(curse) = crate::cards::spec_index::card_pod_from_id(CardId::PoorSleep, false) {
-        state.master_deck.push(curse);
+        state.add_card_to_deck_with_hooks(curse, sts2_core::relic_effects::AddSource::EventGain);
     }
     EventOutcome::finished(format!("Healed {healed} HP, gained a Poor Sleep curse."))
 }
@@ -2197,7 +2192,7 @@ fn wellspring_bathe(state: &mut RunState) -> EventOutcome {
         // convention other events use).
         let _ = state.remove_cards_from_deck(1);
         if let Some(card) = guilty {
-            state.master_deck.push(card);
+            state.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::EventGain);
         }
     }
     EventOutcome::finished("Bathed in the spring — removed a card and gained a Guilty curse.")
@@ -2271,7 +2266,10 @@ fn wood_carvings_transform(
         });
         if let Some(idx) = idx {
             state.master_deck.remove(idx);
-            state.master_deck.push(target);
+            state.add_card_to_deck_with_hooks(
+                target,
+                sts2_core::relic_effects::AddSource::EventGain,
+            );
         }
     }
     EventOutcome::finished(finished.to_owned())
@@ -2379,7 +2377,7 @@ fn zen_weaver_breathing(state: &mut RunState) -> EventOutcome {
     state.gold = state.gold.saturating_sub(ZEN_WEAVER_BREATHING_COST);
     for _ in 0..2 {
         if let Some(card) = card_pod_from_id(CardId::Enlightenment, false) {
-            state.master_deck.push(card);
+            state.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::EventGain);
         }
     }
     EventOutcome::finished(format!(
@@ -2418,17 +2416,17 @@ fn zen_weaver_acupuncture(state: &mut RunState) -> EventOutcome {
 /// Remove `count` deck cards via the C# `FromDeckForRemoval` shape: queue an
 /// interactive `card_select` when the host is interactive, else remove from the
 /// deck front (the headless/parity-fuzz convention). No RNG — the player picks.
-/// Pay a ZenWeaver removal option's gold. v0.111.0: C# pays only after the
-/// removal pick returns (`RemoveCardsAndProceed`, decomp
+/// Pay a ZenWeaver removal option's gold. C# pays only after the removal pick
+/// returns (`RemoveCardsAndProceed`, decomp
 /// `Models.Events/ZenWeaver.cs:70-74`):
 ///
 /// [decompiled C# omitted — see the cited path]
 ///
 /// so an interactive host parks the cost until the queued removals drain and
-/// the removal screen still shows the unpaid gold. v0.107.1 has the same code;
-/// its arm keeps paying up front so that build stays bit-identical (#806).
+/// the removal screen still shows the unpaid gold. Same C# in v0.107.1 and
+/// v0.111.0, so both builds (GH #806).
 fn zen_weaver_pay(state: &mut RunState, cost: i32) {
-    if state.game_version >= sts2_core::GameVersion::V0_111_0 && state.interactive_card_removal {
+    if state.interactive_card_removal {
         state.pending_post_removal_gold_loss += cost;
     } else {
         state.gold = state.gold.saturating_sub(cost);
@@ -2786,12 +2784,12 @@ mod tests {
         assert_eq!(upgraded, 4);
     }
 
-    /// v0.111.0 TouchAMirror (`Reflections.cs:32`): two `NextItem` downgrades
+    /// TouchAMirror (`Reflections.cs:32`, same in both builds): two `NextItem` downgrades
     /// over the upgraded cards, then four `NextItem` upgrades over the
     /// upgradable cards listed after the downgrades, all off the event's own
     /// `REFLECTIONS` stream; the shared `rewards` / `niche` streams stay put.
     #[test]
-    fn reflections_touch_draws_event_stream_v0111() {
+    fn reflections_touch_draws_event_stream_both_versions() {
         let ids = [
             CardId::StrikeIronclad,
             CardId::DefendIronclad,
@@ -2802,9 +2800,15 @@ mod tests {
             CardId::PommelStrike,
             CardId::ShrugItOff,
         ];
-        for seed in 0..16_u64 {
+        for (seed, version) in (0..16_u64).flat_map(|seed| {
+            [
+                sts2_core::GameVersion::V0_107_1,
+                sts2_core::GameVersion::V0_111_0,
+            ]
+            .map(|v| (seed, v))
+        }) {
             let mut rs = fresh_state();
-            rs.game_version = sts2_core::GameVersion::V0_111_0;
+            rs.game_version = version;
             rs.rng = sts2_core::RunRngSet::new_for(rs.game_version, seed);
             for &id in &ids {
                 push_card(&mut rs, id);
@@ -2969,28 +2973,34 @@ mod tests {
         assert_eq!(upgraded_after, upgraded_before + 1);
     }
 
-    /// v0.111.0 (`SpiritGrafter.cs:47-52`): with an interactive host the
-    /// damage waits for the queued upgrade pick; headless it still lands now.
+    /// `SpiritGrafter.cs:47-52` (same in both builds): with an interactive host
+    /// the damage waits for the queued upgrade pick; headless it still lands
+    /// now (GH #806).
     #[test]
-    fn spirit_grafter_rejection_damages_after_the_pick_v0111() {
-        let mut rs = fresh_state();
-        rs.game_version = sts2_core::GameVersion::V0_111_0;
-        rs.interactive_card_upgrade = true;
-        seed_deck(&mut rs, 3);
-        let hp_before = rs.current_hp;
-        let outcome = (SPIRIT_GRAFTER.options[1].handler)(&mut rs);
-        assert!(outcome.finished);
-        assert_eq!(rs.pending_deck_upgrades, 1);
-        assert_eq!(rs.current_hp, hp_before, "no damage before the pick");
-        assert_eq!(rs.pending_post_upgrade_hp_loss, SPIRIT_GRAFTER_DAMAGE);
+    fn spirit_grafter_rejection_damages_after_the_pick_both_versions() {
+        for version in [
+            sts2_core::GameVersion::V0_107_1,
+            sts2_core::GameVersion::V0_111_0,
+        ] {
+            let mut rs = fresh_state();
+            rs.game_version = version;
+            rs.interactive_card_upgrade = true;
+            seed_deck(&mut rs, 3);
+            let hp_before = rs.current_hp;
+            let outcome = (SPIRIT_GRAFTER.options[1].handler)(&mut rs);
+            assert!(outcome.finished);
+            assert_eq!(rs.pending_deck_upgrades, 1);
+            assert_eq!(rs.current_hp, hp_before, "no damage before the pick");
+            assert_eq!(rs.pending_post_upgrade_hp_loss, SPIRIT_GRAFTER_DAMAGE);
 
-        let mut headless = fresh_state();
-        headless.game_version = sts2_core::GameVersion::V0_111_0;
-        seed_deck(&mut headless, 3);
-        let hp = headless.current_hp;
-        let _ = (SPIRIT_GRAFTER.options[1].handler)(&mut headless);
-        assert_eq!(headless.current_hp, hp - SPIRIT_GRAFTER_DAMAGE);
-        assert_eq!(headless.pending_post_upgrade_hp_loss, 0);
+            let mut headless = fresh_state();
+            headless.game_version = version;
+            seed_deck(&mut headless, 3);
+            let hp = headless.current_hp;
+            let _ = (SPIRIT_GRAFTER.options[1].handler)(&mut headless);
+            assert_eq!(headless.current_hp, hp - SPIRIT_GRAFTER_DAMAGE);
+            assert_eq!(headless.pending_post_upgrade_hp_loss, 0);
+        }
     }
 
     #[test]
@@ -3448,32 +3458,26 @@ mod tests {
         assert_eq!(rs.master_deck.len(), deck_before - 1);
     }
 
-    /// v0.111.0 (`ZenWeaver.cs:70-74`): an interactive host pays only once
-    /// the removal picks drain, so the cost is parked, not spent.
+    /// `ZenWeaver.cs:70-74` (same in both builds): an interactive host pays
+    /// only once the removal picks drain, so the cost is parked, not spent
+    /// (GH #806).
     #[test]
-    fn zen_weaver_acupuncture_parks_cost_until_removals_drain_v0111() {
-        let mut rs = fresh_state();
-        rs.game_version = sts2_core::GameVersion::V0_111_0;
-        rs.interactive_card_removal = true;
-        rs.gold = 500;
-        seed_deck(&mut rs, 3);
-        let outcome = (ZEN_WEAVER.options[2].handler)(&mut rs);
-        assert!(outcome.finished);
-        assert_eq!(rs.gold, 500, "unpaid while the removal screen is up");
-        assert_eq!(rs.pending_deck_removals, 2);
-        assert_eq!(rs.pending_post_removal_gold_loss, 250);
-    }
-
-    /// v0.107.1 keeps paying up front, even with an interactive host.
-    #[test]
-    fn zen_weaver_acupuncture_pays_up_front_interactive() {
-        let mut rs = fresh_state();
-        rs.interactive_card_removal = true;
-        rs.gold = 500;
-        seed_deck(&mut rs, 3);
-        let _ = (ZEN_WEAVER.options[2].handler)(&mut rs);
-        assert_eq!(rs.gold, 250);
-        assert_eq!(rs.pending_post_removal_gold_loss, 0);
+    fn zen_weaver_acupuncture_parks_cost_until_removals_drain_both_versions() {
+        for version in [
+            sts2_core::GameVersion::V0_107_1,
+            sts2_core::GameVersion::V0_111_0,
+        ] {
+            let mut rs = fresh_state();
+            rs.game_version = version;
+            rs.interactive_card_removal = true;
+            rs.gold = 500;
+            seed_deck(&mut rs, 3);
+            let outcome = (ZEN_WEAVER.options[2].handler)(&mut rs);
+            assert!(outcome.finished);
+            assert_eq!(rs.gold, 500, "unpaid while the removal screen is up");
+            assert_eq!(rs.pending_deck_removals, 2);
+            assert_eq!(rs.pending_post_removal_gold_loss, 250, "{version:?}");
+        }
     }
 
     #[test]

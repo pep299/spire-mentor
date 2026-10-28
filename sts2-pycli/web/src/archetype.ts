@@ -61,7 +61,9 @@ export interface ArchetypeChip {
 }
 
 // Per-character promise cache so concurrent mounts share one fetch (mirrors
-// synergy.ts loadEdges).
+// synergy.ts loadEdges). Like the synergy catalogs these are the v0.107
+// corpus's tables for every game build (GH #877, see synergy.ts): a card new
+// in v0.111.0 is simply unclassified.
 const cache = new Map<string, Promise<ArchetypeDoc>>();
 
 /** Load `/archetypes_<char>.json`; a missing/failed/off-schema fetch → an empty doc.

@@ -1,48 +1,99 @@
 {
  "debug": {
-  "action": "End turn",
+  "action": "Play Strike+ → Cubex Construct",
   "combat_search": {
    "actions": [
+    {
+     "action": {
+      "action": "play",
+      "card_index": 0,
+      "target_index": 0
+     },
+     "bucket": "likely-loss",
+     "hp_n": 4,
+     "hp_sd": 0.0,
+     "is_best": false,
+     "losses": 4,
+     "low_confidence": false,
+     "mean_final_hp": 0.0,
+     "p_loss": 1.0,
+     "p_tie": 0.0,
+     "p_win": 0.0,
+     "q": -1.2348,
+     "q_saturated": false,
+     "ties": 0,
+     "value": -1.0,
+     "value_sum": -4.9391,
+     "visits": 4,
+     "wins": 0
+    },
+    {
+     "action": {
+      "action": "play",
+      "card_index": 1,
+      "target_index": 0
+     },
+     "bucket": "likely-loss",
+     "hp_n": 4,
+     "hp_sd": 0.0,
+     "is_best": true,
+     "losses": 4,
+     "low_confidence": false,
+     "mean_final_hp": 0.0,
+     "p_loss": 1.0,
+     "p_tie": 0.0,
+     "p_win": 0.0,
+     "q": -1.2245,
+     "q_saturated": false,
+     "ties": 0,
+     "value": -1.0,
+     "value_sum": -4.898,
+     "visits": 4,
+     "wins": 0
+    },
     {
      "action": {
       "action": "end_turn"
      },
      "bucket": "likely-loss",
-     "hp_n": 0,
-     "is_best": true,
-     "losses": 0,
+     "hp_n": 4,
+     "hp_sd": 0.0,
+     "is_best": false,
+     "losses": 4,
      "low_confidence": false,
-     "mean_final_hp": null,
-     "p_loss": 0.0,
+     "mean_final_hp": 0.0,
+     "p_loss": 1.0,
      "p_tie": 0.0,
      "p_win": 0.0,
-     "q": 0.0,
+     "q": -1.2554,
      "q_saturated": false,
      "ties": 0,
-     "value": 0.0,
-     "value_sum": 0.0,
-     "visits": 0,
+     "value": -1.0,
+     "value_sum": -5.0214,
+     "visits": 4,
      "wins": 0
     }
    ],
    "recommended": {
-    "action": "end_turn"
+    "action": "play",
+    "card_index": 1,
+    "target_index": 0
    }
   },
   "is_combat": true,
   "phase": "combat",
   "result": "Advanced",
-  "summary": "combat MCTS → End turn"
+  "summary": "combat MCTS → Play Strike+ → Cubex Construct"
  },
  "done": false,
  "error": null,
  "over": false,
  "search": {
-  "action": "End turn",
+  "action": "Play Strike+ → Cubex Construct",
   "enemies": [
    {
     "block": 0,
-    "hp": 22,
+    "hp": 21,
     "index": 0,
     "intents": [
      {
@@ -82,18 +133,53 @@
   ],
   "scores": [
    {
-    "action": "end turn",
-    "hp_n": 0,
+    "action": "Strike",
+    "hp_n": 4,
+    "hp_sd": 0.0,
     "is_best": true,
-    "losses": 0,
+    "losses": 4,
     "low_confidence": false,
-    "mean_final_hp": null,
-    "q": 0.0,
+    "mean_final_hp": 0.0,
+    "q": -1.2245,
+    "q_saturated": false,
+    "stable_idx": 1,
+    "target_index": 0,
+    "ties": 0,
+    "visits": 4,
+    "win_prob": 0.0,
+    "wins": 0
+   },
+   {
+    "action": "Strike",
+    "hp_n": 4,
+    "hp_sd": 0.0,
+    "is_best": false,
+    "losses": 4,
+    "low_confidence": false,
+    "mean_final_hp": 0.0,
+    "q": -1.2348,
+    "q_saturated": false,
+    "stable_idx": 0,
+    "target_index": 0,
+    "ties": 0,
+    "visits": 4,
+    "win_prob": 0.0,
+    "wins": 0
+   },
+   {
+    "action": "end turn",
+    "hp_n": 4,
+    "hp_sd": 0.0,
+    "is_best": false,
+    "losses": 4,
+    "low_confidence": false,
+    "mean_final_hp": 0.0,
+    "q": -1.2554,
     "q_saturated": false,
     "stable_idx": -1,
     "target_index": null,
     "ties": 0,
-    "visits": 0,
+    "visits": 4,
     "win_prob": 0.0,
     "wins": 0
    }
@@ -113,7 +199,7 @@
    "bg_seed": 3,
    "floor": 5,
    "step_no": 0,
-   "turn": 4
+   "turn": 3
   },
   "pv": null,
   "scores": [],
@@ -127,17 +213,72 @@
    "bg_row": 5,
    "bg_seed": 3,
    "decision": "combat_play",
-   "discard_pile": [],
-   "discard_pile_count": 0,
-   "draw_pile": [
+   "discard_pile": [
+    {
+     "base_cost": 3,
+     "can_play": false,
+     "color": "blue",
+     "cost": 3,
+     "description": "Deal 24 damage.\nIf this kills an enemy, gain Energy.",
+     "description_rich": "Deal 24 damage.\nIf this kills an enemy, gain Energy.",
+     "id": "SUNDER",
+     "image": "https://assets.test/card_atlas/defect/sunder.png",
+     "index": -1,
+     "name": "Sunder",
+     "rarity": "Uncommon",
+     "stats": {
+      "damage": 24
+     },
+     "target_type": "None",
+     "type": "Attack",
+     "upgraded": false
+    },
     {
      "base_cost": 1,
-     "calculated_value": 3,
      "can_play": false,
      "color": "blue",
      "cost": 1,
-     "description": "Deal 5 damage for each Channeled Orb.\n(Hits 3 times)",
-     "description_rich": "Deal 5 damage for each [gold]Channeled[/gold] Orb.\n(Hits 3 times)",
+     "description": "Gain 5 Block.",
+     "description_rich": "Gain 5 [gold]Block[/gold].",
+     "id": "DEFEND_DEFECT",
+     "image": "https://assets.test/card_atlas/defect/defend_defect.png",
+     "index": -1,
+     "name": "Defend",
+     "rarity": "Basic",
+     "stats": {
+      "block": 5
+     },
+     "target_type": "None",
+     "type": "Skill",
+     "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "blue",
+     "cost": 1,
+     "description": "Gain 5 Block.",
+     "description_rich": "Gain 5 [gold]Block[/gold].",
+     "id": "DEFEND_DEFECT",
+     "image": "https://assets.test/card_atlas/defect/defend_defect.png",
+     "index": -1,
+     "name": "Defend",
+     "rarity": "Basic",
+     "stats": {
+      "block": 5
+     },
+     "target_type": "None",
+     "type": "Skill",
+     "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "calculated_value": 1,
+     "can_play": false,
+     "color": "blue",
+     "cost": 1,
+     "description": "Deal 5 damage for each Channeled Orb.\n(Hits 1 time)",
+     "description_rich": "Deal 5 damage for each [gold]Channeled[/gold] Orb.\n(Hits 1 time)",
      "id": "BARRAGE",
      "image": "https://assets.test/card_atlas/defect/barrage.png",
      "index": -1,
@@ -145,6 +286,80 @@
      "rarity": "Common",
      "stats": {
       "damage": 5
+     },
+     "target_type": "None",
+     "type": "Attack",
+     "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "blue",
+     "cost": 1,
+     "description": "Deal 6 damage.",
+     "description_rich": "Deal 6 damage.",
+     "id": "STRIKE_DEFECT",
+     "image": "https://assets.test/card_atlas/defect/strike_defect.png",
+     "index": -1,
+     "name": "Strike",
+     "rarity": "Basic",
+     "stats": {
+      "damage": 6
+     },
+     "target_type": "None",
+     "type": "Attack",
+     "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "blue",
+     "cost": 1,
+     "description": "Evoke your rightmost Orb twice.",
+     "description_rich": "[gold]Evoke[/gold] your rightmost Orb twice.",
+     "id": "DUALCAST",
+     "image": "https://assets.test/card_atlas/defect/dualcast.png",
+     "index": -1,
+     "name": "Dualcast",
+     "rarity": "Basic",
+     "stats": {},
+     "target_type": "None",
+     "type": "Skill",
+     "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "blue",
+     "cost": 1,
+     "description": "Gain 5 Block.",
+     "description_rich": "Gain 5 [gold]Block[/gold].",
+     "id": "DEFEND_DEFECT",
+     "image": "https://assets.test/card_atlas/defect/defend_defect.png",
+     "index": -1,
+     "name": "Defend",
+     "rarity": "Basic",
+     "stats": {
+      "block": 5
+     },
+     "target_type": "None",
+     "type": "Skill",
+     "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "blue",
+     "cost": 1,
+     "description": "Deal 6 damage.",
+     "description_rich": "Deal 6 damage.",
+     "id": "STRIKE_DEFECT",
+     "image": "https://assets.test/card_atlas/defect/strike_defect.png",
+     "index": -1,
+     "name": "Strike",
+     "rarity": "Basic",
+     "stats": {
+      "damage": 6
      },
      "target_type": "None",
      "type": "Attack",
@@ -193,35 +408,16 @@
      "can_play": false,
      "color": "blue",
      "cost": 1,
-     "description": "Evoke your rightmost Orb twice.",
-     "description_rich": "[gold]Evoke[/gold] your rightmost Orb twice.",
-     "id": "DUALCAST",
-     "image": "https://assets.test/card_atlas/defect/dualcast.png",
+     "description": "Channel 1 Lightning.",
+     "description_rich": "[gold]Channel[/gold] 1 [gold]Lightning[/gold].",
+     "id": "ZAP",
+     "image": "https://assets.test/card_atlas/defect/zap.png",
      "index": -1,
-     "name": "Dualcast",
+     "name": "Zap",
      "rarity": "Basic",
      "stats": {},
      "target_type": "None",
      "type": "Skill",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "blue",
-     "cost": 1,
-     "description": "Deal 6 damage.",
-     "description_rich": "Deal 6 damage.",
-     "id": "STRIKE_DEFECT",
-     "image": "https://assets.test/card_atlas/defect/strike_defect.png",
-     "index": -1,
-     "name": "Strike",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 6
-     },
-     "target_type": "None",
-     "type": "Attack",
      "upgraded": false
     },
     {
@@ -242,79 +438,25 @@
      "target_type": "None",
      "type": "Attack",
      "upgraded": true
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "blue",
-     "cost": 1,
-     "description": "Deal 6 damage.",
-     "description_rich": "Deal 6 damage.",
-     "id": "STRIKE_DEFECT",
-     "image": "https://assets.test/card_atlas/defect/strike_defect.png",
-     "index": -1,
-     "name": "Strike",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 6
-     },
-     "target_type": "None",
-     "type": "Attack",
-     "upgraded": false
-    },
-    {
-     "base_cost": 3,
-     "can_play": false,
-     "color": "blue",
-     "cost": 3,
-     "description": "Deal 24 damage.\nIf this kills an enemy, gain Energy.",
-     "description_rich": "Deal 24 damage.\nIf this kills an enemy, gain Energy.",
-     "id": "SUNDER",
-     "image": "https://assets.test/card_atlas/defect/sunder.png",
-     "index": -1,
-     "name": "Sunder",
-     "rarity": "Uncommon",
-     "stats": {
-      "damage": 24
-     },
-     "target_type": "None",
-     "type": "Attack",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "blue",
-     "cost": 1,
-     "description": "Channel 1 Lightning.",
-     "description_rich": "[gold]Channel[/gold] 1 [gold]Lightning[/gold].",
-     "id": "ZAP",
-     "image": "https://assets.test/card_atlas/defect/zap.png",
-     "index": -1,
-     "name": "Zap",
-     "rarity": "Basic",
-     "stats": {},
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
     }
    ],
-   "draw_pile_count": 9,
+   "discard_pile_count": 12,
+   "draw_pile": [],
+   "draw_pile_count": 0,
    "enemies": [
     {
      "block": 0,
-     "hp": 16,
+     "hp": 12,
      "image": "https://assets.test/monsters/cubex_construct.png",
      "index": 0,
      "intents": [
       {
-       "base_damage": 6,
+       "base_damage": 8,
        "damage": 12,
-       "hits": 2,
-       "intent_image": "https://assets.test/intent_atlas/attack/intent_attack_4.png",
+       "intent_image": "https://assets.test/intent_atlas/attack/intent_attack_3.png",
        "modifiers": [
         {
-         "add": 6,
+         "add": 4,
          "image": "https://assets.test/power_atlas/strength_power.png",
          "kind": "power",
          "name": "STRENGTH",
@@ -327,7 +469,7 @@
      ],
      "kind": "CubexConstruct",
      "max_hp": 70,
-     "move_state": "EXPEL_BLAST",
+     "move_state": "REPEATER_2",
      "name": "Cubex Construct",
      "powers": [
       {
@@ -339,8 +481,8 @@
        "name": "Artifact"
       },
       {
-       "amount": 6,
-       "display_amount": 6,
+       "amount": 4,
+       "display_amount": 4,
        "id": "STRENGTH",
        "image": "https://assets.test/power_atlas/strength_power.png",
        "image_big": "https://assets.test/power_big/strength_power.png",
@@ -354,7 +496,7 @@
      "uid": 2
     }
    ],
-   "energy": 3,
+   "energy": 0,
    "energy_image": "https://assets.test/sprite_fonts/defect_energy_icon.png",
    "exhaust_pile": [
     {
@@ -373,14 +515,31 @@
      "target_type": "None",
      "type": "Curse",
      "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "blue",
+     "cost": 1,
+     "description": "Double your Energy.\nExhaust.",
+     "description_rich": "Double your Energy.\n[gold]Exhaust[/gold].",
+     "id": "DOUBLE_ENERGY",
+     "image": "https://assets.test/card_atlas/defect/double_energy.png",
+     "index": -1,
+     "name": "Double Energy",
+     "rarity": "Uncommon",
+     "stats": {},
+     "target_type": "None",
+     "type": "Skill",
+     "upgraded": false
     }
    ],
-   "exhaust_pile_count": 1,
+   "exhaust_pile_count": 2,
    "floor": 5,
    "hand": [
     {
      "base_cost": 1,
-     "can_play": true,
+     "can_play": false,
      "color": "blue",
      "cost": 1,
      "damage_preview": {
@@ -396,82 +555,9 @@
      "stats": {
       "damage": 6
      },
-     "target_type": "AnyEnemy",
+     "target_type": "None",
      "type": "Attack",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": true,
-     "color": "blue",
-     "cost": 1,
-     "description": "Gain 5 Block.",
-     "description_rich": "Gain 5 [gold]Block[/gold].",
-     "id": "DEFEND_DEFECT",
-     "image": "https://assets.test/card_atlas/defect/defend_defect.png",
-     "index": 1,
-     "name": "Defend",
-     "rarity": "Basic",
-     "stats": {
-      "block": 5
-     },
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": true,
-     "color": "blue",
-     "cost": 1,
-     "description": "Gain 5 Block.",
-     "description_rich": "Gain 5 [gold]Block[/gold].",
-     "id": "DEFEND_DEFECT",
-     "image": "https://assets.test/card_atlas/defect/defend_defect.png",
-     "index": 2,
-     "name": "Defend",
-     "rarity": "Basic",
-     "stats": {
-      "block": 5
-     },
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": true,
-     "color": "blue",
-     "cost": 1,
-     "description": "Double your Energy.\nExhaust.",
-     "description_rich": "Double your Energy.\n[gold]Exhaust[/gold].",
-     "id": "DOUBLE_ENERGY",
-     "image": "https://assets.test/card_atlas/defect/double_energy.png",
-     "index": 3,
-     "name": "Double Energy",
-     "rarity": "Uncommon",
-     "stats": {},
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": true,
-     "color": "blue",
-     "cost": 1,
-     "description": "Gain 5 Block.",
-     "description_rich": "Gain 5 [gold]Block[/gold].",
-     "id": "DEFEND_DEFECT",
-     "image": "https://assets.test/card_atlas/defect/defend_defect.png",
-     "index": 4,
-     "name": "Defend",
-     "rarity": "Basic",
-     "stats": {
-      "block": 5
-     },
-     "target_type": "None",
-     "type": "Skill",
+     "unplayable_reason": "cost",
      "upgraded": false
     }
    ],
@@ -480,28 +566,79 @@
     "actions": [
      {
       "action": {
+       "action": "play",
+       "card_index": 0,
+       "target_index": 0
+      },
+      "bucket": "likely-loss",
+      "hp_n": 4,
+      "hp_sd": 0.0,
+      "is_best": false,
+      "losses": 4,
+      "low_confidence": false,
+      "mean_final_hp": 0.0,
+      "p_loss": 1.0,
+      "p_tie": 0.0,
+      "p_win": 0.0,
+      "q": -1.2348,
+      "q_saturated": false,
+      "ties": 0,
+      "value": -1.0,
+      "value_sum": -4.9391,
+      "visits": 4,
+      "wins": 0
+     },
+     {
+      "action": {
+       "action": "play",
+       "card_index": 1,
+       "target_index": 0
+      },
+      "bucket": "likely-loss",
+      "hp_n": 4,
+      "hp_sd": 0.0,
+      "is_best": true,
+      "losses": 4,
+      "low_confidence": false,
+      "mean_final_hp": 0.0,
+      "p_loss": 1.0,
+      "p_tie": 0.0,
+      "p_win": 0.0,
+      "q": -1.2245,
+      "q_saturated": false,
+      "ties": 0,
+      "value": -1.0,
+      "value_sum": -4.898,
+      "visits": 4,
+      "wins": 0
+     },
+     {
+      "action": {
        "action": "end_turn"
       },
       "bucket": "likely-loss",
-      "hp_n": 0,
-      "is_best": true,
-      "losses": 0,
+      "hp_n": 4,
+      "hp_sd": 0.0,
+      "is_best": false,
+      "losses": 4,
       "low_confidence": false,
-      "mean_final_hp": null,
-      "p_loss": 0.0,
+      "mean_final_hp": 0.0,
+      "p_loss": 1.0,
       "p_tie": 0.0,
       "p_win": 0.0,
-      "q": 0.0,
+      "q": -1.2554,
       "q_saturated": false,
       "ties": 0,
-      "value": 0.0,
-      "value_sum": 0.0,
-      "visits": 0,
+      "value": -1.0,
+      "value_sum": -5.0214,
+      "visits": 4,
       "wins": 0
      }
     ],
     "recommended": {
-     "action": "end_turn"
+     "action": "play",
+     "card_index": 1,
+     "target_index": 0
     }
    },
    "options": [],
@@ -514,26 +651,10 @@
      "name": "LIGHTNING_ORB.title",
      "passive": 3,
      "type": "Lightning"
-    },
-    {
-     "evoke": 5,
-     "image": "https://assets.test/orb_atlas/frost.png",
-     "index": 1,
-     "name": "FROST_ORB.title",
-     "passive": 2,
-     "type": "Frost"
-    },
-    {
-     "evoke": 8,
-     "image": "https://assets.test/orb_atlas/lightning.png",
-     "index": 2,
-     "name": "LIGHTNING_ORB.title",
-     "passive": 3,
-     "type": "Lightning"
     }
    ],
    "player": {
-    "block": 0,
+    "block": 5,
     "deck": [
      {
       "color": "blue",
@@ -732,7 +853,7 @@
      }
     ],
     "gold": 144,
-    "hp": 2,
+    "hp": 5,
     "image": "https://assets.test/character_sprites/defect.png",
     "max_hp": 75,
     "name": "Defect",
@@ -758,7 +879,7 @@
     "rig_scale": 0.125
    },
    "player_powers": [],
-   "round": 4
+   "round": 3
   }
  },
  "steps": 6,

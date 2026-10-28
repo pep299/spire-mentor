@@ -80,6 +80,13 @@ export function effectiveGameVersion(
   return available.includes(serverDefault) ? serverDefault : (available[0] ?? DEFAULT_GAME_VERSION);
 }
 
+/** The URL of a per-build static table under `public/` (GH #877): the
+ *  default build's at `/<file>` (where it always was), every other build's at
+ *  `/<ver>/<file>` — `sfx_map.json`, `card_text.json`. */
+export function versionedPublicPath(file: string, v: string | null | undefined): string {
+  return v && v !== DEFAULT_GAME_VERSION ? `/${v}/${file}` : `/${file}`;
+}
+
 /** The request-body fragment for `v`: empty for the default, so a 0.107 run
  *  posts exactly the body it always did. */
 export function gameVersionBody(v: string | null | undefined): { game_version?: string } {

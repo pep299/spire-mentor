@@ -90,8 +90,8 @@
    "combat_log": [],
    "decision": "combat_play",
    "details": [
-    "Spawned: Corpse Slug",
-    "Spawned: Corpse Slug"
+    "Spawned: Corpse Slug #1",
+    "Spawned: Corpse Slug #2"
    ],
    "error": false,
    "floor": 1,
@@ -219,13 +219,13 @@
    "decision": "combat_play",
    "details": [
     "Play Strike",
-    "Corpse Slug HP 27→21 (−6)"
+    "Corpse Slug #1 HP 27→21 (−6)"
    ],
    "error": false,
    "floor": 1,
    "id": 5,
    "idx": 5,
-   "label": "Play Strike → Corpse Slug",
+   "label": "Play Strike → Corpse Slug #1",
    "parent_id": 4,
    "turn": 1,
    "value": null
@@ -395,13 +395,13 @@
    "decision": "combat_play",
    "details": [
     "Play Strike",
-    "Corpse Slug HP 21→15 (−6)"
+    "Corpse Slug #1 HP 21→15 (−6)"
    ],
    "error": false,
    "floor": 1,
    "id": 7,
    "idx": 7,
-   "label": "Play Strike → Corpse Slug",
+   "label": "Play Strike → Corpse Slug #1",
    "parent_id": 6,
    "turn": 2,
    "value": null
@@ -439,13 +439,13 @@
    "decision": "combat_play",
    "details": [
     "Play Strike",
-    "Corpse Slug HP 15→9 (−6)"
+    "Corpse Slug #1 HP 15→9 (−6)"
    ],
    "error": false,
    "floor": 1,
    "id": 8,
    "idx": 8,
-   "label": "Play Strike → Corpse Slug",
+   "label": "Play Strike → Corpse Slug #1",
    "parent_id": 7,
    "turn": 2,
    "value": null
@@ -651,15 +651,15 @@
    "decision": "combat_play",
    "details": [
     "Play Falling Star",
-    "Corpse Slug HP 9→1 (−8)",
-    "Corpse Slug +1 Weak",
-    "Corpse Slug +1 Vulnerable"
+    "Corpse Slug #1 HP 9→1 (−8)",
+    "Corpse Slug #1 +1 Weak",
+    "Corpse Slug #1 +1 Vulnerable"
    ],
    "error": false,
    "floor": 1,
    "id": 11,
    "idx": 11,
-   "label": "Play Falling Star → Corpse Slug",
+   "label": "Play Falling Star → Corpse Slug #1",
    "parent_id": 10,
    "turn": 3,
    "value": null
@@ -739,14 +739,14 @@
    "decision": "combat_play",
    "details": [
     "Play Strike",
-    "Corpse Slug HP 1→0  ☠ defeated",
-    "Corpse Slug +5 Strength"
+    "Corpse Slug #1 HP 1→0  ☠ defeated",
+    "Corpse Slug #2 +5 Strength"
    ],
    "error": false,
    "floor": 1,
    "id": 12,
    "idx": 12,
-   "label": "Play Strike → Corpse Slug",
+   "label": "Play Strike → Corpse Slug #1",
    "parent_id": 11,
    "turn": 3,
    "value": null

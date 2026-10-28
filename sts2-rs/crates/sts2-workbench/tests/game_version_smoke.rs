@@ -67,7 +67,11 @@ fn advance(wb: &mut Workbench, mut step: Value, steps: usize) -> Value {
 fn capabilities_list_the_supported_builds() {
     let mut wb = new_wb();
     let caps = call(&mut wb, "GET", "/api/capabilities", Value::Null);
+    // A public snapshot has no v0.111.0 bundle, so only the default is offered (#855).
+    #[cfg(workbench_game_data_v0_111_0)]
     assert_eq!(caps["game_versions"], json!(["v0.107.1", "v0.111.0"]));
+    #[cfg(not(workbench_game_data_v0_111_0))]
+    assert_eq!(caps["game_versions"], json!(["v0.107.1"]));
     assert_eq!(caps["default_game_version"], json!("v0.107.1"));
 }
 
@@ -354,4 +358,72 @@ fn an_imported_fight_is_rebuilt_in_the_requested_build() {
         .and_then(|g| g.combat_state())
         .expect("a live fight after reload");
     assert_eq!(cs2.game_version, GameVersion::V0_111_0);
+}
+
+/// GH #877: the deck analyzer grades with the run's own build's tables —
+/// a card new in v0.111.0 is a real attack there and unknown to v0.107.1 —
+/// and an unknown build is a 400.
+#[cfg(workbench_game_data_v0_111_0)]
+#[test]
+fn reward_preview_grades_with_the_requested_builds_tables() {
+    let mut wb = new_wb();
+    let mut deck = vec![json!({"id": "STRIKE_IRONCLAD"}); 5];
+    deck.extend(vec![json!({"id": "DEFEND_IRONCLAD"}); 4]);
+    let body = json!({"deck": deck, "candidates": [{"index": 0, "id": "OUTRAGE"}]});
+    let base = call(&mut wb, "POST", "/api/deck/reward-preview", body.clone());
+    let mut v111_body = body.clone();
+    v111_body["game_version"] = json!("v0.111.0");
+    let v111 = call(&mut wb, "POST", "/api/deck/reward-preview", v111_body);
+    assert_eq!(
+        base["base"], v111["base"],
+        "the starter cards did not change"
+    );
+    assert_ne!(
+        base["candidates"][0]["delta"], v111["candidates"][0]["delta"],
+        "OUTRAGE is only a card in v0.111.0"
+    );
+    let mut bad = body;
+    bad["game_version"] = json!("v9");
+    let err = wb
+        .call("POST", "/api/deck/reward-preview", &bad)
+        .expect_err("an unknown build");
+    assert_eq!(err.status, 400);
+}
+
+/// GH #877: SimLab deals a fight in the requested build and names its
+/// catalog in that build's text.
+#[test]
+fn simlab_deals_in_the_requested_build() {
+    let mut wb = new_wb();
+    let body = json!({"character": "Ironclad", "encounter": "FUZZY_WURM_CRAWLER_WEAK", "seed": 4});
+    let base = call(&mut wb, "POST", "/api/simlab/position/new", body.clone());
+    assert!(base["position"].get("game_version").is_none());
+    let mut v111_body = body;
+    v111_body["game_version"] = json!("v0.111.0");
+    let v111 = call(&mut wb, "POST", "/api/simlab/position/new", v111_body);
+    assert_eq!(v111["position"]["game_version"], json!("v0.111.0"));
+    let moves = call(
+        &mut wb,
+        "POST",
+        "/api/simlab/position/moves",
+        json!({"position": v111["position"]}),
+    );
+    assert!(moves["moves"].as_array().is_some_and(|m| !m.is_empty()));
+    let err = wb
+        .call("GET", "/api/simlab/catalog?game_version=v9", &json!({}))
+        .expect_err("an unknown build");
+    assert_eq!(err.status, 400);
+    let cat = call(
+        &mut wb,
+        "GET",
+        "/api/simlab/catalog?game_version=v0.111.0",
+        json!({}),
+    );
+    assert!(cat["cards"].is_array());
+    #[cfg(workbench_game_data_v0_111_0)]
+    assert!(cat["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|c| c["name"] == "Cacophony"));
 }

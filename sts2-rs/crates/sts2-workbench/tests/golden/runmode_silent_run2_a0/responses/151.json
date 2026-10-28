@@ -1,5 +1,3 @@
 {
- "runs": [
-  "<work>/logs/20260101_000000_Silent_2.jsonl"
- ]
+ "detail": "ppo policy only available at a non-combat decision"
 }

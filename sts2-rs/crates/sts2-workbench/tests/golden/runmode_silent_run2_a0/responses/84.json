@@ -1,17 +1,17 @@
 {
  "alternative": {
   "error": "verify arm hit the 12-step cap without ending",
-  "label": "Upgrade Neutralize",
+  "label": "Remove Strike Silent (deck #0)",
   "over": false,
   "steps": 12,
   "won": false
  },
- "decision": "card_select",
- "node_id": 35,
+ "decision": "shop",
+ "node_id": 34,
  "note": "inconclusive — a continuation didn't finish; one agent-played continuation per line (same-seeded combat search) — a paired spot check, not a probability",
  "played": {
   "error": "verify arm hit the 12-step cap without ending",
-  "label": "Upgrade Strike",
+  "label": "Buy Finisher",
   "over": false,
   "steps": 12,
   "won": false

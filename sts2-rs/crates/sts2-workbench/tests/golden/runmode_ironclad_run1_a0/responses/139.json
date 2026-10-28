@@ -13,6 +13,7 @@
   {
    "action": "BASH.title",
    "hp_n": 0,
+   "hp_sd": null,
    "is_best": true,
    "low_confidence": false,
    "mean_final_hp": null,
@@ -26,6 +27,7 @@
   {
    "action": "STRIKE_IRONCLAD.title",
    "hp_n": 0,
+   "hp_sd": null,
    "is_best": false,
    "low_confidence": false,
    "mean_final_hp": null,
@@ -39,6 +41,7 @@
   {
    "action": "end turn",
    "hp_n": 0,
+   "hp_sd": null,
    "is_best": false,
    "low_confidence": false,
    "mean_final_hp": null,

@@ -205,6 +205,7 @@ Copy-Item "$modDir\SpireMentor.conf" "$modDir\SpireMentor.conf.bak-recorder" -Fo
   "agent_timeout_seconds": 0,
   "auto_start": true,
   "advisor_autoplay": true,
+  "pause_on": "",
   "resume_run": false,
   "fast_mode": "instant",
   "time_scale": 4.0,

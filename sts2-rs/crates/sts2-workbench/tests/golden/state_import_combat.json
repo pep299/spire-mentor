@@ -620,6 +620,7 @@
       "hp": 0,
       "max_hp": 10
      },
+     "potion_slots": 3,
      "potions": [
       null,
       null,
@@ -1087,6 +1088,7 @@
      "max_hp": 80,
      "orb_slots": 0,
      "orbs": [],
+     "potion_slots": 3,
      "potions": [
       null,
       null,
@@ -1397,6 +1399,7 @@
      "max_hp": 80,
      "orb_slots": 0,
      "orbs": [],
+     "potion_slots": 3,
      "potions": [
       null,
       null,
@@ -1773,6 +1776,7 @@
        "type": "LIGHTNING"
       }
      ],
+     "potion_slots": 3,
      "potions": [
       null,
       null,
@@ -2105,6 +2109,7 @@
      "max_hp": 75,
      "orb_slots": 3,
      "orbs": [],
+     "potion_slots": 3,
      "potions": [
       null,
       null,
@@ -2557,6 +2562,7 @@
      "max_hp": 87,
      "orb_slots": 0,
      "orbs": [],
+     "potion_slots": 5,
      "potions": [
       null,
       null,
@@ -2870,6 +2876,7 @@
      "max_hp": 80,
      "orb_slots": 0,
      "orbs": [],
+     "potion_slots": 3,
      "potions": [
       null,
       null,
@@ -3158,6 +3165,7 @@
      "max_hp": 80,
      "orb_slots": 0,
      "orbs": [],
+     "potion_slots": 3,
      "potions": [
       null,
       null,
@@ -3432,6 +3440,7 @@
      "max_hp": 80,
      "orb_slots": 0,
      "orbs": [],
+     "potion_slots": 3,
      "potions": [
       null,
       null,
@@ -3476,7 +3485,7 @@
   }
  ],
  "engine": {
-  "src_hash": "8bd2d9bed8cd91f6",
+  "src_hash": "539ed44acf161fc4",
   "version": "0.0.1"
  }
 }

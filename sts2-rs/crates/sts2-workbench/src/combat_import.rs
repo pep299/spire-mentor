@@ -992,6 +992,12 @@ pub fn combat_wire_from_bridge(
     player_out.insert("relics".into(), Value::Array(relics));
     player_out.insert("powers".into(), Value::Array(powers));
     player_out.insert("potions".into(), Value::Array(potions));
+    // Belt capacity — `realgame_adapter` copies `run_state.potion_slot_count`
+    // to `player.potion_slots`, which `translate` forwards when it is a
+    // positive int (GH #893).
+    if let Some(slots) = int_of(run_state.get("potion_slot_count")).filter(|n| *n > 0) {
+        player_out.insert("potion_slots".into(), json!(slots));
+    }
     if let Some(gold) = int_of(run_state.get("gold")) {
         player_out.insert("gold".into(), json!(gold));
     }
@@ -1231,6 +1237,7 @@ mod tests {
             "potions": [{"slot": 0, "empty": true}],
             "pets": [{"id": "BYRDPIP", "name": "Byrdpip"}],
             "run_state": {"gold": 120, "character": "IRONCLAD", "ascension": 5,
+                "potion_slot_count": 2,
                 "relics": [{"id": "BURNING_BLOOD", "name": "Burning Blood", "counter": null}],
                 "master_deck": [{"id": "STRIKE_IRONCLAD", "type": "Attack", "cost": 1}]},
             "rng": {"run_seed": 12345, "counters": {"shuffle": 3, "monster_ai": 1}},
@@ -1238,6 +1245,10 @@ mod tests {
         let (wire, warnings) = combat_wire_from_bridge(&board, "Ironclad", 5).unwrap();
         assert_eq!(wire["is_elite"], true);
         assert_eq!(wire["player"]["gold"], 120);
+        assert_eq!(
+            wire["player"]["potion_slots"], 2,
+            "the A5 board's Tight Belt"
+        );
         assert_eq!(wire["player"]["powers"][0]["name"], "STRENGTH");
         assert_eq!(wire["deck"]["hand"][0]["flags"], json!(["retain"]));
         assert_eq!(wire["deck"]["hand"][0]["upgraded"], true);

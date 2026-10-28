@@ -227,4 +227,31 @@ describe("loadSfxMap", () => {
     await expect(freshLoadSfxMap(fetchFn)).resolves.toEqual(map);
     expect(fetchFn).toHaveBeenCalledTimes(2);
   });
+
+  // GH #877: each game build has its own map, built from its own decompile.
+  it("loads a non-default build's own map, memoised apart from the default's", async () => {
+    const { loadSfxMap: freshLoadSfxMap } = await import("../sfxMap");
+    const mapOf = (version: string): SfxMap => ({ version, generic: {}, powers: {}, cards: {}, relics: {}, monsters: {} });
+    const fetchFn = vi.fn(async (url: string) => ({
+      ok: true,
+      json: async () => mapOf(url === "/v0.111.0/sfx_map.json" ? "v0.111.0" : "v0.107.1"),
+    }));
+    const f = fetchFn as unknown as typeof fetch;
+
+    expect((await freshLoadSfxMap(f, "v0.111.0")).version).toBe("v0.111.0");
+    expect((await freshLoadSfxMap(f)).version).toBe("v0.107.1");
+    expect((await freshLoadSfxMap(f, "v0.107.1")).version).toBe("v0.107.1");
+    expect((await freshLoadSfxMap(f, "v0.111.0")).version).toBe("v0.111.0");
+    expect(fetchFn.mock.calls.map((c) => c[0])).toEqual(["/v0.111.0/sfx_map.json", "/sfx_map.json"]);
+  });
+
+  it("falls back to the default build's map when a build has none (the public snapshot)", async () => {
+    const { loadSfxMap: freshLoadSfxMap } = await import("../sfxMap");
+    const map: SfxMap = { version: "v0.107.1", generic: {}, powers: {}, cards: {}, relics: {}, monsters: {} };
+    const fetchFn = vi.fn(async (url: string) =>
+      url === "/sfx_map.json" ? { ok: true, json: async () => map } : { ok: false, status: 404, json: async () => ({}) });
+
+    await expect(freshLoadSfxMap(fetchFn as unknown as typeof fetch, "v0.111.0")).resolves.toEqual(map);
+    expect(fetchFn.mock.calls.map((c) => c[0])).toEqual(["/v0.111.0/sfx_map.json", "/sfx_map.json"]);
+  });
 });

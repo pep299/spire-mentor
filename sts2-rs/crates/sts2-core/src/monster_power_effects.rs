@@ -433,7 +433,7 @@ pub fn dispatch_after_damage_received_on_monster_powers(
 
 /// Every card UID across the player's draw / hand / discard / exhaust piles,
 /// in that order. Shared helper for the per-card power-hook bodies below.
-fn all_player_card_uids(state: &CombatState) -> smallvec::SmallVec<[CardUid; 32]> {
+pub(crate) fn all_player_card_uids(state: &CombatState) -> smallvec::SmallVec<[CardUid; 32]> {
     let mut out: smallvec::SmallVec<[CardUid; 32]> = smallvec::SmallVec::new();
     out.extend(state.player.draw.iter().copied());
     out.extend(state.player.hand.iter().copied());
@@ -608,6 +608,16 @@ fn vital_spark_after_card_entered_combat(
 
 /// C# `VitalSparkPower.AfterRemoved`: clear every ally card's Tainted affliction.
 fn vital_spark_after_removed(state: &mut CombatState, _old_owner: CreatureUid) -> EffectResult {
+    // Co-op: every player's cards.
+    let mut result = EffectResult::NotImplemented;
+    crate::coop::each_player(state, |state| {
+        result = vital_spark_after_removed_seated(state);
+    });
+    result
+}
+
+/// [`vital_spark_after_removed`] for the seated player's cards.
+fn vital_spark_after_removed_seated(state: &mut CombatState) -> EffectResult {
     use crate::card_afflictions::CardAfflictionKind;
     let uids = all_player_card_uids(state);
     for uid in uids {

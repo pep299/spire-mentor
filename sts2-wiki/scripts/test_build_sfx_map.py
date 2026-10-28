@@ -1424,6 +1424,20 @@ class TestCardPlayerAnim(unittest.TestCase):
         """  # noqa: E501 — verbatim C# from the decomp; keep it byte-for-byte
         self.assertEqual(card_player_anim(src, FALLBACKS), ("attack", None))
 
+    def test_v0111_from_card_passes_the_play_along(self):
+        # v0.111.0's shape: `.FromCard(this, cardPlay)`. Matching only the
+        # v0.107.1 `.FromCard(this)` lost ~160 attack cards' player anim on
+        # a v0.111.0 map (GH #877).
+        src = """
+        await DamageCmd.Attack(base.DynamicVars.Damage.BaseValue).FromCard(this, cardPlay).Targeting(cardPlay.Target)
+            .WithHitFx("vfx/vfx_attack_slash")
+            .Execute(choiceContext);
+        """  # noqa: E501 — verbatim C# from the decomp; keep it byte-for-byte
+        self.assertEqual(card_player_anim(src, FALLBACKS), ("attack", None))
+        # Not a different `FromCard(thisCard)` local.
+        local = src.replace("(this, cardPlay)", "(thisCard)")
+        self.assertIsNone(card_player_anim(local, FALLBACKS))
+
     def test_explicit_cast_trigger(self):
         src = 'await CreatureCmd.TriggerAnim(base.Owner.Creature, "Cast", 0.25f);'
         self.assertEqual(card_player_anim(src, FALLBACKS), ("cast", None))

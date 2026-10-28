@@ -1,4 +1,8 @@
 {
- "mtime": 1767225600.0,
- "size": 766201
+ "combat_boss_sims": 4000,
+ "combat_sims": 12,
+ "combat_threads": 1,
+ "off_combat_brain": "heuristic",
+ "ppo_impl": "rust",
+ "reward_sims": null
 }

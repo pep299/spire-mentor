@@ -8214,6 +8214,17 @@ fn emotion_chip_fires_front_plasma_twice_v0111() {
     assert_eq!(state.player.energy, 2);
 }
 
+/// v0.107.1 (GH #806): `EmotionChip.AfterPlayerTurnStart` calls
+/// `OrbCmd.Passive` on every orb (EmotionChip.cs:52-56), Plasma included, so a
+/// lone Plasma grants 1 energy. Cables doesn't double it in this build.
+#[test]
+#[serial_test::serial(global_registry)]
+fn emotion_chip_fires_plasma_v0107() {
+    let state =
+        emotion_chip_with_cables_fired(crate::GameVersion::V0_107_1, &[crate::orbs::Orb::Plasma]);
+    assert_eq!(state.player.energy, 1);
+}
+
 #[test]
 #[serial_test::serial(global_registry)]
 fn emotion_chip_no_fire_without_prior_hp_loss() {

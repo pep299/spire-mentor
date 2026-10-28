@@ -39,6 +39,21 @@ DEFAULT_GAME_TIMEOUT_S = 1800.0
 _JOB_STARTS: Any = None
 
 
+def _reached_second_boss(rm: Any) -> bool | None:
+    """Whether the run entered the A10 DoubleBoss second-boss room, i.e. beat
+    the first act-3 boss: an A9 win read off an A10 run (A10 = A9 + DoubleBoss).
+    None when the current map has no second boss (below A10, or before act 3)."""
+    m = rm.full_map()
+    sb = m and m.get("second_boss")
+    if not sb:
+        return None
+    for row in m["rows"]:
+        for node in row:
+            if (node["col"], node["row"]) == (sb["col"], sb["row"]):
+                return bool(node["visited"] or node["current"])
+    return None
+
+
 def _init_job_starts(starts: Any) -> None:
     global _JOB_STARTS
     _JOB_STARTS = starts
@@ -167,6 +182,7 @@ def play_one(
 
     terminal: Terminal | None = None
     search_stats: dict[str, Any] | None = None
+    forced_stats: dict[str, Any] | None = None
     if policy == "expert":
         for out in env.expert_run():
             if isinstance(out, Decision):
@@ -248,6 +264,20 @@ def play_one(
                 decisions[-1]["search_value"] = diag["search_value"]
             out = env.step(idx)
         terminal = out
+    elif policy == "net_forced":
+        # The forced-pick counterfactual (`ppo.forced_pick`): greedy net, with
+        # engine-card picks at card rewards forced per `search["arm"]`.
+        from ppo.forced_pick import ForcedPick
+
+        pol = _net_policy(ckpt_path)
+        forcer = ForcedPick(seed=seed, **(search or {}))
+        out = env.reset()
+        while isinstance(out, Decision):
+            idx = forcer.choose(pol, out)
+            record(out, idx)
+            out = env.step(idx)
+        terminal = out
+        forced_stats = forcer.stats()
     else:
         raise ValueError(f"unknown policy {policy!r}")
     if terminal is None:  # expert_run always ends with a Terminal
@@ -269,6 +299,7 @@ def play_one(
         "steps": terminal.steps,
         "n_decisions": terminal.decisions,
         "final": terminal.metrics,
+        "reached_second_boss": _reached_second_boss(env.rm),
         "wall_s": round(time.time() - t0, 2),
         "resolution_counts": counts,
         "decisions": decisions,
@@ -281,6 +312,7 @@ def play_one(
         # mid-campaign would change this.
         "py_src": python_source_digest(),
         **({"search_stats": search_stats} if search_stats is not None else {}),
+        **({"forced_stats": forced_stats} if forced_stats is not None else {}),
     }
 
 
@@ -466,7 +498,7 @@ def play_batch(
     # COMPLETION order — a straggler no longer blocks flushing the runs that
     # already finished, so a crash mid-batch never loses completed rows.
     results: list[dict[str, Any] | None] = [None] * len(jobs)
-    sink = open(out_path, "w") if out_path else None
+    sink = open(out_path, "w", encoding="utf-8") if out_path else None
 
     def _emit(i: int, row: dict[str, Any]) -> None:
         results[i] = row

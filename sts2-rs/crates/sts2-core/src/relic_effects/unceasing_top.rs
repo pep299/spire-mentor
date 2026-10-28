@@ -5,7 +5,14 @@ pub(crate) fn on_after_hand_emptied_unceasing_top(
     state: &mut CombatState,
     _ctx: &crate::hooks::CombatLifecycleCtx,
 ) -> EffectResult {
-    if state.phase != crate::CombatPhase::PlayerPlayPhase {
+    // C# `IsValidPhase`: AutoPrePlay, Play or AutoPostPlay — never before the
+    // hand draw or after the flush (UnceasingTop.cs:25-32). The only
+    // `PlayerTurnStart` caller is the v0.111.0 AutoPrePlay-entry check, which
+    // runs after the draw.
+    if !matches!(
+        state.phase,
+        crate::CombatPhase::PlayerTurnStart | crate::CombatPhase::PlayerPlayPhase
+    ) {
         return EffectResult::NotImplemented;
     }
     if !player_owns_relic(state, crate::RelicKind::UnceasingTop) {

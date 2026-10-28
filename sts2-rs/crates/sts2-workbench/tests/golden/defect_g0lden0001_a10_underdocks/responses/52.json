@@ -1612,8 +1612,8 @@
    "combat_log": [],
    "decision": "combat_play",
    "details": [
-    "Spawned: Corpse Slug",
-    "Spawned: Corpse Slug"
+    "Spawned: Corpse Slug #1",
+    "Spawned: Corpse Slug #2"
    ],
    "error": false,
    "floor": 4,
@@ -1827,7 +1827,7 @@
    "decision": "combat_play",
    "details": [
     "Play Dualcast",
-    "Corpse Slug HP 29→13 (−16)"
+    "Corpse Slug #2 HP 29→13 (−16)"
    ],
    "error": false,
    "floor": 4,
@@ -2020,13 +2020,13 @@
    "decision": "combat_play",
    "details": [
     "Play Strike",
-    "Corpse Slug HP 27→21 (−6)"
+    "Corpse Slug #1 HP 27→21 (−6)"
    ],
    "error": false,
    "floor": 4,
    "id": 37,
    "idx": 37,
-   "label": "Play Strike → Corpse Slug",
+   "label": "Play Strike → Corpse Slug #1",
    "parent_id": 36,
    "turn": 2,
    "value": null
@@ -2105,13 +2105,13 @@
    "decision": "combat_play",
    "details": [
     "Play Strike",
-    "Corpse Slug HP 21→15 (−6)"
+    "Corpse Slug #1 HP 21→15 (−6)"
    ],
    "error": false,
    "floor": 4,
    "id": 39,
    "idx": 39,
-   "label": "Play Strike → Corpse Slug",
+   "label": "Play Strike → Corpse Slug #1",
    "parent_id": 38,
    "turn": 2,
    "value": null

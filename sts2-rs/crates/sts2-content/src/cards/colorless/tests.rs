@@ -1507,20 +1507,75 @@ pin_registered!(pin_beat_down, BeatDown);
 pin_registered!(pin_anointed, Anointed);
 pin_registered!(pin_intercept_card, InterceptCard);
 
-/// `sts2-rs-0c5po`: Intercept applies Covered(1) to the (collapsed-to-self)
-/// target ally in addition to the block.
+/// A co-op teammate for the `AnyAlly` cards: `state.allies[0]`.
+fn push_teammate(state: &mut CombatState, block: i32) {
+    state.allies.push(sts2_core::PlayerCombatState {
+        current_hp: 70,
+        max_hp: 70,
+        block,
+        ..sts2_core::PlayerCombatState::default()
+    });
+}
+
+/// Intercept: the block is the player's, the Covered the teammate's -- and
+/// what that costs the player is `InterceptPower`, which doubles the powered
+/// attack damage they take until the enemy turn ends (C# `Intercept.cs`,
+/// `CoveredPower.AfterApplied`, `InterceptPower.ModifyDamageMultiplicative`).
+/// The old self-collapse put Covered on the player, zeroing their hits.
 #[test]
-fn intercept_card_applies_covered_to_self() {
+fn intercept_card_covers_the_teammate_and_doubles_the_players_hits() {
+    use sts2_core::hooks::{modify_damage, CreatureRef, DamageCtx, ValueProps};
     install_pool();
-    let (mut state, _e) = fresh_state(CardId::InterceptCard, 0, 9);
+    let (mut state, enemy) = fresh_state(CardId::InterceptCard, 0, 9);
     let player = push_player(&mut state);
+    push_teammate(&mut state, 0);
     let f = lookup(CardId::InterceptCard).expect("registered");
     f(&mut state, None);
-    assert_eq!(
-        creature_power(&state, player, PowerKind::Covered),
-        1,
-        "Covered(1) applied to player (ally collapse)"
+    f(&mut state, None); // a second play stays one x2, not x3
+    assert_eq!(creature_power(&state, player, PowerKind::Covered), 0);
+    assert_eq!(creature_power(&state, player, PowerKind::Intercept), 1);
+    assert!(
+        state.allies[0].powers.is_empty(),
+        "teammate powers are not simulated"
     );
+    let hit = |props| DamageCtx {
+        dealer: CreatureRef::Enemy(enemy),
+        target: CreatureRef::Player,
+        props,
+        card_source: None,
+    };
+    assert_eq!(modify_damage(&state, 6, &hit(ValueProps::MOVE)), 12);
+    assert_eq!(modify_damage(&state, 6, &hit(ValueProps::UNPOWERED)), 6);
+}
+
+/// Lift gives the block to the teammate, with the player's Dexterity on it
+/// (C# `DexterityPower.ModifyBlockAdditive` gates on the card's owner) but
+/// not the player's Frail (gated on the target).
+#[test]
+fn lift_blocks_the_teammate_with_the_players_dexterity() {
+    use sts2_core::card_effects::apply_power_to_creature;
+    install_pool();
+    let (mut state, _e) = fresh_state(CardId::Lift, 0, 11);
+    let player = push_player(&mut state);
+    apply_power_to_creature(&mut state, player, PowerKind::Dexterity, 2);
+    apply_power_to_creature(&mut state, player, PowerKind::Frail, 1);
+    push_teammate(&mut state, 3);
+    lookup(CardId::Lift).expect("registered")(&mut state, None);
+    assert_eq!(state.allies[0].block, 3 + 11 + 2);
+    assert_eq!(state.player.block, 0, "Lift gives the player nothing");
+    assert!(state.creatures.iter().all(|c| c.block == 0));
+}
+
+/// Mimic: the player gains block equal to the teammate's (C# `Mimic.cs`
+/// `CalculatedBlock = 0 + 1 * target.Block`).
+#[test]
+fn mimic_copies_the_teammates_block() {
+    install_pool();
+    let (mut state, _e) = fresh_state(CardId::Mimic, 0, 0);
+    push_teammate(&mut state, 7);
+    lookup(CardId::Mimic).expect("registered")(&mut state, None);
+    assert_eq!(state.player.block, 7);
+    assert_eq!(state.allies[0].block, 7, "the teammate keeps theirs");
 }
 pin_registered!(pin_seeker_strike, SeekerStrike);
 pin_registered!(pin_rally, Rally);
@@ -1723,7 +1778,11 @@ fn y9hvo_discovery_flags_generated_card_free_this_turn() {
         .as_ref()
         .expect("Discovery opens a choose-a-card screen");
     assert_eq!(pc.kind, sts2_core::ChoiceKind::AddGeneratedFreeToHand);
-    assert_eq!((pc.min_select, pc.max_select), (0, 1), "one card or an explicit skip");
+    assert_eq!(
+        (pc.min_select, pc.max_select),
+        (0, 1),
+        "one card or an explicit skip"
+    );
     assert!(pc.can_skip, "C# canSkip: true");
     assert_eq!(pc.options.len(), 3, "GetDistinctForCombat(pool, 3)");
     assert_eq!(
@@ -1814,24 +1873,31 @@ fn play_mad_science_energized_gains_two_energy() {
     assert_eq!(state.player.energy, 2, "Energized gains 2 energy");
 }
 
-/// BelieveInYou gains 2 energy base / 3 upgraded (C# `BelieveInYou.cs`
-/// `EnergyVar(2)`, upgrade +1). Bead `sts2-rs-c9exw` — the prior port
-/// hardcoded 3 (the upgraded value) for the base card.
+/// BelieveInYou and Coordinate act on the teammate only (C#
+/// `PlayerCmd.GainEnergy(.., cardPlay.Target.Player)`,
+/// `PowerCmd.Apply<CoordinatePower>(cardPlay.Target, ..)`): the player gets
+/// no energy and no Strength. The old self-collapse gave them both.
 #[test]
-fn play_believe_in_you_energy_scales_with_upgrade() {
+fn teammate_only_cards_leave_the_player_alone() {
     install_pool();
-    // Unupgraded → 2.
-    let (mut state, _e) = fresh_state(CardId::BelieveInYou, 0, 0);
-    state.player.energy = 0;
-    let f = lookup(CardId::BelieveInYou).expect("registered");
-    f(&mut state, None);
-    assert_eq!(state.player.energy, 2, "unupgraded BelieveInYou gains 2");
-    // Upgraded → 3.
-    let (mut state, _e) = fresh_state(CardId::BelieveInYou, 0, 0);
-    state.cards[0].upgraded = true;
-    state.player.energy = 0;
-    f(&mut state, None);
-    assert_eq!(state.player.energy, 3, "upgraded BelieveInYou gains 3");
+    for card in [CardId::BelieveInYou, CardId::CoordinateCard] {
+        let (mut state, _e) = fresh_state(card, 0, 0);
+        let player = push_player(&mut state);
+        push_teammate(&mut state, 0);
+        state.player.energy = 0;
+        lookup(card).expect("registered")(&mut state, None);
+        assert_eq!(state.player.energy, 0, "{card:?}");
+        assert_eq!(
+            creature_power(&state, player, PowerKind::Strength),
+            0,
+            "{card:?}"
+        );
+        assert_eq!(
+            creature_power(&state, player, PowerKind::Coordinate),
+            0,
+            "{card:?}"
+        );
+    }
 }
 
 /// Six colorless self-power cards scale their power amount on upgrade
@@ -1881,7 +1947,6 @@ fn colorless_self_power_amounts_scale_with_upgrade() {
         (CardId::Fasten, PowerKind::Fasten, 4, 6),
         (CardId::PanacheCard, PowerKind::Panache, 10, 14),
         (CardId::PrepTime, PowerKind::PrepTime, 4, 6),
-        (CardId::CoordinateCard, PowerKind::Coordinate, 5, 8),
     ] {
         assert_eq!(amount(card, kind, false), base, "{kind:?} base");
         assert_eq!(amount(card, kind, true), up, "{kind:?} upgraded");
@@ -1897,14 +1962,6 @@ fn colorless_self_power_amounts_scale_with_upgrade() {
         amount(CardId::FeedingFrenzyCard, PowerKind::Strength, true),
         7
     );
-    // sts2-rs-5cry8: CoordinatePower : TemporaryStrengthPower
-    // (IsPositive=true) folds +amount Strength on self (single-
-    // player collapse) alongside the Coordinate marker.
-    assert_eq!(
-        amount(CardId::CoordinateCard, PowerKind::Strength, false),
-        5
-    );
-    assert_eq!(amount(CardId::CoordinateCard, PowerKind::Strength, true), 8);
 }
 
 /// Wisdom rider (Skill mode) → draw 3 cards from the draw pile.
@@ -2198,7 +2255,11 @@ fn play_wish_waits_for_a_choice_over_sorted_draw_cards() {
         (1, 1, false)
     );
     assert_eq!(
-        pending.options.iter().map(|option| option.card_uid).collect::<Vec<_>>(),
+        pending
+            .options
+            .iter()
+            .map(|option| option.card_uid)
+            .collect::<Vec<_>>(),
         vec![Some(basic), Some(common), Some(rare)]
     );
     sts2_core::apply(
@@ -4460,23 +4521,21 @@ fn hidden_gem_on_lone_frantic_escape(version: sts2_core::GameVersion) -> i32 {
     state.cards[uid.0.get() as usize - 1].base_replay_count
 }
 
-/// v0.107.1 Rust drops Status cards from the fallback pool.
+/// The fallback excludes only Curse/Quest (`type - 5 <= 1`, HiddenGem.cs:41;
+/// Status is 4), so the lone FranticEscape gets the Replay. Same C# in both
+/// builds (GH #806).
 #[test]
-fn hidden_gem_fallback_skips_status_v0107() {
-    assert_eq!(
-        hidden_gem_on_lone_frantic_escape(sts2_core::GameVersion::V0_107_1),
-        0
-    );
-}
-
-/// v0.111.0: the fallback excludes only Curse/Quest (`type - 5 <= 1`,
-/// HiddenGem.cs:41; Status is 4), so the lone FranticEscape gets the Replay.
-#[test]
-fn hidden_gem_fallback_keeps_playable_status_v0111() {
-    assert_eq!(
-        hidden_gem_on_lone_frantic_escape(sts2_core::GameVersion::V0_111_0),
-        super::HIDDEN_GEM_REPLAY
-    );
+fn hidden_gem_fallback_keeps_playable_status_both_versions() {
+    for version in [
+        sts2_core::GameVersion::V0_107_1,
+        sts2_core::GameVersion::V0_111_0,
+    ] {
+        assert_eq!(
+            hidden_gem_on_lone_frantic_escape(version),
+            super::HIDDEN_GEM_REPLAY,
+            "{version:?}"
+        );
+    }
 }
 
 /// HiddenGem with no playable cards in the draw pile is a clean
@@ -4720,10 +4779,16 @@ fn enlightenment_cost_expires_on_either_edge_once_and_upgrade_persists() {
             let expected = if upgraded { [1; 4] } else { [1, 3, 3, 3] };
             assert_eq!(state.cards[1].local_costs_after_expiration(), expected);
             for play in [play_first, !play_first] {
-                if play { state.restore_wire_cost_expiring_on_play(uid); }
-                else { state.restore_wire_transient_costs_for_turn_start(); }
+                if play {
+                    state.restore_wire_cost_expiring_on_play(uid);
+                } else {
+                    state.restore_wire_transient_costs_for_turn_start();
+                }
                 assert_eq!(state.cards[1].cost, if upgraded { 1 } else { 3 });
-                assert_eq!(state.cards[1].combat_var(VarKey::CostAbsolutelySet), i32::from(upgraded));
+                assert_eq!(
+                    state.cards[1].combat_var(VarKey::CostAbsolutelySet),
+                    i32::from(upgraded)
+                );
             }
         }
     }
@@ -4734,7 +4799,9 @@ fn enlightenment_reduces_future_cost_even_when_a_temporary_free_card_is_already_
     let (mut state, uid) = enlightenment_with_barricade(true);
     state.cards[1].add_local_cost_modifier(sts2_core::cards::LocalCostModifier {
         kind: sts2_core::cards::LocalCostModifierKind::Absolute,
-        amount: 0, reduce_only: false, expiration: 6,
+        amount: 0,
+        reduce_only: false,
+        expiration: 6,
     });
     play_enlightenment(&mut state, None);
     assert_eq!(state.cards[1].local_costs_after_expiration(), [0, 1, 1, 1]);
@@ -4751,7 +4818,9 @@ fn enlightenment_preserves_preexisting_independent_lifetimes() {
         for (amount, expiration) in [(-2, 2), (-1, 4)] {
             model.append(sts2_core::cards::LocalCostModifier {
                 kind: sts2_core::cards::LocalCostModifierKind::Relative,
-                amount, reduce_only: false, expiration,
+                amount,
+                reduce_only: false,
+                expiration,
             });
         }
         state.cards[1].set_local_energy_cost(model);
@@ -4759,8 +4828,11 @@ fn enlightenment_preserves_preexisting_independent_lifetimes() {
         play_enlightenment(&mut state, None);
         assert_eq!(state.cards[1].local_costs_after_expiration(), [1, 4, 3, 5]);
         for play in [play_first, !play_first] {
-            if play { state.restore_wire_cost_expiring_on_play(uid); }
-            else { state.restore_wire_transient_costs_for_turn_start(); }
+            if play {
+                state.restore_wire_cost_expiring_on_play(uid);
+            } else {
+                state.restore_wire_transient_costs_for_turn_start();
+            }
         }
         assert_eq!(state.cards[1].cost, 5);
     }
@@ -4768,13 +4840,26 @@ fn enlightenment_preserves_preexisting_independent_lifetimes() {
 
 #[test]
 fn enlightenment_absorbs_stomp_and_snecko_banks_without_double_restoration() {
-    for bank in [VarKey::StompCostReductionThisTurn, VarKey::SneckoCostDeltaThisTurn] {
+    for bank in [
+        VarKey::StompCostReductionThisTurn,
+        VarKey::SneckoCostDeltaThisTurn,
+    ] {
         let (mut state, uid) = enlightenment_with_barricade(false);
         state.cards[1].local_energy_cost = None;
         state.cards[1].cost = 2;
-        state.cards[1].set_combat_var(bank, if bank == VarKey::SneckoCostDeltaThisTurn { -1 } else { 1 });
+        state.cards[1].set_combat_var(
+            bank,
+            if bank == VarKey::SneckoCostDeltaThisTurn {
+                -1
+            } else {
+                1
+            },
+        );
         if bank == VarKey::SneckoCostDeltaThisTurn {
-            state.cards[1].set_combat_var(VarKey::SneckoRollLive, sts2_core::cards::SNECKO_ROLL_RAISED_FLAG);
+            state.cards[1].set_combat_var(
+                VarKey::SneckoRollLive,
+                sts2_core::cards::SNECKO_ROLL_RAISED_FLAG,
+            );
             state.cards[1].set_combat_var(VarKey::CostAbsolutelySet, 1);
         }
         play_enlightenment(&mut state, None);
@@ -4795,7 +4880,10 @@ fn enlightenment_cap_survives_card_upgrade_but_expiry_reveals_the_upgraded_base(
         assert_eq!(state.cards[1].cost, 1);
         state.restore_wire_cost_expiring_on_play(uid);
         state.restore_wire_transient_costs_for_turn_start();
-        assert_eq!(state.cards[1].cost, if upgraded_enlightenment { 1 } else { 2 });
+        assert_eq!(
+            state.cards[1].cost,
+            if upgraded_enlightenment { 1 } else { 2 }
+        );
     }
 }
 
@@ -4828,11 +4916,15 @@ fn generated_card_keeps_ordered_cost_after_confused_enlightenment_upgrade_and_ex
     // Confused.SetThisCombat(3), followed by a combat-relative increase.
     card.add_local_cost_modifier(sts2_core::cards::LocalCostModifier {
         kind: sts2_core::cards::LocalCostModifierKind::Absolute,
-        amount: 3, reduce_only: false, expiration: 0,
+        amount: 3,
+        reduce_only: false,
+        expiration: 0,
     });
     card.add_local_cost_modifier(sts2_core::cards::LocalCostModifier {
         kind: sts2_core::cards::LocalCostModifierKind::Relative,
-        amount: 2, reduce_only: false, expiration: 0,
+        amount: 2,
+        reduce_only: false,
+        expiration: 0,
     });
     play_enlightenment(&mut state, None);
     let card = &mut state.cards[uid.get() as usize - 1];
@@ -5631,7 +5723,10 @@ fn two_auto_played_purities_surface_both_selections() {
         },
     );
 
-    assert!(state.pending_choice.is_some(), "the second Purity awaits its own choice");
+    assert!(
+        state.pending_choice.is_some(),
+        "the second Purity awaits its own choice"
+    );
     assert!(state.pending_autoplay_resume.is_some());
     for selection in [[0u8].into_iter().collect(), smallvec::SmallVec::new()] {
         let _ = sts2_core::apply(&mut state, sts2_core::Action::ResolveChoice { selection });

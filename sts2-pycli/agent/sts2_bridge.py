@@ -59,7 +59,7 @@ _log_fh = None
 def log_entry(step, request, response):
     global _log_fh
     if _log_fh is None and LOG_FILE:
-        _log_fh = open(LOG_FILE, "w")
+        _log_fh = open(LOG_FILE, "w", encoding="utf-8")
     if _log_fh:
         entry = {"step": step, "ts": time.time(), "req": request, "resp": response}
         _log_fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -78,7 +78,7 @@ def do_replay():
     print(f"Replaying {REPLAY_FILE} until step {REPLAY_UNTIL or 'end'}...", file=sys.stderr)
     game = Game(forward_stderr=True)
 
-    with open(REPLAY_FILE) as f:
+    with open(REPLAY_FILE, encoding="utf-8") as f:
         entries = [json.loads(line) for line in f if line.strip()]
 
     replayed = 0

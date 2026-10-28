@@ -137,7 +137,7 @@ def main(argv: list[str] | None = None) -> int:
     ]
     jobs = [(p, args.build, args.character, frozenset(args.ascension)) for p in paths]
     n_runs = 0
-    with Pool(args.procs) as pool, open(args.out, "w") as sink:
+    with Pool(args.procs) as pool, open(args.out, "w", encoding="utf-8") as sink:
         for rows in pool.imap_unordered(_job, jobs, chunksize=64):
             for r in rows:
                 sink.write(json.dumps(r) + "\n")

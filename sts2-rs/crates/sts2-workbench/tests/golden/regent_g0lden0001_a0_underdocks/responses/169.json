@@ -12,35 +12,37 @@
  "scores": [
   {
    "action": "end turn",
-   "hp_n": 28,
+   "hp_n": 34,
+   "hp_sd": 4.6269,
    "is_best": true,
-   "losses": 26,
+   "losses": 15,
    "low_confidence": false,
-   "mean_final_hp": 0.0714,
-   "q": -1.0762,
+   "mean_final_hp": 3.9412,
+   "q": 0.0357,
    "q_saturated": false,
    "stable_idx": -1,
    "target_index": null,
    "ties": 0,
-   "visits": 28,
-   "win_prob": 0.0714,
-   "wins": 2
+   "visits": 34,
+   "win_prob": 0.5588,
+   "wins": 19
   },
   {
    "action": "drink Energy Potion",
-   "hp_n": 20,
+   "hp_n": 14,
+   "hp_sd": 5.9453,
    "is_best": false,
-   "losses": 20,
+   "losses": 9,
    "low_confidence": false,
-   "mean_final_hp": 0.0,
-   "q": -1.2266,
+   "mean_final_hp": 2.7143,
+   "q": -0.4325,
    "q_saturated": false,
    "stable_idx": -100,
    "target_index": null,
    "ties": 0,
-   "visits": 20,
-   "win_prob": 0.0,
-   "wins": 0
+   "visits": 14,
+   "win_prob": 0.3571,
+   "wins": 5
   }
  ]
 }

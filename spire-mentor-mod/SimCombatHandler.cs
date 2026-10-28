@@ -123,17 +123,44 @@ public class SimCombatHandler : IRoomHandler, IHandler
         return false;
     }
 
+    /// <summary>
+    /// The teammate an ally-target card or potion goes to (co-op only; such
+    /// cards are unplayable alone): the first living one in run order, the
+    /// order <see cref="SerializeAllies"/> sends them in. The engine aims its
+    /// simulated AnyAlly plays at that same teammate
+    /// (<c>CombatState::any_ally_card_target</c>), so the play autoplay makes
+    /// is the play the advisor valued.
+    /// </summary>
+    internal static Creature? TeammateTarget(Player player)
+    {
+        IRunState? runState = player.RunState;
+        if (runState == null)
+            return null;
+        foreach (Player other in runState.Players)
+        {
+            if (ReferenceEquals(other, player))
+                continue;
+            Creature? c = other.Creature;
+            if (c != null && c.IsAlive)
+                return c;
+        }
+        return null;
+    }
+
     private static bool IsPlayerInPlayPhase(Player player) =>
         player.PlayerCombatState?.Phase == PlayerTurnPhase.Play;
 
     /// <summary>
-    /// Target for a card play. Only AnyEnemy cards take a target. A
-    /// non-negative index addresses the full enemy list (so indices match the
-    /// serialized <c>enemies</c> array) and must land on a hittable enemy; a
-    /// negative index means "first hittable enemy".
+    /// Target for a card play. AnyEnemy cards take an enemy: a non-negative
+    /// index addresses the full enemy list (so indices match the serialized
+    /// <c>enemies</c> array) and must land on a hittable enemy; a negative
+    /// index means "first hittable enemy". Co-op's AnyAlly cards take a
+    /// teammate (<see cref="TeammateTarget"/>).
     /// </summary>
     internal static Creature? ResolveTarget(CardModel card, int targetIndex)
     {
+        if (card.TargetType == TargetType.AnyAlly)
+            return TeammateTarget(card.Owner);
         if (card.TargetType != TargetType.AnyEnemy)
             return null;
 
@@ -281,6 +308,12 @@ public class SimCombatHandler : IRoomHandler, IHandler
             SendMissingTarget(targetIndex, potion.Id.Entry, runState, player);
             return;
         }
+        if (potion.TargetType == TargetType.AnyAlly && target == null)
+        {
+            SimProtocolHelpers.SendError("target_required",
+                $"{potion.Id.Entry} needs a living teammate and there is none", runState, player);
+            return;
+        }
 
         Logger.Log($"[SimCombat] Using potion in slot {slot} (target_index={targetIndex})");
         await UsePotionAndWaitAsync(player, potion, slot, target, ct);
@@ -327,8 +360,9 @@ public class SimCombatHandler : IRoomHandler, IHandler
 
     /// <summary>
     /// Target for a potion use. AnyEnemy follows the same addressing as
-    /// <see cref="ResolveTarget"/>; self/ally potions target the player;
-    /// everything else auto-targets (null).
+    /// <see cref="ResolveTarget"/>; self/any-player potions target the player;
+    /// ally potions a teammate (<see cref="TeammateTarget"/>, null when none
+    /// is alive); everything else auto-targets (null).
     /// </summary>
     internal static Creature? ResolvePotionTarget(Player player, PotionModel? potion, int targetIndex)
     {
@@ -349,9 +383,11 @@ public class SimCombatHandler : IRoomHandler, IHandler
                 Creature candidate = combat.Enemies[targetIndex];
                 return candidate.IsHittable ? candidate : null;
             }
+            case TargetType.AnyAlly:
+                // Never the user (PotionModel.IsValidTarget).
+                return TeammateTarget(player);
             case TargetType.Self:
             case TargetType.AnyPlayer:
-            case TargetType.AnyAlly:
                 return player.Creature;
             default:
                 return null;
@@ -709,6 +745,11 @@ public class SimCombatHandler : IRoomHandler, IHandler
                              ?? new List<Dictionary<string, object?>>(),
                 ["cards_played_this_turn"] = CountCardsPlayedThisTurn(combatState, creature),
                 ["bound_card_played_this_turn"] = BoundCardPlayedThisTurn(combatState, creature),
+                // Co-op: who we are on the combat log's card-play rows (`owner`).
+                ["net_id"] = player.NetId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                // Our place in the run's player order: who sets up, draws and
+                // flushes first each turn (they share the run's shuffle stream).
+                ["seat_index"] = runState?.Players.ToList().IndexOf(player) ?? 0,
             };
             try
             {
@@ -759,6 +800,7 @@ public class SimCombatHandler : IRoomHandler, IHandler
                 ["exhaust_pile_count"] = pcs?.ExhaustPile?.Cards.Count ?? 0,
                 ["round"] = combatState?.RoundNumber ?? 0,
                 ["room_type"] = runState?.CurrentRoom?.RoomType.ToString() ?? "Combat",
+                ["allies"] = SerializeAllies(player, runState),
             };
 
             SimStateExtractor.ApplyEnvelope(state, runState, player);
@@ -768,6 +810,80 @@ public class SimCombatHandler : IRoomHandler, IHandler
         {
             Logger.Log($"[SimCombat] Could not build combat state: {ex}");
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Co-op (PROTOCOL.md "allies"): every other player in the run, as this
+    /// peer simulates them. Every peer runs every player's draws and plays,
+    /// so a teammate's hand is known here even though the game's own UI only
+    /// shows its size. Empty in single-player. One unreadable teammate is
+    /// logged and left out rather than failing the board.
+    /// </summary>
+    private static List<Dictionary<string, object?>> SerializeAllies(Player me, RunState? runState)
+    {
+        var allies = new List<Dictionary<string, object?>>();
+        if (runState == null)
+            return allies;
+        foreach (Player other in runState.Players)
+        {
+            if (ReferenceEquals(other, me))
+                continue;
+            try
+            {
+                Creature? c = other.Creature;
+                PlayerCombatState? pcs = other.PlayerCombatState;
+                allies.Add(new Dictionary<string, object?>
+                {
+                    ["character"] = other.Character?.Id.Entry ?? "",
+                    ["hp"] = c?.CurrentHp ?? 0,
+                    ["max_hp"] = c?.MaxHp ?? 0,
+                    ["block"] = c?.Block ?? 0,
+                    ["is_dead"] = c?.IsDead ?? true,
+                    ["energy"] = pcs?.Energy ?? 0,
+                    ["max_energy"] = pcs?.MaxEnergy ?? 0,
+                    ["powers"] = c?.Powers.Select(SimStateExtractor.SerializePower).ToList()
+                                 ?? new List<Dictionary<string, object?>>(),
+                    ["hand"] = pcs != null
+                        ? PileType.Hand.GetPile(other).Cards
+                            .Select(card => SimStateExtractor.SerializeCard(card))
+                            .ToList()
+                        : new List<Dictionary<string, object?>>(),
+                    ["ended_turn"] = SafeEndedTurn(other),
+                    // The rest of the seat, so a recorded fight can be replayed
+                    // as a whole co-op fight: every peer runs every player's draws.
+                    ["net_id"] = other.NetId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ["draw_pile"] = SimStateExtractor.SerializePile(pcs?.DrawPile),
+                    ["discard_pile"] = SimStateExtractor.SerializePile(pcs?.DiscardPile),
+                    ["exhaust_pile"] = SimStateExtractor.SerializePile(pcs?.ExhaustPile),
+                    ["play_pile"] = SimStateExtractor.SerializePile(pcs?.PlayPile),
+                    ["relics"] = other.Relics.Select(SimStateExtractor.SerializeRelic).ToList(),
+                    ["stars"] = pcs?.Stars ?? 0,
+                    // Their belt, slot by slot as ours is: a replay plays a
+                    // teammate's logged potion from it.
+                    ["potions"] = other.PotionSlots
+                        .Select((potion, slot) => SimStateExtractor.SerializePotionSlot(potion, slot))
+                        .ToList(),
+                });
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"[SimCombat] Could not serialize a teammate: {ex.Message}");
+            }
+        }
+        return allies;
+    }
+
+    private static bool SafeEndedTurn(Player player)
+    {
+        try
+        {
+            return CombatManager.Instance.IsInProgress
+                && CombatManager.Instance.IsPlayerReadyToEndTurn(player);
+        }
+        catch (Exception)
+        {
+            return false;
         }
     }
 

@@ -890,7 +890,7 @@ impl Game {
                 None => Value::Null,
             },
         );
-        m.insert("bg_seed".into(), json!(rmx::run_seed(rm)));
+        m.insert("bg_seed".into(), seed_json(rmx::run_seed(rm)));
         // GH #801: only a non-default build is named, so every v0.107.1
         // state (and golden) keeps its bytes. Readers treat absence as
         // v0.107.1.
@@ -1259,7 +1259,7 @@ impl Game {
             .collect();
         let can_skip = actions.iter().any(|a| {
             rmx::action_kind(a) == "pick_card_reward"
-                && rmx::action_value(a).get("idx").map_or(true, Value::is_null)
+                && rmx::action_value(a).get("idx").is_none_or(Value::is_null)
         });
         let m = state.as_object_mut().expect("state dict");
         m.insert("cards".into(), Value::Array(cards));
@@ -1544,7 +1544,7 @@ impl Game {
             };
             let enabled = info
                 .and_then(|i| i.get("enabled"))
-                .map_or(true, combat_view::truthy);
+                .is_none_or(combat_view::truthy);
             options.push(json!({
                 "index": idx,
                 "title": if title.is_empty() { format!("Option {idx}") } else { title },
@@ -2015,6 +2015,21 @@ pub fn build_faithful_run_manager(
     rm
 }
 
+/// A run seed as the browser can read it back exactly (GH #878).
+///
+/// v0.111.0 run seeds are `ulong`s and `JSON.parse` rounds any number past
+/// 2^53, so those go out as a decimal string. Every smaller seed (all of
+/// v0.107.1's `uint`s) stays a number, so its bytes and goldens don't change.
+/// Python twin: `workbench.seed.json_exact_seed`.
+pub(crate) fn seed_json(seed: u64) -> Value {
+    const JSON_SAFE_MAX: u64 = (1 << 53) - 1;
+    if seed <= JSON_SAFE_MAX {
+        json!(seed)
+    } else {
+        json!(seed.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2272,6 +2287,14 @@ mod tests {
         assert!(state["options"].as_array().is_some_and(|o| !o.is_empty()));
         assert!(state.get("room_reveal").is_none());
         assert!(state["bg_seed"].is_number());
+    }
+
+    #[test]
+    fn seed_json_keeps_a_ulong_seed_exact() {
+        assert_eq!(seed_json(44_815_703), json!(44_815_703));
+        assert_eq!(seed_json((1 << 53) - 1), json!(9_007_199_254_740_991_u64));
+        assert_eq!(seed_json(1 << 53), json!("9007199254740992"));
+        assert_eq!(seed_json(u64::MAX), json!("18446744073709551615"));
     }
 
     #[test]

@@ -8,8 +8,17 @@ const DECISION_COLOR: Record<string, string> = {
   game_over: "var(--muted)",
 };
 
-export default function Timeline({ idx, count, entries, onSeek }: {
+/** A coach tick under a step: a costly turn or a flagged choice. */
+const TICK_COLOR: Record<string, string> = {
+  blunder: "var(--hp)",
+  slip: "var(--warn, #c79a3a)",
+  flag: "var(--accent)",
+};
+
+export default function Timeline({ idx, count, entries, onSeek, marks }: {
   idx: number; count: number; entries: TimelineEntry[]; onSeek: (idx: number) => void;
+  /** Coach records logged for a step (`coachSelectors.stepTones`). */
+  marks?: Map<number, string>;
 }) {
   const here = entries[idx];
   return (
@@ -34,6 +43,20 @@ export default function Timeline({ idx, count, entries, onSeek }: {
               outline: e.idx === idx ? "2px solid var(--accent-strong)" : "none" }} />
         ))}
       </div>
+      {marks && marks.size > 0 && (
+        <div style={{ display: "flex", gap: 1, height: 4, marginBottom: 6 }} aria-label="coach marks">
+          {entries.map((e) => {
+            const tone = marks.get(e.idx);
+            return (
+              <div key={e.idx} data-testid={tone ? `coach-tick-${e.idx}` : undefined}
+                title={tone ? `#${e.idx}: ${tone}` : undefined}
+                onClick={tone ? () => onSeek(e.idx) : undefined}
+                style={{ flex: 1, minWidth: 1, borderRadius: 1, cursor: tone ? "pointer" : "default",
+                  background: tone ? TICK_COLOR[tone] ?? "var(--muted)" : "transparent" }} />
+            );
+          })}
+        </div>
+      )}
       <input type="range" min={0} max={Math.max(0, count - 1)} value={idx}
         onChange={(e) => onSeek(Number(e.target.value))} style={{ width: "100%" }} />
       <div className="mono" style={{ fontSize: 10, color: "var(--muted)", marginTop: 6 }}>

@@ -82,7 +82,7 @@ def load(features_path: Path, decisions_path: Path, schema: dict[str, Any]) -> d
     trajectory gets the trajectory's final outcome as its label.
     """
     dec_by_seed: dict[int, tuple[int, int]] = {}
-    for line in decisions_path.read_text().splitlines():
+    for line in decisions_path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         r = json.loads(line)
@@ -95,7 +95,7 @@ def load(features_path: Path, decisions_path: Path, schema: dict[str, Any]) -> d
     y_act: list[int] = []
     seeds: list[int] = []
     n_dropped = 0
-    for line in features_path.read_text().splitlines():
+    for line in features_path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         r = json.loads(line)
@@ -428,7 +428,7 @@ def emit_parity_fixture(
     ]
     fixture = {"net": net, "cases": cases}
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(fixture))
+    path.write_text(json.dumps(fixture), encoding="utf-8")
     print(f"wrote parity fixture ({n} cases) -> {path}")
 
 

@@ -1,6 +1,6 @@
 {
  "details": [
-  "You HP 67→70 (+3)"
+  "You HP 59→68 (+9)"
  ],
  "error": null,
  "label": "Choose: Consume",
@@ -704,7 +704,7 @@
      }
     ],
     "gold": 35,
-    "hp": 70,
+    "hp": 68,
     "max_hp": 70,
     "name": "Silent",
     "potion_slots": 3,

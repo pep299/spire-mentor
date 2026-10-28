@@ -1,8 +1,32 @@
 {
  "debug": {
-  "action": "Play Strike → Nibbit",
+  "action": "Play Snakebite → Nibbit",
   "combat_search": {
    "actions": [
+    {
+     "action": {
+      "action": "play",
+      "card_index": 3,
+      "target_index": null
+     },
+     "bucket": "likely-win",
+     "hp_n": 1,
+     "hp_sd": 0.0,
+     "is_best": false,
+     "losses": 0,
+     "low_confidence": false,
+     "mean_final_hp": 66.0,
+     "p_loss": 0.0,
+     "p_tie": 0.0,
+     "p_win": 1.0,
+     "q": 1.2355,
+     "q_saturated": false,
+     "ties": 0,
+     "value": 1.0,
+     "value_sum": 1.2355,
+     "visits": 1,
+     "wins": 1
+    },
     {
      "action": {
       "action": "play",
@@ -10,7 +34,8 @@
       "target_index": 0
      },
      "bucket": "likely-win",
-     "hp_n": 3,
+     "hp_n": 2,
+     "hp_sd": 0.0,
      "is_best": true,
      "losses": 0,
      "low_confidence": false,
@@ -22,39 +47,19 @@
      "q_saturated": false,
      "ties": 0,
      "value": 1.0,
-     "value_sum": 3.7067,
-     "visits": 3,
-     "wins": 3
+     "value_sum": 2.4711,
+     "visits": 2,
+     "wins": 2
     },
     {
      "action": {
       "action": "play",
-      "card_index": 1,
-      "target_index": null
-     },
-     "bucket": "likely-win",
-     "hp_n": 3,
-     "is_best": false,
-     "losses": 0,
-     "low_confidence": false,
-     "mean_final_hp": 66.0,
-     "p_loss": 0.0,
-     "p_tie": 0.0,
-     "p_win": 1.0,
-     "q": 1.2356,
-     "q_saturated": false,
-     "ties": 0,
-     "value": 1.0,
-     "value_sum": 3.7067,
-     "visits": 3,
-     "wins": 3
-    },
-    {
-     "action": {
-      "action": "end_turn"
+      "card_index": 2,
+      "target_index": 0
      },
      "bucket": "likely-win",
      "hp_n": 2,
+     "hp_sd": 0.0,
      "is_best": false,
      "losses": 0,
      "low_confidence": false,
@@ -69,6 +74,52 @@
      "value_sum": 2.4711,
      "visits": 2,
      "wins": 2
+    },
+    {
+     "action": {
+      "action": "play",
+      "card_index": 1,
+      "target_index": 0
+     },
+     "bucket": "likely-win",
+     "hp_n": 2,
+     "hp_sd": 0.0,
+     "is_best": false,
+     "losses": 0,
+     "low_confidence": false,
+     "mean_final_hp": 66.0,
+     "p_loss": 0.0,
+     "p_tie": 0.0,
+     "p_win": 1.0,
+     "q": 1.2356,
+     "q_saturated": false,
+     "ties": 0,
+     "value": 1.0,
+     "value_sum": 2.4711,
+     "visits": 2,
+     "wins": 2
+    },
+    {
+     "action": {
+      "action": "end_turn"
+     },
+     "bucket": "likely-win",
+     "hp_n": 1,
+     "hp_sd": 0.0,
+     "is_best": false,
+     "losses": 0,
+     "low_confidence": false,
+     "mean_final_hp": 61.0,
+     "p_loss": 0.0,
+     "p_tie": 0.0,
+     "p_win": 1.0,
+     "q": 1.2177,
+     "q_saturated": false,
+     "ties": 0,
+     "value": 1.0,
+     "value_sum": 1.2177,
+     "visits": 1,
+     "wins": 1
     }
    ],
    "recommended": {
@@ -80,18 +131,18 @@
   "is_combat": true,
   "phase": "combat",
   "result": "Advanced",
-  "summary": "combat MCTS → Play Strike → Nibbit"
+  "summary": "combat MCTS → Play Snakebite → Nibbit"
  },
  "diff": null,
  "error": null,
  "over": false,
  "played": true,
  "search": {
-  "action": "Play Strike → Nibbit",
+  "action": "Play Snakebite → Nibbit",
   "enemies": [
    {
-    "block": 5,
-    "hp": 12,
+    "block": 0,
+    "hp": 21,
     "index": 0,
     "intents": [
      {
@@ -103,21 +154,15 @@
     "max_hp": 43,
     "move_state": "HISS",
     "name": "Nibbit",
-    "powers": [
-     {
-      "amount": 6,
-      "display_amount": 6,
-      "id": "POISON",
-      "name": "Poison"
-     }
-    ],
+    "powers": [],
     "uid": 2
    }
   ],
   "scores": [
    {
-    "action": "Strike",
-    "hp_n": 3,
+    "action": "Snakebite",
+    "hp_n": 2,
+    "hp_sd": 0.0,
     "is_best": true,
     "losses": 0,
     "low_confidence": false,
@@ -127,13 +172,48 @@
     "stable_idx": 0,
     "target_index": 0,
     "ties": 0,
-    "visits": 3,
+    "visits": 2,
     "win_prob": 1.0,
-    "wins": 3
+    "wins": 2
    },
    {
-    "action": "Defend",
-    "hp_n": 3,
+    "action": "Survivor",
+    "hp_n": 1,
+    "hp_sd": 0.0,
+    "is_best": false,
+    "losses": 0,
+    "low_confidence": false,
+    "mean_final_hp": 66.0,
+    "q": 1.2355,
+    "q_saturated": false,
+    "stable_idx": 3,
+    "target_index": null,
+    "ties": 0,
+    "visits": 1,
+    "win_prob": 1.0,
+    "wins": 1
+   },
+   {
+    "action": "Finisher",
+    "hp_n": 2,
+    "hp_sd": 0.0,
+    "is_best": false,
+    "losses": 0,
+    "low_confidence": false,
+    "mean_final_hp": 66.0,
+    "q": 1.2356,
+    "q_saturated": false,
+    "stable_idx": 2,
+    "target_index": 0,
+    "ties": 0,
+    "visits": 2,
+    "win_prob": 1.0,
+    "wins": 2
+   },
+   {
+    "action": "Strike",
+    "hp_n": 2,
+    "hp_sd": 0.0,
     "is_best": false,
     "losses": 0,
     "low_confidence": false,
@@ -141,27 +221,28 @@
     "q": 1.2356,
     "q_saturated": false,
     "stable_idx": 1,
-    "target_index": null,
-    "ties": 0,
-    "visits": 3,
-    "win_prob": 1.0,
-    "wins": 3
-   },
-   {
-    "action": "end turn",
-    "hp_n": 2,
-    "is_best": false,
-    "losses": 0,
-    "low_confidence": false,
-    "mean_final_hp": 66.0,
-    "q": 1.2356,
-    "q_saturated": false,
-    "stable_idx": -1,
-    "target_index": null,
+    "target_index": 0,
     "ties": 0,
     "visits": 2,
     "win_prob": 1.0,
     "wins": 2
+   },
+   {
+    "action": "end turn",
+    "hp_n": 1,
+    "hp_sd": 0.0,
+    "is_best": false,
+    "losses": 0,
+    "low_confidence": false,
+    "mean_final_hp": 61.0,
+    "q": 1.2177,
+    "q_saturated": false,
+    "stable_idx": -1,
+    "target_index": null,
+    "ties": 0,
+    "visits": 1,
+    "win_prob": 1.0,
+    "wins": 1
    }
   ]
  },
@@ -196,17 +277,16 @@
    "discard_pile": [
     {
      "base_cost": 1,
-     "calculated_value": 2,
      "can_play": false,
      "color": "green",
      "cost": 1,
-     "description": "Deal 6 damage for each Attack already played this turn.\n(Hits 2 times)",
-     "description_rich": "Deal 6 damage for each Attack already played this turn.\n(Hits 2 times)",
-     "id": "FINISHER",
-     "image": "https://assets.test/card_atlas/silent/finisher.png",
+     "description": "Deal 6 damage.",
+     "description_rich": "Deal 6 damage.",
+     "id": "STRIKE_SILENT",
+     "image": "https://assets.test/card_atlas/silent/strike_silent.png",
      "index": -1,
-     "name": "Finisher",
-     "rarity": "Uncommon",
+     "name": "Strike",
+     "rarity": "Basic",
      "stats": {
       "damage": 6
      },
@@ -214,6 +294,26 @@
      "type": "Attack",
      "upgraded": false
     },
+    {
+     "base_cost": 2,
+     "can_play": false,
+     "color": "green",
+     "cost": 2,
+     "description": "Retain.\nApply 7 Poison.",
+     "description_rich": "[gold]Retain[/gold].\nApply 7 [gold]Poison[/gold].",
+     "id": "SNAKEBITE",
+     "image": "https://assets.test/card_atlas/silent/snakebite.png",
+     "index": -1,
+     "name": "Snakebite",
+     "rarity": "Common",
+     "stats": {},
+     "target_type": "None",
+     "type": "Skill",
+     "upgraded": false
+    }
+   ],
+   "discard_pile_count": 2,
+   "draw_pile": [
     {
      "base_cost": 1,
      "can_play": false,
@@ -238,23 +338,20 @@
      "can_play": false,
      "color": "green",
      "cost": 1,
-     "description": "Deal 6 damage.",
-     "description_rich": "Deal 6 damage.",
-     "id": "STRIKE_SILENT",
-     "image": "https://assets.test/card_atlas/silent/strike_silent.png",
+     "description": "Gain 5 Block.",
+     "description_rich": "Gain 5 [gold]Block[/gold].",
+     "id": "DEFEND_SILENT",
+     "image": "https://assets.test/card_atlas/silent/defend_silent.png",
      "index": -1,
-     "name": "Strike",
+     "name": "Defend",
      "rarity": "Basic",
      "stats": {
-      "damage": 6
+      "block": 5
      },
      "target_type": "None",
-     "type": "Attack",
+     "type": "Skill",
      "upgraded": false
-    }
-   ],
-   "discard_pile_count": 3,
-   "draw_pile": [
+    },
     {
      "base_cost": 1,
      "can_play": false,
@@ -351,42 +448,6 @@
      "upgraded": false
     },
     {
-     "base_cost": 2,
-     "can_play": false,
-     "color": "green",
-     "cost": 2,
-     "description": "Retain.\nApply 7 Poison.",
-     "description_rich": "[gold]Retain[/gold].\nApply 7 [gold]Poison[/gold].",
-     "id": "SNAKEBITE",
-     "image": "https://assets.test/card_atlas/silent/snakebite.png",
-     "index": -1,
-     "name": "Snakebite",
-     "rarity": "Common",
-     "stats": {},
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "green",
-     "cost": 1,
-     "description": "Deal 6 damage.",
-     "description_rich": "Deal 6 damage.",
-     "id": "STRIKE_SILENT",
-     "image": "https://assets.test/card_atlas/silent/strike_silent.png",
-     "index": -1,
-     "name": "Strike",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 6
-     },
-     "target_type": "None",
-     "type": "Attack",
-     "upgraded": false
-    },
-    {
      "base_cost": 1,
      "can_play": false,
      "color": "green",
@@ -429,18 +490,18 @@
      "can_play": false,
      "color": "green",
      "cost": 1,
-     "description": "Gain 8 Block.\nDiscard 1 card.",
-     "description_rich": "Gain 8 [gold]Block[/gold].\nDiscard 1 card.",
-     "id": "SURVIVOR",
-     "image": "https://assets.test/card_atlas/silent/survivor.png",
+     "description": "Deal 6 damage.",
+     "description_rich": "Deal 6 damage.",
+     "id": "STRIKE_SILENT",
+     "image": "https://assets.test/card_atlas/silent/strike_silent.png",
      "index": -1,
-     "name": "Survivor",
+     "name": "Strike",
      "rarity": "Basic",
      "stats": {
-      "block": 8
+      "damage": 6
      },
      "target_type": "None",
-     "type": "Skill",
+     "type": "Attack",
      "upgraded": false
     }
    ],
@@ -448,7 +509,7 @@
    "enemies": [
     {
      "block": 0,
-     "hp": 11,
+     "hp": 21,
      "image": "https://assets.test/monsters/nibbit.png",
      "index": 0,
      "intents": [
@@ -464,8 +525,8 @@
      "name": "Nibbit",
      "powers": [
       {
-       "amount": 6,
-       "display_amount": 6,
+       "amount": 7,
+       "display_amount": 7,
        "id": "POISON",
        "image": "https://assets.test/power_atlas/poison_power.png",
        "image_big": "https://assets.test/power_big/poison_power.png",
@@ -490,18 +551,45 @@
      "can_play": false,
      "color": "green",
      "cost": 1,
-     "description": "Gain 5 Block.",
-     "description_rich": "Gain 5 [gold]Block[/gold].",
-     "id": "DEFEND_SILENT",
-     "image": "https://assets.test/card_atlas/silent/defend_silent.png",
+     "damage_preview": {
+      "0": 6
+     },
+     "description": "Deal 6 damage.",
+     "description_rich": "Deal 6 damage.",
+     "id": "STRIKE_SILENT",
+     "image": "https://assets.test/card_atlas/silent/strike_silent.png",
      "index": 0,
-     "name": "Defend",
+     "name": "Strike",
      "rarity": "Basic",
      "stats": {
-      "block": 5
+      "damage": 6
      },
      "target_type": "None",
-     "type": "Skill",
+     "type": "Attack",
+     "unplayable_reason": "cost",
+     "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "calculated_value": 1,
+     "can_play": false,
+     "color": "green",
+     "cost": 1,
+     "damage_preview": {
+      "0": 6
+     },
+     "description": "Deal 6 damage for each Attack already played this turn.\n(Hits 1 time)",
+     "description_rich": "Deal 6 damage for each Attack already played this turn.\n(Hits 1 time)",
+     "id": "FINISHER",
+     "image": "https://assets.test/card_atlas/silent/finisher.png",
+     "index": 1,
+     "name": "Finisher",
+     "rarity": "Uncommon",
+     "stats": {
+      "damage": 6
+     },
+     "target_type": "None",
+     "type": "Attack",
      "unplayable_reason": "cost",
      "upgraded": false
     },
@@ -510,21 +598,18 @@
      "can_play": false,
      "color": "green",
      "cost": 1,
-     "damage_preview": {
-      "0": 6
-     },
-     "description": "Deal 6 damage.",
-     "description_rich": "Deal 6 damage.",
-     "id": "STRIKE_SILENT",
-     "image": "https://assets.test/card_atlas/silent/strike_silent.png",
-     "index": 1,
-     "name": "Strike",
+     "description": "Gain 8 Block.\nDiscard 1 card.",
+     "description_rich": "Gain 8 [gold]Block[/gold].\nDiscard 1 card.",
+     "id": "SURVIVOR",
+     "image": "https://assets.test/card_atlas/silent/survivor.png",
+     "index": 2,
+     "name": "Survivor",
      "rarity": "Basic",
      "stats": {
-      "damage": 6
+      "block": 8
      },
      "target_type": "None",
-     "type": "Attack",
+     "type": "Skill",
      "unplayable_reason": "cost",
      "upgraded": false
     }
@@ -535,11 +620,36 @@
      {
       "action": {
        "action": "play",
+       "card_index": 3,
+       "target_index": null
+      },
+      "bucket": "likely-win",
+      "hp_n": 1,
+      "hp_sd": 0.0,
+      "is_best": false,
+      "losses": 0,
+      "low_confidence": false,
+      "mean_final_hp": 66.0,
+      "p_loss": 0.0,
+      "p_tie": 0.0,
+      "p_win": 1.0,
+      "q": 1.2355,
+      "q_saturated": false,
+      "ties": 0,
+      "value": 1.0,
+      "value_sum": 1.2355,
+      "visits": 1,
+      "wins": 1
+     },
+     {
+      "action": {
+       "action": "play",
        "card_index": 0,
        "target_index": 0
       },
       "bucket": "likely-win",
-      "hp_n": 3,
+      "hp_n": 2,
+      "hp_sd": 0.0,
       "is_best": true,
       "losses": 0,
       "low_confidence": false,
@@ -551,39 +661,19 @@
       "q_saturated": false,
       "ties": 0,
       "value": 1.0,
-      "value_sum": 3.7067,
-      "visits": 3,
-      "wins": 3
+      "value_sum": 2.4711,
+      "visits": 2,
+      "wins": 2
      },
      {
       "action": {
        "action": "play",
-       "card_index": 1,
-       "target_index": null
-      },
-      "bucket": "likely-win",
-      "hp_n": 3,
-      "is_best": false,
-      "losses": 0,
-      "low_confidence": false,
-      "mean_final_hp": 66.0,
-      "p_loss": 0.0,
-      "p_tie": 0.0,
-      "p_win": 1.0,
-      "q": 1.2356,
-      "q_saturated": false,
-      "ties": 0,
-      "value": 1.0,
-      "value_sum": 3.7067,
-      "visits": 3,
-      "wins": 3
-     },
-     {
-      "action": {
-       "action": "end_turn"
+       "card_index": 2,
+       "target_index": 0
       },
       "bucket": "likely-win",
       "hp_n": 2,
+      "hp_sd": 0.0,
       "is_best": false,
       "losses": 0,
       "low_confidence": false,
@@ -598,6 +688,52 @@
       "value_sum": 2.4711,
       "visits": 2,
       "wins": 2
+     },
+     {
+      "action": {
+       "action": "play",
+       "card_index": 1,
+       "target_index": 0
+      },
+      "bucket": "likely-win",
+      "hp_n": 2,
+      "hp_sd": 0.0,
+      "is_best": false,
+      "losses": 0,
+      "low_confidence": false,
+      "mean_final_hp": 66.0,
+      "p_loss": 0.0,
+      "p_tie": 0.0,
+      "p_win": 1.0,
+      "q": 1.2356,
+      "q_saturated": false,
+      "ties": 0,
+      "value": 1.0,
+      "value_sum": 2.4711,
+      "visits": 2,
+      "wins": 2
+     },
+     {
+      "action": {
+       "action": "end_turn"
+      },
+      "bucket": "likely-win",
+      "hp_n": 1,
+      "hp_sd": 0.0,
+      "is_best": false,
+      "losses": 0,
+      "low_confidence": false,
+      "mean_final_hp": 61.0,
+      "p_loss": 0.0,
+      "p_tie": 0.0,
+      "p_win": 1.0,
+      "q": 1.2177,
+      "q_saturated": false,
+      "ties": 0,
+      "value": 1.0,
+      "value_sum": 1.2177,
+      "visits": 1,
+      "wins": 1
      }
     ],
     "recommended": {
@@ -608,7 +744,7 @@
    },
    "options": [],
    "player": {
-    "block": 5,
+    "block": 0,
     "deck": [
      {
       "color": "green",

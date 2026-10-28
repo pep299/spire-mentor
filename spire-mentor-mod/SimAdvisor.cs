@@ -58,6 +58,7 @@ using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.Screens.ScreenContext;
+using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
 
 namespace SpireMentor;
@@ -180,6 +181,13 @@ internal sealed class SimAdvisor
     [ThreadStatic]
     public static bool SuppressEndTurnReport;
 
+    /// <summary>In co-op the mod's end turn is an enqueued
+    /// EndPlayerTurnAction, which reaches PlayerCmd.EndTurn later and with
+    /// canBackOut: true, the human's signature; this marks it as the AI's.
+    /// Only the main thread touches it (takeover and the queue both run
+    /// there).</summary>
+    private static bool _aiEndTurnQueued;
+
     /// <summary>F5 was pressed for the current position before its advice
     /// arrived: render the peek on the next accepted reply. Cleared whenever
     /// the position changes (ScheduleAdvice).</summary>
@@ -235,11 +243,38 @@ internal sealed class SimAdvisor
     /// accepted action. See <see cref="OnActionRefused" />.</summary>
     private int _refusedInARow;
 
+    /// <summary>Co-op autoplay: combat replies in a row that carried no
+    /// move (the advisor failed on the position). See
+    /// <see cref="OnNoMoveInCoop"/>.</summary>
+    private int _noMoveInARow;
+
+    /// <summary>Co-op autoplay: how long this round has already held moves
+    /// for a teammate (<see cref="SimAdvice.WaitForAllyMs"/>), so two bots
+    /// waiting on each other cost at most <see cref="AllyWaitBudgetMs"/> a
+    /// round instead of deadlocking.</summary>
+    private int _allyWaitRound = -1;
+    private int _allyWaitUsedMs;
+    private const int AllyWaitBudgetMs = 6000;
+
+    /// <summary>Bumped by every <see cref="ScheduleAutoPlay"/>; a timer
+    /// fires only if it is still the latest, so a long ally wait cannot be
+    /// cut short by an older timer executing the newer advice.</summary>
+    private int _autoPlayGen;
+
     /// <summary>Backing field — write through <see cref="SetAutoPlay"/> so
     /// SimRuntime.AdvisorAutoplayArmed (the speed patches' gate) stays in
     /// sync.</summary>
     private bool _autoPlay;
     private int _aiActionsPending;
+
+    /// <summary>
+    /// The decision autoplay last handed back (`pause_on`, GH #874), and the
+    /// one the player resumed F7 on. Resuming on a handed-back screen means
+    /// "you do it after all", so that decision -- every page and reveal of it
+    /// -- must not pause again. See <see cref="PauseKey"/>.
+    /// </summary>
+    private string _pausedKey = "";
+    private string _resumedKey = "";
 
     // Runaway guard. A screen choice that does not change the screen is not
     // idempotent in general: on the deck-select screens each repeat SELECTS
@@ -395,7 +430,11 @@ internal sealed class SimAdvisor
         // CombatEnded(CombatRoom) fires with the room's combat state intact
         // (both game builds), so the round and room type are read from it.
         cm.CombatEnded += room => OnCombatEnded(room?.CombatState?.RoundNumber ?? 0, room?.RoomType.ToString() ?? "Combat");
-        cm.PlayerUnendedTurn += _ => HumanEndTurnPending = false;
+        cm.PlayerUnendedTurn += _ =>
+        {
+            HumanEndTurnPending = false;
+            _aiEndTurnQueued = false;
+        };
         cm.History.Changed += OnHistoryChanged;
         ActiveScreenContext.Instance.Updated += OnScreenUpdated;
         StartScreenPoll();
@@ -543,6 +582,10 @@ internal sealed class SimAdvisor
             // The player's turn in a fight: the previous fight's recap is over.
             SimCoachPanel.Instance.OnCombatTurn();
         }
+        _aiEndTurnQueued = false;
+        // A streak is about one position: no-move replies from an earlier
+        // turn or fight must not end this turn on its first miss.
+        _noMoveInARow = 0;
         _turnStartHistoryMark = CombatHistoryMark();
         _unsettledRetries = 0;
         try
@@ -1062,13 +1105,9 @@ internal sealed class SimAdvisor
             // Re-asked, not assumed: settling can take us past the end of the
             // fight, or onto a screen that outranks the board.
             //
-            // Only when we actually waited, though. Describe() is not a pure
-            // read -- DescribeFakeMerchant emits MerchantOpened and advances
-            // its open-poll counter before returning null -- so asking a
-            // second time for a request that never waited would consume that
-            // poll limit at twice the rate and abandon a shopfront still
-            // animating open. When the queue was already quiet, the answer
-            // RequestAdviceNow got moments ago is still the answer.
+            // Only when we actually waited, though. When the queue was
+            // already quiet, the answer RequestAdviceNow got moments ago is
+            // still the answer.
             if (boardMayHaveMoved)
             {
                 SimScreenDecision? nowScreen = SimScreenAdvice.Describe();
@@ -1170,6 +1209,7 @@ internal sealed class SimAdvisor
             // workbench's log panel renders for a live game, in the same shape
             // the Rust engine emits for a simulated one. Display only; the
             // advisor ignores it.
+            WatchPlayerChoices();
             state["combat_log"] = SimCombatLog.Drain();
             state["capabilities"] = ModCapabilities();
 
@@ -1256,7 +1296,7 @@ internal sealed class SimAdvisor
                 SimHud.Instance.ShowAdvice(screen.LocalAdvice, null);
                 RenderLatchedPeek();
             }
-            if (_autoPlay && _lastBest != null)
+            if (_autoPlay && !PauseForPlayer(screen, screen.HandBack) && _lastBest != null)
             {
                 ScheduleAutoPlay();
             }
@@ -1431,11 +1471,26 @@ internal sealed class SimAdvisor
                 SimHud.Instance.ShowAdvice(advice, LocalContext.GetMe(runState));
                 RenderLatchedPeek();
 
-                if (_autoPlay && _lastBest != null)
+                // The screen this reply answers, for `pause_on`'s ids and the
+                // mod's own verdict; combat has neither.
+                SimScreenDecision? forDecision = !isCombat && _lastScreen != null &&
+                                                 ReferenceEquals(_lastScreen.Screen, forScreen)
+                    ? _lastScreen
+                    : null;
+                if (_autoPlay && !PauseForPlayer(forDecision, advice.HandBack ?? forDecision?.HandBack) &&
+                    _lastBest != null)
                 {
                     // Small grace so the human can see the recommendation
                     // (and press F7 to stop) before it fires.
-                    ScheduleAutoPlay();
+                    ScheduleAutoPlay(isCombat ? AllyWaitMs(advice) : 0);
+                }
+                if (isCombat)
+                {
+                    _noMoveInARow = _lastBest != null ? 0 : _noMoveInARow + 1;
+                    if (_autoPlay && _lastBest == null)
+                    {
+                        OnNoMoveInCoop(advice.Note);
+                    }
                 }
             });
         }
@@ -1590,7 +1645,8 @@ internal sealed class SimAdvisor
                         return;
                     }
                     var target = SimCombatHandler.ResolveTarget(card, best.TargetIndex);
-                    if (card.TargetType == TargetType.AnyEnemy && target == null)
+                    if ((card.TargetType == TargetType.AnyEnemy || card.TargetType == TargetType.AnyAlly) &&
+                        target == null)
                     {
                         Logger.Log("[SimAdvisor] Takeover: recommended target no longer hittable.");
                         OnActionRefused(player);
@@ -1621,6 +1677,16 @@ internal sealed class SimAdvisor
                         return;
                     }
                     var target = SimCombatHandler.ResolvePotionTarget(player, potion, best.TargetIndex);
+                    // Same guard as a card: the game drops a targeted potion
+                    // with no target in silence (an AnyAlly one has none when
+                    // no teammate is alive).
+                    if ((potion.TargetType == TargetType.AnyEnemy || potion.TargetType == TargetType.AnyAlly) &&
+                        target == null)
+                    {
+                        Logger.Log("[SimAdvisor] Takeover: no valid target for the recommended potion.");
+                        OnActionRefused(player);
+                        return;
+                    }
                     RunManager.Instance.ActionQueueSynchronizer.RequestEnqueue(
                         new UsePotionAction(potion, target, cm.IsInProgress));
                     break;
@@ -1681,6 +1747,40 @@ internal sealed class SimAdvisor
     }
 
     /// <summary>
+    /// The advisor answers this combat position with no move (an engine
+    /// error: content it cannot model, 2026-10-23's Dowsing). Solo, autoplay
+    /// just waits and the player takes over. In co-op nobody can: the enemy
+    /// turn starts only once every player has ended theirs, so a silent
+    /// player freezes the whole run. After a few such replies, end the turn
+    /// -- the same escape hatch as <see cref="OnActionRefused"/>.
+    /// </summary>
+    private void OnNoMoveInCoop(string? note)
+    {
+        if (!SimMp.IsMultiplayer || _noMoveInARow < MaxRefusedBeforeEndTurn)
+        {
+            return;
+        }
+        Player? player = LocalContext.GetMe(RunManager.Instance.DebugOnlyGetState());
+        if (player == null)
+        {
+            return;
+        }
+        Logger.Log(
+            $"[SimAdvisor] {_noMoveInARow} combat replies without a move ({note ?? "no note"}); " +
+            "ending the turn so the co-op partners are not blocked.");
+        SimActionLog.Note($"AI has no move {_noMoveInARow}x — ending turn (co-op)");
+        _noMoveInARow = 0;
+        try
+        {
+            EndTurnAsAi(player);
+        }
+        catch (Exception ex)
+        {
+            Logger.Log($"[SimAdvisor] Could not end the turn after no-move replies: {ex.Message}");
+        }
+    }
+
+    /// <summary>
     /// "Executed" above means ENQUEUED, not accepted. A card the game refuses
     /// -- unplayable, or an index that addressed a different card because the
     /// board moved under a slow reply -- is dropped by the action queue in
@@ -1702,7 +1802,7 @@ internal sealed class SimAdvisor
             {
                 return;
             }
-            int mark = cm.History.Entries.Count();
+            int mark = CombatHistoryMark();
             SceneTreeTimer timer = tree.CreateTimer(RefusedActionWatchdogSeconds);
             timer.Connect(SceneTreeTimer.SignalName.Timeout, Callable.From(() =>
             {
@@ -1724,7 +1824,16 @@ internal sealed class SimAdvisor
                     {
                         return;
                     }
-                    if (now.History.Entries.Count() != mark)
+                    // Our end turn is queued or done. It leaves no history
+                    // entry of ours, and in co-op it waits on the synced
+                    // queue, so an unchanged mark here is not a refusal; a
+                    // re-ask would queue plays behind the end turn.
+                    Player? ending = LocalContext.GetMe(RunManager.Instance.DebugOnlyGetState());
+                    if (_aiEndTurnQueued || (ending != null && now.IsPlayerReadyToEndTurn(ending)))
+                    {
+                        return;
+                    }
+                    if (CombatHistoryMark() != mark)
                     {
                         // The board moved: this action was accepted. THIS is
                         // acceptance, and the only place the streak may reset.
@@ -2046,6 +2155,8 @@ internal sealed class SimAdvisor
         // Turning it back on is the player saying "try again" -- most often
         // right after clearing by hand whatever the runaway guard stopped on.
         _recentScreenChoices.Clear();
+        // ...or "play it after all" on a decision `pause_on` handed back.
+        _resumedKey = _pausedKey;
         if (_lastBest != null)
         {
             ScheduleAutoPlay();
@@ -2068,7 +2179,99 @@ internal sealed class SimAdvisor
         SimRuntime.AdvisorAutoplayArmed = value;
     }
 
-    private void ScheduleAutoPlay()
+    /// <summary>
+    /// `pause_on` (GH #874): stop autoplay on a decision the AI cannot really
+    /// make, or one the player listed, and hand it back exactly as F7-off
+    /// does. Returns true when it paused. Main thread.
+    /// <paramref name="screen"/> is null for combat; <paramref name="handBack"/>
+    /// is the advisor's or the mod's "not really a decision" reason.
+    /// </summary>
+    private bool PauseForPlayer(SimScreenDecision? screen, string? handBack)
+    {
+        if (!_autoPlay)
+        {
+            return false;
+        }
+        IReadOnlyList<string> pauseOn = SimConfig.Instance.EffectivePauseOn;
+        if (pauseOn.Count == 0)
+        {
+            return false;
+        }
+        RunState? runState = RunManager.Instance.DebugOnlyGetState();
+        string? eventId = CurrentEventId(runState);
+        string adviceFor = screen?.AdviceFor ?? "combat_action";
+        string? reason = AutoplayPause.Reason(pauseOn, handBack, new[] { adviceFor, screen?.ScreenName, eventId });
+        if (reason == null)
+        {
+            return false;
+        }
+        string key = PauseKey(screen, adviceFor, eventId, runState);
+        if (key == _resumedKey)
+        {
+            return false;
+        }
+        _pausedKey = key;
+        SetAutoPlay(false);
+        string toast = AutoplayPause.Toast(AutoplayPause.Pretty(eventId ?? adviceFor), reason);
+        Logger.Log($"[SimAdvisor] Paused for the player on {screen?.ScreenName ?? "combat"}: {reason}");
+        SimActionLog.Note(toast);
+        // After ShowAdvice, which set the toolbar note to the advice's own.
+        SimToolbar.Instance.SetNote(toast);
+        return true;
+    }
+
+    /// <summary>
+    /// One handed-back decision, however many requests it takes: an event's
+    /// pages share the room node and the floor, the crystal sphere's reveals
+    /// share their screen. The floor tells apart the long-lived nodes (the
+    /// event room, the map) from one room to the next.
+    /// </summary>
+    private static string PauseKey(SimScreenDecision? screen, string adviceFor, string? eventId, RunState? runState) =>
+        $"{adviceFor}|{eventId}|{runState?.TotalFloor}|" +
+        (screen?.Screen is { } node && GodotObject.IsInstanceValid(node) ? node.GetInstanceId() : 0UL);
+
+    /// <summary>The current event's id ("NEOW", "CRYSTAL_SPHERE"), or null
+    /// outside an event room. Never throws.</summary>
+    private static string? CurrentEventId(RunState? runState)
+    {
+        try
+        {
+            return runState?.CurrentRoom is EventRoom room ? room.LocalMutableEvent?.Id.Entry : null;
+        }
+        catch (Exception)
+        {
+            // Between pages the event synchronizer has no local event yet.
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The co-op hold for this reply, within the round's budget (0 = none).
+    /// Single-player and older advisors never set it.
+    /// </summary>
+    private int AllyWaitMs(SimAdvice advice)
+    {
+        if (advice.WaitForAllyMs <= 0 || !SimMp.IsMultiplayer)
+        {
+            return 0;
+        }
+        int round = CombatManager.Instance.DebugOnlyGetState()?.RoundNumber ?? 0;
+        if (round != _allyWaitRound)
+        {
+            _allyWaitRound = round;
+            _allyWaitUsedMs = 0;
+        }
+        int ms = Math.Min(advice.WaitForAllyMs, AllyWaitBudgetMs - _allyWaitUsedMs);
+        if (ms <= 0)
+        {
+            return 0;
+        }
+        _allyWaitUsedMs += ms;
+        Logger.Log($"[SimAdvisor] Co-op: holding {_lastBestLabel} up to {ms} ms for the teammate ({advice.Note}).");
+        return ms;
+    }
+
+    private void ScheduleAutoPlay(int extraMs = 0)
     {
         try
         {
@@ -2076,14 +2279,15 @@ internal sealed class SimAdvisor
             {
                 return;
             }
+            int gen = ++_autoPlayGen;
             // 0.6 s is the "human can read it and press F7 to veto" grace.
             // Unattended, there is no reader; 0.15 s still decouples the
             // press from the advice render (same-frame execution was never
             // exercised) without paying half a second per decision.
-            SceneTreeTimer timer = tree.CreateTimer(Unattended ? 0.15 : 0.6);
+            SceneTreeTimer timer = tree.CreateTimer((Unattended ? 0.15 : 0.6) + extraMs / 1000.0);
             timer.Connect(SceneTreeTimer.SignalName.Timeout, Callable.From(() =>
             {
-                if (_autoPlay && SimRuntime.Mode == SimMode.Advisor)
+                if (gen == _autoPlayGen && _autoPlay && SimRuntime.Mode == SimMode.Advisor)
                 {
                     ExecuteBestOnce();
                 }
@@ -2110,7 +2314,19 @@ internal sealed class SimAdvisor
         {
             // Count() not .Count: Entries is an IEnumerable, so `?.Count` binds
             // the LINQ method group and does not compile.
-            return CombatManager.Instance?.History?.Entries?.Count() ?? -1;
+            IEnumerable<CombatHistoryEntry>? entries = CombatManager.Instance?.History?.Entries;
+            if (entries == null)
+            {
+                return -1;
+            }
+            if (!SimMp.IsMultiplayer)
+            {
+                return entries.Count();
+            }
+            // Co-op: teammates' plays append entries too, which would read as
+            // "our action resolved" to every guard keyed on this mark.
+            var me = LocalContext.GetMe(RunManager.Instance.DebugOnlyGetState())?.Creature;
+            return entries.Count(e => e.Actor == me);
         }
         catch (Exception)
         {
@@ -2272,6 +2488,72 @@ internal sealed class SimAdvisor
     /// advice_request (PROTOCOL.md section 5): coach 2 = chips plus the v5.1
     /// recap / autopsy records.</summary>
     private static Dictionary<string, object> ModCapabilities() => new() { ["coach"] = 2 };
+
+    /// <summary>The run's choice synchronizer <see cref="WatchPlayerChoices"/>
+    /// listens to; a new run brings a new one.</summary>
+    private static PlayerChoiceSynchronizer? _choiceSync;
+
+    /// <summary>
+    /// Log every player's mid-combat choice onto the combat log
+    /// (<see cref="SimCombatLog.RecordChoice"/>): the synchronizer raises
+    /// `PlayerChoiceReceived` for our picks and for each teammate's as they
+    /// arrive, so a recorded co-op fight can replay them. Subscribes once per
+    /// run (the old run's synchronizer goes with it). Called before every
+    /// drain; never throws.
+    /// </summary>
+    private static void WatchPlayerChoices()
+    {
+        try
+        {
+            PlayerChoiceSynchronizer? sync = RunManager.Instance?.PlayerChoiceSynchronizer;
+            if (sync == null || ReferenceEquals(sync, _choiceSync))
+            {
+                return;
+            }
+            _choiceSync = sync;
+            sync.PlayerChoiceReceived += (player, choiceId, result) =>
+            {
+                var cards = new List<Dictionary<string, object?>>();
+                try
+                {
+                    foreach (CardModel c in result.canonicalCards ?? new())
+                    {
+                        cards.Add(SimCombatLog.ChoiceCard(c.Id.Entry, c.IsUpgraded));
+                    }
+                    foreach (var c in result.combatCards ?? new())
+                    {
+                        CardModel? card = c.ToCardModelOrNull();
+                        cards.Add(SimCombatLog.ChoiceCard(card?.Id.Entry, card?.IsUpgraded ?? false));
+                    }
+                    foreach (var c in result.deckCards ?? new())
+                    {
+                        CardModel card = c.ToCardModel(player);
+                        cards.Add(SimCombatLog.ChoiceCard(card.Id.Entry, card.IsUpgraded));
+                    }
+                    foreach (var c in result.mutableCards ?? new())
+                    {
+                        cards.Add(SimCombatLog.ChoiceCard(c.Id?.Entry, c.CurrentUpgradeLevel > 0));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log($"[SimAdvisor] Could not read a player choice's cards: {ex.Message}");
+                }
+                var invariant = System.Globalization.CultureInfo.InvariantCulture;
+                SimCombatLog.RecordChoice(
+                    player.NetId.ToString(invariant),
+                    choiceId,
+                    result.type.ToString(),
+                    cards,
+                    result.indexes?.ToList(),
+                    result.playerId?.ToString(invariant));
+            };
+        }
+        catch (Exception ex)
+        {
+            Logger.Log($"[SimAdvisor] Could not watch player choices: {ex.Message}");
+        }
+    }
 
     /// <summary>
     /// An inbound `coach` record (BridgeServer.CoachReceived, socket thread):
@@ -2449,6 +2731,11 @@ internal sealed class SimAdvisor
             {
                 return;
             }
+            if (_aiEndTurnQueued)
+            {
+                _aiEndTurnQueued = false;
+                return;
+            }
             HumanEndTurnPending = true;
         }
         catch (Exception ex)
@@ -2461,6 +2748,23 @@ internal sealed class SimAdvisor
     /// here, so the end-turn capture never reports it as the human's.</summary>
     internal static void EndTurnAsAi(Player player)
     {
+        if (SimMp.IsMultiplayer)
+        {
+            // PlayerCmd.EndTurn only marks this machine ready; the other
+            // players never hear of it and the turn never ends. The end-turn
+            // button's path (NEndTurnButton) goes through the synced queue.
+            // Once: a re-ask before the action runs would queue a second one,
+            // which reaches the prefix after the marker is spent.
+            if (_aiEndTurnQueued || player.PlayerCombatState is not { } combatState ||
+                CombatManager.Instance.IsPlayerReadyToEndTurn(player))
+            {
+                return;
+            }
+            _aiEndTurnQueued = true;
+            RunManager.Instance.ActionQueueSynchronizer.RequestEnqueue(
+                new EndPlayerTurnAction(player, combatState.TurnNumber));
+            return;
+        }
         bool was = SuppressEndTurnReport;
         SuppressEndTurnReport = true;
         try

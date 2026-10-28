@@ -68,6 +68,7 @@
     "src/effects/__tests__/spineVfxSelection.test.ts",
     "src/effects/particles/__tests__/simulateManifestCoverage.test.ts",
     "src/effects/particles/__tests__/composite.test.ts",
-    "src/effects/particles/__tests__/shaders.test.ts"
+    "src/effects/particles/__tests__/shaders.test.ts",
+    "src/coach/coachRank.test.ts"
   ]
 }

@@ -199,28 +199,19 @@ fn doll_room_random(state: &mut RunState) -> EventOutcome {
 /// Lose `damage` HP, then `_dolls.StableShuffle(Rng).Take(take)` → offer those
 /// dolls on page 1 (NOT finished, so the run-loop stays in `Phase::Event`).
 ///
-/// **Documented approximation (v0.107.1 arm only):** C# `StableShuffle` sorts
-/// by `relic.CompareTo` before the Fisher-Yates pass; the v0.107.1 arm sorts by
-/// [`DOLL_ROOM_DOLLS`] declaration order (RelicId) instead, the v0.111.0 arm by
-/// the id entry as C# does. The shuffle consumes the same draw count, and the
-/// effect-parity harness only checks the page-1 option COUNT (not the doll
-/// order), so this is faithful for everything currently observable — the exact
-/// sub-menu ordering needs a dedicated multi-page-identity probe to pin.
+/// C# `StableShuffle` sorts by `relic.CompareTo` (the id entry) before the
+/// Fisher-Yates pass, and so does this, in both builds (GH #806; the old
+/// [`DOLL_ROOM_DOLLS`] declaration-order approximation is gone).
 fn doll_room_open_pick(state: &mut RunState, damage: i32, take: usize) -> EventOutcome {
     state.lose_hp(damage);
     let mut codes: Vec<i16> = (0..DOLL_ROOM_DOLLS.len() as i16).collect();
     let mut rng = doll_room_rng(state);
-    if state.game_version >= sts2_core::GameVersion::V0_111_0 {
-        // v0.111.0: `StableShuffle` sorts the dolls by `relic.CompareTo`, i.e.
-        // `ModelId.CompareTo` = ordinal `Entry` order (decomp
-        // `Models.Events/DollRoom.cs:28`, `Models/ModelId.cs:43`): BING_BONG <
-        // DAUGHTER_OF_THE_WIND < MR_STRUGGLES. v0.107.1 has the same code; its
-        // arm keeps the declaration-order approximation (bit-identical).
-        let entry = |c: i16| DOLL_ROOM_DOLLS[c as usize].0.to_python_name();
-        rng.stable_shuffle_by(&mut codes, &|a: i16, b: i16| entry(a).cmp(entry(b)));
-    } else {
-        rng.stable_shuffle(&mut codes);
-    }
+    // `StableShuffle` sorts the dolls by `relic.CompareTo`, i.e.
+    // `ModelId.CompareTo` = ordinal `Entry` order (decomp
+    // `Models.Events/DollRoom.cs:28`, `Models/ModelId.cs:43`, identical in
+    // v0.107.1 and v0.111.0): BING_BONG < DAUGHTER_OF_THE_WIND < MR_STRUGGLES.
+    let entry = |c: i16| DOLL_ROOM_DOLLS[c as usize].0.to_python_name();
+    rng.stable_shuffle_by(&mut codes, &|a: i16, b: i16| entry(a).cmp(entry(b)));
     codes.truncate(take);
     state.event_state.scratch = codes;
     state.event_state.page = 1;
@@ -568,6 +559,28 @@ fn fake_merchant_throw_foul(state: &mut RunState) -> EventOutcome {
     }
 }
 
+/// Present `buy, throw_foul, leave` in that fixed order, disabling what the
+/// game would not let the player do (GH #885). The fight only starts from
+/// a thrown Foul Potion (`FoulPotion.OnUse` → `FakeMerchant.FoulPotionThrown`),
+/// and the merchant UI only sells a stocked relic the player can afford. A
+/// disabled option keeps its slot: the live bridge and the policy index by
+/// position.
+fn fake_merchant_generate_options(state: &RunState, spec: &EventSpec) -> Vec<EventOptionInfo> {
+    let can_buy = state.gold >= FAKE_MERCHANT_BUY_COST && !fake_merchant_stock(state).is_empty();
+    let has_foul = state
+        .potions
+        .contains(&sts2_core::potions::PotionKind::FoulPotion);
+    let mut options = super::default_option_info_from_spec(state, spec);
+    for opt in &mut options {
+        opt.enabled = match opt.option_id {
+            "buy" => can_buy,
+            "throw_foul" => has_foul,
+            _ => true,
+        };
+    }
+    options
+}
+
 fn fake_merchant_leave(_state: &mut RunState) -> EventOutcome {
     EventOutcome::finished("Left the fake merchant.")
 }
@@ -608,12 +621,12 @@ const FAKE_MERCHANT_OPTIONS: &[EventOptionSpec] = &[
 /// Port pin: `sts2-rl-agent@01c094d:sts2_env/events/act2.py:303`.
 /// `is_allowed`: `fake_merchant_allowed`
 /// (`current_act_index >= 1 && (gold >= 100 || has_foul)`) — wired.
-/// (throw_foul potion-remove + combat setup still deferred: `sts2-rs-m3n0g`.)
+/// `buy` needs 50 gold and `throw_foul` a held Foul Potion (GH #885).
 pub const FAKE_MERCHANT: EventSpec = EventSpec {
     id: EventId::FakeMerchant,
     python_name: "FakeMerchant",
     is_allowed: fake_merchant_allowed,
-    generate_options: super::default_option_info_from_spec,
+    generate_options: fake_merchant_generate_options,
     options: FAKE_MERCHANT_OPTIONS,
 };
 
@@ -634,7 +647,7 @@ fn field_of_man_sized_holes_resist(state: &mut RunState) -> EventOutcome {
     } else {
         let _ = state.remove_cards_from_deck(2);
         if let Some(card) = normality {
-            state.master_deck.push(card);
+            state.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::EventGain);
         }
     }
     EventOutcome::finished("Resisted — removed 2 cards and gained a Normality curse.")
@@ -916,7 +929,7 @@ fn luminous_choir_reach(state: &mut RunState) -> EventOutcome {
         // curse immediately.
         let _ = state.remove_cards_from_deck(2);
         if let Some(card) = spore_mind {
-            state.master_deck.push(card);
+            state.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::EventGain);
         }
     }
     EventOutcome::finished("Reached into the flesh — removed 2 cards and gained Spore Mind.")
@@ -1025,7 +1038,10 @@ fn morphic_grove_group(state: &mut RunState) -> EventOutcome {
             ) {
                 if let Some(card) = crate::cards::spec_index::card_pod_from_id(new_id, false) {
                     state.master_deck.remove(0);
-                    state.master_deck.push(card);
+                    state.add_card_to_deck_with_hooks(
+                        card,
+                        sts2_core::relic_effects::AddSource::EventGain,
+                    );
                     done += 1;
                 }
             } else {
@@ -1349,21 +1365,28 @@ mod tests {
         assert!(opts.iter().all(|o| o.enabled));
     }
 
-    /// v0.111.0: `StableShuffle` sorts the dolls by relic id entry (ordinal)
-    /// before the Fisher-Yates pass (`DollRoom.cs:28`), so every seed shuffles
-    /// [BingBong, Daughter, MrStruggles], not the declaration order.
+    /// `StableShuffle` sorts the dolls by relic id entry (ordinal) before the
+    /// Fisher-Yates pass (`DollRoom.cs:28`, same in both builds), so every
+    /// seed shuffles [BingBong, Daughter, MrStruggles], not the declaration
+    /// order (GH #806).
     #[test]
-    fn doll_room_take_time_shuffles_in_entry_order_v0111() {
-        for seed in 0..32 {
+    fn doll_room_take_time_shuffles_in_entry_order_both_versions() {
+        for (seed, version) in (0..32).flat_map(|seed| {
+            [
+                sts2_core::GameVersion::V0_107_1,
+                sts2_core::GameVersion::V0_111_0,
+            ]
+            .map(|v| (seed, v))
+        }) {
             let mut rs = RunState::new();
-            rs.game_version = sts2_core::GameVersion::V0_111_0;
+            rs.game_version = version;
             rs.rng = sts2_core::run_rng_set::RunRngSet::new_for(rs.game_version, seed);
             rs.current_hp = 50;
             let mut expected: Vec<i16> = vec![2, 0, 1];
             doll_room_rng(&rs).shuffle(&mut expected);
             expected.truncate(2);
             let _ = doll_room_take_time(&mut rs);
-            assert_eq!(rs.event_state.scratch, expected, "seed {seed}");
+            assert_eq!(rs.event_state.scratch, expected, "seed {seed} {version:?}");
         }
     }
 
@@ -1558,6 +1581,32 @@ mod tests {
         assert!(outcome.finished);
         assert_eq!(rs.gold, 200 - FAKE_MERCHANT_BUY_COST);
         assert_eq!(rs.relic_rewards.len(), 1);
+    }
+
+    #[test]
+    fn fake_merchant_throw_needs_a_held_foul_potion() {
+        // GH #885: without a Foul Potion there is nothing to throw, so the
+        // fight is not on offer; the slot stays put (buy, throw_foul, leave).
+        let rs = rs_with_gold(200);
+        let opts = fake_merchant_generate_options(&rs, &FAKE_MERCHANT);
+        let ids: Vec<_> = opts.iter().map(|o| o.option_id).collect();
+        assert_eq!(ids, ["buy", "throw_foul", "leave"]);
+        assert!(opts[0].enabled);
+        assert!(!opts[1].enabled, "no Foul Potion held");
+        assert!(opts[2].enabled);
+
+        let mut rs = rs_with_gold(200);
+        rs.potions.push(sts2_core::potions::PotionKind::FoulPotion);
+        let opts = fake_merchant_generate_options(&rs, &FAKE_MERCHANT);
+        assert!(opts[1].enabled, "Foul Potion held");
+    }
+
+    #[test]
+    fn fake_merchant_buy_needs_50_gold() {
+        let opts = fake_merchant_generate_options(&rs_with_gold(49), &FAKE_MERCHANT);
+        assert!(!opts[0].enabled, "49g cannot buy");
+        let opts = fake_merchant_generate_options(&rs_with_gold(50), &FAKE_MERCHANT);
+        assert!(opts[0].enabled, "50g can buy");
     }
 
     #[test]

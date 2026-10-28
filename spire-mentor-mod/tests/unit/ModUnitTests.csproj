@@ -11,6 +11,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RollForward>Major</RollForward>
+    <!-- run_unit_tests.sh builds into .build/. A plain `dotnet build` here
+         leaves obj/ and bin/ behind, and the default glob would then compile
+         obj/'s generated AssemblyInfo next to .build/obj/'s (CS0579). -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);obj/**;bin/**;.build/**</DefaultItemExcludes>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../GameVersionFormat.cs" Link="GameVersionFormat.cs" />
@@ -20,5 +24,7 @@
     <Compile Include="../../SimCoachReports.cs" Link="SimCoachReports.cs" />
     <Compile Include="../../WorkbenchUrl.cs" Link="WorkbenchUrl.cs" />
     <Compile Include="../../CoachPanelText.cs" Link="CoachPanelText.cs" />
+    <Compile Include="../../AutoplayPause.cs" Link="AutoplayPause.cs" />
+    <Compile Include="../../EnemyTagText.cs" Link="EnemyTagText.cs" />
   </ItemGroup>
 </Project>

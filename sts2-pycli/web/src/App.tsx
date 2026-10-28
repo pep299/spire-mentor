@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import CoachChip from "./components/CoachChip";
+import TurnChip from "./components/TurnChip";
+import ChoiceRecordChip from "./components/ChoiceRecordChip";
+import { recordsForStep, stepTones } from "./coach/coachSelectors";
+import CoachReview, { type CoachAutopsyView, type CoachSeekTarget, type CoachTab } from "./components/CoachReview";
+import { rankAutopsy } from "./coach/coachRank";
+import { choiceRecordOf, isFresh } from "./coach/coachGate";
 import ChoiceChip from "./components/ChoiceChip";
+import PeekBanner from "./components/PeekBanner";
+import { peekLabelFromAction, peekLabelFromScores } from "./coach/peek";
 import "./theme.css";
 import "./game-skin.css";
 import "./responsive.css";
@@ -182,6 +189,10 @@ function AppBody() {
   const [idx, setIdx] = useState(0);
   const [step, setStep] = useState<Step | null>(null);
   const [entries, setEntries] = useState<TimelineEntry[]>([]);
+  // The loaded run log's coach records (`GET /api/coach`): what the real-game
+  // advisor graded, shown on their steps in replay and follow.
+  const [coachLog, setCoachLog] = useState<import("./api").CoachLog | null>(null);
+  const coachMarks = useMemo(() => stepTones(coachLog), [coachLog]);
   const [mapRows, setMapRows] = useState<MapRow[]>([]);
   const [mapGraphs, setMapGraphs] = useState<MapGraph[]>([]);
 
@@ -254,6 +265,9 @@ function AppBody() {
   // every path that replaces `live` -- restore, start, faithful, import,
   // play-from-here, loading a save, seek -- reports the right build.
   const liveGameVersion = live ? declaredGameVersion(live) : null;
+  // The build the SHOWN run plays -- the live session's, or the replayed
+  // recording's in replay -- for the per-build display tables (GH #877).
+  const shownGameVersion = mode === "replay" ? (step ? declaredGameVersion(step) : null) : liveGameVersion;
   // Feature flags from the same probe: a control whose route this deployment
   // cannot answer is hidden rather than left as a button whose every call
   // answers 501. Absent flags (the classic backend) mean everything is on.
@@ -366,6 +380,10 @@ function AppBody() {
   const [wpaOpen, setWpaOpen] = useState(false);
   const [wpa, setWpa] = useState<import("./api").WpaReview | null>(null);
   const [wpaHeight, setWpaHeight] = useState(0);
+  // The Coach review dock (one bottom dock at a time, like regret / WPA).
+  const [coachOpen, setCoachOpen] = useState(false);
+  const [coachTab, setCoachTab] = useState<CoachTab | undefined>(undefined);
+  const [coachHeight, setCoachHeight] = useState(0);
   const wpaLiveRef = useRef<boolean | null>(null);
   // Autobattle mode: the run-level drill. Combats are auto-played by the MCTS
   // agent so only run-level decisions reach the human, with a change-diff at
@@ -386,14 +404,21 @@ function AppBody() {
   // body checks `stopAutoRef` between steps) without borrowing `autoRunning`,
   // whose progress overlay and reduced-effects mode belong to "play to end".
   const autobattleWatchRef = useRef(false);
-  // Live regret coach: after each combat move, flag it if it was a blunder.
-  const [coachOn, setCoachOn] = useState(false);
-  const [blunder, setBlunder] = useState<import("./api").DecisionRegret | null>(null);
+  // Live coach (both advice styles): after each End turn, the turn just
+  // played graded whole against the AI's line (the mod's `turn` record).
+  const [turnGrade, setTurnGrade] = useState<import("./api").CoachTurnRecord | null>(null);
+  // Every turn and choice graded this session, for the Coach review dock.
+  const [coachRecords, setCoachRecords] = useState<import("./api").CoachRecord[]>([]);
   // ...and after each run-level choice, how it compares with the AI's policy.
   const [choiceGrade, setChoiceGrade] = useState<import("./api").ChoiceGrade | null>(null);
   // Bumped by every move and seek: a coach reply for an older position is
   // dropped, so a grade never lands on a branch it doesn't describe.
   const coachGenRef = useRef(0);
+  // Peek (P, Coach style): the AI's next action for the current decision, one
+  // line, cleared by the next action. Any press-first reveal of the AI's pick
+  // in Coach (P, H) marks the turn / decision PEEKED, and its grade says so.
+  const [peek, setPeek] = useState<string | null>(null);
+  const peekedRef = useRef(false);
   const [trend, setTrend] = useState<import("./api").TrendPoint[]>([]);
   const [treeOpen, setTreeOpen] = useState(false);
   const [searchTree, setSearchTree] = useState<import("./api").SearchTree | null>(null);
@@ -639,6 +664,9 @@ function AppBody() {
         const { steps } = await api.timeline();
         if (cancelled) return;
         setEntries(steps);
+        // A new grade for the step on screen appears in place: the chips read
+        // `by_step[idx]`, so this never moves the view.
+        void refreshCoach();
         setCount(n);
         if (atTailRef.current && n > 0) setIdx(n - 1);
       } catch {
@@ -785,12 +813,22 @@ function AppBody() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, live?.meta.act, live?.meta.floor, !!live]);
 
+  /** Re-read the loaded log's coach records. A host without the route (the
+   *  dev Python workbench) or a log without records shows none. */
+  async function refreshCoach() {
+    try {
+      setCoachLog(await api.coach());
+    } catch {
+      setCoachLog(null);
+    }
+  }
   async function loadRun(path: string): Promise<number> {
     const { count: n, resume: cap } = await api.load(path);
     setResume(cap ?? null);
     setLiveError(null);
     const [{ steps }, { rows, graphs }] = await Promise.all([api.timeline(), api.map()]);
     setEntries(steps);
+    void refreshCoach();
     setMapRows(rows);
     setMapGraphs(graphs);
     setCount(n);
@@ -896,6 +934,7 @@ function AppBody() {
   function openRegret(live = false) {
     if (regretOpen) { setRegretOpen(false); return; }
     setWpaOpen(false); // one bottom dock at a time
+    setCoachOpen(false);
     setRegretOpen(true);
     if (shouldRerunRegret(regret != null, regretLiveRef.current, live)) void runRegret(live);
   }
@@ -922,8 +961,19 @@ function AppBody() {
   function openWpa(live = false) {
     if (wpaOpen) { setWpaOpen(false); return; }
     setRegretOpen(false);
+    setCoachOpen(false);
     setWpaOpen(true);
     if (shouldRerunRegret(wpa != null, wpaLiveRef.current, live)) void runWpa(live);
+  }
+
+  /** Toggle the Coach review dock; `tab` opens it on that tab (the autopsy,
+   *  from the run-end screen). */
+  function openCoach(tab?: CoachTab) {
+    if (coachOpen && !tab) { setCoachOpen(false); return; }
+    setRegretOpen(false);
+    setWpaOpen(false);
+    setCoachTab(tab);
+    setCoachOpen(true);
   }
 
   async function refreshTimeline() {
@@ -969,6 +1019,8 @@ function AppBody() {
       return;
     }
     setLive(s);
+    setCoachRecords([]);
+    peekedRef.current = false;
     setAutoPaused(false);
     setLastSearch(null);
     setAppliedBudget(null);
@@ -1249,9 +1301,15 @@ function AppBody() {
   ): Promise<Step | null> {
     autoHintedRef.current = false;
     setHintShown(false);
-    setBlunder(null);
+    setTurnGrade(null);
     setChoiceGrade(null);
+    setPeek(null);
     const coachGen = ++coachGenRef.current;
+    // A combat turn's peeked flag lasts until its End turn; a run-level
+    // decision's until it is made. Read before the grades below, reset after.
+    const peeked = peekedRef.current;
+    const fromCombat = !!live && (live.decision === "combat_play" || isCombatChoiceStep(live));
+    if (action === "end_turn" || !fromCombat) peekedRef.current = false;
     // The autoplay's last search is about a position this action leaves behind.
     setLastSearch(null);
     // The cues that belong to the CHOICE rather than to its result — a shop
@@ -1272,10 +1330,16 @@ function AppBody() {
     // policy at the position it was made from. Fetched BEFORE the autobattle
     // advance below moves the active node; the endpoint 409s (null) for a
     // combat move, a forced pick, or no loaded net.
-    if (coachOn && !error && !COMBAT_VERBS.has(action)) {
+    // After-the-fact feedback runs in both advice styles, for the player's own
+    // moves only: an autoplay loop is the AI grading itself.
+    const feedbackOn = advisors && !autoRunningRef.current;
+    if (feedbackOn && !error && !COMBAT_VERBS.has(action)) {
       try {
         const g = await api.live.lastChoiceGrade();
-        if (coachGen === coachGenRef.current) setChoiceGrade(g);
+        if (isFresh(coachGen, coachGenRef.current)) {
+          setChoiceGrade(g);
+          if (g) setCoachRecords((rs) => [...rs.filter((r) => r.id !== `choice:${g.node_id}`), choiceRecordOf(g, peeked)]);
+        }
       } catch {
         setChoiceGrade(null);
       }
@@ -1291,20 +1355,19 @@ function AppBody() {
       await advanceAutobattle();
       return error ? null : s;
     }
-    // Live regret coach: a combat move's quality is judged against the MCTS
-    // line for the position it was made from. The endpoint 409s for a
-    // non-combat parent — caught and ignored.
-    if (coachOn && !error && COMBAT_VERBS.has(action)) {
+    // Live coach: combat is graded per TURN, never per card. An End turn
+    // closes the turn, and the wasm grades all its moves against the AI's
+    // line (reusing the hint searches it already ran). 409 = nothing to grade
+    // or a silent turn (a move stayed uncertain / over the search cap). A
+    // reply that lands after you acted again is dropped, never shown late.
+    if (feedbackOn && !error && action === "end_turn") {
       try {
-        const r = await api.live.lastMoveRegret({});
-        if (coachGen !== coachGenRef.current) return error ? null : s;
-        // Show after every assessable combat move — blunder, suboptimal, or
-        // best — not only flagged blunders. The error payload (no MCTS scores)
-        // carries no verdict, so skip it.
-        setBlunder(r.error ? null : r);
+        const r = await api.live.lastTurnGrade({ peeked });
+        if (!isFresh(coachGen, coachGenRef.current)) return s;
+        setTurnGrade(r);
+        setCoachRecords((rs) => [...rs.filter((x) => x.id !== r.id), r]);
       } catch {
-        // 409 = the prior decision had no counterfactual (e.g. forced move).
-        setBlunder(null);
+        setTurnGrade(null);
       }
     }
     return error ? null : s;
@@ -1367,8 +1430,9 @@ function AppBody() {
     autoHintedRef.current = false;
     setHintShown(false);
     setLiveError(null);
-    setBlunder(null);
+    setTurnGrade(null);
     setChoiceGrade(null);
+    setPeek(null);
     coachGenRef.current++;
     setSeekBusy(true);
     try {
@@ -1459,6 +1523,7 @@ function AppBody() {
     }
   }
   async function liveHint() {
+    if (!hints.on) peekedRef.current = true;
     setHintShown(true);
     await fetchHint();
   }
@@ -1483,6 +1548,31 @@ function AppBody() {
       setSearchTree({ nodes: [], root: null, pv: [], error: String(e) });
     } finally {
       setSearchBusy(false);
+    }
+  }
+  /** P: in Coach style, show only the AI's pick for the current decision. */
+  async function peekNext() {
+    if (!live || autoRunning || live.decision === "game_over") return;
+    if (hints.on) {
+      setPeek("P peeks in Coach style — Hints already shows the AI's opinion.");
+      return;
+    }
+    peekedRef.current = true;
+    const gen = coachGenRef.current;
+    try {
+      let label: string | null;
+      if (live.decision === "combat_play") {
+        // The scores land on `live.scores`, which the board shows only when
+        // you pressed H (`showScores`) — a peek reveals the pick, not the list.
+        const scores = live.scores.length > 0 ? live.scores : await fetchHint();
+        label = peekLabelFromScores(scores, live.state.enemies ?? []);
+      } else {
+        label = peekLabelFromAction(await api.live.autoAction(), live.state.options ?? []);
+      }
+      if (gen !== coachGenRef.current) return; // you acted meanwhile
+      setPeek(label ? `AI's next action: ${label}` : "The AI has no pick for this screen.");
+    } catch {
+      if (gen === coachGenRef.current) setPeek("Peek failed — no AI pick available here.");
     }
   }
   async function playRecommended() {
@@ -1759,6 +1849,7 @@ function AppBody() {
     // buttons they mirror.
     onPlayBest: playBestChoice,
     onPlayToEnd: playToEnd,
+    onPeek: advisors ? peekNext : undefined,
     autoRunning,
     onStart: startLive,
     onToggleHelp: () => setHelpOpen((o) => !o),
@@ -1792,6 +1883,7 @@ function AppBody() {
       endRun: () => { void endRun(); },
       analyze: () => { void openAnalysis(); },
       regretReview: () => openRegret(mode === "play"),
+      coachReview: () => openCoach(),
       runReview: () => openWpa(mode === "play"),
       searchTree: () => { void openSearchTree(); },
       simlabFromHere: () => { void simlabFromHere(); },
@@ -1818,7 +1910,7 @@ function AppBody() {
 
   return (
     <EffectsProvider autoplaying={autoRunning}>
-    <SoundProvider>
+    <SoundProvider gameVersion={shownGameVersion}>
     <SoundBridge soundRef={soundRef} live={live} mode={mode} />
     <div className="wb-shell"
       style={{ gridTemplateColumns: sideVisible && !narrow ? "1fr 320px" : "1fr" }}>
@@ -1841,8 +1933,8 @@ function AppBody() {
           commands={commands}
           chips={{
             hints: mode === "play" && advisors ? {
-              on: hints.on, toggle: () => hints.setOn(!hints.on),
-              title: "AI hints: show the machine's opinion WITHOUT being asked — the PPO policy panel, auto combat hints, the EV analyzers, the synergy/archetype chips and the map's planned route. Off = play unadvised; the press-first tools (hint, coach, the reviews, search) still work.",
+              on: hints.on, toggle: hints.toggle,
+              title: "advice style. 💡 Hints: show the machine's opinion WITHOUT being asked — the PPO policy panel, auto combat hints, the EV analyzers, the synergy/archetype chips and the map's planned route. 🎓 Coach: nothing unprompted before you act; the press-first tools (hint, peek P, the reviews, search) still work. Both grade your turns and choices after you act.",
             } : undefined,
             autobattle: mode === "play" && live && advisors && runMode ? {
               on: autobattleOn,
@@ -1856,10 +1948,6 @@ function AppBody() {
               },
               title: "autobattle mode: the agent plays the fights (watch them play out, or skip them) and you make only the run-level decisions — with a change-diff at each stop and the champion's pick revealed after you commit",
             } : undefined,
-            coach: mode === "play" && live && advisors ? {
-              on: coachOn, toggle: () => { setCoachOn((v) => !v); setBlunder(null); setChoiceGrade(null); },
-              title: "regret coach: right after a move, compare it with the AI — combat moves by the MCTS line, run-level choices by the policy",
-            } : undefined,
           }}
           replay={mode === "replay" ? {
             runs, loadRun: (path) => { void loadRun(path); }, loadedPath,
@@ -1867,6 +1955,7 @@ function AppBody() {
           } : undefined}
           tools={{
             simlabLink: advisors && simlab,
+            gameVersion: shownGameVersion,
             debug: { on: debugEnabled, toggle: toggleDebug },
             onHelp: () => setHelpOpen((o) => !o),
             ...(isStaticMode()
@@ -1908,7 +1997,7 @@ function AppBody() {
             height — not just the scroll box inside it, which used to leave the
             PPO dock under them. */}
         <div style={{ position: "relative", flex: 1, minHeight: 0, display: "flex", flexDirection: "column",
-          paddingBottom: regretHeight + wpaHeight }}>
+          paddingBottom: regretHeight + wpaHeight + coachHeight }}>
           {/* Replay's copy of the error banner. The other two live inside the
               play-mode branches, so a failed "play from here" in replay mode set
               liveError and NOTHING rendered it — the button read as inert. */}
@@ -2135,7 +2224,9 @@ function AppBody() {
             <>
               {!live && endedRun && (
                 <RunEnded step={endedRun.step} logPath={endedRun.logPath}
-                  onNewRun={startNewRunFromSummary} onReviewReplay={reviewEndedReplay} />
+                  onNewRun={startNewRunFromSummary} onReviewReplay={reviewEndedReplay}
+                  onCoachReview={advisors && coachRecords.length > 0
+                    ? () => openCoach(endedRun.step.state.victory ? "all" : "autopsy") : undefined} />
               )}
               {!live && !endedRun && (
                 <RunLauncher
@@ -2176,6 +2267,7 @@ function AppBody() {
                   }
                   onDiscardPotion={(slot) => liveAction("discard_potion", { potion_index: slot })}
                   onHint={advisors ? liveHint : undefined}
+                  onPeek={advisors ? peekNext : undefined}
                   attack={liveAttack ?? undefined}
                   scores={live.scores}
                   onPlayRecommended={advisors ? playRecommended : undefined}
@@ -2242,6 +2334,7 @@ function AppBody() {
                     api.live.quit().then(refreshRunList, () => {});
                   }}
                   onReviewReplay={reviewFinishedRun}
+                  onCoachReview={advisors ? () => openCoach(live.state.victory ? "all" : "autopsy") : undefined}
                 />
               )}
             </>
@@ -2269,7 +2362,7 @@ function AppBody() {
               non-combat screen without needing to be sticky. */}
           {mode === "play" && live && advisors && <PpoPolicyPanel live={live} />}
         </div>
-        {count > 0 && <Timeline idx={idx} count={count} entries={entries} onSeek={(i) => setIdx(Math.max(0, Math.min(count - 1, i)))} />}
+        {count > 0 && <Timeline idx={idx} count={count} entries={entries} marks={coachMarks} onSeek={(i) => setIdx(Math.max(0, Math.min(count - 1, i)))} />}
         {/* Debug drawer, docked at the bottom of the left column. A fixed-height
             flex child: the content area above (flex:1) absorbs its space, so the
             relic strip never moves. Collapsed = header only; both states are a
@@ -2387,7 +2480,8 @@ function AppBody() {
                     onStop={() => { stopAutoRef.current = true; }}
                   />
                 )}
-                {blunder && <CoachChip regret={blunder} onDismiss={() => setBlunder(null)} />}
+                {peek && mode === "play" && <PeekBanner text={peek} onDismiss={() => setPeek(null)} />}
+                {turnGrade && <TurnChip record={turnGrade} onDismiss={() => setTurnGrade(null)} />}
                 {choiceGrade && <ChoiceChip key={choiceGrade.node_id} grade={choiceGrade} onDismiss={() => setChoiceGrade(null)} />}
                 {liveTimeline && liveTimeline.nodes.length > 1 && (
                   <button type="button" onClick={() => setTreeOpen(true)}
@@ -2408,7 +2502,7 @@ function AppBody() {
                   </div>
                 )}
               </div>
-              <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "0 16px 16px", paddingBottom: 16 + regretHeight + wpaHeight }}>
+              <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "0 16px 16px", paddingBottom: 16 + regretHeight + wpaHeight + coachHeight }}>
                 <LiveLog timeline={liveTimeline} onSeek={seekTo} busy={seekBusy} />
               </div>
             </div>
@@ -2432,7 +2526,11 @@ function AppBody() {
                   heading={false} enemies={step.state.enemies} />
               </ReasoningDock>
             )}
-            <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 16, paddingBottom: 16 + regretHeight + wpaHeight }}>
+            <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 16, paddingBottom: 16 + regretHeight + wpaHeight + coachHeight }}>
+              {recordsForStep(coachLog, idx).map((r) =>
+                r.kind === "turn"
+                  ? <TurnChip key={r.id} record={r} />
+                  : r.kind === "choice" ? <ChoiceRecordChip key={r.id} record={r} /> : null)}
               <EventLog entries={entries} current={idx} onPick={setIdx} />
             </div>
           </div>
@@ -2502,6 +2600,44 @@ function AppBody() {
           onSeek={mode === "replay" ? (i) => setIdx(Math.max(0, Math.min(count - 1, i))) : undefined}
           onClose={() => setAnalysisOpen(false)} />
       )}
+      {coachOpen && (() => {
+        // Live play (or a run that just ended in this tab): the session's own
+        // grades, on the active line only, and an autopsy ranked here. Replay
+        // and follow: what the advisor logged, its own autopsy included.
+        const liveView = mode === "play";
+        const onPath = new Set(liveTimeline?.active_path ?? []);
+        const records = liveView
+          ? coachRecords.filter((r) => r.kind === "recap" || !liveTimeline || onPath.has(Number(r.node_id)))
+          : coachLog?.records ?? [];
+        const died = liveView
+          ? (live?.decision === "game_over" && !live.state.victory)
+            || (!!endedRun && endedRun.step.state.decision === "game_over" && !endedRun.step.state.victory)
+          : !!coachLog?.autopsy;
+        const autopsy: CoachAutopsyView | null = !died ? null : liveView
+          ? {
+              items: rankAutopsy(
+                records.filter((r) => r.kind === "turn"),
+                records.filter((r) => r.kind === "choice"),
+              ),
+              floor: (live ?? endedRun?.step)?.state.floor ?? null,
+              decisions_graded: records.filter((r) => r.kind !== "recap" && r.verdict !== "ungraded").length,
+              turns_ungraded: records.filter((r) => r.kind === "turn" && r.verdict === "ungraded").length,
+            }
+          : coachLog!.autopsy;
+        const seekRecord = (r: CoachSeekTarget) => {
+          if (!liveView) {
+            if (r.log_idx != null) setIdx(Math.max(0, Math.min(count - 1, r.log_idx)));
+            return;
+          }
+          const nodeId = Number(r.node_id);
+          if (live && Number.isFinite(nodeId)) void seekTo(nodeId);
+        };
+        return (
+          <CoachReview key={`${liveView}-${coachTab ?? ""}`} records={records} autopsy={autopsy}
+            initialTab={coachTab} live={liveView} onSeek={seekRecord}
+            onHeight={setCoachHeight} onClose={() => setCoachOpen(false)} />
+        );
+      })()}
       {regretOpen && (
         <RegretReview review={regret}
           live={regretLiveRef.current ?? false}

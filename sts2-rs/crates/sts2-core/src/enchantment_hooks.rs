@@ -375,7 +375,28 @@ fn after_player_turn_start_stub(state: &mut CombatState) {
         let Some(pos) = state.player.draw.iter().position(|u| *u == uid) else {
             continue;
         };
-        if pos != 0 {
+        if state.player.deferred_draw_order {
+            // GH #785: under BeliefDraw the auto-play below pops the top
+            // through `cards::pop_top_card`, which only takes a KNOWN card
+            // deterministically. The Imbued card is known, so move it to the
+            // physical top and PIN it there (it is then popped with no RNG
+            // read). A swap would drop whatever sat at `draw[0]` (a pinned
+            // card, or the head of the sorted unknown middle) into the
+            // middle of the pile and break the pile's segment layout.
+            state.player.draw.remove(pos);
+            state.player.draw.insert(0, uid);
+            crate::cards::pin_top(&mut state.player, uid);
+        } else if pos != 0 {
+            // KNOWN PARITY DIVERGENCE (pre-existing; found in the GH #785
+            // review, left as is so clairvoyant mode stays byte-stable): the
+            // swap moves the old top card down to the Imbued card's slot.
+            // C# `CardCmd.AutoPlay(card)` plays the card where it sits and
+            // leaves the rest of the pile in order, so the next turn's draws
+            // differ. The fix is the remove + insert(0) shape above. (C#
+            // also moves Imbued cards to the BOTTOM before the turn-1 hand
+            // draw — `ShouldStartAtBottomOfDrawPile`, `CombatManager.cs:662`
+            // — which this engine does not model either; see the round-1
+            // Innate float in `combat_loop.rs`.)
             state.player.draw.swap(0, pos);
         }
         // Imbued does NOT force-exhaust — C# `Imbued.cs` calls
@@ -640,7 +661,7 @@ fn on_card_played_stub(state: &mut CombatState, card_uid: CardUid) {
 
 /// Fire enchantment `after_card_played` for a card whose effect has
 /// fully resolved. Marks first-play-only enchantments (Swift / Sown /
-/// Vigorous / Glam) as consumed and ticks Goopy's exhaust scaling.
+/// Vigorous / Glam) as consumed and ticks Goopy's amount.
 ///
 /// Python entry: `enchantments.py:184` — `after_card_played(card)`.
 pub fn dispatch_after_card_played(state: &mut CombatState, card_uid: CardUid) {
@@ -662,7 +683,10 @@ pub fn dispatch_after_card_played(state: &mut CombatState, card_uid: CardUid) {
 /// if card.has_enchantment(name): card.combat_vars[_used_key(name)] = 1`
 /// at `enchantments.py:184-194`.
 ///
-/// Pending (Wave 4+): Goopy exhaust scaling tick.
+/// **GH #952:** Goopy's amount grows by one per play (C# `Goopy.AfterCardPlayed`:
+/// `base.Amount++`), so each later play's [`enchant_block_additive`] reads the
+/// grown value. The deck copy's half (`DeckVersion.Enchantment.Amount++`) is
+/// folded back at `exit_combat` (sts2-content `run_bridge`).
 #[inline]
 fn after_card_played_stub(state: &mut CombatState, card_uid: CardUid) {
     let idx = (card_uid.get() as usize).saturating_sub(1);
@@ -683,6 +707,10 @@ fn after_card_played_stub(state: &mut CombatState, card_uid: CardUid) {
         bits |= SOWN_USED_BIT;
     }
     card.set_combat_var(VarKey::Generic, bits);
+    if card.has_enchantment(EnchantmentId::Goopy) {
+        let amount = card.enchantment(EnchantmentId::Goopy);
+        card.set_enchantment(EnchantmentId::Goopy, amount.saturating_add(1));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1339,6 +1367,49 @@ mod tests {
         assert!(
             state.player.draw.len() < draw_before || !state.player.draw.contains(&uid(1)),
             "Imbued card should have been auto-played out of draw on round 1",
+        );
+    }
+
+    /// GH #785: under BeliefDraw the auto-play pops the top through
+    /// `cards::pop_top_card`, which samples an UNKNOWN top. The Imbued card
+    /// is known, so it must be pinned on top first: the auto-play then takes
+    /// exactly it, reads no RNG, and leaves the sorted middle intact.
+    #[test]
+    fn imbued_auto_play_under_belief_draw_takes_the_imbued_card_without_rng() {
+        let mut state = state_with_one_enchanted_card(EnchantmentId::Imbued, 1);
+        state.player.hand.clear();
+        // Two plain cards (uids 2, 3) join the pile.
+        for n in 2..=3 {
+            state.cards.push(Card {
+                uid: uid(n),
+                card_id: CardId::DefendIronclad,
+                cost: 1,
+                card_type: CardType::Skill,
+                target_type: TargetType::Self_,
+                ..Card::pod_defaults()
+            });
+        }
+        // Move the enchantment from uid 1 to uid 3, so the Imbued card is the
+        // HIGHEST uid of the canonical pile: taking the lowest-uid stand-in
+        // (`draw[0]`) would play the wrong card.
+        let imbued = state.cards[0].enchantments;
+        state.cards[0].enchantments = crate::cards::CardEnchantments::new();
+        state.cards[2].enchantments = imbued;
+        state.player.draw = [uid(1), uid(2), uid(3)].into_iter().collect();
+        state.player.deferred_draw_order = true;
+
+        let before = state.run_rng.shuffle.counter();
+        dispatch_after_player_turn_start(&mut state);
+        assert!(
+            !state.player.draw.contains(&uid(3)),
+            "the Imbued card (not the lowest-uid stand-in) was auto-played"
+        );
+        assert_eq!(state.player.draw.as_slice(), &[uid(1), uid(2)]);
+        assert!(state.player.pinned_top.is_empty(), "its pin was consumed");
+        assert_eq!(
+            state.run_rng.shuffle.counter(),
+            before,
+            "a known card on top is popped with no RNG read"
         );
     }
 }

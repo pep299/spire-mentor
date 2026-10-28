@@ -116,7 +116,7 @@ public class SimAutoSlayer
     private CancellationTokenSource? _runCts;
     private IDisposable? _selectorOverride;
     private Watchdog? _watchdog;
-    private Rng _rng = new Rng(0u);
+    private Rng _rng = SimGameApi.NewRng(0);
 
     // Set by Stop(); a run that dies afterwards was handed back on purpose.
     private volatile bool _stopRequested;
@@ -395,16 +395,10 @@ public class SimAutoSlayer
 
         // Handlers receive this Rng per the IHandler contract; the Sim
         // handlers do not draw from it.
-        // Seeded the way the game's own AutoSlayer seeds its Rng: v0.107.1
-        // truncates the int hash to uint (AutoSlayer.cs:167); v0.111.0's hash
-        // is already a ulong and goes in whole (AutoSlayer.cs:184).
-#if GAME_V0111
-        _rng = new Rng(StringHelper.GetDeterministicHashCode(provisionalSeed));
-#else
-        _rng = new Rng((uint)StringHelper.GetDeterministicHashCode(provisionalSeed));
-#endif
+        // Seeded the way the game's own AutoSlayer seeds its Rng.
+        _rng = SimGameApi.RngFromSeedString(provisionalSeed);
 
-        _selectorOverride = CardSelectCmd.UseSelector(new SimCardSelector());
+        _selectorOverride = SimGameApi.UseSelector(new SimCardSelector());
 
         var watchdog = new Watchdog();
         PublishWatchdog(watchdog);
@@ -576,7 +570,7 @@ public class SimAutoSlayer
     /// Keyed on the map shape rather than the ascension level, so it holds
     /// for any act that carries a second boss point.
     /// </summary>
-    private static bool IsFirstOfDoubleBoss(RunState? runState)
+    internal static bool IsFirstOfDoubleBoss(RunState? runState)
     {
         if (runState?.Map?.SecondBossMapPoint == null)
             return false;

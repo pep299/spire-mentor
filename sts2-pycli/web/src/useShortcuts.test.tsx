@@ -64,6 +64,13 @@ describe("useShortcuts", () => {
     expect(onPlayBest).toHaveBeenCalledTimes(2);
   });
 
+  it("play choice screen: p peeks", () => {
+    const onPeek = vi.fn();
+    render(<Harness mode="play" live={choiceStep()} onPeek={onPeek} />);
+    fireEvent.keyDown(document.body, { key: "p" });
+    expect(onPeek).toHaveBeenCalledTimes(1);
+  });
+
   it("play choice screen: f plays the run to the end", () => {
     const onPlayToEnd = vi.fn();
     render(<Harness mode="play" live={choiceStep()} onPlayToEnd={onPlayToEnd} />);

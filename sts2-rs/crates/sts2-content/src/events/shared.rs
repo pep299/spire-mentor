@@ -59,18 +59,14 @@ fn lost_wisp_generate_options(_state: &RunState, _spec: &EventSpec) -> Vec<Event
 /// Rust branch ships the relic queue + a doc-pin divergence so the
 /// parity harness's future event-mode replay can detect the gap.
 fn lost_wisp_claim(state: &mut RunState) -> EventOutcome {
-    // v0.111.0: Claim adds the Decay curse before the relic
+    // Claim adds the Decay curse before the relic
     // (`CardPileCmd.AddCursesToDeck([Decay])`, decomp
-    // `Models.Events/LostWisp.cs:49`). v0.107.1 has the same line; its arm
-    // keeps the deferred (curse-less) behaviour so that build stays
-    // bit-identical (tracked for #806).
-    if state.game_version >= sts2_core::GameVersion::V0_111_0 {
-        if let Some(curse) =
-            crate::cards::spec_index::card_pod_from_id(sts2_core::cards::CardId::Decay, false)
-        {
-            state
-                .add_card_to_deck_with_hooks(curse, sts2_core::relic_effects::AddSource::EventGain);
-        }
+    // `Models.Events/LostWisp.cs:49`, identical in v0.107.1 and v0.111.0, so
+    // both builds: GH #806).
+    if let Some(curse) =
+        crate::cards::spec_index::card_pod_from_id(sts2_core::cards::CardId::Decay, false)
+    {
+        state.add_card_to_deck_with_hooks(curse, sts2_core::relic_effects::AddSource::EventGain);
     }
     state.offer_relic_rewards(RelicId::LostWisp, 1);
     EventOutcome::finished("Gained Lost Wisp relic (Decay curse add deferred to 6ynt.4.deck-add).")
@@ -196,7 +192,7 @@ fn trash_heap_grab(state: &mut RunState) -> EventOutcome {
     let mut rng = event_rng(state, TRASH_HEAP_STREAM);
     let idx = rng.next_int_exclusive(0, TRASH_HEAP_CARDS.len() as i32) as usize;
     if let Some(card) = crate::cards::spec_index::card_pod_from_id(TRASH_HEAP_CARDS[idx], false) {
-        state.master_deck.push(card);
+        state.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::EventGain);
     }
     EventOutcome::finished("Gained 100 gold and a card.")
 }
@@ -323,8 +319,8 @@ fn amalgamator_remove_basic_tagged(
     let rank = sts2_core::lookup_card_rarity_rank();
     let removable = sts2_core::lookup_card_removable();
     let version = state.game_version;
-    let is_basic = |id| rank.map_or(true, |f| f(id, version) == 1);
-    let is_removable = |c: &sts2_core::Card| removable.map_or(true, |f| f(c));
+    let is_basic = |id| rank.is_none_or(|f| f(id, version) == 1);
+    let is_removable = |c: &sts2_core::Card| removable.is_none_or(|f| f(c));
     let mut removed = 0;
     let mut i = 0;
     while removed < count && i < state.master_deck.len() {
@@ -422,7 +418,10 @@ fn aroma_let_go(state: &mut RunState) -> EventOutcome {
             ) {
                 if let Some(card) = crate::cards::spec_index::card_pod_from_id(new_id, false) {
                     state.master_deck.remove(0);
-                    state.master_deck.push(card);
+                    state.add_card_to_deck_with_hooks(
+                        card,
+                        sts2_core::relic_effects::AddSource::EventGain,
+                    );
                 }
             }
         }
@@ -672,7 +671,7 @@ pub const BATTLEWORN_DUMMY: EventSpec = EventSpec {
 // Same fix as `byrdonis_take` above. Bead `sts2-rs-RP26`.
 fn bugslayer_add_card(state: &mut RunState, card_id: sts2_core::cards::CardId) {
     if let Some(card) = crate::cards::spec_index::card_pod_from_id(card_id, false) {
-        state.master_deck.push(card);
+        state.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::EventGain);
     }
 }
 
@@ -738,7 +737,7 @@ fn byrdonis_take(state: &mut RunState) -> EventOutcome {
     if let Some(card) =
         crate::cards::spec_index::card_pod_from_id(sts2_core::cards::CardId::ByrdonisEgg, false)
     {
-        state.master_deck.push(card);
+        state.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::EventGain);
     }
     EventOutcome::finished("Added Byrdonis Egg to the deck.")
 }
@@ -1464,7 +1463,7 @@ fn grave_confront(state: &mut RunState) -> EventOutcome {
     if let Some(card) =
         crate::cards::spec_index::card_pod_from_id(sts2_core::cards::CardId::Decay, false)
     {
-        state.master_deck.push(card);
+        state.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::EventGain);
     }
     EventOutcome::finished("Added Decay to the deck (Soul's Power enchant deferred).")
 }
@@ -1571,7 +1570,7 @@ pub const HUNGRY_FOR_MUSHROOMS: EventSpec = EventSpec {
 fn infested_study(state: &mut RunState) -> EventOutcome {
     if let Some(id) = crate::cards::spec_index::roll_infested_study_card(state) {
         if let Some(card) = crate::cards::spec_index::card_pod_from_id(id, false) {
-            state.master_deck.push(card);
+            state.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::EventGain);
         }
     }
     EventOutcome::finished("Gained a random Power card.")
@@ -1580,7 +1579,7 @@ fn infested_study(state: &mut RunState) -> EventOutcome {
 fn infested_touch_core(state: &mut RunState) -> EventOutcome {
     if let Some(id) = crate::cards::spec_index::roll_infested_touch_core_card(state) {
         if let Some(card) = crate::cards::spec_index::card_pod_from_id(id, false) {
-            state.master_deck.push(card);
+            state.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::EventGain);
         }
     }
     EventOutcome::finished("Gained a random 0-cost card.")
@@ -1825,7 +1824,7 @@ fn punchoff_nab(state: &mut RunState) -> EventOutcome {
     if let Some(card) =
         crate::cards::spec_index::card_pod_from_id(sts2_core::cards::CardId::Injury, false)
     {
-        state.master_deck.push(card);
+        state.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::EventGain);
     }
     state
         .pending_rewards
@@ -1872,9 +1871,8 @@ const PUNCHOFF_OPTIONS: &[EventOptionSpec] = &[
     },
 ];
 
-/// `PunchOff` spec. Pin: `shared.py:1268`. `is_allowed`'s
-/// `total_floor >= 6` precondition deferred (no `total_floor` field
-/// on RunState yet).
+/// `PunchOff` spec. Pin: `shared.py:1268`. `is_allowed` is C#
+/// `TotalFloor >= 6` ([`punch_off_allowed`]).
 pub const PUNCH_OFF: EventSpec = EventSpec {
     id: EventId::PunchOff,
     python_name: "PunchOff",
@@ -2170,27 +2168,24 @@ mod tests {
         assert_eq!(rs.gold, before + LOST_WISP_GOLD);
     }
 
+    /// `LostWisp.Claim` (`LostWisp.cs:49`, same in both builds): Decay, then
+    /// the relic (GH #806).
     #[test]
-    fn lost_wisp_claim_queues_relic_reward() {
-        let mut rs = RunState::new();
-        let outcome = (LOST_WISP.options[0].handler)(&mut rs);
-        assert!(outcome.finished);
-        assert_eq!(rs.relic_rewards.len(), 1);
-        assert_eq!(rs.relic_rewards[0].relic_id, RelicId::LostWisp);
-        assert!(rs.master_deck.is_empty(), "v0.107.1 arm adds no curse");
-    }
-
-    /// v0.111.0 `LostWisp.Claim` (`LostWisp.cs:49`): Decay, then the relic.
-    #[test]
-    fn lost_wisp_claim_adds_decay_v0111() {
+    fn lost_wisp_claim_adds_decay_and_queues_relic_both_versions() {
         crate::cards::dispatch::ensure_installed();
-        let mut rs = RunState::new();
-        rs.game_version = sts2_core::GameVersion::V0_111_0;
-        let outcome = (LOST_WISP.options[0].handler)(&mut rs);
-        assert!(outcome.finished);
-        assert_eq!(rs.relic_rewards[0].relic_id, RelicId::LostWisp);
-        let ids: Vec<_> = rs.master_deck.iter().map(|c| c.card_id).collect();
-        assert_eq!(ids, vec![sts2_core::cards::CardId::Decay]);
+        for version in [
+            sts2_core::GameVersion::V0_107_1,
+            sts2_core::GameVersion::V0_111_0,
+        ] {
+            let mut rs = RunState::new();
+            rs.game_version = version;
+            let outcome = (LOST_WISP.options[0].handler)(&mut rs);
+            assert!(outcome.finished);
+            assert_eq!(rs.relic_rewards.len(), 1, "{version:?}");
+            assert_eq!(rs.relic_rewards[0].relic_id, RelicId::LostWisp);
+            let ids: Vec<_> = rs.master_deck.iter().map(|c| c.card_id).collect();
+            assert_eq!(ids, vec![sts2_core::cards::CardId::Decay], "{version:?}");
+        }
     }
 
     #[test]

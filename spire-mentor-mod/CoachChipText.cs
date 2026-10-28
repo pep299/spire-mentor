@@ -132,6 +132,11 @@ internal static class CoachChipText
             }
         }
         chip.Lines.Add($"{hp}win {Pct(Num(rec, "win_before"))} → {Pct(Num(rec, "win_after"))}{peekedSuffix}");
+        string why = Str(rec, "why");
+        if (why.Length > 0)
+        {
+            chip.Lines.Add(why);
+        }
         return chip;
     }
 

@@ -128,7 +128,7 @@ def _nanmean(xs: list[float]) -> float:
 def load_reps(paths: list[str]) -> list[dict[str, Any]]:
     rows = []
     for path in paths:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             for line in f:
                 r = json.loads(line)
                 if r.get("kind") == "rep" and r.get("trace"):
@@ -242,7 +242,7 @@ def main() -> None:
     rows = load_reps(args.jsonl)
     rep = contrast(rows)
     if args.json:
-        with open(args.json, "w") as f:
+        with open(args.json, "w", encoding="utf-8") as f:
             json.dump(rep, f, indent=1)
 
     print(f"seeds contrasted: {rep['n_seeds']} (traced reps: {len(rows)})")

@@ -13,6 +13,7 @@
   {
    "action": "Sweeping Beam",
    "hp_n": 22,
+   "hp_sd": 0.0,
    "is_best": true,
    "losses": 0,
    "low_confidence": false,
@@ -29,6 +30,7 @@
   {
    "action": "drink Energy Potion",
    "hp_n": 12,
+   "hp_sd": 1.4907,
    "is_best": false,
    "losses": 2,
    "low_confidence": false,
@@ -45,11 +47,12 @@
   {
    "action": "TURBO",
    "hp_n": 11,
+   "hp_sd": 1.7814,
    "is_best": false,
    "losses": 3,
    "low_confidence": false,
    "mean_final_hp": 2.9091,
-   "q": 0.4298,
+   "q": 0.4324,
    "q_saturated": false,
    "stable_idx": 1,
    "target_index": null,
@@ -61,6 +64,7 @@
   {
    "action": "end turn",
    "hp_n": 3,
+   "hp_sd": 0.0,
    "is_best": false,
    "losses": 3,
    "low_confidence": false,

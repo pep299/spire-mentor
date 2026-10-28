@@ -36,7 +36,7 @@ import numpy as np
 
 
 def load_schema(path: Path) -> dict:
-    schema = json.loads(path.read_text())
+    schema = json.loads(path.read_text(encoding="utf-8"))
     for key in ("schema_id", "n_card", "n_relic", "n_scalar", "context_dim"):
         if key not in schema:
             raise SystemExit(f"schema missing {key!r}")
@@ -66,7 +66,7 @@ def densify(context: dict, schema: dict) -> np.ndarray:
 def per_seed_final_act(decisions_path: Path) -> dict[int, int]:
     """Run's final act = max ``act`` over that seed's decision records."""
     final: dict[int, int] = {}
-    for line in decisions_path.read_text().splitlines():
+    for line in decisions_path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         r = json.loads(line)
@@ -79,7 +79,7 @@ def load_xy(
     features_path: Path, schema: dict, final_act: dict[int, int]
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     xs, ys, seeds, steps = [], [], [], []
-    for line in features_path.read_text().splitlines():
+    for line in features_path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         r = json.loads(line)
@@ -171,7 +171,7 @@ def auc(scores: np.ndarray, labels: np.ndarray) -> float:
 def per_seed_win(decisions_path: Path) -> dict[int, int]:
     """Run won iff any decision record for that seed has win==1."""
     win: dict[int, int] = {}
-    for line in decisions_path.read_text().splitlines():
+    for line in decisions_path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         r = json.loads(line)
@@ -389,7 +389,8 @@ def main() -> None:
                 "w2": net.w2.ravel().tolist(),
                 "b2": float(net.b2[0]),
             }
-        )
+        ),
+        encoding="utf-8",
     )
     print(f"wrote {args.out}", file=sys.stderr)
 

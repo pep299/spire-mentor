@@ -2,8 +2,8 @@
  "details": [
   "You HP 4→0 (−4)",
   "You Block 5→0",
-  "Wriggler HP 2→0  ☠ defeated",
-  "Wriggler HP 4→0  ☠ defeated"
+  "Wriggler #1 HP 2→0  ☠ defeated",
+  "Wriggler #2 HP 4→0  ☠ defeated"
  ],
  "error": null,
  "label": "End turn",

@@ -58,7 +58,7 @@ PROXY_COLS = ["win_rate", "loss_rate", "dmg_t5_mean", "hp_lost_mean", "turns_mea
 
 
 def load_rows(path: Path) -> list[dict]:
-    rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+    rows = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
     if not rows:
         raise SystemExit(f"{path}: no rows")
     return rows

@@ -1143,7 +1143,9 @@ _TRIGGER_ANIM_ON_OWNER = re.compile(
     r"CreatureCmd\.TriggerAnim\(\s*base\.Owner\.Creature\s*,\s*"
     r'(?P<arg>"[A-Za-z_]+"|[\w.]+\()'
 )
-_FROM_CARD = re.compile(r"\.FromCard\(this\)")
+# v0.111.0 passes the play along (`.FromCard(this, cardPlay)`); v0.107.1 is
+# `.FromCard(this)`. Both seed the attacker animation the same way.
+_FROM_CARD = re.compile(r"\.FromCard\(this\s*[,)]")
 _WITH_ATTACKER_ANIM_ARG = re.compile(r'\.WithAttackerAnim\(\s*(?P<arg>"[A-Za-z_]+"|[\w.]+\()')
 # `public static string GetHeavyAnimIfApplicable(CharacterModel character) {
 #      if (!(character is Ironclad)) { return "Attack"; } return "heavyAttack"; }`

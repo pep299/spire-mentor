@@ -17,7 +17,7 @@ _spec.loader.exec_module(ab)
 
 
 def _load(p):
-    return [json.loads(l) for l in open(p) if l.strip()]
+    return [json.loads(l) for l in open(p, encoding="utf-8") if l.strip()]
 
 
 def per_level_delta(base, new):

@@ -172,7 +172,7 @@ def _emit_observational(args: argparse.Namespace) -> None:
         "pairs": pairs_out,
     }
 
-    out_path.write_text(json.dumps(catalog, indent=2))
+    out_path.write_text(json.dumps(catalog, indent=2), encoding="utf-8")
     print(f"Wrote {len(pairs_out)} pairs to {out_path}", file=sys.stderr)
 
 
@@ -201,7 +201,7 @@ def _load_econ_file(path: str) -> dict[Pair, EconRow] | None:
     p = Path(path)
     if not p.exists():
         return None
-    raw: dict = json.loads(p.read_text())
+    raw: dict = json.loads(p.read_text(encoding="utf-8"))
     if not raw:
         return None
     result: dict[Pair, EconRow] = {}
@@ -237,7 +237,7 @@ def _load_combat_file(path: str) -> dict[Pair, CombatRow] | None:
     p = Path(path)
     if not p.exists():
         return None
-    raw: dict = json.loads(p.read_text())
+    raw: dict = json.loads(p.read_text(encoding="utf-8"))
     if not raw:
         return None
     result: dict[Pair, CombatRow] = {}
@@ -259,7 +259,7 @@ def _emit_catalog(args: argparse.Namespace) -> None:
     out_path = Path(args.out)
 
     print(f"Reading obs catalog from {obs_path} …", file=sys.stderr)
-    raw = json.loads(obs_path.read_text())
+    raw = json.loads(obs_path.read_text(encoding="utf-8"))
 
     # Reconstruct obs, interaction and FM dicts from the obs_catalog pairs list.
     obs: dict[Pair, ObsRow] = {}
@@ -383,7 +383,7 @@ def _emit_catalog(args: argparse.Namespace) -> None:
         thresholds=thresholds,
     )
 
-    out_path.write_text(json.dumps(catalog, indent=2))
+    out_path.write_text(json.dumps(catalog, indent=2), encoding="utf-8")
     n_edges = len(catalog["edges"])
     n_nodes = len(catalog["nodes"])
     print(f"Wrote catalog.json: {n_nodes} nodes, {n_edges} edges → {out_path}", file=sys.stderr)
@@ -400,7 +400,7 @@ def _emit_geometry(args: argparse.Namespace) -> None:
 
     obs_path = Path(args.obs)
     print(f"Reading card frequencies from {obs_path} …", file=sys.stderr)
-    raw = json.loads(obs_path.read_text())
+    raw = json.loads(obs_path.read_text(encoding="utf-8"))
     card_frequency: dict[str, float] = {
         k: float(v) for k, v in raw.get("card_frequency", {}).items()
     }
@@ -415,7 +415,7 @@ def _emit_geometry(args: argparse.Namespace) -> None:
     )
 
     out_path = Path(args.out)
-    out_path.write_text(json.dumps(doc, indent=2))
+    out_path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
     n_clusters = len(set(doc["clusters"].values()))
     print(
         f"Wrote {out_path}: {doc['n_cards']} cards, {n_clusters} clusters (k={doc['k']}).",
@@ -436,7 +436,7 @@ def _emit_archetypes(args: argparse.Namespace) -> None:
 
     catalog_path = Path(args.catalog)
     print(f"Reading catalog edges from {catalog_path} …", file=sys.stderr)
-    edges = json.loads(catalog_path.read_text()).get("edges", [])
+    edges = json.loads(catalog_path.read_text(encoding="utf-8")).get("edges", [])
 
     build_ids = tuple(b.strip() for b in args.build_ids.split(",") if b.strip())
     print(f"Loading decks from {args.root} …", file=sys.stderr)
@@ -450,7 +450,7 @@ def _emit_archetypes(args: argparse.Namespace) -> None:
     )
     card_text = None
     if args.card_text:
-        card_text = json.loads(Path(args.card_text).read_text())
+        card_text = json.loads(Path(args.card_text).read_text(encoding="utf-8"))
     print(f"Discovering archetypes over {len(decks)} decks + {len(edges)} edges …", file=sys.stderr)
     candidates = discover_archetypes(
         decks,
@@ -469,7 +469,7 @@ def _emit_archetypes(args: argparse.Namespace) -> None:
 
     doc = {"character": args.character, "candidates": [asdict(c) for c in candidates]}
     out_path = Path(args.out)
-    out_path.write_text(json.dumps(doc, indent=2))
+    out_path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
     by_tag: dict[str, int] = defaultdict(int)
     for c in candidates:
         by_tag[c.tag] += 1
@@ -492,8 +492,10 @@ def _emit_dose(args: argparse.Namespace) -> None:
     from synergy.causal_dose import dose_archetype
     from synergy.embed_geometry import champion_onnx_path, load_card_embeddings
 
-    archetypes = json.loads(Path(args.archetypes).read_text()).get("candidates", [])
-    clusters: dict[str, int] = json.loads(Path(args.geometry).read_text()).get("clusters", {})
+    archetypes = json.loads(Path(args.archetypes).read_text(encoding="utf-8")).get("candidates", [])
+    clusters: dict[str, int] = json.loads(Path(args.geometry).read_text(encoding="utf-8")).get(
+        "clusters", {}
+    )
     print(f"Loading champion embeddings for {args.character} …", file=sys.stderr)
     emb = load_card_embeddings(champion_onnx_path(args.character))
 
@@ -531,7 +533,7 @@ def _emit_dose(args: argparse.Namespace) -> None:
         doses.append({"cards": cards, "tag": cand["tag"], **asdict(res)})
 
     doc = {"character": args.character, "doses": doses}
-    Path(args.out).write_text(json.dumps(doc, indent=2))
+    Path(args.out).write_text(json.dumps(doc, indent=2), encoding="utf-8")
     print(f"Wrote {args.out}: {len(doses)} archetype dose panels.", file=sys.stderr)
 
 
@@ -548,8 +550,10 @@ def _emit_injection(args: argparse.Namespace) -> None:
     from synergy.causal_run import injection_ab
     from synergy.embed_geometry import champion_onnx_path, control_match, load_card_embeddings
 
-    archetypes = json.loads(Path(args.archetypes).read_text()).get("candidates", [])
-    clusters: dict[str, int] = json.loads(Path(args.geometry).read_text()).get("clusters", {})
+    archetypes = json.loads(Path(args.archetypes).read_text(encoding="utf-8")).get("candidates", [])
+    clusters: dict[str, int] = json.loads(Path(args.geometry).read_text(encoding="utf-8")).get(
+        "clusters", {}
+    )
     champion = str(champion_onnx_path(args.character))
     print(f"Loading champion embeddings for {args.character} …", file=sys.stderr)
     emb = load_card_embeddings(champion_onnx_path(args.character))
@@ -570,7 +574,7 @@ def _emit_injection(args: argparse.Namespace) -> None:
         injections.append({"id": cand.get("id"), "cards": cards, "tag": cand["tag"], **asdict(res)})
 
     doc = {"character": args.character, "injections": injections}
-    Path(args.out).write_text(json.dumps(doc, indent=2))
+    Path(args.out).write_text(json.dumps(doc, indent=2), encoding="utf-8")
     print(f"Wrote {args.out}: {len(injections)} injection A/B verdicts.", file=sys.stderr)
 
 
@@ -583,10 +587,10 @@ def _emit_archetype_catalog(args: argparse.Namespace) -> None:
     """Merge archetypes + dose curves into the UI archetypes_<char>.json file."""
     from synergy.archetype_catalog import assemble_archetypes
 
-    archetypes_doc = json.loads(Path(args.archetypes).read_text())
-    dose_doc = json.loads(Path(args.dose).read_text()) if args.dose else None
+    archetypes_doc = json.loads(Path(args.archetypes).read_text(encoding="utf-8"))
+    dose_doc = json.loads(Path(args.dose).read_text(encoding="utf-8")) if args.dose else None
     doc = assemble_archetypes(archetypes_doc, dose_doc)
-    Path(args.out).write_text(json.dumps(doc, indent=2))
+    Path(args.out).write_text(json.dumps(doc, indent=2), encoding="utf-8")
     print(
         f"Wrote {args.out}: {len(doc['archetypes'])} archetypes for {doc['character']}.",
         file=sys.stderr,
@@ -1090,11 +1094,11 @@ def _order_catalog(args: argparse.Namespace) -> None:
     out_path = Path(args.out)
 
     print(f"Reading dense obs catalog from {obs_path} …", file=sys.stderr)
-    obs_raw = json.loads(obs_path.read_text())
+    obs_raw = json.loads(obs_path.read_text(encoding="utf-8"))
     obs_pairs = obs_raw.get("pairs", [])
 
     print(f"Reading display catalog from {catalog_path} …", file=sys.stderr)
-    catalog = json.loads(catalog_path.read_text())
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
 
     # Signal cards: those that appear in at least one edge of the display catalog
     signal_ids: set[str] = set()
@@ -1118,7 +1122,7 @@ def _order_catalog(args: argparse.Namespace) -> None:
     # Bake card_order at the top level
     catalog["card_order"] = card_order
 
-    out_path.write_text(json.dumps(catalog, indent=2))
+    out_path.write_text(json.dumps(catalog, indent=2), encoding="utf-8")
     print(f"Wrote updated catalog to {out_path}", file=sys.stderr)
 
 
@@ -1139,7 +1143,7 @@ def _emit_econ(args: argparse.Namespace) -> None:
     binary = ensure_binary_fresh()
     binary.touch()
 
-    obs_raw = json.loads(Path(args.obs).read_text())
+    obs_raw = json.loads(Path(args.obs).read_text(encoding="utf-8"))
     pairs = [tuple(sorted(p["pair"])) for p in obs_raw.get("pairs", [])]
     print(f"Econ: {len(pairs)} pairs from {args.obs}", file=sys.stderr)
 
@@ -1157,7 +1161,7 @@ def _emit_econ(args: argparse.Namespace) -> None:
         net=args.backend,
         character=args.character,
     )
-    Path(args.out).write_text(json.dumps(table, indent=2))
+    Path(args.out).write_text(json.dumps(table, indent=2), encoding="utf-8")
     print(f"Wrote econ scores for {len(table)} pairs → {args.out}", file=sys.stderr)
 
 
@@ -1175,7 +1179,7 @@ def _emit_combat(args: argparse.Namespace) -> None:
     fight_binary = _ensure_fight_binary()
     fight_binary.touch()
 
-    obs_raw = json.loads(Path(args.obs).read_text())
+    obs_raw = json.loads(Path(args.obs).read_text(encoding="utf-8"))
     pairs = select_pairs(
         obs_raw.get("pairs", []),
         top_k=args.top_k,
@@ -1217,7 +1221,7 @@ def _emit_combat(args: argparse.Namespace) -> None:
         log_every=args.log_every,
         checkpoint_path=Path(args.checkpoint) if args.checkpoint else None,
     )
-    Path(args.out).write_text(json.dumps(table, indent=2))
+    Path(args.out).write_text(json.dumps(table, indent=2), encoding="utf-8")
     print(
         f"Wrote combat scores for {len(table)}/{len(pairs)} pairs → {args.out}",
         file=sys.stderr,

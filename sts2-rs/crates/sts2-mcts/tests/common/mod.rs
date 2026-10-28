@@ -11,10 +11,30 @@ use smallvec::SmallVec;
 use sts2_core::card_effects;
 use sts2_core::cards::{Card, CardId, CardTags, CardType, TargetType};
 use sts2_core::combat_loop::{start_combat, start_player_turn};
+use sts2_core::potions::PotionKind;
 use sts2_core::{
     CardUid, CombatPhase, CombatState, Creature, CreatureUid, IntentHistory, MonsterId,
     MonsterKind, PlayerCombatState, Side, TurnEvents,
 };
+
+/// 一時コスト導入前に固定した探索木の表記を保つ。
+/// コスト情報が存在する場合は文字列に含め、比較対象から除外しない。
+pub fn legacy_edge_text(edge: &sts2_mcts::EdgeAction) -> String {
+    match edge {
+        sts2_mcts::EdgeAction::PlayCard {
+            card_id,
+            upgraded,
+            cost,
+            local_cost: None,
+            free,
+            affliction,
+            target,
+        } => format!(
+            "PlayCard {{ card_id: {card_id:?}, upgraded: {upgraded}, cost: {cost}, free: {free}, affliction: {affliction:?}, target: {target:?} }}"
+        ),
+        _ => format!("{edge:?}"),
+    }
+}
 
 /// Same as [`build_handful`] but with full control over the cultist's
 /// intent and the player's potion inventory. Used by the value-function
@@ -176,12 +196,14 @@ pub fn build_handful(
         pending_end_turn_resume: None,
         pending_autoplay_resume: None,
         autoplay_inline_resolve: false,
+        vakuu_selector: false,
         pending_curse_choice: None,
         pending_potion_hook_resume: None,
         pending_enemy_exec_resume: None,
         combat_log: TurnEvents::default(),
         swipe_stolen: Vec::new(),
         escaped_creatures: 0,
+        coop: sts2_core::coop::CoopState::default(),
         heist_recovered_gold: 0,
         event_combat_timed_out: false,
         gold: 0,
@@ -328,12 +350,14 @@ pub fn build_vertical_slice_hp(seed: u64, player_hp: i32, cultist_hp: i32) -> Co
         pending_end_turn_resume: None,
         pending_autoplay_resume: None,
         autoplay_inline_resolve: false,
+        vakuu_selector: false,
         pending_curse_choice: None,
         pending_potion_hook_resume: None,
         pending_enemy_exec_resume: None,
         combat_log: TurnEvents::default(),
         swipe_stolen: Vec::new(),
         escaped_creatures: 0,
+        coop: sts2_core::coop::CoopState::default(),
         heist_recovered_gold: 0,
         event_combat_timed_out: false,
         gold: 0,
@@ -357,21 +381,67 @@ pub fn build_vertical_slice_hp(seed: u64, player_hp: i32, cultist_hp: i32) -> Co
     state
 }
 
-/// A net whose logit is exactly the heuristic's softmax logit
-/// (`-priority / tau`, feature 21): the net with the heuristic's
-/// preferences.
-pub fn heuristic_mirror_net() -> sts2_mcts::rollout_net::RolloutNet {
-    use sts2_mcts::rollout_net::{RolloutNet, ACTION_DIM, STATE_DIM};
-    let (h, d) = (2usize, 2usize);
-    let zeros = |r: usize, c: usize| vec![vec![0.0f32; c]; r];
-    let mut lin = vec![0.0f32; ACTION_DIM];
-    lin[21] = 1.0;
-    let text = serde_json::json!({
-        "state_dim": STATE_DIM, "action_dim": ACTION_DIM, "hidden": h, "emb_dim": d,
-        "temperature": 1.0, "keys": ["<unk>", "end_turn"],
-        "w1": zeros(h, STATE_DIM), "b1": vec![0.0; h], "w2": zeros(d, h), "b2": vec![0.0; d],
-        "emb": zeros(2, d), "bias": [0.0, 0.0], "proj": zeros(d, ACTION_DIM), "lin": lin,
-    })
-    .to_string();
-    RolloutNet::from_json(&text).expect("valid net")
+pub type HandCard = (CardId, i32, i32, i8, TargetType);
+
+/// Fixture tuple for `id` from its real content spec.
+pub fn card(id: CardId) -> HandCard {
+    let spec = sts2_content::cards::spec_index::spec_for_card_id(id).expect("card has a spec");
+    (
+        id,
+        spec.base_damage,
+        spec.base_block,
+        spec.cost,
+        spec.target_type,
+    )
+}
+
+/// `build_handful_ex` with every hand card's `card_type` taken from its
+/// spec (the base fixture infers it from the target type only).
+pub fn fixture(hand: &[CardId], enemy_hp: i32, potions: &[PotionKind], energy: i8) -> CombatState {
+    let tuples: Vec<HandCard> = hand.iter().map(|&id| card(id)).collect();
+    let mut state = build_handful_ex(
+        0,
+        &tuples,
+        enemy_hp,
+        /*player_hp=*/ 60,
+        sts2_core::Intent::Attack { damage: 6 },
+        potions,
+        energy,
+    );
+    for c in &mut state.cards {
+        let spec = sts2_content::cards::spec_index::spec_for_card_id(c.card_id).expect("spec");
+        c.card_type = spec.card_type;
+    }
+    state
+}
+
+/// Add `ids` to the card arena as fresh cards (in no pile); returns their uids.
+pub fn new_cards(state: &mut CombatState, ids: &[CardId]) -> Vec<CardUid> {
+    let mut cards: Vec<Card> = state.cards.iter().copied().collect();
+    let mut uids = Vec::with_capacity(ids.len());
+    for &id in ids {
+        let spec = sts2_content::cards::spec_index::spec_for_card_id(id).expect("spec");
+        let raw = u32::try_from(cards.len() + 1).expect("fits");
+        let uid = CardUid::new(raw).expect("non-zero");
+        cards.push(Card {
+            uid,
+            card_id: id,
+            cost: spec.cost,
+            card_type: spec.card_type,
+            target_type: spec.target_type,
+            base_damage: spec.base_damage,
+            base_block: spec.base_block,
+            ..Card::pod_defaults()
+        });
+        uids.push(uid);
+    }
+    state.cards = cards.into();
+    uids
+}
+
+/// Append `ids` to the draw pile as fresh arena cards.
+pub fn push_draw(state: &mut CombatState, ids: &[CardId]) {
+    for uid in new_cards(state, ids) {
+        state.player.draw.push(uid);
+    }
 }

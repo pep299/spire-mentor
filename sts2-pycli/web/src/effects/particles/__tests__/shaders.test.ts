@@ -8,6 +8,7 @@ import {
   lutScaleOf,
   maskChannelOf,
   maskSelectVector,
+  particleDrawAngle,
   trailQuadGeometry,
 } from "../shaders";
 import type { ParticleMaterial, VfxManifest } from "../../manifest";
@@ -380,6 +381,40 @@ suite("against the real committed manifest", () => {
     expect(flipbookCell(m, 0.0, 0.4, null)).toEqual(flipbookCell(m, 0.9, 0.4, null));
     // ...but two different offsets must still land on different frames.
     expect(flipbookCell(m, 0.5, 0.0, null)).not.toEqual(flipbookCell(m, 0.5, 0.6, null));
+  });
+});
+
+describe("particleDrawAngle", () => {
+  const aligned = { particleFlagAlignY: true };
+  const free = { particleFlagAlignY: false };
+
+  it("leaves an unaligned emitter on the particle's own spin", () => {
+    expect(particleDrawAngle(free, { angle: 0.7, heading: [1, 0] })).toBe(0.7);
+  });
+
+  it("REPLACES the authored angle with the heading rather than adding to it", () => {
+    // Godot's 2D align branch never reads `CUSTOM.x`, so a spinning particle
+    // under the flag points along its heading, not along heading + spin.
+    expect(particleDrawAngle(aligned, { angle: 0.7, heading: [0, 1] })).toBeCloseTo(0, 9);
+    expect(particleDrawAngle(aligned, { angle: 0.7, heading: [1, 0] })).toBeCloseTo(-Math.PI / 2, 9);
+  });
+
+  it("puts the quad's local +Y (the texture's bottom) along the heading on screen", () => {
+    // Reconstructs where the texture's BOTTOM edge lands, from the geometry
+    // `appendQuadVertices` actually writes, for a diagonal heading where a
+    // sign slip in either axis still yields a plausible-looking quad. Godot
+    // `(0.6, -0.8)` is up-and-right; on this Y-up canvas that is (0.6, 0.8).
+    const out: number[] = [];
+    const angle = particleDrawAngle(aligned, { angle: 0, heading: [0.6, -0.8] });
+    appendQuadVertices(out, { cx: 50, cy: 50, w: 0, h: 10, color: [1, 1, 1, 1], angle }, 100, 100);
+    // Vertex 0 is the bottom-left corner (`v1`, the texture's last row); with
+    // `w = 0` it sits exactly half the height along local -Y_canvas, i.e.
+    // along Godot +Y. Clip -> pixels: (clip + 1) / 2 * 100.
+    const bx = ((out[0] + 1) / 2) * 100 - 50;
+    const by = ((out[1] + 1) / 2) * 100 - 50;
+    expect(out[3]).toBe(1); // v1: this corner IS the texture's bottom row
+    expect(bx).toBeCloseTo(0.6 * 5, 6);
+    expect(by).toBeCloseTo(0.8 * 5, 6);
   });
 });
 

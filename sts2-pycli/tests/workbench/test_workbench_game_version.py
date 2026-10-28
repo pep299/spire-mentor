@@ -64,8 +64,13 @@ def _first_enabled_action(c: TestClient, step: dict) -> dict:
 
 
 def test_capabilities_list_the_supported_builds(tmp_path):
+    """Lists the builds this checkout can render: a public snapshot has no
+    v0.111.0 loc dir, so only the default is offered there (#855)."""
+    from workbench import localization
+
     caps = _client(tmp_path).get("/api/capabilities").json()
-    assert caps["game_versions"] == [V107, V111]
+    assert caps["game_versions"] == localization.available_game_versions()
+    assert caps["game_versions"][0] == V107
     assert caps["default_game_version"] == V107
     assert "backends" in caps
 

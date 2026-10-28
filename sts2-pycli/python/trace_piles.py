@@ -86,7 +86,9 @@ class _RustFd2:
     def __init__(self) -> None:
         import tempfile
 
-        self._tmp = tempfile.NamedTemporaryFile(mode="w+", suffix=".piletrace", delete=False)
+        self._tmp = tempfile.NamedTemporaryFile(
+            encoding="utf-8", mode="w+", suffix=".piletrace", delete=False
+        )
         self._saved = os.dup(2)
         os.dup2(self._tmp.fileno(), 2)
 
@@ -169,7 +171,7 @@ def main() -> int:
     else:
         ex_path, bucket = sys.argv[1], sys.argv[2]
         max_turns = int(sys.argv[3]) if len(sys.argv) > 3 else 6
-        rec = json.load(open(ex_path))[bucket]
+        rec = json.load(open(ex_path, encoding="utf-8"))[bucket]
         seed = rec["seed"]
         scd = rec["scenario"]
         sc = Scenario(

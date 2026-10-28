@@ -149,6 +149,12 @@ Check("turn blunder with HP",
     Chip("{" + turnBase + ",\"verdict\":\"blunder\",\"hp_drop\":9.4,\"win_before\":0.96,\"win_after\":0.941,\"peeked\":false}"),
     "[Blunder] ⚠ blunder | Turn 3 · you: Strike → Cultist → Strike → Cultist → end turn" +
     " | AI:  Bash → Cultist → Defend → end turn | ≈ 9 HP more lost · win 96% → 94%");
+Check("turn blunder with a reason line",
+    Chip("{" + turnBase + ",\"verdict\":\"blunder\",\"hp_drop\":9.4,\"win_before\":0.96,\"win_after\":0.941,\"peeked\":false," +
+         "\"why\":\"Your line wakes Lagavulin Matriarch on turn 3\"}"),
+    "[Blunder] ⚠ blunder | Turn 3 · you: Strike → Cultist → Strike → Cultist → end turn" +
+    " | AI:  Bash → Cultist → Defend → end turn | ≈ 9 HP more lost · win 96% → 94%" +
+    " | Your line wakes Lagavulin Matriarch on turn 3");
 Check("turn slip without HP",
     Chip("{" + turnBase + ",\"verdict\":\"slip\",\"hp_drop\":null,\"win_before\":0.80,\"win_after\":0.75,\"peeked\":false}"),
     "[Slip] ▽ suboptimal | Turn 3 · you: Strike → Cultist → Strike → Cultist → end turn" +
@@ -264,6 +270,12 @@ Check("recap one costliest turn",
     "Fight recap · floor 5 | −4 HP (AI line typically −6) · 1 turn ungraded" +
     " | [Turn 2 — hand: Bash, Strike, Defend · 3 energy@12] Jaw Worm intends: attack 11 / You: Strike → end turn" +
     " / AI:  Bash → Defend → end turn / ≈ 5 HP more lost");
+Check("recap costliest turn with a reason line",
+    Panel(RecapJson("\"ai_hp_lost\":null,\"turns_ungraded\":0",
+        CostlyTurn(ctx + ",\"hp_drop\":5.4,\"peeked\":false,\"why\":\"Your line wakes Jaw Worm on turn 2\""))),
+    "Fight recap · floor 5 | −4 HP" +
+    " | [Turn 2 — hand: Bash, Strike, Defend · 3 energy@12] Jaw Worm intends: attack 11 / You: Strike → end turn" +
+    " / AI:  Bash → Defend → end turn / ≈ 5 HP more lost / Your line wakes Jaw Worm on turn 2");
 Check("recap costliest without hp_drop -> win line, peeked",
     Panel(RecapJson("\"ai_hp_lost\":null,\"turns_ungraded\":0", CostlyTurn(ctx + ",\"hp_drop\":null,\"peeked\":true"))),
     "Fight recap · floor 5 | −4 HP" +
@@ -299,6 +311,59 @@ Check("latch: first claim", SimCoachReports.TryClaimGameOver(runA).ToString(), "
 Check("latch: second claim same run", SimCoachReports.TryClaimGameOver(runA).ToString(), "False");
 Check("latch: a new run claims again", SimCoachReports.TryClaimGameOver(runB).ToString(), "True");
 Check("latch: no run never claims", SimCoachReports.TryClaimGameOver(null).ToString(), "False");
+
+// AutoplayPause: `pause_on` parsing and where F7 hands back (GH #874).
+string PauseOn(string confJson)
+{
+    using var doc = System.Text.Json.JsonDocument.Parse(confJson);
+    return string.Join(",", AutoplayPause.FromJson(doc.RootElement, "pause_on", AutoplayPause.Default));
+}
+Check("pause_on absent -> unsupported", PauseOn("{}"), "unsupported");
+Check("pause_on string list", PauseOn("{\"pause_on\":\"unsupported, Neow\"}"), "unsupported,neow");
+Check("pause_on array", PauseOn("{\"pause_on\":[\"Unsupported\",\"CRYSTAL_SPHERE\"]}"), "unsupported,crystalsphere");
+Check("pause_on empty string -> never", PauseOn("{\"pause_on\":\"\"}"), "");
+Check("pause_on blanks and dupes", PauseOn("{\"pause_on\":\" , neow,Neow ,\"}"), "neow");
+Check("pause_on null -> never", PauseOn("{\"pause_on\":null}"), "");
+Check("pause_on wrong type -> default", PauseOn("{\"pause_on\":3}"), "unsupported");
+Check("advisor_autoplay forces never",
+    AutoplayPause.Effective(AutoplayPause.Parse("unsupported, neow"), advisorAutoplay: true).Count.ToString(), "0");
+Check("attended keeps the list",
+    string.Join(",", AutoplayPause.Effective(AutoplayPause.Parse("unsupported"), advisorAutoplay: false)), "unsupported");
+
+IReadOnlyList<string> unsupportedOnly = AutoplayPause.Parse("unsupported");
+Check("hand_back pauses under unsupported",
+    AutoplayPause.Reason(unsupportedOnly, "card bundles have no trained policy", new[] { "card_bundle" }),
+    "not covered by the AI (card bundles have no trained policy)");
+Check("a real decision plays on",
+    AutoplayPause.Reason(unsupportedOnly, null, new[] { "event", "NEventRoom", "NEOW" }), null);
+Check("hand_back ignored without unsupported",
+    AutoplayPause.Reason(AutoplayPause.Parse("Neow"), "no head", new[] { "shop" }), null);
+Check("never pause",
+    AutoplayPause.Reason(Array.Empty<string>(), "no head", new[] { "NEOW" }), null);
+Check("a listed event id pauses",
+    AutoplayPause.Reason(AutoplayPause.Parse("unsupported, Neow"), null, new[] { "event", "NEventRoom", "NEOW" }),
+    "you asked to play this yourself (pause_on)");
+Check("a listed advice_for pauses",
+    AutoplayPause.Reason(AutoplayPause.Parse("shop"), null, new[] { "shop", "NMerchantRoom", null }),
+    "you asked to play this yourself (pause_on)");
+Check("an unlisted event plays on",
+    AutoplayPause.Reason(AutoplayPause.Parse("Neow"), null, new[] { "event", "NEventRoom", "CRYSTAL_SPHERE" }), null);
+Check("pretty event id", AutoplayPause.Pretty("CRYSTAL_SPHERE"), "Crystal Sphere");
+Check("pretty advice_for", AutoplayPause.Pretty("card_bundle"), "Card Bundle");
+Check("pretty nothing", AutoplayPause.Pretty(null), "This decision");
+Check("toast", AutoplayPause.Toast("Crystal Sphere", "not covered by the AI (x)"),
+    "Crystal Sphere: not covered by the AI (x) — your call. F7 to resume.");
+
+// EnemyTagText: the "#k" beside a same-named enemy, numbered as the advisor's
+// "→ Name #k" labels are (sts2-pycli/python/enemy_labels.py).
+string TagList(params string?[] names) =>
+    string.Join(",", EnemyTagText.Tags(names).Select(t => t ?? "-"));
+Check("tags: three rats", TagList("Rat", "Rat", "Rat"), "#1,#2,#3");
+Check("tags: unique names stay bare", TagList("Cultist", "Jaw Worm"), "-,-");
+Check("tags: mixed, ranked within each name", TagList("Louse", "Cultist", "Louse"), "#1,-,#2");
+Check("tags: a dead enemy (null) is not counted", TagList("Rat", null, "Rat"), "#1,-,#2");
+Check("tags: one live rat beside a dead one stays bare", TagList("Rat", null), "-,-");
+Check("tags: empty", TagList(), "");
 
 Console.WriteLine(failures == 0
     ? $"ModUnitTests: OK ({checks} checks)"

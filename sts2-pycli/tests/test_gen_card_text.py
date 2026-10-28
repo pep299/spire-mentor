@@ -144,3 +144,56 @@ def test_shipped_card_text_carries_keyword_lines():
     assert text["TREMBLE"]["description"].endswith("\nExhaust.")
     # A card that Exhausts OTHER cards must NOT claim the keyword itself.
     assert "Exhaust." not in text["BURNING_PACT"]["description"].splitlines()
+
+
+# --- per game build (GH #877) -------------------------------------------------
+
+
+def test_a_version_pins_its_own_build_last(tmp_path: Path):
+    """``--version v0.111.0`` describes a card with v0.111.0 text, keeps a card
+    only an older build has, and the default build still ignores v0.111.0."""
+    _write(
+        tmp_path / _ENGINE_WIKI_VERSION / "cards.json",
+        [
+            {"loc_key": "BASH", "title": "Bash", "description_plain": "old"},
+            {"loc_key": "SCARE", "title": "Scare"},
+        ],
+    )
+    _write(
+        tmp_path / "v0.111.0" / "cards.json",
+        [
+            {"loc_key": "BASH", "title": "Bash", "description_plain": "new"},
+            {"loc_key": "CACOPHONY", "title": "Cacophony"},
+        ],
+    )
+    out = tmp_path / "out.json"
+    gen_card_text.generate(tmp_path, out, "v0.111.0")
+    text = json.loads(out.read_text(encoding="utf-8"))
+    assert text["BASH"]["description"] == "new"
+    assert "CACOPHONY" in text and "SCARE" in text
+
+    gen_card_text.generate(tmp_path, out)
+    text = json.loads(out.read_text(encoding="utf-8"))
+    assert text["BASH"]["description"] == "old"
+    assert "CACOPHONY" not in text
+
+
+def test_out_path_for_keeps_the_default_build_at_todays_path():
+    assert gen_card_text.out_path_for(None) == _SHIPPED
+    assert gen_card_text.out_path_for("v0.111.0") == (
+        _SHIPPED.parent / "v0.111.0" / "card_text.json"
+    )
+
+
+_SHIPPED_V111 = gen_card_text.out_path_for("v0.111.0")
+
+
+@pytest.mark.skipif(
+    not (_WIKI_DATA / "v0.111.0").is_dir() or not _SHIPPED_V111.is_file(),
+    reason="no v0.111.0 wiki data / card text (public)",
+)
+def test_shipped_v0111_card_text_matches_a_fresh_regeneration(tmp_path: Path):
+    fresh = tmp_path / "card_text.json"
+    gen_card_text.generate(_WIKI_DATA, fresh, "v0.111.0")
+    assert fresh.read_bytes() == _SHIPPED_V111.read_bytes()
+    assert "CACOPHONY" in json.loads(_SHIPPED_V111.read_text(encoding="utf-8"))

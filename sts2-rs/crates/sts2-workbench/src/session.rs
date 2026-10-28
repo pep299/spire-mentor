@@ -212,6 +212,12 @@ pub struct Session {
     /// and RNG cursors are grafted — so `seek`, a reload and a named save must
     /// all rebuild it through the graft. `None` for every other run.
     pub(crate) imported: Option<crate::state_import::RunSnapshot>,
+    /// The hint search's rows, PV and sims for each combat node it scored, by
+    /// node id: the per-turn coach (`advisors::last_turn_grade`) grades a
+    /// move against the very numbers the player was shown instead of
+    /// searching the position again — when that search was at least as
+    /// strong as the coach's own. In memory only.
+    pub(crate) hint_scores: BTreeMap<u64, (Vec<Value>, Vec<Value>, u32)>,
 }
 
 impl Session {
@@ -252,6 +258,7 @@ impl Session {
             ppo: None,
             ppo_error: None,
             imported: None,
+            hint_scores: BTreeMap::new(),
         }
     }
 

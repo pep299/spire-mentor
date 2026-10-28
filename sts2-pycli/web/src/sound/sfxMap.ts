@@ -1,4 +1,5 @@
 import { assetUrl } from "../api";
+import { versionedPublicPath } from "../gameVersion";
 
 // `hits`/`damage` are omitted from sfx_map.json (never null) when the v0.107.1
 // decompilation didn't let Task 4 resolve them for that move — 181/257 moves
@@ -198,32 +199,48 @@ export function resolveMonsterAttack(
   return m.defaultAttack ?? attacks[0]?.event ?? fallback;
 }
 
-let cached: Promise<SfxMap> | null = null;
+/** One memoised fetch per map URL (one per game build). */
+const cached = new Map<string, Promise<SfxMap>>();
 
 /**
- * Fetch and memoise the generated map. Called on the first sound enable.
+ * Fetch and memoise the generated map of game build `gameVersion` (GH #877):
+ * the default build's is `/sfx_map.json`, every other build's
+ * `/<ver>/sfx_map.json` (built from that build's decompile, so its new
+ * cards / powers / monsters have their own cues). Called on the first sound
+ * enable. A build whose map is missing (the public snapshot ships only the
+ * default build's) falls back to the default build's map rather than going
+ * silent.
  *
- * A failed fetch is NOT memoised: `??=` only skips reassignment for null/
- * undefined, and a rejected promise is neither, so without clearing `cached`
- * here a single transient failure (page opened before assets settle, a
- * network blip) would wedge sound off for the rest of the session — every
- * later call would replay the same rejection instead of retrying.
+ * A failed fetch is NOT memoised: a rejected promise left in the cache would
+ * wedge sound off for the rest of the session (a page opened before assets
+ * settle, a network blip) — every later call would replay the same rejection
+ * instead of retrying.
  */
-export function loadSfxMap(fetchFn: typeof fetch = fetch): Promise<SfxMap> {
-  cached ??= fetchFn("/sfx_map.json")
+export function loadSfxMap(
+  fetchFn: typeof fetch = fetch,
+  gameVersion?: string | null,
+): Promise<SfxMap> {
+  const url = versionedPublicPath("sfx_map.json", gameVersion);
+  const hit = cached.get(url);
+  if (hit) return hit;
+  const fallback = url === "/sfx_map.json" ? null : () => loadSfxMap(fetchFn);
+  const p = fetchFn(url)
     .then((r) => {
       if (!r.ok) throw new Error(`sfx_map.json: ${r.status}`);
       return r.json() as Promise<SfxMap>;
     })
     .then((map) => {
       // Before any cue can be built, so `eventAssetUrl` is never called with
-      // a stale (or empty) rev while a map that carries one is in hand.
+      // a stale (or empty) rev while a map that carries one is in hand. The
+      // audio tree is shared by every build, so every map carries the same.
       audioRev = map.audioRev ?? "";
       return map;
     })
     .catch((err: unknown) => {
-      cached = null;
+      cached.delete(url);
+      if (fallback) return fallback();
       throw err;
     });
-  return cached;
+  cached.set(url, p);
+  return p;
 }

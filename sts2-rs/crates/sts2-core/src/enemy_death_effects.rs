@@ -77,6 +77,48 @@ pub fn registered_count() -> usize {
         .len()
 }
 
+// The tail of the kill: handlers that must run AFTER everything the killing
+// hit still does once its `AfterDeath` handler has fired. C#
+// `CreatureCmd.Damage` runs `Hook.AfterDamageGiven` for every result
+// (`CreatureCmd.cs:388-391`) and only then `Kill(killedCreatures)` (`:409`),
+// whose `KillWithoutCheckingWinCondition` runs `Hook.AfterDeath` (`:519`) and
+// then `creature.RemoveAllPowersAfterDeath()` (`:533`). The engine fires the
+// `AfterDeath` handler early, at the damage chokepoint's just-died witness,
+// so a step that C# orders after the killing hit's `AfterDamageGiven` has to
+// be split off and run by [`finish_kill`] once those hooks are done.
+static AFTER_KILL_REGISTRY: OnceLock<RwLock<BTreeMap<PowerKind, EnemyDeathFn>>> = OnceLock::new();
+
+fn after_kill_registry() -> &'static RwLock<BTreeMap<PowerKind, EnemyDeathFn>> {
+    AFTER_KILL_REGISTRY.get_or_init(|| RwLock::new(BTreeMap::new()))
+}
+
+/// Register the kill-tail handler for a death power whose [`EnemyDeathFn`]
+/// fired. Overwrites any previous entry. See [`finish_kill`].
+pub fn register_after_kill(kind: PowerKind, handler: EnemyDeathFn) {
+    after_kill_registry()
+        .write()
+        .expect("enemy-death after-kill registry poisoned")
+        .insert(kind, handler);
+}
+
+/// Run the kill-tail handler registered for `kind`, if any, on `owner`.
+///
+/// `kind` is the death power whose handler just fired for `owner`
+/// ([`fire_for_owner`]'s return value). The damage chokepoint calls this
+/// after the killing hit's `AfterDamageGiven` hooks and the relic `AfterDeath`
+/// bus; [`fire_pending`], which has no hit around it, calls it straight after
+/// the handler.
+pub fn finish_kill(state: &mut CombatState, owner: CreatureUid, kind: PowerKind) {
+    let handler = after_kill_registry()
+        .read()
+        .expect("enemy-death after-kill registry poisoned")
+        .get(&kind)
+        .copied();
+    if let Some(handler) = handler {
+        handler(state, owner);
+    }
+}
+
 /// Fire any pending on-death second-phase effects and report whether any
 /// fired.
 ///
@@ -128,6 +170,9 @@ pub fn fire_pending(state: &mut CombatState) -> bool {
         if let Some(handler) = lookup(kind) {
             handler(state, owner);
         }
+        // No killing hit is in flight here, so its `AfterDamageGiven` hooks
+        // are long done: the kill tail runs straight away.
+        finish_kill(state, owner, kind);
         // Mark fired: zero the triggering power so a later combat-end
         // check (after the reinforcements die) does not re-summon.
         //
@@ -196,8 +241,10 @@ pub fn has_pending(state: &CombatState) -> bool {
 /// power's `amount` is zeroed afterwards (the corpse stays dead — a
 /// respawn creates a *new* creature, it does not revive the owner), so
 /// the later combat-end [`fire_pending`] sweep never re-fires it. Returns
-/// `true` iff a handler fired.
-pub fn fire_for_owner(state: &mut CombatState, owner: CreatureUid) -> bool {
+/// the death power whose handler fired, `None` if none did; the caller hands
+/// it to [`finish_kill`] once the killing hit's `AfterDamageGiven` hooks have
+/// run.
+pub fn fire_for_owner(state: &mut CombatState, owner: CreatureUid) -> Option<PowerKind> {
     // Only fire for an actual corpse.
     let triple: Option<(NonZeroU32, PowerKind)> = state
         .creatures
@@ -216,9 +263,7 @@ pub fn fire_for_owner(state: &mut CombatState, owner: CreatureUid) -> bool {
                 }
             })
         });
-    let Some((power_id, kind)) = triple else {
-        return false;
-    };
+    let (power_id, kind) = triple?;
     if let Some(handler) = lookup(kind) {
         handler(state, owner);
     }
@@ -234,7 +279,7 @@ pub fn fire_for_owner(state: &mut CombatState, owner: CreatureUid) -> bool {
             p.amount = 0;
         }
     }
-    true
+    Some(kind)
 }
 
 #[cfg(test)]
@@ -279,7 +324,11 @@ mod tests {
     fn fire_for_owner_dispatches_and_zeroes_the_power() {
         register(PowerKind::Stock, marker_handler);
         let (mut state, uid) = corpse_with_power(PowerKind::Stock, 2);
-        assert!(fire_for_owner(&mut state, uid), "handler should fire");
+        assert_eq!(
+            fire_for_owner(&mut state, uid),
+            Some(PowerKind::Stock),
+            "handler should fire"
+        );
         let c = state.creatures.iter().find(|c| c.id == uid.0).unwrap();
         assert_eq!(c.block, 99, "registered handler ran");
         // The triggering power is zeroed so the combat-end sweep won't re-fire.
@@ -299,8 +348,9 @@ mod tests {
         if let Some(c) = state.creatures.iter_mut().find(|c| c.id == uid.0) {
             c.current_hp = 10;
         }
-        assert!(
-            !fire_for_owner(&mut state, uid),
+        assert_eq!(
+            fire_for_owner(&mut state, uid),
+            None,
             "no fire for a live creature"
         );
     }
@@ -328,8 +378,9 @@ mod tests {
     fn fire_for_owner_skips_zero_amount_power() {
         register(PowerKind::Stock, marker_handler);
         let (mut state, uid) = corpse_with_power(PowerKind::Stock, 0);
-        assert!(
-            !fire_for_owner(&mut state, uid),
+        assert_eq!(
+            fire_for_owner(&mut state, uid),
+            None,
             "amount-0 power is already spent"
         );
     }

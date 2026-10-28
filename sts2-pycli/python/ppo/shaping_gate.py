@@ -124,7 +124,7 @@ class Run:
 def load_runs(path: str, limit: int = 0) -> list[Run]:
     """Read a `ppo.probe --record --out` corpus (same format `ppo.shaping_fit` eats)."""
     runs: list[Run] = []
-    with open(path) as fh:
+    with open(path, encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
             if not line:
@@ -543,7 +543,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.json:
-        with open(args.json, "w") as fh:
+        with open(args.json, "w", encoding="utf-8") as fh:
             json.dump(
                 {
                     "corpus": args.corpus,

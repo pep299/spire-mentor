@@ -177,10 +177,13 @@ export function artSlugs(enemy: Enemy): string[] {
  *  fight's room exactly — and both producers already have them: SpireMentor sends
  *  `rng.run_seed` and `map.current`, and the engine knows its own seed and node. */
 export interface BgRoll {
-  /** `RunState.Rng.Seed` — the run's master seed as a uint, NOT the string seed. */
-  seed: number;
+  /** `RunState.Rng.Seed` — the run's master seed, NOT the string seed. A
+   *  `uint` on v0.107.1, a `ulong` on v0.111.0; a decimal string past 2^53. */
+  seed: number | string;
   row: number;
   col: number;
+  /** The run's game build; absent = v0.107.1. Decides the seed's width. */
+  gameVersion?: string | null;
 }
 
 /** The scene key for this fight: a boss's own room if one of them is on the
@@ -259,7 +262,7 @@ export function resolveScene(
   // Without a node (a workbench-native run, an old log) it falls back to the
   // hash below: stable per room+floor, so a fight still looks the same every
   // time you replay it and different from the one on the floor below.
-  const rng = bg ? backgroundRng(bg.seed, bg.row, bg.col) : null;
+  const rng = bg ? backgroundRng(bg.seed, bg.row, bg.col, bg.gameVersion) : null;
   const seed = `${sceneKey}|${act ?? 0}|${floor ?? 0}`;
   const roll = (variants: readonly RoomVariant[], slot: string): RoomVariant | undefined => {
     if (rng) return rng.nextItem(variants);

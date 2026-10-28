@@ -249,3 +249,74 @@ def test_step_deck_analysis_no_run(tmp_path):
     images.mkdir(parents=True)
     c = TestClient(create_app(images_root=images, logs_dir=tmp_path))
     assert c.get("/api/step/0/deck-analysis").status_code == 400
+
+
+# --- per game build (GH #877) -------------------------------------------------
+
+_V111 = "v0.111.0"
+_V111_DB = deck_analysis.data_dir_for(_V111) / "card_db.json"
+_needs_v111 = pytest.mark.skipif(not _V111_DB.is_file(), reason="no v0.111.0 card db (public)")
+
+
+def test_data_dir_for_keeps_the_default_build_at_todays_path():
+    assert deck_analysis.data_dir_for(None) == deck_analysis.data_dir_for("v0.107.1")
+    assert deck_analysis.data_dir_for(None).name == "data"
+    assert deck_analysis.data_dir_for(_V111).name == _V111
+    with pytest.raises(ValueError, match="unsupported game version"):
+        deck_analysis.data_dir_for("v9.9.9")
+
+
+@_needs_v111
+def test_v0111_tables_cover_each_other():
+    """The v0.111.0 tag overlay tags every card its db knows, and drops the
+    card it removed."""
+    db = deck_analysis.card_db_for(_V111)
+    tags = deck_analysis.card_tags_for(_V111)
+    assert set(db) == set(tags)
+    assert "CACOPHONY" in db and "SCARE" not in db
+    roles = {"frontload", "scaling", "both", "none"}
+    for t in tags.values():
+        assert t["damage_role"] in roles
+        assert t["block_role"] in roles
+        assert isinstance(t["velocity"], list)
+    # The default build is untouched by the overlay.
+    assert "CACOPHONY" not in deck_analysis._card_tags()
+    assert "SCARE" in deck_analysis._card_tags()
+
+
+@_needs_v111
+def test_a_v0111_card_is_known_only_to_its_build():
+    deck = [*IRONCLAD_STARTER, {"id": "OUTRAGE"}]
+    v111 = analyze_deck(deck, game_version=_V111)
+    base = analyze_deck(deck)
+    assert v111["damage"]["attack_count"] == base["damage"]["attack_count"] + 1
+    assert (
+        analyze_deck(IRONCLAD_STARTER, game_version=_V111)["scores"]
+        == analyze_deck(IRONCLAD_STARTER)["scores"]
+    )
+
+
+@_needs_v111
+def test_shipped_v0111_card_db_matches_a_fresh_build(tmp_path):
+    from workbench import build_card_db
+
+    out = tmp_path / "card_db.json"
+    build_card_db.main(["--version", _V111, "--out", str(out)])
+    assert out.read_bytes() == _V111_DB.read_bytes()
+
+
+def test_reward_preview_endpoint_takes_a_game_version(tmp_path):
+    c = _client(tmp_path, IRONCLAD_STARTER)
+    body = {
+        "deck": [{"id": x["id"]} for x in IRONCLAD_STARTER],
+        "candidates": [{"index": 0, "id": "OUTRAGE"}],
+    }
+    assert (
+        c.post("/api/deck/reward-preview", json={**body, "game_version": "v9"}).status_code == 400
+    )
+    r = c.post("/api/deck/reward-preview", json={**body, "game_version": _V111})
+    assert r.status_code == 200
+    if _V111_DB.is_file():
+        # Unknown to v0.107.1 (no stats, no damage), a real attack in v0.111.0.
+        base = c.post("/api/deck/reward-preview", json=body).json()
+        assert r.json()["candidates"][0]["delta"] != base["candidates"][0]["delta"]

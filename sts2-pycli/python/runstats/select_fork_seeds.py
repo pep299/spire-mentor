@@ -24,7 +24,7 @@ def main() -> None:
     ap.add_argument("--max", type=int, default=200)
     ap.add_argument("--out", default="seeds.txt")
     args = ap.parse_args()
-    with open(args.anatomy_json) as f:
+    with open(args.anatomy_json, encoding="utf-8") as f:
         rep = json.load(f)
     fatal = rep["fatal_by_seed"]  # seed -> {encounter, ...}
     # Exclude every pseudo-encounter bucket (angle-bracketed:
@@ -37,7 +37,7 @@ def main() -> None:
     budget = max(0, args.max - len(must))
     rng = random.Random(20260717)
     sample = must + (rest if len(rest) <= budget else rng.sample(rest, budget))
-    with open(args.out, "w") as f:
+    with open(args.out, "w", encoding="utf-8") as f:
         f.writelines(f"{s}\n" for s in sorted(sample, key=int))
     print(
         f"selected {len(sample)} seeds ({len(must)} from top-{args.top} killers "

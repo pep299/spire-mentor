@@ -140,7 +140,17 @@ public static class SimStateExtractor
         // enemy intent and reshuffle order it predicts is a guess, and a guess
         // that misses is not evidence of anything. Same block, same names, as
         // the headless runner emits; the mirror's restore path is shared.
-        msg["rng"] = RngState(runState);
+        msg["rng"] = RngState(runState, player);
+        // Co-op: the same block for a replay that starts AT this board
+        // (`coop_replay`), where the counters are exact. Kept off `rng`, which
+        // the advisor reads as "the world owns the dice": live, teammates draw
+        // from the shared streams between our decisions.
+        if (SimMp.IsMultiplayer)
+            msg["coop_rng"] = RngState(runState, player, multiplayer: true);
+        // Co-op (PROTOCOL.md s1): the advisor plans for the local player
+        // only; this says how many others share the fight and the map. Absent
+        // (every mod before the field) means 1.
+        msg["player_count"] = SimMp.PlayerCount;
         // Phase 1b stale-state guard (see SimProtocolHelpers.cs / PROTOCOL.md
         // "state_id"): every outbound message gets a fresh, monotonically
         // increasing id here so a handler can compare it against an optional
@@ -148,28 +158,22 @@ public static class SimStateExtractor
         msg["state_id"] = SimProtocolHelpers.NextStateId();
     }
 
-    /// <summary>
-    /// A stream's read count. v0.111.0 dropped the public <c>Rng.Counter</c>;
-    /// the count now lives only in the stream's serializable state
-    /// (decomp v0.111.0 <c>Core.Random/Rng.cs</c>
-    /// <c>ToSerializable()</c>, <c>SerializableRng.counter</c>).
-    /// </summary>
-#if GAME_V0111
-    private static int Cursor(Rng r) => r.ToSerializable().counter;
-#else
-    private static int Cursor(Rng r) => r.Counter;
-#endif
+    /// <summary>A stream's read count (SimGameApi: the member moved in v0.111.0).</summary>
+    private static int Cursor(Rng r) => SimGameApi.Counter(r);
 
     /// <summary>
     /// `{"run_seed": uint (v0.107.1) | ulong (v0.111.0), "counters": {stream: readCount}}` — the run's RNG
     /// position, keyed by the same snake_case stream names sts2-rs uses so the
-    /// two sides line up field-for-field. Empty when no run is active.
+    /// two sides line up field-for-field. Empty when no run is active, and in
+    /// co-op: teammates draw from the shared streams between our actions, and
+    /// each player's own streams are seeded by slot, so no lineage we could
+    /// send would hold.
     /// </summary>
-    private static Dictionary<string, object?> RngState(RunState? runState)
+    private static Dictionary<string, object?> RngState(RunState? runState, Player? player, bool multiplayer = false)
     {
         var d = new Dictionary<string, object?>();
         var rng = runState?.Rng;
-        if (rng == null) return d;
+        if (rng == null || SimMp.IsMultiplayer != multiplayer) return d;
         try
         {
             // Built LOCALLY and published as a pair. A partial block here is
@@ -180,7 +184,7 @@ public static class SimStateExtractor
             // counters rebuilds every stream at count 0. Seed-without-counters
             // therefore does not degrade to the pre-field behaviour, it
             // actively destroys RNG lineage that was previously intact.
-            var seed = rng.Seed;
+            object seed = SimGameApi.RunSeed(rng);
             var c = new Dictionary<string, object?>
             {
                 ["up_front"] = Cursor(rng.UpFront),
@@ -194,9 +198,11 @@ public static class SimStateExtractor
                 ["niche"] = Cursor(rng.Niche),
                 ["combat_orbs"] = Cursor(rng.CombatOrbGeneration),
             };
-            var prng = (runState?.Players != null && runState.Players.Count > 0)
-                ? runState.Players[0].PlayerRng
-                : null;
+            // Solo only (co-op returned above), so the local player is
+            // Players[0]: a caller without a player must not drop the three
+            // player streams and publish the partial block warned about above.
+            var prng = player?.PlayerRng ??
+                       (runState!.Players is { Count: > 0 } players ? players[0].PlayerRng : null);
             if (prng != null)
             {
                 c["rewards"] = Cursor(prng.Rewards);
@@ -254,6 +260,12 @@ public static class SimStateExtractor
                 ["relics"] = relics,
                 ["master_deck"] = deck,
                 ["ascension"] = runState?.AscensionLevel ?? 0,
+                // The two facts the run agent's boss win value keys on
+                // (sts2-mcts `boss_win_carry`, Rust `is_last_act` /
+                // `awaiting_second_boss`): the run's last boss values only
+                // winning. Null when there is no run to read.
+                ["is_last_act"] = runState == null ? null : (bool?)(runState.CurrentActIndex >= runState.Acts.Count - 1),
+                ["awaiting_second_boss"] = runState == null ? null : (bool?)SafeBool(() => SimAutoSlayer.IsFirstOfDoubleBoss(runState)),
                 ["character"] = player?.Character?.Id.Entry,
                 ["unlocked_epochs"] = SerializeUnlockedEpochs(runState, player),
             };
@@ -469,7 +481,52 @@ public static class SimStateExtractor
             data["valid_target_indices"] = ComputeValidTargetIndices(card);
         }
 
+        int? returnRound = ReturnIfPlayedRound(card);
+        if (returnRound != null)
+        {
+            data["combat_vars"] = new Dictionary<string, object?>
+            {
+                ["return_if_played_round"] = returnRound,
+            };
+        }
+
         return data;
+    }
+
+    /// <summary>
+    /// Bolas and Thrumming Hatchet come back to hand at a turn start when they
+    /// were played on the owner's previous turn (`BeforeHandDraw`:
+    /// `CardPlaysFinished.Any(e => e.HappenedLastPlayerTurn(Owner) &&
+    /// e.CardPlay.Card == this)`). The engine keeps that as the round of the
+    /// play (`return_if_played_round`), which it cannot see on a rebuilt
+    /// board: the round this card was played this turn or last, else null.
+    /// </summary>
+    private static int? ReturnIfPlayedRound(CardModel card)
+    {
+        string id = SafeCardId(card);
+        if (id != "BOLAS" && id != "THRUMMING_HATCHET")
+            return null;
+        try
+        {
+            CombatState? state = CombatManager.Instance?.DebugOnlyGetState();
+            CombatHistory? history = CombatManager.Instance?.History;
+            if (state == null || history == null)
+                return null;
+            foreach (CardPlayFinishedEntry e in history.CardPlaysFinished)
+            {
+                if (!ReferenceEquals(e.CardPlay?.Card, card))
+                    continue;
+                if (e.HappenedThisTurn(state))
+                    return state.RoundNumber;
+                if (card.Owner != null && e.HappenedLastPlayerTurn(card.Owner))
+                    return state.RoundNumber - 1;
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Log($"[SimStateExtractor] Could not read {id}'s last play: {ex.Message}");
+        }
+        return null;
     }
 
     private static List<int> ComputeValidTargetIndices(CardModel card)
@@ -719,6 +776,11 @@ public static class SimStateExtractor
     private static readonly System.Reflection.FieldInfo? PermafrostLatch =
         LatchField("Permafrost", "_activatedThisCombat");
 
+    // First-HP-loss-this-combat draw 3 (a co-op replay drew it again on the
+    // next hit). Same allowlist entry as RunSimulator's.
+    private static readonly System.Reflection.FieldInfo? CentennialPuzzleLatch =
+        LatchField("CentennialPuzzle", "_usedThisCombat");
+
     private static System.Reflection.FieldInfo? LatchField(string typeName, string fieldName)
     {
         try
@@ -742,6 +804,7 @@ public static class SimStateExtractor
                 "VAMBRACE" => VambraceLatch,
                 "RUINED_HELMET" => RuinedHelmetLatch,
                 "PERMAFROST" => PermafrostLatch,
+                "CENTENNIAL_PUZZLE" => CentennialPuzzleLatch,
                 _ => null,
             };
             if (latch == null) return null;
@@ -757,7 +820,7 @@ public static class SimStateExtractor
     /// bespoke [SavedProperty] counter fields (PenNib.AttacksPlayed,
     /// Girya.TimesLifted, etc -- see phase1-decomp.md section 4). This
     /// covers every relic with a visible counter, not just a hardcoded list --
-    /// plus the two counter-less once-per-combat latches, see
+    /// plus the counter-less once-per-combat latches, see
     /// <see cref="SafeRelicCounter"/>.
     /// </summary>
     public static Dictionary<string, object?> SerializeRelic(RelicModel relic)
@@ -992,6 +1055,10 @@ public static class SimStateExtractor
         var data = new Dictionary<string, object?>
         {
             ["id"] = SafeCreatureId(creature),
+            // The creature's id within this combat: what the combat log's rows
+            // name it by (`uid`), so a replay can find a target C# has since
+            // dropped from its enemy list.
+            ["combat_id"] = creature.CombatId,
             ["name"] = SafeString(() => creature.Name) ?? "UNKNOWN",
             ["side"] = creature.Side.ToString(),
             ["is_player"] = creature.IsPlayer,

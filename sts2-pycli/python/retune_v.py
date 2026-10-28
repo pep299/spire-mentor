@@ -71,7 +71,7 @@ FEATURE_TO_TOML: dict[str, tuple[str | None, str]] = {
 
 def load_labels(path: Path) -> dict[tuple, list[dict]]:
     by_decision: dict[tuple, list[dict]] = defaultdict(list)
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -174,7 +174,7 @@ def write_candidate_toml(
         if name in FEATURE_TO_TOML:
             updates[FEATURE_TO_TOML[name]] = float(val)
 
-    lines = weights_path.read_text().splitlines(keepends=True)
+    lines = weights_path.read_text(encoding="utf-8").splitlines(keepends=True)
     section: str | None = None
     out_lines = []
     for line in lines:
@@ -189,7 +189,7 @@ def write_candidate_toml(
                 # 0.0 as the integer `0`).
                 line = f"{key} = {float(f'{updates[section, key]:.6g}')!r}\n"
         out_lines.append(line)
-    out_path.write_text("".join(out_lines))
+    out_path.write_text("".join(out_lines), encoding="utf-8")
 
 
 def main(argv: list[str] | None = None) -> None:

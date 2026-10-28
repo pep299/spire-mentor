@@ -15,7 +15,7 @@ def bucket_key(row: dict[str, Any]) -> str:
 
 
 def write_rows(path: Path, rows: list[dict[str, Any]]) -> None:
-    with path.open("a") as f:
+    with path.open("a", encoding="utf-8") as f:
         for r in rows:
             f.write(json.dumps(r, separators=(",", ":")) + "\n")
 

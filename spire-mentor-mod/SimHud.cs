@@ -51,7 +51,9 @@ using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.AutoSlay.Helpers;
 using MegaCrit.Sts2.Core.Nodes.Cards;
+using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Nodes.Combat;
+using MegaCrit.Sts2.Core.Nodes.Rooms;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using MegaCrit.Sts2.Core.Nodes.Screens.Map;
 
@@ -133,6 +135,22 @@ internal sealed class SimAdvice
     public readonly List<SimAdviceOption> Options = new();
     public readonly List<string> Pv = new();
 
+    /// <summary>
+    /// `advice.hand_back`: the advisor's own word that this answer is not
+    /// really a decision (unranked, a borrowed head, an error), as a short
+    /// player-facing reason. F7 stops on it under `pause_on: "unsupported"`
+    /// (GH #874). Null on a real recommendation and on older advisors.
+    /// </summary>
+    public string? HandBack;
+
+    /// <summary>
+    /// `advice.wait_for_ally.max_ms` (co-op): a teammate who has not ended
+    /// their turn holds a card that would change this move (Vulnerable before
+    /// our attack, Weak or block before our block), so autoplay holds the
+    /// move up to this long. 0 on a normal reply and on older advisors.
+    /// </summary>
+    public int WaitForAllyMs;
+
     /// <summary>Projected route through the act (map advice only).</summary>
     public readonly List<SimPathNode> Path = new();
 
@@ -163,6 +181,11 @@ internal sealed class SimAdvice
         advice.Note = ReadString(el, "note");
         advice.PWin = ReadDouble(el, "p_win");
         advice.LowConfidence = ReadBool(el, "low_confidence") ?? false;
+        advice.HandBack = ReadString(el, "hand_back");
+        if (el.TryGetProperty("wait_for_ally", out JsonElement waitEl) && waitEl.ValueKind == JsonValueKind.Object)
+        {
+            advice.WaitForAllyMs = Math.Max(0, ReadInt(waitEl, "max_ms") ?? 0);
+        }
 
         if (el.TryGetProperty("best", out JsonElement bestEl) && bestEl.ValueKind == JsonValueKind.Object)
         {
@@ -369,6 +392,7 @@ internal sealed class SimHud
     private PanelContainer? _advicePanel;
     private VBoxContainer? _adviceRows;
     private readonly List<CardLabelAnchor> _cardLabels = new();
+    private readonly Dictionary<Creature, Label> _enemyTags = new();
     private readonly List<MapMarkerAnchor> _mapMarkers = new();
     private readonly List<Control> _routePoints = new();
     private Line2D? _routeLine;
@@ -1463,6 +1487,153 @@ internal sealed class SimHud
     }
 
     // ------------------------------------------------------------------
+    // Enemy tags: "#2" beside the health bar of each same-named enemy
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// Keep a "#k" tag beside every enemy whose name it shares with another,
+    /// numbered exactly as the advisor numbers its "→ Name #k" targets
+    /// (`EnemyTagText`). Independent of advice: the tag is what tells the
+    /// player which rat a label means, so it stays up while the HUD is.
+    /// Rebuilt every tick because enemies spawn, die and walk mid-fight.
+    /// </summary>
+    private void RepositionEnemyTags()
+    {
+        try
+        {
+            NCombatRoom? room = NCombatRoom.Instance;
+            IReadOnlyList<Creature>? enemies =
+                CombatManager.Instance?.IsInProgress == true &&
+                room != null && GodotObject.IsInstanceValid(room)
+                    ? CombatManager.Instance.DebugOnlyGetState()?.Enemies
+                    : null;
+            if (enemies == null || enemies.Count < 2)
+            {
+                ClearEnemyTags();
+                return;
+            }
+
+            var names = new List<string?>(enemies.Count);
+            foreach (Creature e in enemies)
+            {
+                string? name = null;
+                try { name = e.IsAlive ? e.Name ?? "?" : null; } catch (Exception) { name = "?"; }
+                names.Add(name);
+            }
+            string?[] tags = EnemyTagText.Tags(names);
+
+            var live = new HashSet<Creature>();
+            for (int i = 0; i < enemies.Count; i++)
+            {
+                Creature enemy = enemies[i];
+                Rect2? bar = null;
+                if (tags[i] != null)
+                {
+                    // Per enemy, so one creature whose node lookup throws
+                    // loses only its own tag, not every enemy's.
+                    try { bar = HealthBarRect(room!.GetCreatureNode(enemy)); }
+                    catch (Exception ex) { LogEnemyTagFailure(ex); }
+                }
+                if (bar == null)
+                {
+                    continue;
+                }
+                live.Add(enemy);
+                if (!_enemyTags.TryGetValue(enemy, out Label? label) || !GodotObject.IsInstanceValid(label))
+                {
+                    label = SmallLabel("", new Color(1f, 0.85f, 0.3f));
+                    label.Name = "SpireMentorEnemyTag";
+                    label.AddThemeColorOverride("font_outline_color", Colors.Black);
+                    label.AddThemeConstantOverride("outline_size", 6);
+                    label.AddThemeFontSizeOverride("font_size", 22);
+                    label.HorizontalAlignment = HorizontalAlignment.Right;
+                    label.VerticalAlignment = VerticalAlignment.Center;
+                    _layer!.AddChildSafely(label);
+                    _enemyTags[enemy] = label;
+                }
+                label.Text = tags[i];
+                label.Size = new Vector2(44f, bar.Value.Size.Y + 8f);
+                label.GlobalPosition = new Vector2(
+                    bar.Value.Position.X - label.Size.X - 6f,
+                    bar.Value.Position.Y + bar.Value.Size.Y / 2f - label.Size.Y / 2f);
+                label.Visible = HudVisible;
+            }
+
+            foreach (Creature gone in new List<Creature>(_enemyTags.Keys))
+            {
+                if (!live.Contains(gone))
+                {
+                    FreeEnemyTag(gone);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            LogEnemyTagFailure(ex);
+        }
+    }
+
+    private string? _lastEnemyTagFailure;
+
+    /// <summary>
+    /// <see cref="RepositionEnemyTags"/> runs on the 0.05 s ticker, so a
+    /// failure that persists would log 20 lines a second for the whole fight.
+    /// Log each distinct message once, until a different one replaces it.
+    /// </summary>
+    private void LogEnemyTagFailure(Exception ex)
+    {
+        if (ex.Message == _lastEnemyTagFailure)
+        {
+            return;
+        }
+        _lastEnemyTagFailure = ex.Message;
+        Logger.Log($"[SimHud] Enemy-tag reposition failed: {ex.Message}");
+    }
+
+    /// <summary>
+    /// The enemy's drawn health bar in viewport pixels, or null when it has
+    /// none on screen (dying, hidden bar, not yet laid out). Same transform
+    /// trick as <see cref="CardFaceRect"/>: the room sits under a canvas
+    /// transform this layer does not share.
+    /// </summary>
+    private static Rect2? HealthBarRect(NCreature? node)
+    {
+        if (node == null || !GodotObject.IsInstanceValid(node) || !node.IsVisibleInTree())
+        {
+            return null;
+        }
+        // %HealthBar on the creature is its state display; the bar itself is
+        // that display's own %HealthBar.
+        Control? display = node.GetNodeOrNull<Control>("%HealthBar");
+        Control? bar = display?.GetNodeOrNull<Control>("%HealthBar") ?? display;
+        if (bar == null || !GodotObject.IsInstanceValid(bar) || !bar.IsVisibleInTree() ||
+            bar.Size.X <= 0f || bar.Size.Y <= 0f)
+        {
+            return null;
+        }
+        Transform2D xf = bar.GetGlobalTransformWithCanvas();
+        Vector2 a = xf * Vector2.Zero;
+        Vector2 d = xf * bar.Size;
+        return new Rect2(Math.Min(a.X, d.X), Math.Min(a.Y, d.Y), Math.Abs(d.X - a.X), Math.Abs(d.Y - a.Y));
+    }
+
+    private void FreeEnemyTag(Creature enemy)
+    {
+        if (_enemyTags.Remove(enemy, out Label? label) && GodotObject.IsInstanceValid(label))
+        {
+            label.QueueFreeSafely();
+        }
+    }
+
+    private void ClearEnemyTags()
+    {
+        foreach (Creature enemy in new List<Creature>(_enemyTags.Keys))
+        {
+            FreeEnemyTag(enemy);
+        }
+    }
+
+    // ------------------------------------------------------------------
     // Layer / panel construction
     // ------------------------------------------------------------------
 
@@ -1519,6 +1690,7 @@ internal sealed class SimHud
                 RepositionPanels();
                 RepositionCardLabels();
                 RepositionMapMarkers();
+                RepositionEnemyTags();
             }));
             layer.AddChild(ticker);
 

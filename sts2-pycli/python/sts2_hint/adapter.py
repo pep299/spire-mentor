@@ -850,6 +850,19 @@ def _translate_card(raw: dict[str, Any], path: str, *, hand: bool = False) -> di
     if isinstance(rider, str) and rider:
         spec["tinker_time_rider"] = rider
 
+    # Per-instance combat scratch the producer disclosed (the engine's
+    # `VarKey` wire names, e.g. Bolas / Thrumming Hatchet's
+    # `return_if_played_round`). Integers only; absent otherwise.
+    combat_vars = raw.get("combat_vars")
+    if isinstance(combat_vars, dict):
+        clean = {
+            k: v
+            for k, v in combat_vars.items()
+            if isinstance(k, str) and isinstance(v, int) and not isinstance(v, bool)
+        }
+        if clean:
+            spec["combat_vars"] = clean
+
     return spec
 
 
@@ -1189,6 +1202,14 @@ def translate(
     gold = player_raw.get("gold")
     if isinstance(gold, int) and not isinstance(gold, bool):
         player["gold"] = gold
+    # Belt CAPACITY (C# ``Player.MaxPotionCount``). ``potions`` above is not
+    # the slot count on every producer (the headless ``PlayerSummary`` drops
+    # empty slots), so the capacity rides in its own key: the headless
+    # ``potion_slots`` (RunSimulator.cs PlayerSummary) or the live bridge's
+    # ``run_state.potion_slot_count`` via ``realgame_adapter``. GH #893.
+    potion_slots = player_raw.get("potion_slots")
+    if isinstance(potion_slots, int) and not isinstance(potion_slots, bool) and potion_slots > 0:
+        player["potion_slots"] = potion_slots
     if orbs is not None:
         player["orbs"] = orbs
         if orb_slots is not None:
@@ -1248,6 +1269,66 @@ def translate(
     game_version = _wire_game_version(state)
     if game_version is not None:
         out["game_version"] = game_version
+    # Co-op teammates (``$.allies``): omitted when solo, so a single-player
+    # board yields the wire it always did.
+    allies = state.get("allies")
+    if allies:
+        out["allies"] = [_translate_ally(a, i) for i, a in enumerate(allies)]
+    return out
+
+
+_CLASS_OF_CHARACTER = {
+    "Ironclad": "ironclad",
+    "Silent": "silent",
+    "Defect": "defect",
+    "Necrobinder": "necrobinder",
+    "Regent": "regent",
+}
+
+
+def _translate_ally(ally: dict[str, Any], index: int) -> dict[str, Any]:
+    """One ``$.allies`` entry: HP and block, plus -- when the teammate came
+    with a hand -- the whole seat the engine plays out (``sts2_core::coop``)."""
+    out: dict[str, Any] = {
+        "hp": int(ally["hp"]),
+        "max_hp": int(ally["max_hp"]),
+        "block": int(ally["block"]),
+    }
+    if "hand" not in ally:
+        return out
+    path = f"$.allies[{index}]"
+
+    def _hand_translator(raw: dict[str, Any], card_path: str) -> dict[str, Any]:
+        return _translate_card(raw, card_path, hand=True)
+
+    cls = _CLASS_OF_CHARACTER.get(ally.get("character") or "")
+    if cls is not None:
+        out["class"] = cls
+    out["energy"] = int(ally.get("energy") or 0)
+    out["max_energy"] = int(ally.get("max_energy") or 0)
+    out["powers"] = _soft_translate_list(
+        ally.get("powers") or [], _translate_power, f"{path}.powers"
+    )
+    out["hand"] = _soft_translate_list(ally["hand"], _hand_translator, f"{path}.hand")
+    out["ended_turn"] = bool(ally.get("ended_turn"))
+    # The rest of the seat, when the producer sent it (a recorded fight to be
+    # replayed as a whole co-op fight); omitted otherwise.
+    for key in ("draw_pile", "discard_pile", "exhaust_pile", "play_pile"):
+        if isinstance(ally.get(key), list):
+            out[key] = _soft_translate_list(ally[key], _translate_card, f"{path}.{key}")
+    if isinstance(ally.get("relics"), list):
+        out["relics"] = [
+            _translate_relic(r, f"{path}.relics[{i}]") for i, r in enumerate(ally["relics"])
+        ]
+    if isinstance(ally.get("stars"), int):
+        out["stars"] = ally["stars"]
+    if isinstance(ally.get("potions"), list):
+        out["potions"] = [
+            _translate_potion(p.get("name"), f"{path}.potions[{i}]")
+            if isinstance(p, dict)
+            else None
+            for i, p in enumerate(ally["potions"])
+        ]
     return out
 
 

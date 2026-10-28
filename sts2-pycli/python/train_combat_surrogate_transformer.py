@@ -70,7 +70,7 @@ VAL_SEED_MOD = 5  # seed % 5 == 0 -> holdout; split by SEED, never by row
 
 def load_rows(path: str, limit: int = 0, source_tag: str = "") -> list[dict]:
     rows = []
-    with open(path) as fh:
+    with open(path, encoding="utf-8") as fh:
         for line in fh:
             r = json.loads(line)
             if source_tag:
@@ -272,7 +272,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     schema_path = args.schema or f"{args.labels}.schema.json"
-    schema = json.load(open(schema_path))
+    schema = json.load(open(schema_path, encoding="utf-8"))
     n_cards, n_relics, n_enc = schema["n_cards"], schema["n_relics"], schema["n_encounters"]
 
     rows = load_rows(args.labels, args.limit, source_tag="primary")
@@ -446,7 +446,7 @@ def main(argv: list[str] | None = None) -> int:
     print("is the more informative of the two.")
 
     if args.out:
-        with open(args.out, "w") as f:
+        with open(args.out, "w", encoding="utf-8") as f:
             json.dump(
                 {
                     "labels": args.labels,

@@ -8,12 +8,14 @@ pub(crate) fn play_knockout_blow(
     target: Option<CreatureUid>,
 ) -> EffectResult {
     let t = target.expect("KnockoutBlow: Enemy-targeted");
-    let _ = deal_damage_player_to_enemy(state, t, current_damage(state));
-    let dead = state
-        .creatures
-        .iter()
-        .any(|c| c.id == t.0 && c.current_hp <= 0);
-    if dead {
+    // C# `KnockoutBlow.cs:36-38`: `Results…Any(r => r.WasTargetKilled)` — THIS
+    // hit took a living target to 0 (`Creature.cs:447`). Not "dead afterwards":
+    // a replay onto a corpse kills nothing, and a target revived inside the hit
+    // (the pressurized Waterfall Giant) was still killed.
+    let killed =
+        sts2_core::card_effects::deal_damage_player_to_enemy_full(state, t, current_damage(state))
+            .was_target_killed;
+    if killed {
         gain_stars(state, 5);
     }
     EffectResult::Resolved

@@ -81,6 +81,10 @@ pub const POVERTY_ASCENSION_GOLD_MULTIPLIER: f64 = 0.75;
 /// discriminant 2) —
 /// `../sts2-wiki/decompiled/v0.103.2/MegaCrit.Sts2.Core.Entities.Ascension/AscensionLevel.cs`.
 pub const WEARY_TRAVELER_ASCENSION_LEVEL: u8 = 2;
+
+/// C# `AscensionLevel.TightBelt` (4): the run starts with one potion slot
+/// fewer (`AscensionManager.ApplyEffectsTo` → `SubtractFromMaxPotionCount(1)`).
+pub const TIGHT_BELT_ASCENSION_LEVEL: u8 = 4;
 /// Fraction of the missing HP recovered by an Ancient-event entry heal
 /// at ascension >= 2. Mirrors C# `amount *= 0.8m` in
 /// `AncientEventModel.BeforeEventStarted`.
@@ -277,6 +281,14 @@ pub struct CardReward {
     /// [`Self::from_cards`] (a v0.111.0 caller whose slate went through the
     /// `modify_card_reward_options_late` listeners, e.g. SilverCrucible).
     pub upgraded: Vec<bool>,
+    /// Per-option enchantments of a pre-resolved reward, parallel to
+    /// [`Self::options`], or empty for "none enchanted". Set only by
+    /// [`Self::from_cards`]: a slate that went through the
+    /// `modify_card_reward_options_late` listeners can carry a relic stamp
+    /// (FresnelLens's Nimble, Glitter's Glam, WingCharm's Swift,
+    /// SilkenTress's Glam), and C# adds that very card to the deck on pick
+    /// (`CardReward.OnSelect` → `CardPileCmd.Add(result.Card, Deck)`). GH #806.
+    pub enchantments: Vec<crate::cards::CardEnchantments>,
 }
 
 impl CardReward {
@@ -286,6 +298,7 @@ impl CardReward {
         Self {
             options: Vec::new(),
             upgraded: Vec::new(),
+            enchantments: Vec::new(),
         }
     }
 
@@ -295,16 +308,18 @@ impl CardReward {
         Self {
             options,
             upgraded: Vec::new(),
+            enchantments: Vec::new(),
         }
     }
 
     /// Construct a pre-resolved `CardReward` from offered card instances,
-    /// keeping each one's upgrade flag.
+    /// keeping each one's upgrade flag and enchantments.
     #[must_use]
     pub fn from_cards(cards: &[Card]) -> Self {
         Self {
             options: cards.iter().map(|c| c.card_id).collect(),
             upgraded: cards.iter().map(|c| c.upgraded).collect(),
+            enchantments: cards.iter().map(|c| c.enchantments).collect(),
         }
     }
 }
@@ -1497,16 +1512,16 @@ pub struct RunState {
     /// Gold to spend AFTER the current batch of interactive
     /// [`Self::pending_deck_removals`] fully drains — the "remove, THEN pay"
     /// twin of [`Self::pending_post_removal_hp_loss`]. Set only by the
-    /// v0.111.0 ZenWeaver removal options (`RemoveCardsAndProceed`: remove,
-    /// then `PlayerCmd.LoseGold`); always 0 in a v0.107.1 run. Drained by
+    /// ZenWeaver removal options (`RemoveCardsAndProceed`: remove, then
+    /// `PlayerCmd.LoseGold`; same C# in both builds). Drained by
     /// [`crate::run_manager::RunManager::do_remove_deck_card_at`].
     pub pending_post_removal_gold_loss: i32,
 
     /// HP damage to apply AFTER the current batch of interactive
     /// [`Self::pending_deck_upgrades`] fully drains — the upgrade twin of
-    /// [`Self::pending_post_removal_hp_loss`]. Set only by the v0.111.0
-    /// SpiritGrafter Rejection (`FromDeckForUpgrade`, then
-    /// `CreatureCmd.Damage(10)`); always 0 in a v0.107.1 run. Drained by
+    /// [`Self::pending_post_removal_hp_loss`]. Set only by the SpiritGrafter
+    /// Rejection (`FromDeckForUpgrade`, then `CreatureCmd.Damage(10)`; same
+    /// C# in both builds). Drained by
     /// [`crate::run_manager::RunManager::do_upgrade_deck_card_at`].
     pub pending_post_upgrade_hp_loss: i32,
 
@@ -3022,7 +3037,7 @@ impl RunState {
         let removable = crate::lookup_card_removable();
         self.master_deck
             .iter()
-            .filter(|c| removable.map_or(true, |f| f(c)))
+            .filter(|c| removable.is_none_or(|f| f(c)))
             .count()
     }
 
@@ -3054,7 +3069,7 @@ impl RunState {
     pub fn removal_offer_order(&self) -> Vec<usize> {
         let removable = crate::lookup_card_removable();
         let mut order: Vec<usize> = (0..self.master_deck.len())
-            .filter(|&i| removable.map_or(true, |f| f(&self.master_deck[i])))
+            .filter(|&i| removable.is_none_or(|f| f(&self.master_deck[i])))
             .collect();
         // Stable sort: Curse → key 0 (front, deck order preserved), else key 1
         // (deck order). `sort_by_key` is stable, matching C#'s OrderBy.
@@ -3082,6 +3097,45 @@ impl RunState {
             .iter()
             .filter(|c| c.is_upgradable())
             .map(|c| c.card_id)
+            .collect()
+    }
+
+    /// Master-deck position behind each option of the open run-level
+    /// [`crate::ChoiceKind::CardSelect`] prompt, index-aligned with its
+    /// `options`; empty when none is open.
+    ///
+    /// The rest-site Smith prompt is built 1:1 from
+    /// [`Self::upgradable_deck_cards`] in deck order and resolved by position
+    /// (`RunManager::do_smith_card_at`), so option `k` is the `k`-th
+    /// upgradable deck card. An option whose id does not match that card
+    /// (a prompt built some other way) gets `None` rather than a guess. Lets
+    /// a host read per-instance state (the enchantment, GH #947) that the
+    /// option itself, carrying only `(id, upgraded)`, has lost.
+    #[must_use]
+    pub fn card_select_option_deck_indices(&self) -> Vec<Option<usize>> {
+        let Some(pc) = self
+            .pending_choice
+            .as_ref()
+            .filter(|pc| pc.kind == crate::ChoiceKind::CardSelect)
+        else {
+            return Vec::new();
+        };
+        let upgradable: Vec<usize> = self
+            .master_deck
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.is_upgradable())
+            .map(|(i, _)| i)
+            .collect();
+        pc.options
+            .iter()
+            .enumerate()
+            .map(|(k, opt)| {
+                upgradable
+                    .get(k)
+                    .copied()
+                    .filter(|&i| self.master_deck[i].card_id == opt.card_id)
+            })
             .collect()
     }
 
@@ -3404,12 +3458,11 @@ impl RunState {
     /// [decompiled C# omitted — see the cited path]
     ///
     /// (decomp `Models.Relics/SilverCrucible.cs:104`, `SilkenTress.cs:53`). The
-    /// guard is in v0.107.1 too, but that arm keeps the old behaviour (every
-    /// slate is treated as a card reward) so v0.107.1 output stays
-    /// bit-identical; the fix is tracked for that build in #806.
+    /// guard and the bare `CreateForReward` callers (`BrainLeech.cs:66`,
+    /// `RoomFullOfCheese.cs:41`) are the same in v0.107.1, so both builds
+    /// honour it (GH #806).
     pub fn offer_card_slate(&mut self, options: Vec<Card>, is_card_reward: bool) -> Vec<Card> {
-        let not_reward = !is_card_reward && self.game_version >= crate::GameVersion::V0_111_0;
-        self.card_slate_not_card_reward = not_reward;
+        self.card_slate_not_card_reward = !is_card_reward;
         let options = self.offer_card_reward(options);
         self.card_slate_not_card_reward = false;
         options
@@ -4091,7 +4144,7 @@ impl RunState {
         let rank = crate::lookup_card_rarity_rank();
         let tezcatara_basic_strike = self.master_deck.iter().any(|c| {
             c.tags.contains(CardTag::Strike)
-                && rank.map_or(true, |f| f(c.card_id, self.game_version) == 1)
+                && rank.is_none_or(|f| f(c.card_id, self.game_version) == 1)
         });
         crate::boss_ancient_offers::AncientConditions {
             act_index: act_index_0based,
@@ -4331,21 +4384,45 @@ impl RunState {
     /// does: `Hook.ModifyCardBeingAddedToDeck` first (the eggs' upgrade), then
     /// the append, then the add listeners C# reaches through
     /// `AfterCardChangedPiles` (LuckyFysh's gold, DarkstonePeriapt, BingBong),
-    /// here the `on_card_added_to_deck` channel. Used by v0.111.0 arms only;
-    /// many v0.107.1 run-side adds still push straight onto the deck (#806).
+    /// here the `on_card_added_to_deck` channel. Both builds run the same C#;
+    /// every run-side deck add (event grants, relic pickups, curses, the
+    /// deferred post-removal / post-pick cards) goes through here (GH #806).
+    ///
+    /// A deck TRANSFORM uses this too, one replacement at a time: C#
+    /// `CardCmd.Transform` runs `Hook.ModifyCardBeingAddedToDeck` on the
+    /// replacement, appends it, then `Hook.AfterCardChangedPiles` before the
+    /// next one (`CardCmd.cs:427-447`).
     pub fn add_card_to_deck_with_hooks(
         &mut self,
-        mut card: Card,
+        card: Card,
         source: crate::relic_effects::AddSource,
     ) {
-        self.modify_card_being_added_to_deck(&mut card);
-        let ctx = crate::run_effects::CardAddedRunCtx {
-            card_id: card.card_id,
-            card_type: card.card_type,
-            source,
-        };
-        self.master_deck.push(card);
-        let _ = crate::run_effects::dispatch_on_card_added_to_deck(self, &ctx);
+        self.add_cards_to_deck_with_hooks([card], source);
+    }
+
+    /// Add several cards in ONE C# `CardPileCmd.Add(cards, PileType.Deck)`:
+    /// `Hook.ModifyCardBeingAddedToDeck` + append for each card in order
+    /// (`CardPileCmd.cs:497-515`), and only then `Hook.AfterCardChangedPiles`
+    /// for each (`CardPileCmd.cs:636`). The split matters to BingBong, whose
+    /// clone lands after the whole batch.
+    pub fn add_cards_to_deck_with_hooks(
+        &mut self,
+        cards: impl IntoIterator<Item = Card>,
+        source: crate::relic_effects::AddSource,
+    ) {
+        let mut added: Vec<crate::run_effects::CardAddedRunCtx> = Vec::new();
+        for mut card in cards {
+            self.modify_card_being_added_to_deck(&mut card);
+            added.push(crate::run_effects::CardAddedRunCtx {
+                card_id: card.card_id,
+                card_type: card.card_type,
+                source,
+            });
+            self.master_deck.push(card);
+        }
+        for ctx in &added {
+            let _ = crate::run_effects::dispatch_on_card_added_to_deck(self, ctx);
+        }
     }
 
     /// v0.111.0 Dowsing quest (GH #793): one `?` map node entered with the
@@ -4659,7 +4736,9 @@ impl RunState {
         let len = self.master_deck.len() as i32;
         let idx = self.rng.rewards.next_int_exclusive(0, len) as usize;
         let clone = self.master_deck[idx];
-        self.master_deck.push(clone);
+        // C# DollysMirror: `CardPileCmd.Add(CloneCard(card), Deck)`
+        // (`DollysMirror.cs:21-22`) — a deck add with the full hooks.
+        self.add_card_to_deck_with_hooks(clone, crate::relic_effects::AddSource::RelicGain);
         true
     }
 
@@ -5106,8 +5185,9 @@ impl RunState {
         // Append the resolved replacements at the deck tail. Python
         // re-emits the replacements at the deck tail too; pile order
         // is non-load-bearing for parity (combat shuffle randomizes).
+        // C# `CardCmd.Transform` hooks each Deck replacement (GH #806).
         for card in replacements.into_iter().take(take) {
-            self.master_deck.push(card);
+            self.add_card_to_deck_with_hooks(card, crate::relic_effects::AddSource::Other);
         }
         take
     }
@@ -5202,9 +5282,10 @@ impl RunState {
         for &(deck_idx, _) in pairs.iter().rev() {
             self.master_deck.remove(deck_idx);
         }
-        // Append replacements in ascending original-index order.
+        // Append replacements in ascending original-index order, each through
+        // the deck-add hooks as C# `CardCmd.Transform` does (GH #806).
         for (_, replacement) in pairs {
-            self.master_deck.push(replacement);
+            self.add_card_to_deck_with_hooks(replacement, crate::relic_effects::AddSource::Other);
         }
         transformed
     }
@@ -5339,15 +5420,15 @@ impl RunState {
         self.master_deck.drain(0..take).count()
     }
 
-    /// v0.111.0 `Guilty.AfterCombatEnd`: every Guilty in the deck counts the
+    /// `Guilty.AfterCombatEnd`: every Guilty in the deck counts the
     /// combat, and one that has seen [`GUILTY_MAX_COMBATS`] combats removes
     /// itself from the deck.
     ///
     /// [decompiled C# omitted — see the cited path]
     ///
-    /// (decomp `Models.Cards/Guilty.cs:46`; v0.107.1 has the same code, but the
-    /// v0.107.1 arm keeps its old behaviour (no removal) so that build's output
-    /// stays bit-identical.) The per-card `CombatsSeen` lives in the deck card's
+    /// (decomp `Models.Cards/Guilty.cs:46`, identical in v0.107.1 and v0.111.0,
+    /// so both builds run it: GH #806.) The per-card `CombatsSeen` lives in the
+    /// deck card's
     /// [`crate::cards::VarKey::Generic`] slot: a Guilty is never enchanted
     /// (it is an unplayable curse), so nothing else writes that slot. The only
     /// `BeforeCardRemoved` listener `RemoveFromDeck` fires is SpoilsMap's own
@@ -5369,7 +5450,7 @@ impl RunState {
     }
 }
 
-/// `Guilty.maxCombats` (v0.111.0 `Models.Cards/Guilty.cs:13`): the combats a
+/// `Guilty.maxCombats` (`Models.Cards/Guilty.cs:13`, both builds): the combats a
 /// Guilty stays in the deck before it removes itself.
 pub const GUILTY_MAX_COMBATS: i32 = 5;
 
@@ -8809,6 +8890,38 @@ mod tests {
         rs.master_deck.extend([anger, anger_up, strike]);
         let pool = rs.upgradable_deck_cards();
         assert_eq!(pool, vec![CardId::Anger, CardId::StrikeIronclad]);
+    }
+
+    /// GH #947: each Smith option names the k-th upgradable deck card, so an
+    /// upgraded copy ahead of it shifts the position; an option whose id does
+    /// not match its slot is left unplaced rather than guessed.
+    #[test]
+    fn card_select_option_deck_indices_skips_non_upgradable_cards() {
+        let opt = |card_id| crate::ChoiceOption {
+            card_id,
+            upgraded: false,
+            card_uid: None,
+            source_pile: None,
+        };
+        let mut rs = RunState::new();
+        assert!(rs.card_select_option_deck_indices().is_empty());
+        let mut anger_up = Card::pod_defaults();
+        anger_up.card_id = CardId::Anger;
+        anger_up.upgraded = true;
+        let mut anger = Card::pod_defaults();
+        anger.card_id = CardId::Anger;
+        let mut strike = Card::pod_defaults();
+        strike.card_id = CardId::StrikeIronclad;
+        rs.master_deck.extend([anger_up, anger, strike]);
+
+        let options: Vec<_> = rs.upgradable_deck_cards().into_iter().map(opt).collect();
+        assert!(rs.request_card_choice(crate::ChoiceKind::CardSelect, options, 1, 1, false));
+        assert_eq!(rs.card_select_option_deck_indices(), vec![Some(1), Some(2)]);
+
+        rs.pending_choice = None;
+        let options = vec![opt(CardId::StrikeIronclad)];
+        assert!(rs.request_card_choice(crate::ChoiceKind::CardSelect, options, 1, 1, false));
+        assert_eq!(rs.card_select_option_deck_indices(), vec![None]);
     }
 
     /// `offer_upgrade_cards_reward(count, None)` pushes a

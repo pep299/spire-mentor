@@ -112,11 +112,26 @@ def build_api_router(mgr: JobManager) -> APIRouter:
     # travels in the request, the engine validates it, the reply is what the
     # engine holds. See `simlab/position.py` for the schema.
 
+    def _game_version_or_400(raw: object) -> str | None:
+        """A request's ``game_version`` (GH #877): ``None`` for the default
+        build, else a supported build; anything else is a 400 naming them."""
+        from sts2_client import DEFAULT_GAME_VERSION, SUPPORTED_GAME_VERSIONS
+
+        if raw is None or raw == DEFAULT_GAME_VERSION:
+            return None
+        if raw not in SUPPORTED_GAME_VERSIONS:
+            raise HTTPException(
+                400,
+                f"unsupported game_version {raw!r} "
+                f"(supported: {', '.join(SUPPORTED_GAME_VERSIONS)})",
+            )
+        return str(raw)
+
     @router.get("/api/simlab/catalog")
-    def simlab_catalog() -> dict:
+    def simlab_catalog(game_version: str | None = None) -> dict:
         from simlab.catalog import catalog
 
-        return catalog()
+        return catalog(_game_version_or_400(game_version))
 
     def _position_or_422(fn, *args, **kwargs):
         from simlab.position import PositionError
@@ -151,6 +166,8 @@ def build_api_router(mgr: JobManager) -> APIRouter:
             relics=body.get("relics"),
             potions=body.get("potions"),
             deck=body.get("deck"),
+            # The workbench selector's build, like /api/live/start (GH #877).
+            game_version=_game_version_or_400(body.get("game_version")),
         )
         return {"position": built.position, "wire": built.wire, "notes": built.notes}
 
@@ -166,19 +183,25 @@ def build_api_router(mgr: JobManager) -> APIRouter:
     def position_moves(body: dict) -> dict:
         """Every legal first move and the position it leads to."""
         from simlab.catalog import name_of
-        from simlab.position import build_position, first_moves
+        from simlab.position import build_position, first_moves, position_game_version
 
-        built = _position_or_422(build_position, body.get("position") or {})
-        moves = _position_or_422(first_moves, built.wire, name_of=name_of)
+        pos = body.get("position") or {}
+        built = _position_or_422(build_position, pos)
+        version = _position_or_422(position_game_version, pos)
+        moves = _position_or_422(
+            first_moves, built.wire, name_of=lambda k, i: name_of(k, i, version)
+        )
         return {"moves": moves, "wire": built.wire}
 
     @router.post("/api/simlab/position/mcts")
     def position_mcts(body: dict) -> dict:
         """MCTS verdict per first move (the same search the workbench hint runs)."""
         from simlab.catalog import name_of
-        from simlab.position import build_position, mcts_eval
+        from simlab.position import build_position, mcts_eval, position_game_version
 
-        built = _position_or_422(build_position, body.get("position") or {})
+        pos = body.get("position") or {}
+        built = _position_or_422(build_position, pos)
+        version = _position_or_422(position_game_version, pos)
         sims = max(1, min(int(body.get("sims") or 1000), 20000))
         return _position_or_422(
             mcts_eval,
@@ -188,7 +211,7 @@ def build_api_router(mgr: JobManager) -> APIRouter:
             depth=int(body.get("depth") or 200),
             threads=int(body.get("threads") or 1),
             hidden_info=str(body.get("hidden_info") or "beliefdraw"),
-            name_of=name_of,
+            name_of=lambda k, i: name_of(k, i, version),
         )
 
     @router.post("/api/sweeps")

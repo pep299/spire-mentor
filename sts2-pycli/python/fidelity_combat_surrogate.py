@@ -313,7 +313,7 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    schema = json.load(open(args.schema or f"{args.labels}.schema.json"))
+    schema = json.load(open(args.schema or f"{args.labels}.schema.json", encoding="utf-8"))
     n_cards, n_relics, n_enc = schema["n_cards"], schema["n_relics"], schema["n_encounters"]
 
     rows = load_rows(args.labels, source_tag="primary")
@@ -530,7 +530,7 @@ def main() -> int:
                 "ref_death_rate": ref_deaths / len(traces),
                 "sur_death_rate": sur_deaths / len(traces),
             },
-            open(args.out, "w"),
+            open(args.out, "w", encoding="utf-8"),
             indent=2,
         )
         print(f"\nreport -> {args.out}")

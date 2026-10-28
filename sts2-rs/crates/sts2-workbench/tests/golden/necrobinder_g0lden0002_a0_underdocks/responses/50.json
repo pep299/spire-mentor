@@ -89,8 +89,8 @@
    "combat_log": [],
    "decision": "combat_play",
    "details": [
-    "Spawned: Corpse Slug",
-    "Spawned: Corpse Slug"
+    "Spawned: Corpse Slug #1",
+    "Spawned: Corpse Slug #2"
    ],
    "error": false,
    "floor": 1,
@@ -176,13 +176,13 @@
    "decision": "combat_play",
    "details": [
     "Play Strike",
-    "Corpse Slug HP 25→19 (−6)"
+    "Corpse Slug #1 HP 25→19 (−6)"
    ],
    "error": false,
    "floor": 1,
    "id": 4,
    "idx": 4,
-   "label": "Play Strike → Corpse Slug",
+   "label": "Play Strike → Corpse Slug #1",
    "parent_id": 3,
    "turn": 1,
    "value": null
@@ -394,13 +394,13 @@
    "decision": "combat_play",
    "details": [
     "Play Strike",
-    "Corpse Slug HP 19→13 (−6)"
+    "Corpse Slug #1 HP 19→13 (−6)"
    ],
    "error": false,
    "floor": 1,
    "id": 7,
    "idx": 7,
-   "label": "Play Strike → Corpse Slug",
+   "label": "Play Strike → Corpse Slug #1",
    "parent_id": 6,
    "turn": 2,
    "value": null
@@ -457,13 +457,13 @@
    "decision": "combat_play",
    "details": [
     "Play Strike",
-    "Corpse Slug HP 13→7 (−6)"
+    "Corpse Slug #1 HP 13→7 (−6)"
    ],
    "error": false,
    "floor": 1,
    "id": 9,
    "idx": 9,
-   "label": "Play Strike → Corpse Slug",
+   "label": "Play Strike → Corpse Slug #1",
    "parent_id": 8,
    "turn": 2,
    "value": null
@@ -650,13 +650,13 @@
    "decision": "combat_play",
    "details": [
     "Play Strike",
-    "Corpse Slug HP 7→1 (−6)"
+    "Corpse Slug #1 HP 7→1 (−6)"
    ],
    "error": false,
    "floor": 1,
    "id": 12,
    "idx": 12,
-   "label": "Play Strike → Corpse Slug",
+   "label": "Play Strike → Corpse Slug #1",
    "parent_id": 11,
    "turn": 3,
    "value": null
@@ -736,14 +736,14 @@
    "decision": "combat_play",
    "details": [
     "Play Strike",
-    "Corpse Slug HP 1→0  ☠ defeated",
-    "Corpse Slug +4 Strength"
+    "Corpse Slug #1 HP 1→0  ☠ defeated",
+    "Corpse Slug #2 +4 Strength"
    ],
    "error": false,
    "floor": 1,
    "id": 13,
    "idx": 13,
-   "label": "Play Strike → Corpse Slug",
+   "label": "Play Strike → Corpse Slug #1",
    "parent_id": 12,
    "turn": 3,
    "value": null

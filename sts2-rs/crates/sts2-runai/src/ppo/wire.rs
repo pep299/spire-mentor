@@ -245,6 +245,23 @@ fn is_upgraded(c: &Value) -> bool {
     level || b(c, "upgraded")
 }
 
+/// A wire card's enchantment as `(registry id, amount)` (GH #947), mirroring
+/// `realgame_ppo._card_enchantment`. The wire spells it as the C# id entry or
+/// the display title (`PROTOCOL.md`: `enchantment`); either resolves to the
+/// UPPER_SNAKE registry id the engine-side obs carries. An unknown spelling is
+/// kept verbatim (it lands on the vocab's OOV row) rather than dropped, so a
+/// new enchantment still reads as "enchanted with something". An absent
+/// `enchantment_amount` is one stack, as in `sts2_wire::state_dict`.
+fn card_enchantment(c: &Value) -> super::obs::CardEnchantObs {
+    let name = opt_s(c, "enchantment")?;
+    let id = sts2_core::cards::EnchantmentId::from_wire_name(&name)
+        .map_or(name, |e| e.python_name().to_string());
+    let amount = obj(c, "enchantment_amount")
+        .and_then(Value::as_i64)
+        .unwrap_or(1);
+    Some((id, amount))
+}
+
 /// The act-map current coord, with the row-0 guard applied.
 ///
 /// Returns `None` both when there is no map in reach and when `current` sits
@@ -299,6 +316,8 @@ fn base_obs(state: &Value) -> PpoObs {
         .iter()
         .map(|c| (card_id(c).unwrap_or_default(), is_upgraded(c)))
         .collect();
+    let deck_enchantments: Vec<super::obs::CardEnchantObs> =
+        deck_entries.iter().map(card_enchantment).collect();
     let num_upgraded = deck_entries.iter().filter(|c| is_upgraded(c)).count() as i64;
 
     let relics: Vec<String> = arr(&run_state, "relics")
@@ -370,6 +389,7 @@ fn base_obs(state: &Value) -> PpoObs {
         seed: 0,
         ascension: i(&run_state, "ascension"),
         deck,
+        deck_enchantments: Some(deck_enchantments),
         relics: relics.clone(),
         potions: potions.clone(),
         map,
@@ -399,12 +419,16 @@ fn base_obs(state: &Value) -> PpoObs {
 
         card_reward_option_ids: None,
         card_reward_option_upgraded: None,
+        card_reward_option_enchantments: None,
         card_reward_bundles: None,
         relic_reward_ids: None,
         boss_relic_options: None,
         smith_options: None,
+        smith_option_enchantments: None,
         card_removal_options: None,
         card_grant_options: None,
+        card_removal_option_enchantments: None,
+        card_grant_option_enchantments: None,
         transform_select_deck_indices: None,
         enchant_select_deck_indices: None,
         // GH #545: same rationale as the deck-mutation selects below — the
@@ -543,6 +567,7 @@ fn build_card_reward(state: &Value) -> Option<WireDecision> {
             .collect(),
     );
     obs.card_reward_option_upgraded = Some(cards.iter().map(is_upgraded).collect());
+    obs.card_reward_option_enchantments = Some(cards.iter().map(card_enchantment).collect());
 
     let mut actions = Vec::with_capacity(cards.len() + 1);
     let mut responses = Vec::with_capacity(cards.len() + 1);
@@ -813,8 +838,8 @@ fn build_event(state: &Value) -> Option<WireDecision> {
     if let Some(decision) = ancient_boss_relic_decision(state) {
         return Some(decision);
     }
-    let mut options = enabled_options(state);
-    if options.is_empty() {
+    let mut offered = enabled_options(state);
+    if offered.is_empty() {
         return None;
     }
 
@@ -832,14 +857,26 @@ fn build_event(state: &Value) -> Option<WireDecision> {
         &state.get("run_state").cloned().unwrap_or(Value::Null),
         "hp",
     );
-    let survivors: Vec<&Value> = options
+    let survivors: Vec<&Value> = offered
         .iter()
         .copied()
         .filter(|o| !option_is_lethal(o, hp))
         .collect();
     if !survivors.is_empty() {
-        options = survivors;
+        offered = survivors;
     }
+
+    // A disabled option keeps its slot, as in the engine's option list: the
+    // net reads an option by POSITION, so dropping one would shift every later
+    // option onto another's slot (the Fake Merchant's throw/leave, GH #873).
+    // It gets no action, and is never the pick.
+    let options: Vec<&Value> = arr(state, "options")
+        .iter()
+        .filter(|o| !enabled(o) || offered.iter().any(|k| std::ptr::eq(*k, *o)))
+        .collect();
+    let choices: Vec<usize> = (0..options.len())
+        .filter(|&idx| enabled(options[idx]))
+        .collect();
 
     let mut obs = base_obs(state);
     let event_id = options
@@ -889,15 +926,18 @@ fn build_event(state: &Value) -> Option<WireDecision> {
 
     Some(WireDecision {
         obs,
-        actions: (0..options.len())
-            .map(|idx| ActionDesc::EventChoice { idx: idx as i64 })
-            .collect(),
-        responses: options
+        actions: choices
             .iter()
-            .enumerate()
-            .map(|(idx, o)| choose(bridge_index(o, idx)))
+            .map(|&idx| ActionDesc::EventChoice { idx: idx as i64 })
             .collect(),
-        labels: option_labels,
+        responses: choices
+            .iter()
+            .map(|&idx| choose(bridge_index(options[idx], idx)))
+            .collect(),
+        labels: choices
+            .iter()
+            .map(|&idx| option_labels[idx].clone())
+            .collect(),
     })
 }
 
@@ -1398,6 +1438,45 @@ mod tests {
             .remove("will_kill_player");
         let d = build_decision(&s, "event").expect("decision");
         assert_eq!(d.labels, ["Safe"]);
+    }
+
+    /// GH #873: the Fake Merchant always sends the engine's three options;
+    /// one that is not available stays in its slot, so leave is still read
+    /// as option 2 and never as the throw.
+    #[test]
+    fn a_disabled_event_option_keeps_its_slot() {
+        let opt = |index: i64, key: &str, enabled: bool, relics: i64, potions: i64| {
+            json!({
+                "index": index, "label": key, "description": "", "enabled": enabled,
+                "event_id": "FAKE_MERCHANT", "text_key": format!("FAKE_MERCHANT.options.{key}"),
+                "gold_delta": if relics > 0 { -50 } else { 0 }, "hp_delta": 0, "max_hp_delta": 0,
+                "relics_gained": relics, "potions_lost": potions
+            })
+        };
+        let s = json!({
+            "type": "event", "floor": 20, "act": 2, "run_state": run_state(),
+            "options": [
+                opt(0, "BUY", true, 1, 0),
+                opt(1, "THROW_FOUL", false, 0, 1),
+                opt(2, "LEAVE", true, 0, 0)
+            ]
+        });
+        let d = build_decision(&s, "event").expect("decision");
+        assert_eq!(d.obs.event_name.as_deref(), Some("FAKE_MERCHANT"));
+        let opts = d.obs.event_options.as_ref().expect("options");
+        assert_eq!(opts.len(), 3, "the disabled throw is still observed");
+        assert!(!opts[1].enabled);
+        assert_eq!(opts[0].relics_gained, Some(1));
+        assert_eq!(opts[1].potions_lost, Some(1));
+        assert!(matches!(
+            d.actions.as_slice(),
+            [
+                ActionDesc::EventChoice { idx: 0 },
+                ActionDesc::EventChoice { idx: 2 }
+            ]
+        ));
+        assert_eq!(d.labels, ["BUY", "LEAVE"]);
+        assert_eq!(d.responses, [choose(0), choose(2)]);
     }
 
     #[test]

@@ -327,7 +327,7 @@ def _fmt_matrix(sim_levels, prepared, results, first_win):
 
 def _write_report(path, sim_levels, prepared, results, summary, potion_runs, errored, first_win):
     never = sum(1 for s10 in results if s10 not in first_win)
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         f.write("# Boss-only sweep — Vantom (Act-1 IC boss), human boss-entry loadout\n\n")
         f.write(f"- runs: {len(prepared)} won-only IC (human won 100% by construction)\n")
         f.write(f"- given potions: {potion_runs}/{len(prepared)}; prep errors: {errored}\n")

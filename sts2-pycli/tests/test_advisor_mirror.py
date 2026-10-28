@@ -810,6 +810,26 @@ def _potion_screen(potion: str = "ATTACK_POTION") -> tuple[AdvisorMirror, dict[s
     }
 
 
+def test_a_card_select_answer_rebuilds_at_the_run_ascension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GH #848: the answer's rebuild reads the run's ascension, not A0."""
+    from sts2_hint import adapter
+
+    advisor, screen = _potion_screen()
+    screen["run_state"]["ascension"] = 10
+    seen: list[int] = []
+    real = adapter.translate
+
+    def spy(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        seen.append(kwargs.get("ascension", 0))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(adapter, "translate", spy)
+    assert advisor.answer_card_select(screen, HONEST, 8) is not None
+    assert seen and set(seen) == {10}
+
+
 def test_a_potion_screen_is_searched_end_to_end() -> None:
     """The whole chain, on the screen class that was 100% rarity-sorted.
 
@@ -1785,3 +1805,88 @@ class TestRememberedPicks:
         advisor = self._primed()
         advisor.drop("new fight")
         assert advisor.next_remembered_pick("PREPARED", _offer("DEFEND", "SURVIVOR")) is None
+
+
+def test_note_names_the_desynced_paths() -> None:
+    """The note tallies desyncs by wire path, list keys folded, so a run
+    log says WHAT the mirror failed to follow (co-op: a teammate's moves)."""
+    import copy
+
+    advisor = AdvisorMirror(HONEST)
+    wire = sts2_rs.state_to_dict(_burning_pact_state())
+    advisor.on_combat_board(wire, {"act": 1, "floor": 3})
+    moved = copy.deepcopy(wire)
+    moved["encounter"][0]["hp"] -= 5  # someone else hit the enemy
+    advisor.on_combat_board(moved, {"act": 1, "floor": 3})
+    assert advisor.stats["desyncs"] >= 1
+    assert "desynced: $.encounter[].hp x1" in advisor.note()
+
+
+def _coop_board(player_count: int) -> dict[str, Any]:
+    return {"act": 1, "floor": 3, "player_count": player_count}
+
+
+def test_coop_adopts_a_teammate_hit_instead_of_dropping() -> None:
+    """Co-op: an enemy field the mirror could not have predicted (a teammate
+    hit it) is adopted, not reported. The mirror keeps its carried state and
+    stays untainted; the note says how often that happened."""
+    import copy
+
+    advisor = AdvisorMirror(HONEST)
+    wire = sts2_rs.state_to_dict(_burning_pact_state())
+    advisor.on_combat_board(wire, _coop_board(2))
+    mirror = advisor.live
+    moved = copy.deepcopy(wire)
+    moved["encounter"][0]["hp"] -= 5
+    advisor.on_combat_board(moved, _coop_board(2))
+    assert advisor.stats["desyncs"] == 0
+    assert advisor.live is mirror and not mirror.tainted
+    assert sts2_rs.state_to_dict(mirror.state)["encounter"][0]["hp"] == moved["encounter"][0]["hp"]
+    assert "teammate-adopted: $.encounter[].hp x1" in advisor.note()
+
+
+def test_coop_adopts_the_teammates_own_block() -> None:
+    """The teammate's creature (``$.allies``) moves on its own -- they block
+    and take hits -- so a change there is adopted like an enemy-side one."""
+    import copy
+
+    advisor = AdvisorMirror(HONEST)
+    wire = sts2_rs.state_to_dict(_burning_pact_state())
+    wire["allies"] = [{"hp": 60, "max_hp": 70, "block": 0}]
+    advisor.on_combat_board(wire, _coop_board(2))
+    mirror = advisor.live
+    moved = copy.deepcopy(wire)
+    moved["allies"][0]["block"] = 9
+    advisor.on_combat_board(moved, _coop_board(2))
+    assert advisor.stats["desyncs"] == 0
+    assert advisor.live is mirror and not mirror.tainted
+    assert sts2_rs.state_to_dict(mirror.state)["allies"][0]["block"] == 9
+
+
+def test_coop_still_reports_a_player_side_desync() -> None:
+    """The exemption is scoped to the enemy side: our own HP is ours to
+    predict, so a mismatch there drops the mirror exactly as solo."""
+    import copy
+
+    advisor = AdvisorMirror(HONEST)
+    wire = sts2_rs.state_to_dict(_burning_pact_state())
+    advisor.on_combat_board(wire, _coop_board(2))
+    moved = copy.deepcopy(wire)
+    moved["encounter"][0]["hp"] -= 5
+    moved["player"]["hp"] -= 3
+    advisor.on_combat_board(moved, _coop_board(2))
+    assert advisor.stats["desyncs"] >= 2
+    assert "teammate-adopted" not in advisor.note()
+
+
+def test_solo_never_adopts() -> None:
+    import copy
+
+    advisor = AdvisorMirror(HONEST)
+    wire = sts2_rs.state_to_dict(_burning_pact_state())
+    advisor.on_combat_board(wire, _coop_board(1))
+    moved = copy.deepcopy(wire)
+    moved["encounter"][0]["hp"] -= 5
+    advisor.on_combat_board(moved, _coop_board(1))
+    assert advisor.stats["desyncs"] == 1
+    assert "teammate-adopted" not in advisor.note()

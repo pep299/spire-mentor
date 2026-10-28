@@ -187,6 +187,21 @@ pub fn deal_damage_to_all_alive_enemies(
     props: ValueProps,
     card: Option<CardId>,
 ) -> i32 {
+    deal_damage_to_all_alive_enemies_counting_kills(state, base, props, card).0
+}
+
+/// [`deal_damage_to_all_alive_enemies`] that also returns how many of its hits
+/// killed their target: C# `results.Count(r => r.WasTargetKilled)`
+/// (`EchoingSlash.cs:34`), read off each hit's
+/// [`damage::DamageOutcome::was_target_killed`] rather than from who is alive
+/// afterwards, so a target revived inside the hit (the pressurized Waterfall
+/// Giant) still counts. Returns `(total hp loss, kills)`.
+pub fn deal_damage_to_all_alive_enemies_counting_kills(
+    state: &mut CombatState,
+    base: i32,
+    props: ValueProps,
+    card: Option<CardId>,
+) -> (i32, usize) {
     // Snapshot the iteration set up-front. Subsequent listener fan-out
     // (e.g. on_damage_received → Thorns reflection → Combust) can mutate
     // `state.enemy_uids` between iterations; the Python pin reads
@@ -232,6 +247,7 @@ pub fn deal_damage_to_all_alive_enemies(
         precomputed.push((uid, dmg));
     }
     let mut total = 0_i32;
+    let mut kills = 0_usize;
     for (target_uid, final_damage) in precomputed {
         // Per-iteration alive recheck: a previous iteration may have
         // killed a chained-listener target (or this very target through
@@ -244,17 +260,17 @@ pub fn deal_damage_to_all_alive_enemies(
         if !alive {
             continue;
         }
-        let hp_loss = damage::apply_damage_with_final(
+        let outcome = damage::apply_damage_with_final(
             state,
             CreatureRef::Player,
             target_uid,
             final_damage,
             props,
-        )
-        .hp_loss;
-        total = total.saturating_add(hp_loss);
+        );
+        total = total.saturating_add(outcome.hp_loss);
+        kills += usize::from(outcome.was_target_killed);
     }
-    total
+    (total, kills)
 }
 
 /// Resolve the player's Osty pet to the [`CreatureRef`] used as the **dealer**
@@ -343,16 +359,27 @@ pub fn deal_damage_from_osty_to_all_alive_enemies(state: &mut CombatState, base:
 }
 
 fn after_osty_attack_costs(state: &mut CombatState) {
-    if state.game_version < crate::GameVersion::V0_111_0 { return; }
-    let active: smallvec::SmallVec<[CardUid; 32]> = state.player.hand.iter()
-        .chain(&state.player.draw).chain(&state.player.discard)
-        .chain(&state.player.exhaust).chain(&state.player.play).copied().collect();
+    if state.game_version < crate::GameVersion::V0_111_0 {
+        return;
+    }
+    let active: smallvec::SmallVec<[CardUid; 32]> = state
+        .player
+        .hand
+        .iter()
+        .chain(&state.player.draw)
+        .chain(&state.player.discard)
+        .chain(&state.player.exhaust)
+        .chain(&state.player.play)
+        .copied()
+        .collect();
     for uid in active {
         if let Some(card) = state.cards.get_mut(uid.get() as usize - 1) {
             if card.card_id == crate::cards::CardId::Flatten {
                 card.add_local_cost_modifier(crate::cards::LocalCostModifier {
                     kind: crate::cards::LocalCostModifierKind::Absolute,
-                    amount: 0, reduce_only: false, expiration: 2,
+                    amount: 0,
+                    reduce_only: false,
+                    expiration: 2,
                 });
             }
         }
@@ -438,6 +465,25 @@ pub fn modify_player_block_move(state: &CombatState, base: i32) -> i32 {
         card_source: resolving_card_uid(state),
     };
     hooks::modify_block(state, base, &ctx)
+}
+
+/// Block a player card gives co-op teammate `ally` (`state.allies[ally]`):
+/// C# `CreatureCmd.GainBlock(cardPlay.Target, block, Move, cardPlay)` from an
+/// `AnyAlly` card. Runs the powered block pipeline with the teammate as the
+/// target, so the player's Dexterity applies (the card is theirs) and the
+/// player's own Frail does not. The teammate's powers are not simulated, so
+/// their Frail is not either. Returns the block gained.
+pub fn gain_block_ally(state: &mut CombatState, ally: u8, base: i32) -> i32 {
+    let ctx = BlockCtx {
+        target: CreatureRef::Ally(ally),
+        props: ValueProps::MOVE,
+        card_source: resolving_card_uid(state),
+    };
+    let gained = hooks::modify_block(state, base, &ctx).max(0);
+    if let Some(a) = state.allies.get_mut(usize::from(ally)) {
+        a.block += gained;
+    }
+    gained
 }
 
 /// Player block gain that is `Unpowered` (Frail-exempt). C# powers that
@@ -1012,6 +1058,8 @@ fn apply_power_to_creature_inner(
         PowerAmountObserverPhase::Before,
     );
     let amount = pipe_power_amount_through_modify_chain(state, None, target_uid, kind, amount);
+    // C# `PowerCmd.Apply` scales some enemy powers by the player count.
+    let amount = crate::coop::scale_enemy_power(state, target_uid, kind, amount);
     if amount <= 0 {
         return;
     }
@@ -1055,8 +1103,19 @@ fn apply_power_to_creature_inner(
     // C# `PowerModel.IsInstanced` kinds skip the merge entirely — each
     // apply is a FRESH instance with its own amount/counter (see
     // [`power_kind_is_instanced`]).
+    // C# `InstancedPerApplier` kinds merge only into the instance the same
+    // player applied (`crate::coop::tracks_applier_seat`).
     let existing_uid = if power_kind_is_instanced(kind) {
         None
+    } else if crate::coop::tracks_applier_seat(kind) && crate::coop::has_seats(state) {
+        state.creatures[creature_idx]
+            .powers
+            .iter()
+            .copied()
+            .find(|&u| {
+                state.powers.get_by_id(u.0).is_some_and(|p| p.kind == kind)
+                    && crate::coop::applied_by_seated(state, u.0)
+            })
     } else {
         existing_power_uid_unioned(state, creature_idx, target_uid, kind)
     };
@@ -1128,6 +1187,7 @@ fn apply_power_to_creature_inner(
         skip_next_tick: arm_skip_next_tick(state, target_uid, kind),
     });
     state.creatures[creature_idx].powers.push(PowerUid(new_id));
+    crate::coop::stamp_power_seat(state, new_id, kind);
     fire_power_amount_observer_channels(
         state,
         None,
@@ -1490,6 +1550,8 @@ pub fn apply_power_to_creature_with_applier(
         PowerAmountObserverPhase::Before,
     );
     let amount = pipe_power_amount_through_modify_chain(state, applier, target_uid, kind, amount);
+    // C# `PowerCmd.Apply` scales some enemy powers by the player count.
+    let amount = crate::coop::scale_enemy_power(state, target_uid, kind, amount);
     if amount <= 0 {
         return;
     }
@@ -1642,7 +1704,7 @@ pub fn should_owner_death_trigger_fatal(state: &CombatState, target: CreatureUid
         return true;
     };
     creature.powers.iter().all(|pu| {
-        state.powers.get_by_id(pu.0).map_or(true, |p| match p.kind {
+        state.powers.get_by_id(pu.0).is_none_or(|p| match p.kind {
             PowerKind::Minion => false,
             PowerKind::Reattach => all_other_segments_dead(state, target),
             _ => true,
@@ -2657,11 +2719,15 @@ pub fn stamp_entered_combat_cost_backfill(state: &mut CombatState, uid: CardUid)
     let Some(card) = state.cards.get(idx) else {
         return;
     };
-    if card.card_id == crate::cards::CardId::Flatten && state.game_version >= crate::GameVersion::V0_111_0
-        && state.combat_log.osty_attacks_this_turn > 0 {
+    if card.card_id == crate::cards::CardId::Flatten
+        && state.game_version >= crate::GameVersion::V0_111_0
+        && state.combat_log.osty_attacks_this_turn > 0
+    {
         state.cards[idx].add_local_cost_modifier(crate::cards::LocalCostModifier {
             kind: crate::cards::LocalCostModifierKind::Absolute,
-            amount: 0, reduce_only: false, expiration: 2,
+            amount: 0,
+            reduce_only: false,
+            expiration: 2,
         });
         return;
     }
@@ -2682,7 +2748,9 @@ pub fn stamp_entered_combat_cost_backfill(state: &mut CombatState, uid: CardUid)
         if plays > 0 {
             card.add_local_cost_modifier(crate::cards::LocalCostModifier {
                 kind: crate::cards::LocalCostModifierKind::Relative,
-                amount: -plays, reduce_only: false, expiration: 2,
+                amount: -plays,
+                reduce_only: false,
+                expiration: 2,
             });
         }
         return;

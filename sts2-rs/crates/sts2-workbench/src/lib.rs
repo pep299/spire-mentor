@@ -27,6 +27,7 @@ pub mod bench;
 pub mod combat_import;
 pub mod combat_view;
 pub mod deck;
+pub mod enemy_labels;
 pub mod enrich;
 pub mod game;
 pub mod rmx;

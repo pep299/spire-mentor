@@ -83,7 +83,8 @@ export function makeApiMocks() {
   const sweeps: SweepListEntry[] = [];
   return {
     meta: vi.fn(async () => META),
-    catalog: vi.fn(async () => CATALOG),
+    capabilities: vi.fn(async () => ({ game_versions: ["v0.107.1"], default_game_version: "v0.107.1" })),
+    catalog: vi.fn<(gameVersion?: string | null) => Promise<Catalog>>(async () => CATALOG),
     submit: vi.fn<(spec: SweepSpec) => Promise<{ sweep_id: string }>>(async () => ({ sweep_id: "sw1" })),
     list: vi.fn(async () => ({ sweeps })),
     status: vi.fn<(id: string) => Promise<{ status: string; done: number; total: number }>>(async () => ({ status: "done", done: 1, total: 1 })),

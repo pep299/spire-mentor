@@ -126,23 +126,18 @@ fn history_course_fan_of_knives_shiv_targets(version: GameVersion) -> u32 {
     state.run_rng.combat_targets.counter() - before
 }
 
-/// v0.107.1 Rust rolls a random target off the Shiv POD's `Enemy` type.
+/// Under FanOfKnives the Shiv is `AllEnemies` (Shiv.cs:23-32), so
+/// `CardCmd.AutoPlay` rolls no target (CardCmd.cs:74). Same C# in both builds
+/// (GH #806).
 #[test]
-fn history_course_fan_of_knives_shiv_rolls_target_v0107() {
-    assert_eq!(
-        history_course_fan_of_knives_shiv_targets(GameVersion::V0_107_1),
-        1
-    );
-}
-
-/// v0.111.0: under FanOfKnives the Shiv is `AllEnemies` (Shiv.cs:23-32), so
-/// `CardCmd.AutoPlay` rolls no target (CardCmd.cs:74).
-#[test]
-fn history_course_fan_of_knives_shiv_rolls_no_target_v0111() {
-    assert_eq!(
-        history_course_fan_of_knives_shiv_targets(GameVersion::V0_111_0),
-        0
-    );
+fn history_course_fan_of_knives_shiv_rolls_no_target_both_versions() {
+    for version in [GameVersion::V0_107_1, GameVersion::V0_111_0] {
+        assert_eq!(
+            history_course_fan_of_knives_shiv_targets(version),
+            0,
+            "{version:?}"
+        );
+    }
 }
 
 /// Hand draws over `turns` turn starts, folded the way `combat_loop` does:

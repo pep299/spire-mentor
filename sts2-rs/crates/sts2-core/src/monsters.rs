@@ -1536,6 +1536,29 @@ impl MonsterKind {
         }
     }
 
+    /// The midpoint of [`Self::hp_roll`], rounded down: what a spawn of this
+    /// species is expected to start with, read WITHOUT rolling anything.
+    /// For a scorer forecasting a creature that does not exist yet (the
+    /// Axebot a Stock respawn will roll, the Wrigglers an Infested death
+    /// will add).
+    #[must_use]
+    pub fn mean_initial_hp(self, ascension: u8) -> i32 {
+        match self.hp_roll(ascension) {
+            HpRoll::Fixed(v) => v,
+            HpRoll::Range(lo, hi) => lo + (hi - lo) / 2,
+        }
+    }
+
+    /// The high end of [`Self::hp_roll_for`] — C# `MonsterModel.MaxInitialHp`
+    /// on game build `version`, read without rolling anything. The
+    /// `ToughEnemies` completeness guard reads it against the decomp.
+    #[must_use]
+    pub fn max_initial_hp_for(self, ascension: u8, version: crate::GameVersion) -> i32 {
+        match self.hp_roll_for(ascension, version) {
+            HpRoll::Fixed(v) | HpRoll::Range(_, v) => v,
+        }
+    }
+
     /// Roll starting HP while guaranteeing distinctness from HP values
     /// already taken by same-side creatures. Port of C#
     /// `../sts2-wiki/decompiled/v0.103.2/MegaCrit.Sts2.Core.Entities.Creatures/Creature.cs:319`
@@ -1771,29 +1794,14 @@ pub fn roll_unique_max_hps_for(
 }
 
 impl MonsterKind {
-    /// Per-species static buffs applied at creature spawn. Mirrors
-    /// Python's `creature.apply_power(...)` calls at the tail of each
-    /// `create_<monster>` factory in
-    /// `sts2-rl-agent@01c094d:sts2_env/monsters/*.py`. The returned
-    /// slice is consumed by
-    /// [`crate::CombatState::apply_creature_spawn_buffs`], which the
-    /// `spawn_enemy` helper calls automatically.
-    ///
-    /// Empty slice means "no on-spawn self-buff" — that's the default
-    /// for every monster whose AI carries its buffs through `Buff`
-    /// intent moves at runtime (Cubex CHARGE_UP, Mawler ROAR, etc.).
-    /// The 5 species enumerated below have buffs that fire at
-    /// construction time — they're statically present on every
-    /// fresh spawn before any AI moves resolve.
-    ///
-    /// Bead `sts2-rs-3jo9`.
     /// A9 `DeadlyEnemies` replacements for the [`Self::on_spawn_self_buffs`]
     /// amounts C# resolves through
     /// `AscensionHelper.GetValueIfAscension(DeadlyEnemies, …)`. The base
     /// table carries the A0 amount (which every parity fixture pins);
     /// this returns the A9 amount, or `None` when the amount is flat.
     /// Same base-table + A9-override shape as
-    /// `sts2_content::ascension_scaling`.
+    /// `sts2_content::ascension_scaling`. Resolve through
+    /// [`Self::on_spawn_self_buff_amount`], not directly.
     #[must_use]
     pub fn on_spawn_self_buff_deadly(self, power: crate::powers::PowerKind) -> Option<i32> {
         use crate::powers::PowerKind;
@@ -1802,6 +1810,11 @@ impl MonsterKind {
             (MonsterKind::CorpseSlug, PowerKind::Ravenous) => Some(5),
             // C# `TestSubject.cs:88,179` `EnrageAmount => (.., 3, 2)`.
             (MonsterKind::TestSubject, PowerKind::Enrage) => Some(3),
+            // C# `InfestedPrism.cs:40,59` `VitalSparkAmount => (.., 3, 2)`
+            // (identical in v0.111.0). The PULSATE re-apply reads the same
+            // property inline (`infested_prism_pulsate_effect`); this is the
+            // spawn-time stack (GH #858).
+            (MonsterKind::InfestedPrism, PowerKind::VitalSpark) => Some(3),
             _ => None,
         }
     }
@@ -1827,6 +1840,84 @@ impl MonsterKind {
         self.on_spawn_self_buff_deadly(power)
     }
 
+    /// A8 `ToughEnemies` replacements for the [`Self::on_spawn_self_buffs`]
+    /// amounts C# resolves through
+    /// `AscensionHelper.GetValueIfAscension(ToughEnemies, …)` in
+    /// `AfterAddedToRoom`; `None` when the amount is flat or A9-scaled.
+    /// Identical in v0.107.1 and v0.111.0 (every non-HP `ToughEnemies` line
+    /// of the two decomps matches), so there is no `_for` variant. Resolve
+    /// through [`Self::on_spawn_self_buff_amount`], not directly (GH #858).
+    #[must_use]
+    pub fn on_spawn_self_buff_tough(self, power: crate::powers::PowerKind) -> Option<i32> {
+        use crate::powers::PowerKind;
+        match (self, power) {
+            // `TerrorEel.cs:39,65` `ShriekAmount => (ToughEnemies, 75, 70)`.
+            (MonsterKind::TerrorEel, PowerKind::Shriek) => Some(75),
+            // `PhantasmalGardener.cs:49,93` `SkittishAmount => (.., 7, 6)`.
+            (MonsterKind::PhantasmalGardener, PowerKind::Skittish) => Some(7),
+            // `Vantom.cs:64,94` `SlipperyAmt => (.., 9, 8)`.
+            (MonsterKind::Vantom, PowerKind::Slippery) => Some(9),
+            // `FrogKnight.cs:43,63` `PlatingAmount => (.., 19, 15)`.
+            (MonsterKind::FrogKnight, PowerKind::Plating) => Some(19),
+            // `SlumberingBeetle.cs:45,76` `PlatingAmount => (.., 18, 15)`.
+            (MonsterKind::SlumberingBeetle, PowerKind::Plating) => Some(18),
+            // `SewerClam.cs:32-33` local `GetValueIfAscension(.., 9, 8)`.
+            (MonsterKind::SewerClam, PowerKind::Plating) => Some(9),
+            // `LouseProgenitor.cs:65,70` `CurlBlock => (.., 18, 14)`; the same
+            // property is CURL_AND_GROW's block (`:106`), scaled in
+            // `sts2_content::ascension_scaling::ASCENSION_TOUGH_BLOCK_SCALING`.
+            (MonsterKind::LouseProgenitor, PowerKind::CurlUp) => Some(18),
+            _ => None,
+        }
+    }
+
+    /// The `AfterAddedToRoom` amount C# applies for `power` at `ascension`
+    /// on `version`: the A9 value if `DeadlyEnemies` scales it, else the A8
+    /// value if `ToughEnemies` does, else `base` (the
+    /// [`Self::on_spawn_self_buffs`] A0 amount). The two override tables are
+    /// disjoint (each C# property names one level), so the order only decides
+    /// which threshold is checked first. The single amount resolution
+    /// [`crate::CombatState::apply_creature_spawn_buffs`] uses (GH #858).
+    #[must_use]
+    pub fn on_spawn_self_buff_amount(
+        self,
+        power: crate::powers::PowerKind,
+        base: i32,
+        ascension: u8,
+        version: crate::GameVersion,
+    ) -> i32 {
+        use crate::ascension::AscensionLevel::{DeadlyEnemies, ToughEnemies};
+        if ascension >= DeadlyEnemies as u8 {
+            if let Some(v) = self.on_spawn_self_buff_deadly_for(power, version) {
+                return v;
+            }
+        }
+        if ascension >= ToughEnemies as u8 {
+            if let Some(v) = self.on_spawn_self_buff_tough(power) {
+                return v;
+            }
+        }
+        base
+    }
+
+    /// Per-species static buffs applied at creature spawn, at their A0
+    /// amounts. Mirrors C# `AfterAddedToRoom` (originally ported from the
+    /// tail of each `create_<monster>` factory in
+    /// `sts2-rl-agent@01c094d:sts2_env/monsters/*.py`). The returned
+    /// slice is consumed by
+    /// [`crate::CombatState::apply_creature_spawn_buffs`], which the
+    /// `spawn_enemy` helper calls automatically and which resolves each
+    /// amount at the combat's ascension through
+    /// [`Self::on_spawn_self_buff_amount`].
+    ///
+    /// Empty slice means "no on-spawn self-buff" — that's the default
+    /// for every monster whose AI carries its buffs through `Buff`
+    /// intent moves at runtime (Cubex CHARGE_UP, Mawler ROAR, etc.).
+    /// The species enumerated below have buffs that fire at
+    /// construction time — they're statically present on every
+    /// fresh spawn before any AI moves resolve.
+    ///
+    /// Bead `sts2-rs-3jo9`.
     #[must_use]
     pub fn on_spawn_self_buffs(self) -> &'static [(crate::powers::PowerKind, i32)] {
         use crate::powers::PowerKind;
@@ -1861,10 +1952,8 @@ impl MonsterKind {
             // Bead `…wb8lk.11`: v0.107.1 nerfed Vantom's spawn Slippery
             // 9→8 at A0. Decomp `v0.107.1/…/Vantom.cs:64`
             // `SlipperyAmt => GetValueIfAscension(ToughEnemies, 9, 8)` —
-            // A0=8, A8(ToughEnemies)=9. The on-spawn buff table is not
-            // ascension-aware, so the A8 bump to 9 is not modeled here
-            // (consistent with the other static on-spawn entries); the A0
-            // value 8 is the live-parity-correct one. First 8 hits to
+            // A0 amount here; the A8 value 9 comes from
+            // `on_spawn_self_buff_tough` (GH #858). The first 8 (9) hits to
             // Vantom deal 1 damage each (SlipperyPower landed in
             // sts2-rs-12xvk; see hooks.rs Osty HP-loss arm).
             MonsterKind::Vantom => &[(PowerKind::Slippery, 8)],
@@ -1894,8 +1983,9 @@ impl MonsterKind {
             // (BYRDONIS_ELITE monsters[0].powers.len 0 vs 1, 33/500 trials).
             MonsterKind::Byrdonis => &[(PowerKind::Territorial, 1)],
             // sts2-rs-7iuyk (29kfv): C# `TerrorEel.cs:71` AfterAddedToRoom
-            // applies `ShriekPower(70)` to self (75 ToughEnemies; identity at
-            // pin 01c094d). ShriekPower is a Counter Debuff with an
+            // applies `ShriekPower(70)` to self — the A0 amount; the A8
+            // value 75 comes from `on_spawn_self_buff_tough` (GH #858).
+            // ShriekPower is a Counter Debuff with an
             // `AfterDamageReceived`/Stun mechanic (ShriekPower.cs:25) that is
             // NOT modeled here — this only registers the on-spawn power for
             // INIT/powers.len parity, matching the Illusion/Minion convention
@@ -1922,10 +2012,8 @@ impl MonsterKind {
             // sts2-rs-vawqf (uy6g9 follow-up): C# AfterAddedToRoom also
             // applies `EnragePower(EnrageAmount)` (`TestSubject.cs:171`)
             // where EnrageAmount = 2 at non-ascension
-            // (`AscensionHelper.GetValueIfAscension(DeadlyEnemies, 3, 2)`).
-            // Ascension is identity at pin `01c094d` per
-            // `project_ascension_identity_at_pin`, so the static `2` is
-            // canonical here.
+            // (`AscensionHelper.GetValueIfAscension(DeadlyEnemies, 3, 2)`);
+            // the A9 value 3 comes from `on_spawn_self_buff_deadly`.
             MonsterKind::TestSubject => &[(PowerKind::Adaptable, 1), (PowerKind::Enrage, 2)],
             // sts2-rs-7h9y2: C# `Axebot.cs:76-82` AfterAddedToRoom
             // applies `StockPower(StockAmount)` when StockAmount > 0;
@@ -1939,14 +2027,15 @@ impl MonsterKind {
             MonsterKind::Axebot => &[(PowerKind::Stock, 2)],
             // sts2-rs-u97h0: C# `FrogKnight.cs:59-64` AfterAddedToRoom
             // applies `PlatingPower(PlatingAmount)`; PlatingAmount = 15
-            // non-ascension (19 ToughEnemies; identity at pin 01c094d).
+            // non-ascension (the A8 value 19 comes from
+            // `on_spawn_self_buff_tough`, GH #858).
             // FrogKnight is a standalone encounter — no minion-spawn
             // double-apply concern. Plating's listener is already
             // modeled (existing SlumberingBeetle entry shares the kind).
             MonsterKind::FrogKnight => &[(PowerKind::Plating, 15)],
             // sts2-rs-enb55: C# `SewerClam.cs:28-33` AfterAddedToRoom
-            // applies `PlatingPower(8)` non-asc (9 ToughEnemies;
-            // identity at pin 01c094d). Plating listener already
+            // applies `PlatingPower(8)` non-asc (the A8 value 9 comes from
+            // `on_spawn_self_buff_tough`, GH #858). Plating listener already
             // modeled. Closes INIT/powers.len parity gap.
             MonsterKind::SewerClam => &[(PowerKind::Plating, 8)],
             // sts2-rs-9djjh: All three BattleFriend variants apply
@@ -2013,7 +2102,8 @@ impl MonsterKind {
             //   `GlobeHead.cs:41`   → GalvanicPower(6)
             MonsterKind::GlobeHead => &[(PowerKind::Galvanic, 6)],
             //   `SlumberingBeetle.cs:75-76` → PlatingPower(15) then
-            //   SlumberPower(3). PlatingAmount=15 non-asc (18 ToughEnemies).
+            //   SlumberPower(3). PlatingAmount=15 non-asc (the A8 value 18
+            //   comes from `on_spawn_self_buff_tough`, GH #858).
             //   Order matches C# (Plating applied first).
             MonsterKind::SlumberingBeetle => &[(PowerKind::Plating, 15), (PowerKind::Slumber, 3)],
             //   `Entomancer.cs:37`  → PersonalHivePower(1)
@@ -2027,11 +2117,9 @@ impl MonsterKind {
             //   `InfestedPrism.cs:59` → VitalSparkPower(VitalSparkAmount).
             //   `…wb8lk.11`: v0.107.1 reworked the spawn amount from a flat
             //   1m to `VitalSparkAmount = GetValueIfAscension(DeadlyEnemies,
-            //   3, 2)` (A0=2, A9=3). The on-spawn table is not ascension-
-            //   aware, so we register the A0 value 2; the A9 bump to 3 is a
-            //   declared deferral (same limitation as the other static
-            //   on-spawn arms). VitalSpark is the in-combat Tainted applier
-            //   (bead `…wb8lk.4`).
+            //   3, 2)` (A0=2, A9=3). The A0 value here; the A9 value 3 comes
+            //   from `on_spawn_self_buff_deadly` (GH #858). VitalSpark is the
+            //   in-combat Tainted applier (bead `…wb8lk.4`).
             MonsterKind::InfestedPrism => &[(PowerKind::VitalSpark, 2)],
             // sts2-rs-rop3f (batch 2): further C# `AfterAddedToRoom`
             // self-powers, verified against the decomp (non-ascension
@@ -2055,11 +2143,14 @@ impl MonsterKind {
             //   `SkulkingColony.cs:56` → HardenedShellPower(20). `…wb8lk.11`:
             //   v0.107.1 bumped the spawn HardenedShell 15→20.
             MonsterKind::SkulkingColony => &[(PowerKind::HardenedShell, 20)],
-            //   `LouseProgenitor.cs:69` → CurlUpPower(CurlBlock=14 non-asc)
+            //   `LouseProgenitor.cs:69` → CurlUpPower(CurlBlock=14 non-asc;
+            //   A8 18 via `on_spawn_self_buff_tough`, GH #858)
             MonsterKind::LouseProgenitor => &[(PowerKind::CurlUp, 14)],
-            //   `PhantasmalGardener.cs:92` → SkittishPower(SkittishAmount=6 non-asc)
+            //   `PhantasmalGardener.cs:92` → SkittishPower(SkittishAmount=6
+            //   non-asc; A8 7 via `on_spawn_self_buff_tough`, GH #858)
             MonsterKind::PhantasmalGardener => &[(PowerKind::Skittish, 6)],
-            //   `CorpseSlug.cs:85`   → RavenousPower(RavenousStr=4 non-asc)
+            //   `CorpseSlug.cs:85`   → RavenousPower(RavenousStr=4 non-asc;
+            //   A9 5 via `on_spawn_self_buff_deadly`)
             MonsterKind::CorpseSlug => &[(PowerKind::Ravenous, 4)],
             // sts2-rs-jj9gv: further C# `AfterAddedToRoom` self-powers,
             // verified against the v0.103.2 decomp (non-ascension identity
@@ -2285,12 +2376,44 @@ pub mod test_subject {
     /// Initial spawn HP (matches `MonsterKind::TestSubject` HpRoll
     /// at `Range(100, 100)` in this file). 111 on ToughEnemies.
     pub const FIRST_FORM_HP: i32 = 100;
-    /// HP set on first Revive (TestSubject.cs:267
-    /// `await Revive(SecondFormHp);`). 212 on ToughEnemies.
+    /// A0 HP set on first Revive (v0.107.1 `TestSubject.cs:273`
+    /// `await Revive(SecondFormHp);`), below A8. See [`SECOND_FORM_HP_TOUGH`]
+    /// and [`second_form_hp`].
     pub const SECOND_FORM_HP: i32 = 200;
-    /// HP set on second Revive (TestSubject.cs:271
-    /// `await Revive(ThirdFormHp);`). 313 on ToughEnemies.
+    /// `SecondFormHp` at `AscensionLevel.ToughEnemies` (A8+):
+    /// `GetValueIfAscension(ToughEnemies, 212, 200)` (`TestSubject.cs:84`).
+    pub const SECOND_FORM_HP_TOUGH: i32 = 212;
+    /// A0 HP set on second Revive (v0.107.1 `TestSubject.cs:277`
+    /// `await Revive(ThirdFormHp);`), below A8. See [`THIRD_FORM_HP_TOUGH`]
+    /// and [`third_form_hp`].
     pub const THIRD_FORM_HP: i32 = 300;
+    /// `ThirdFormHp` at `AscensionLevel.ToughEnemies` (A8+):
+    /// `GetValueIfAscension(ToughEnemies, 313, 300)` (`TestSubject.cs:86`).
+    pub const THIRD_FORM_HP_TOUGH: i32 = 313;
+
+    /// C# `SecondFormHp => GetValueIfAscension(ToughEnemies, 212, 200)`
+    /// (`TestSubject.cs:84`, the same in v0.111.0).
+    #[must_use]
+    pub fn second_form_hp(ascension: u8) -> i32 {
+        crate::ascension::get_value_if_ascension(
+            ascension,
+            crate::ascension::AscensionLevel::ToughEnemies,
+            SECOND_FORM_HP_TOUGH,
+            SECOND_FORM_HP,
+        )
+    }
+
+    /// C# `ThirdFormHp => GetValueIfAscension(ToughEnemies, 313, 300)`
+    /// (`TestSubject.cs:86`, the same in v0.111.0).
+    #[must_use]
+    pub fn third_form_hp(ascension: u8) -> i32 {
+        crate::ascension::get_value_if_ascension(
+            ascension,
+            crate::ascension::AscensionLevel::ToughEnemies,
+            THIRD_FORM_HP_TOUGH,
+            THIRD_FORM_HP,
+        )
+    }
 
     // ── Phase-3 move constants (sts2-rs-94lp7) ─────────────────────
     //
@@ -2619,6 +2742,43 @@ impl IntentHistory {
 mod tests {
     use super::*;
     use crate::powers::PowerKind;
+
+    /// GH #858 table hygiene for the on-spawn ascension overrides: every
+    /// `on_spawn_self_buff_tough` / `_deadly_for` row targets a power the
+    /// kind actually spawns with, scales it to a different amount, and no
+    /// (kind, power) sits in both tables (each C# property names one level).
+    #[test]
+    fn on_spawn_ascension_tables_target_spawned_powers() {
+        let mut rows = 0;
+        for &kind in MonsterKind::ALL_KNOWN {
+            for &power in PowerKind::all() {
+                let tough = kind.on_spawn_self_buff_tough(power);
+                let deadly = crate::GameVersion::ALL
+                    .iter()
+                    .find_map(|&v| kind.on_spawn_self_buff_deadly_for(power, v));
+                if tough.is_none() && deadly.is_none() {
+                    continue;
+                }
+                rows += 1;
+                assert!(
+                    tough.is_none() || deadly.is_none(),
+                    "{kind:?} {power:?} is in both the A8 and the A9 table"
+                );
+                let Some(&(_, base)) = kind.on_spawn_self_buffs().iter().find(|(p, _)| *p == power)
+                else {
+                    panic!("{kind:?} {power:?} has an override but no on-spawn row");
+                };
+                let scaled = tough.or(deadly).unwrap();
+                assert_ne!(
+                    scaled, base,
+                    "{kind:?} {power:?} override equals the A0 amount"
+                );
+            }
+        }
+        // 7 ToughEnemies rows + CorpseSlug, TestSubject, InfestedPrism and
+        // GlobeHead (v0.111.0) at A9.
+        assert_eq!(rows, 11, "override rows seen");
+    }
     fn rng() -> crate::dotnet_rng::Rng {
         crate::dotnet_rng::Rng::new(0)
     }

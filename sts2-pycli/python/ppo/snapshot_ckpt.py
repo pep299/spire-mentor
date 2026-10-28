@@ -42,7 +42,7 @@ def win_band(log: pathlib.Path, it: int, window: int = 10) -> str:
     """Mean self-play win over the ``window`` iterations up to ``it``."""
     wins = []
     if log.exists():
-        for line in log.read_text().splitlines():
+        for line in log.read_text(encoding="utf-8").splitlines():
             m = _LOG_RE.match(line)
             if m and it - window < int(m.group(1)) <= it:
                 wins.append(float(m.group(2)))

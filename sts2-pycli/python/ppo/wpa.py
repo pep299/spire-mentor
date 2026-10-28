@@ -570,7 +570,7 @@ def render_text(report: dict[str, Any]) -> str:
 def _emit(report: dict[str, Any], out_path: str | None) -> None:
     payload = {k: v for k, v in report.items() if not k.startswith("_")}
     if out_path:
-        with open(out_path, "w") as f:
+        with open(out_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
         print(f"[wpa] report written to {out_path}", file=sys.stderr)
     print(render_text(report))
@@ -578,7 +578,7 @@ def _emit(report: dict[str, Any], out_path: str | None) -> None:
 
 def _load_row(path: str, seed: int | None) -> dict[str, Any]:
     """Pick the episode row from a ``ppo.probe --record`` JSONL file."""
-    rows = [json.loads(line) for line in open(path) if line.strip()]
+    rows = [json.loads(line) for line in open(path, encoding="utf-8") if line.strip()]
     rows = [r for r in rows if r.get("decisions")]
     if seed is not None:
         rows = [r for r in rows if r.get("seed") == seed]

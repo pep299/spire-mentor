@@ -10,7 +10,9 @@ the shared ``FakeGame`` stub with ``reasoning.score`` monkeypatched.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from workbench import regret_review
 from workbench.server import create_app
@@ -98,6 +100,32 @@ def test_player_beats_ai_line_is_a_tie():
     d = regret_review.assess_decision(_hp_step({}, {"mean_final_hp": 75.0}))
     assert d.hp_drop == 0
     assert d.verdict == "tie"
+
+
+def test_hp_gap_within_noise_reads_zero():
+    # GH #888: two near-equal rows, 2 HP apart with overlapping spread
+    # (SE of the difference 4 HP) -- rollout noise, not advice.
+    noisy = {"mean_final_hp": 60.0, "hp_sd": 20.0, "hp_n": 50}
+    d = regret_review.assess_decision(_hp_step(noisy, {**noisy, "mean_final_hp": 58.0}))
+    assert d.hp_drop == 0
+    assert d.verdict == "tie"
+    assert "HP" not in d.message
+
+
+def test_hp_gap_clearing_noise_counts():
+    d = regret_review.assess_decision(_hp_step({"hp_sd": 5.0}, {"hp_sd": 5.0}))
+    assert d.hp_drop == 12
+    assert d.verdict == "blunder"
+
+
+def test_noise_gaps_do_not_sum_into_a_turn_grade():
+    # Clamp-then-sum turned three +1.5 HP jitters into a 4.5 HP slip.
+    noisy = {"mean_final_hp": 60.0, "hp_sd": 20.0, "hp_n": 50}
+    played = {**noisy, "mean_final_hp": 58.5}
+    regrets = [regret_review.assess_decision(_hp_step(noisy, played)) for _ in range(3)]
+    grade = regret_review.grade_turn(regrets)
+    assert grade.hp_drop is None
+    assert grade.verdict == "best"
 
 
 def test_best_line_is_echoed():
@@ -668,3 +696,50 @@ def test_quit_persists_the_agent_search_for_replay(tmp_path, monkeypatch):
     # 79 - 41, straight off the agent's own p_win — not wins/visits.
     assert blunder["drop_pct"] == 38
     assert blunder["best_label"] == "end turn"
+
+
+# ── per-turn grading rule (shared fixture with advisors::grade_turn) ─────────
+_GRADE_TURN_CASES = (
+    Path(__file__).resolve().parents[1] / "fixtures" / "coach" / "grade_turn_cases.json"
+)
+
+
+def _fixture_regret(d):
+    if d is None:
+        return None
+    return regret_review.DecisionRegret(
+        idx=0,
+        node_id=None,
+        turn=1,
+        floor=1,
+        act=1,
+        played_label="played",
+        played_win_prob=d["played_win_prob"],
+        best_label="best",
+        best_win_prob=d["best_win_prob"],
+        regret=max(0.0, d["best_win_prob"] - d["played_win_prob"]),
+        drop_pct=d["drop_pct"],
+        player_rank=0,
+        n_actions=2,
+        visits=100,
+        matched_best=d["verdict"] == "best",
+        is_blunder=d["verdict"] == "blunder",
+        message="",
+        hp_drop=d["hp_drop"],
+        severity=d["severity"],
+        verdict=d["verdict"],
+    )
+
+
+@pytest.mark.parametrize(
+    "case",
+    json.loads(_GRADE_TURN_CASES.read_text(encoding="utf-8"))["cases"],
+    ids=lambda c: c["name"],
+)
+def test_grade_turn_shared_cases(case):
+    grade = regret_review.grade_turn([_fixture_regret(r) for r in case["regrets"]])
+    if case["expect"] is None:
+        assert grade is None
+    else:
+        assert grade is not None
+        assert grade.to_dict() == case["expect"]

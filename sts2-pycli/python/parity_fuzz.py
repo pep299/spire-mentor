@@ -807,7 +807,7 @@ def main(argv: list[str] | None = None) -> int:
             key = f"HARNESS_ERROR:{type(ex).__name__}"
             buckets[key] += 1
             err_path = os.path.join(out_dir, f"trial_{seed}_error.json")
-            with open(err_path, "w") as f:
+            with open(err_path, "w", encoding="utf-8") as f:
                 json.dump({"seed": seed, "error": repr(ex)}, f, indent=2)
             print(f"[trial {seed}] HARNESS_ERROR: {ex!r}", file=sys.stderr)
             continue
@@ -815,12 +815,12 @@ def main(argv: list[str] | None = None) -> int:
         buckets[key] += 1
         if result.divergence_type is not None:
             trial_path = os.path.join(out_dir, f"trial_{seed}.json")
-            with open(trial_path, "w") as f:
+            with open(trial_path, "w", encoding="utf-8") as f:
                 json.dump(_trial_to_json(result), f, indent=2, default=str)
         print(f"[trial {seed}] {key}", file=sys.stderr)
 
     summary_path = os.path.join(out_dir, "summary.md")
-    with open(summary_path, "w") as f:
+    with open(summary_path, "w", encoding="utf-8") as f:
         f.write(f"# Parity fuzz summary — {ts}\n\n")
         f.write(f"Trials: {args.trials}; max_turns: {args.max_turns}\n\n")
         f.write("| count | bucket |\n|---:|---|\n")

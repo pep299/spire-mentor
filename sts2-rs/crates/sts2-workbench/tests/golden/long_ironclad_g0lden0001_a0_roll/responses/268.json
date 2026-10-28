@@ -3153,9 +3153,9 @@
    "details": [
     "You Block 5→0",
     "Fogmog HP 48→6 (−42)",
-    "Eye with Teeth +1 Illusion",
-    "Eye with Teeth +1 Minion",
-    "Eye with Teeth −Vulnerable",
+    "Fogmog +1 Illusion",
+    "Fogmog +1 Minion",
+    "Fogmog −Vulnerable",
     "Spawned: Fogmog"
    ],
    "floor": 11,
@@ -3949,8 +3949,8 @@
    "combat_log": [],
    "decision": "map_select",
    "details": [
-    "Spawned: Nibbit",
-    "Spawned: Nibbit"
+    "Spawned: Nibbit #1",
+    "Spawned: Nibbit #2"
    ],
    "floor": 11,
    "idx": 107,
@@ -4055,11 +4055,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Nibbit +3 Vulnerable"
+    "Nibbit #1 +3 Vulnerable"
    ],
    "floor": 12,
    "idx": 110,
-   "label": "Play Tremble → Nibbit",
+   "label": "Play Tremble → Nibbit #1",
    "turn": 1
   },
   {
@@ -4177,9 +4177,9 @@
    "decision": "combat_play",
    "details": [
     "You Block 10→0",
-    "Nibbit Block 0→5",
-    "Nibbit Vulnerable 3→2",
-    "Nibbit +2 Strength"
+    "Nibbit #1 Block 0→5",
+    "Nibbit #1 Vulnerable 3→2",
+    "Nibbit #2 +2 Strength"
    ],
    "floor": 12,
    "idx": 111,
@@ -4216,11 +4216,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Nibbit HP 43→25 (−18)"
+    "Nibbit #2 HP 43→25 (−18)"
    ],
    "floor": 12,
    "idx": 112,
-   "label": "Play Cinder → Nibbit",
+   "label": "Play Cinder → Nibbit #2",
    "turn": 2
   },
   {
@@ -4253,11 +4253,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Nibbit HP 25→19 (−6)"
+    "Nibbit #2 HP 25→19 (−6)"
    ],
    "floor": 12,
    "idx": 113,
-   "label": "Play Strike → Nibbit",
+   "label": "Play Strike → Nibbit #2",
    "turn": 2
   },
   {
@@ -4354,9 +4354,9 @@
    "decision": "combat_play",
    "details": [
     "You HP 48→34 (−14)",
-    "Nibbit Block 5→0",
-    "Nibbit Vulnerable 2→1",
-    "Nibbit +2 Strength"
+    "Nibbit #1 Block 5→0",
+    "Nibbit #1 Vulnerable 2→1",
+    "Nibbit #1 +2 Strength"
    ],
    "floor": 12,
    "idx": 114,
@@ -4535,11 +4535,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Nibbit HP 19→5 (−14)"
+    "Nibbit #2 HP 19→5 (−14)"
    ],
    "floor": 12,
    "idx": 119,
-   "label": "Play Ultimate Strike → Nibbit",
+   "label": "Play Ultimate Strike → Nibbit #2",
    "turn": 3
   },
   {
@@ -4572,11 +4572,11 @@
    ],
    "decision": "combat_play",
    "details": [
-    "Nibbit HP 5→0  ☠ defeated"
+    "Nibbit #2 HP 5→0  ☠ defeated"
    ],
    "floor": 12,
    "idx": 120,
-   "label": "Play Molten Fist → Nibbit",
+   "label": "Play Molten Fist → Nibbit #2",
    "turn": 3
   },
   {

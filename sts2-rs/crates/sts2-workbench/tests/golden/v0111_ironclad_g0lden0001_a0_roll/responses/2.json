@@ -13,7 +13,7 @@
    "act_name": "Overgrowth",
    "bg_col": null,
    "bg_row": null,
-   "bg_seed": 11180935036767329045,
+   "bg_seed": "11180935036767329045",
    "floor": 0,
    "step_no": 0,
    "turn": null
@@ -26,7 +26,7 @@
    "act1": "overgrowth",
    "act_name": "Overgrowth",
    "ascension": 0,
-   "bg_seed": 11180935036767329045,
+   "bg_seed": "11180935036767329045",
    "choices": [
     {
      "col": 0,

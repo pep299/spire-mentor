@@ -33,20 +33,9 @@ use super::prelude::*;
 // osty_to_enemy` is itself a no-op when the Osty is absent (`osty_dealer_ref` →
 // None); we gate the draw on the same Osty-alive check to reproduce that.
 //
-// BLOCKER (recorded, not faked): the C# draw is additionally gated on
-// `!HasBeenPlayedThisTurn`, where `HasBeenPlayedThisTurn` scans
+// The C# draw is additionally gated on `!HasBeenPlayedThisTurn`, which scans
 // `CombatManager.History.CardPlaysFinished` for a *finished* play of THIS card
-// instance during the current turn. The engine has no per-card-instance
-// finished-play history (no `times_played_this_turn`/play-history surface — see
-// the VarKey table in sts2-core/src/cards.rs, which has no such slot). On the
-// first play of the turn the current OnPlay has not finished, so the history is
-// empty and the card draws; this handler therefore draws unconditionally, which
-// is FAITHFUL for the single-play-per-turn case (the overwhelmingly common one).
-// It diverges only when Fetch is returned to hand and replayed within the same
-// turn — C# would then skip the draw, but this handler still draws. Implementing
-// the guard requires a per-instance turn-scoped played-flag (e.g. a `VarKey::
-// FetchPlayedThisTurn` set after resolve and cleared at turn cleanup, mirroring
-// the `FreeThisTurn`/`Bolas` per-card turn-flag pattern).
+// instance during the current turn — see the GH #806 note in the body.
 pub(crate) fn play_fetch(state: &mut CombatState, target: Option<CreatureUid>) -> EffectResult {
     let t = target.expect("Fetch: enemy target required");
 
@@ -59,10 +48,26 @@ pub(crate) fn play_fetch(state: &mut CombatState, target: Option<CreatureUid>) -
 
     // C# `if (!HasBeenPlayedThisTurn) Draw(Cards.BaseValue=1)` — gated inside the
     // Osty-alive block. We only draw when the Osty is alive (matching the C#
-    // guard placement); the HasBeenPlayedThisTurn half is the recorded blocker
-    // above (drawn unconditionally on each play for lack of play-history infra).
+    // guard placement).
+    //
+    // GH #806: `HasBeenPlayedThisTurn` (Fetch.cs:29) looks for a finished play
+    // of THIS instance this turn. A play's `CardPlayFinishedEntry` is added after
+    // its `OnPlay` returns (CardModel.cs:1957) and only Fetch reads it, so the
+    // handler records its own uid on the way out
+    // (`TurnEvents::fetch_played_this_turn`, cleared each player turn). A
+    // replayed or returned Fetch then skips the draw.
+    let this_card = sts2_core::card_effects::resolving_card_uid(state);
     if osty_dealer_ref(state).is_some() {
-        let _ = sts2_core::cards::draw_via_state(state, 1);
+        let played_before =
+            this_card.is_some_and(|uid| state.combat_log.fetch_played_this_turn.contains(&uid));
+        if !played_before {
+            let _ = sts2_core::cards::draw_via_state(state, 1);
+        }
+    }
+    if let Some(uid) = this_card {
+        if !state.combat_log.fetch_played_this_turn.contains(&uid) {
+            state.combat_log.fetch_played_this_turn.push(uid);
+        }
     }
 
     EffectResult::Resolved

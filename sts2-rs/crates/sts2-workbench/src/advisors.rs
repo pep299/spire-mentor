@@ -60,8 +60,16 @@ pub const DEFAULT_BLUNDER_DROP_PCT: f64 = 8.0;
 pub const TIE_PTS: f64 = 3.0;
 /// Minimum resolved playouts (`hp_n`) on BOTH rows before the HP gap is used.
 pub const HP_MIN_SAMPLES: i64 = 10;
+/// Standard errors (of the difference of the two rows' mean final HP) an HP
+/// gap must clear to count; under it the gap reads as 0 (GH #888). Mirrors
+/// `regret_review.HP_GAP_SE`.
+pub const HP_GAP_SE: f64 = 2.0;
 /// Minimum MCTS visits on the played move before it can be graded at all.
 pub const PLAYED_MIN_VISITS: i64 = 50;
+/// Per-action severity (win-chance points or HP) below which an action does
+/// not count toward its turn's grade (sub-point jitter over five plays would
+/// otherwise add up to a slip). Mirrors `regret_review.TURN_ACTION_FLOOR`.
+pub const TURN_ACTION_FLOOR: f64 = 1.0;
 
 /// A progress sink: receives each wire frame (`{"type": "start", …}`,
 /// `{"type": "tick", …}`) as the rollout advisors go.
@@ -215,6 +223,7 @@ pub fn rows_from_mcts(result: &Value, state: &Value) -> Vec<Value> {
             "losses": entry["losses"].as_i64().unwrap_or(0),
             "ties": entry["ties"].as_i64().unwrap_or(0),
             "mean_final_hp": entry["mean_final_hp"].as_f64(),
+            "hp_sd": entry["hp_sd"].as_f64(),
             "hp_n": entry["hp_n"].as_i64().unwrap_or(0),
         }));
     }
@@ -529,14 +538,16 @@ fn best_row(scores: &[Value]) -> &Value {
         })
 }
 
+/// `_enemy_name`: the label of the enemy whose `index` is `target` — its
+/// name plus `" #k"` when several enemies share it
+/// ([`crate::enemy_labels`]), so a "wrong rat" blunder says which rat.
 fn enemy_name(enemies: &[Value], target: Option<i64>) -> Option<String> {
     let target = target?;
-    enemies
+    let e = enemies
         .iter()
-        .find(|e| e["index"].as_i64() == Some(target))
-        .and_then(|e| e["name"].as_str())
-        .filter(|n| !n.is_empty())
-        .map(str::to_string)
+        .find(|e| e["index"].as_i64() == Some(target))?;
+    e["name"].as_str().filter(|n| !n.is_empty())?;
+    crate::enemy_labels::enemy_label_by_index(enemies, target)
 }
 
 /// `_targeted_label`: the row's label, with `→ <enemy>` when the fight has
@@ -644,6 +655,23 @@ fn hp_known(row: &Value) -> bool {
     row["mean_final_hp"].as_f64().is_some() && py_int(&row["hp_n"]) >= HP_MIN_SAMPLES
 }
 
+/// `_hp_gap`: how much more mean final HP `best` keeps than `played`, or 0
+/// when that is within [`HP_GAP_SE`] standard errors of the difference (a
+/// noise gap) or negative. Clamping only after the noise test keeps
+/// `grade_turn`'s per-turn sum from accumulating one-sided jitter. Rows
+/// without `hp_sd` (logged before it existed) skip the test.
+fn hp_gap(best: &Value, played: &Value) -> f64 {
+    let gap = f64_of(&best["mean_final_hp"]) - f64_of(&played["mean_final_hp"]);
+    if let (Some(sb), Some(sp)) = (best["hp_sd"].as_f64(), played["hp_sd"].as_f64()) {
+        #[allow(clippy::cast_precision_loss)]
+        let var = sb * sb / py_int(&best["hp_n"]) as f64 + sp * sp / py_int(&played["hp_n"]) as f64;
+        if gap < HP_GAP_SE * var.sqrt() {
+            return 0.0;
+        }
+    }
+    gap.max(0.0)
+}
+
 /// A position's name-resolved `combat_play` view, built from the engine
 /// state the way the session builds a combat node's `state` (the same
 /// `build_combat_view` → `resolve_state_names` the hand / potion labels of
@@ -673,8 +701,16 @@ fn legal_action_for(cs: &CombatState, v: &Value) -> Option<Action> {
 /// either).
 #[must_use]
 pub fn label_line(cs: &CombatState, pv: &[Value], loc: &Loc) -> Vec<String> {
+    walk_line(cs, pv, loc).0
+}
+
+/// [`label_line`], plus the position the line ended the turn from: the
+/// one its End turn was played in, or the won / lost position — `None` when
+/// the line stopped short of either (`realgame_coach.CoachEngine.ai_turn`).
+fn walk_line(cs: &CombatState, pv: &[Value], loc: &Loc) -> (Vec<String>, Option<CombatState>) {
     let mut state = cs.clone();
     let mut out = Vec::new();
+    let mut end = None;
     for v in pv {
         if state.is_over {
             break;
@@ -685,19 +721,147 @@ pub fn label_line(cs: &CombatState, pv: &[Value], loc: &Loc) -> Vec<String> {
         if let Some(idx) = row_stable_idx(v) {
             out.push(action_label(idx, &named_combat_state(&state, loc)));
         }
-        let ends_turn = matches!(action, Action::EndTurn);
+        if matches!(action, Action::EndTurn) {
+            end = Some(state.clone());
+            break;
+        }
         let hand_before = state.player.hand.clone();
         let _ = sts2_core::apply(&mut state, action);
+        if state.is_over {
+            end = Some(state);
+            break;
+        }
         let hand_gained = state
             .player
             .hand
             .iter()
             .any(|uid| !hand_before.contains(uid));
-        if ends_turn || hand_gained {
+        if hand_gained {
             break;
         }
     }
+    (out, end)
+}
+
+/// Powers whose removal is an enemy waking up (C# `AsleepPower` /
+/// `SlumberPower`): `realgame_coach._SLEEP_POWERS`.
+const SLEEP_POWERS: [&str; 2] = ["ASLEEP", "SLUMBER"];
+
+fn asleep(enemy: &Value) -> bool {
+    enemy["powers"].as_array().is_some_and(|ps| {
+        ps.iter().any(|p| {
+            p["name"]
+                .as_str()
+                .is_some_and(|n| SLEEP_POWERS.contains(&n))
+        })
+    })
+}
+
+/// `realgame_coach.board_events`: what a line visibly did to the enemies
+/// between two engine boards ([`rmx::wire`]) — `("wakes", i)` /
+/// `("kills", i)` per encounter slot, or a lone `("wins", -1)`.
+fn board_events(start: &Value, end: &Value) -> Vec<(&'static str, i64)> {
+    if end["phase"] == "Victory" {
+        return vec![("wins", -1)];
+    }
+    let empty = Vec::new();
+    let after = end["encounter"].as_array().unwrap_or(&empty);
+    let mut out = Vec::new();
+    for (i, e) in start["encounter"]
+        .as_array()
+        .unwrap_or(&empty)
+        .iter()
+        .enumerate()
+    {
+        if e["is_dead"].as_bool() == Some(true) {
+            continue;
+        }
+        let Some(f) = after.iter().find(|f| f["uid"] == e["uid"]) else {
+            continue;
+        };
+        if f["is_dead"].as_bool() == Some(true) {
+            out.push(("kills", i as i64));
+        } else if asleep(e) && !asleep(f) {
+            out.push(("wakes", i as i64));
+        }
+    }
     out
+}
+
+/// `realgame_coach.why_text`: the recap's reason line — what one line did on
+/// the board that the other did not, e.g. "Your line wakes Lagavulin
+/// Matriarch on turn 1" (GH #888). `None` when both lines did the same.
+fn why_text(
+    you: &[(&'static str, i64)],
+    ai: &[(&'static str, i64)],
+    names: &[String],
+    turn: &Value,
+) -> Option<String> {
+    let phrase = |&(kind, i): &(&str, i64)| {
+        if kind == "wins" {
+            return "wins the fight".to_string();
+        }
+        let name = usize::try_from(i)
+            .ok()
+            .and_then(|i| names.get(i).cloned())
+            .unwrap_or_else(|| format!("enemy {}", i + 1));
+        format!("{kind} {name}")
+    };
+    let mut parts = Vec::new();
+    for (subject, mine, theirs) in [("your line", you, ai), ("the AI's line", ai, you)] {
+        let only: Vec<String> = mine
+            .iter()
+            .filter(|e| !theirs.contains(e))
+            .map(phrase)
+            .collect();
+        if !only.is_empty() {
+            parts.push(format!("{subject} {}", only.join(" and ")));
+        }
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    let mut text = parts.join("; ");
+    if let Some(t) = turn.as_i64() {
+        text.push_str(&format!(" on turn {t}"));
+    }
+    let mut chars = text.chars();
+    chars
+        .next()
+        .map(|c| c.to_uppercase().chain(chars).collect())
+}
+
+/// The reason line of a graded turn: the boards the turn started from
+/// (`start`), the player's End turn was played from (`you_end`) and the AI's
+/// line ended at (`ai_end`). Enemy names are the turn context's board labels
+/// by encounter slot, falling back to the view's name.
+fn turn_why(
+    start: &CombatState,
+    you_end: &CombatState,
+    ai_end: Option<&CombatState>,
+    named: &Value,
+) -> Option<String> {
+    let ai_end = ai_end?;
+    let start = rmx::wire(start);
+    let empty = Vec::new();
+    let mut names: Vec<String> = start["encounter"]
+        .as_array()
+        .unwrap_or(&empty)
+        .iter()
+        .map(|e| crate::display_maps::monster_title(e["kind"].as_str().unwrap_or("?")))
+        .collect();
+    let view = named["enemies"].as_array().unwrap_or(&empty);
+    for (e, label) in view.iter().zip(crate::enemy_labels::enemy_labels(view)) {
+        if let Some(slot) = e["index"].as_u64().and_then(|i| names.get_mut(i as usize)) {
+            *slot = label;
+        }
+    }
+    why_text(
+        &board_events(&start, &rmx::wire(you_end)),
+        &board_events(&start, &rmx::wire(ai_end)),
+        &names,
+        &named["round"],
+    )
 }
 
 /// Index of the score row for `(stable_idx, target)` — [`match_row`]'s
@@ -775,6 +939,7 @@ pub fn top_up_played(
         "mean_final_hp".into(),
         json!(fresh["mean_final_hp"].as_f64()),
     );
+    m.insert("hp_sd".into(), json!(fresh["hp_sd"].as_f64()));
     m.insert("is_best".into(), json!(false));
 }
 
@@ -799,7 +964,7 @@ pub fn assess_decision(step: &DecisionStep, scores: &[Value], blunder_pct: f64) 
     let hp = (hp_known(played) && hp_known(best)).then(|| {
         let played_hp = f64_of(&played["mean_final_hp"]);
         let best_hp = f64_of(&best["mean_final_hp"]);
-        (played_hp, best_hp, (best_hp - played_hp).max(0.0))
+        (played_hp, best_hp, hp_gap(best, played))
     });
     let hp_drop = hp.map(|(_, _, d)| d);
     // `regret * 100.0` in f64, as Python computes it: 1.0 − 0.92 gives
@@ -872,6 +1037,63 @@ pub fn assess_decision(step: &DecisionStep, scores: &[Value], blunder_pct: f64) 
     }))
 }
 
+/// Python `round(x, n)`: exact-value rounding, ties to even.
+fn py_round(x: f64, n: usize) -> f64 {
+    format!("{x:.n$}").parse().unwrap_or(x)
+}
+
+/// `regret_review.grade_turn`: one combat turn graded from its non-forced
+/// actions' regrets (`assess_decision` values; `None` = could not be graded).
+/// `None` (stay silent) when any action is ungraded or `uncertain`; else
+/// `{verdict, hp_drop, severity, win_before, win_after}`.
+///
+/// ```text
+/// counted  = actions with severity >= TURN_ACTION_FLOOR
+/// severity = max(sum drop_pct, sum hp_drop) over counted
+/// verdict  = best (none counted) | tie (< TIE_PTS)
+///            | blunder (>= DEFAULT_BLUNDER_DROP_PCT) | slip
+/// ```
+///
+/// Twin of the Python rule; both are pinned by
+/// `sts2-pycli/tests/fixtures/coach/grade_turn_cases.json`.
+#[must_use]
+pub fn grade_turn(regrets: &[Option<Value>]) -> Option<Value> {
+    let mut graded = Vec::with_capacity(regrets.len());
+    for r in regrets {
+        let r = r.as_ref()?;
+        if r["verdict"].as_str() == Some("uncertain") {
+            return None;
+        }
+        graded.push(r);
+    }
+    let counted: Vec<&Value> = graded
+        .iter()
+        .copied()
+        .filter(|r| f64_of(&r["severity"]) >= TURN_ACTION_FLOOR)
+        .collect();
+    let turn_hp: f64 = counted.iter().map(|r| f64_of(&r["hp_drop"])).sum();
+    let turn_pts: f64 = counted.iter().map(|r| f64_of(&r["drop_pct"])).sum();
+    let severity = turn_pts.max(turn_hp);
+    let verdict = if counted.is_empty() {
+        "best"
+    } else if severity < TIE_PTS {
+        "tie"
+    } else if severity >= DEFAULT_BLUNDER_DROP_PCT {
+        "blunder"
+    } else {
+        "slip"
+    };
+    let hp_known = counted.iter().any(|r| !r["hp_drop"].is_null());
+    let first = graded.first();
+    Some(json!({
+        "verdict": verdict,
+        "hp_drop": hp_known.then(|| py_round(turn_hp, 2)),
+        "severity": py_round(severity, 2),
+        "win_before": first.map(|r| py_round(f64_of(&r["best_win_prob"]), 4)),
+        "win_after": first.map(|r| py_round(f64_of(&r["played_win_prob"]), 4)),
+    }))
+}
+
 /// `summarize`: `{decisions, blunders (top_n costliest), summary}`.
 #[must_use]
 pub fn summarize(decisions: Vec<Value>, top_n: usize) -> Value {
@@ -931,6 +1153,27 @@ pub fn hint(sess: &Session, config: &Value) -> Result<Option<Value>, SessionErro
         .and_then(|g| g.combat_state())
         .ok_or_else(|| SessionError::new(400, "no native combat state"))?;
     Ok(Some(score(cs, &named, config)))
+}
+
+/// [`hint`], remembering the rows and PV on the session
+/// (`Session::hint_scores`) for the per-turn coach to reuse.
+pub fn hint_remembered(sess: &mut Session, config: &Value) -> Result<Option<Value>, SessionError> {
+    let node = sess.active_node()?;
+    if !combat_play(node) {
+        return Ok(None);
+    }
+    let id = node.id;
+    let named = resolve_state_names(Some(&node.state), sess.loc());
+    let cs = sess
+        .game()
+        .and_then(|g| g.combat_state())
+        .ok_or_else(|| SessionError::new(400, "no native combat state"))?;
+    let (out, pv) = score_with_pv(cs, &named, config);
+    let sims = params_for(config, "mcts_recommend").map_or(0, |p| p.sims);
+    if let Some(rows) = out["scores"].as_array().filter(|r| !r.is_empty()) {
+        sess.hint_scores.insert(id, (rows.clone(), pv, sims));
+    }
+    Ok(Some(out))
 }
 
 /// `search_tree`: the full tree for the active combat state, `None` off combat.
@@ -1061,6 +1304,256 @@ pub fn last_move_regret(sess: &Session, config: &Value) -> Result<Option<Value>,
     Ok(assess_decision(&step, &scores, blunder_pct))
 }
 
+/// `realgame_coach.intent_text`: one enemy's telegraphed move as display
+/// text — `"attack 6"`, `"attack 6×2"`, another intent as its lower-cased
+/// type, joined by `" + "` (`"attack 6×2 + debuff"`); `"unknown"` when
+/// nothing is telegraphed. Reads the workbench view's `type` and the mod
+/// wire's `intent_type`. Pinned with the Python one by
+/// `sts2-pycli/tests/fixtures/coach/intent_text_cases.json`.
+#[must_use]
+pub fn intent_text(intents: &[Value]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for intent in intents.iter().filter(|i| i.is_object()) {
+        let text = if let Some(damage) = intent["damage"].as_i64() {
+            let hits = intent["hits"].as_i64().unwrap_or(1);
+            if hits > 1 {
+                format!("attack {damage}×{hits}")
+            } else {
+                format!("attack {damage}")
+            }
+        } else {
+            let kind = intent["intent_type"]
+                .as_str()
+                .or_else(|| intent["type"].as_str())
+                .unwrap_or("")
+                .trim();
+            if kind.is_empty() {
+                continue;
+            }
+            kind.to_lowercase()
+        };
+        if !parts.contains(&text) {
+            parts.push(text);
+        }
+    }
+    if parts.is_empty() {
+        "unknown".to_string()
+    } else {
+        parts.join(" + ")
+    }
+}
+
+/// `realgame_coach.turn_context` for a workbench combat view: the position
+/// a turn started from — `{hand, energy, max_energy, hp, max_hp, block,
+/// enemies: [{name, hp, intent}]}`. The view lists live enemies only; the
+/// Python twin reads the mod's wire, which can still carry a dying one, and
+/// [`crate::enemy_labels`] gives such an entry no number — so both number
+/// the same live enemies the same way.
+#[must_use]
+pub fn turn_context(named: &Value) -> Value {
+    let empty = Vec::new();
+    let hand: Vec<Value> = named["hand"]
+        .as_array()
+        .unwrap_or(&empty)
+        .iter()
+        .map(|c| {
+            json!(c["name"]
+                .as_str()
+                .or_else(|| c["id"].as_str())
+                .unwrap_or("?"))
+        })
+        .collect();
+    let view_enemies = named["enemies"].as_array().unwrap_or(&empty);
+    // `name` is the board label: a name shared by several enemies carries
+    // its `" #k"` ([`crate::enemy_labels`]), so the recap says WHICH rat.
+    let labels = crate::enemy_labels::enemy_labels(view_enemies);
+    let enemies: Vec<Value> = view_enemies
+        .iter()
+        .zip(labels)
+        .map(|(e, label)| {
+            json!({
+                "name": label,
+                "hp": e["hp"].as_i64(),
+                "intent": intent_text(e["intents"].as_array().unwrap_or(&empty)),
+            })
+        })
+        .collect();
+    let player = &named["player"];
+    json!({
+        "hand": hand,
+        "energy": named["energy"].as_i64(),
+        "max_energy": named["max_energy"].as_i64(),
+        "hp": player["hp"].as_i64(),
+        "max_hp": player["max_hp"].as_i64(),
+        "block": player["block"].as_i64(),
+        "enemies": enemies,
+    })
+}
+
+/// Default cap on fresh searches one turn grade may run: the worker is
+/// single-threaded, so a long turn with no remembered hint scores stays
+/// ungraded rather than stall the player's next action.
+pub const TURN_GRADE_MAX_SEARCHES: usize = 6;
+
+/// Default sims of a turn grade's search: the live advisor's `--sims`
+/// (`realgame_advisor.py`), so the browser coach and the mod's grade a turn
+/// from the same search strength. At the engine's 300 the root's children
+/// split ~75 playouts each and an under-played turn's HP cost drowns in the
+/// noise (a Strike-then-End-turn graded `best`).
+pub const TURN_GRADE_SIMS: u32 = 8000;
+
+/// Forced-root sims for a played-move top-up: `realgame_coach.TOP_UP_SIMS`.
+pub const TURN_GRADE_TOP_UP_SIMS: u32 = 400;
+
+/// `last_turn_grade`: the combat turn that the active node's End turn just
+/// closed, graded whole (`grade_turn`) — the PROTOCOL.md `coach` `turn`
+/// record, so the live chip and follow mode share one renderer.
+///
+/// Walks back from the End turn through the turn's moves (same fight, same
+/// round). Each move is scored from its remembered hint search
+/// (`Session::hint_scores`, if it ran at least the grade's `sims`, default
+/// [`TURN_GRADE_SIMS`]) or a fresh search — at most `max_searches`
+/// (default [`TURN_GRADE_MAX_SEARCHES`]) of them; past the cap the move is
+/// ungraded and the turn silent — then topped up and diffed like
+/// [`last_move_regret`]. A forced move (one legal action) is labelled, not
+/// graded; an in-combat card select counts in `ungraded_actions`.
+///
+/// `None` when the active node is not the result of an End turn, or when
+/// the turn is silent (a move ungraded or still `uncertain`);
+/// `{error, turn: null}` when nothing can be scored.
+pub fn last_turn_grade(sess: &Session, config: &Value) -> Result<Option<Value>, SessionError> {
+    let node = sess.active_node()?;
+    let Some(end) = node.parent_id.and_then(|p| sess.node(p)) else {
+        return Ok(None);
+    };
+    if !combat_play(end)
+        || native_action(node.action.as_deref(), &node.args)["action"] != "end_turn"
+    {
+        return Ok(None);
+    }
+    let Some(round) = end.combat.as_ref().map(|c| c.round) else {
+        return Ok(None);
+    };
+    let mut steps: Vec<(&Node, &Node)> = vec![(end, node)];
+    let mut cur = end;
+    while let Some(prev) = cur.parent_id.and_then(|p| sess.node(p)) {
+        if prev.combat.as_ref().map(|c| c.round) != Some(round) {
+            break;
+        }
+        steps.push((prev, cur));
+        cur = prev;
+    }
+    steps.reverse();
+
+    let mut cfg = config_obj(config);
+    let blunder_pct = pop_f64(&mut cfg, "blunder_pct", DEFAULT_BLUNDER_DROP_PCT);
+    let max_searches = pop_usize(&mut cfg, "max_searches", TURN_GRADE_MAX_SEARCHES);
+    let peeked = cfg
+        .as_object_mut()
+        .and_then(|m| m.remove("peeked"))
+        .is_some_and(|v| v.as_bool() == Some(true));
+    if let Some(m) = cfg.as_object_mut() {
+        m.entry("sims").or_insert(json!(TURN_GRADE_SIMS));
+    }
+    let Ok(params) = params_for(&cfg, "mcts_recommend") else {
+        return Ok(Some(
+            json!({"error": "no MCTS scores available", "turn": Value::Null}),
+        ));
+    };
+    let top_up = RecommendParams {
+        sims: TURN_GRADE_TOP_UP_SIMS,
+        ..params
+    };
+
+    let mut you: Vec<String> = Vec::new();
+    let mut regrets: Vec<Option<Value>> = Vec::new();
+    let mut ungraded_actions = 0usize;
+    let mut searches = 0usize;
+    // The turn's first graded position and its search's PV: the AI's line.
+    let mut first: Option<(&CombatState, Vec<Value>, Vec<Value>)> = None;
+    for (parent, child) in &steps {
+        if !combat_play(parent) {
+            ungraded_actions += 1;
+            continue;
+        }
+        let step = step_of(parent, child, sess.loc(), &Value::Null, &Value::Null);
+        let Some(cs) = parent.combat.as_ref() else {
+            regrets.push(None);
+            continue;
+        };
+        if sts2_core::legal_actions(cs).len() < 2 {
+            let (idx, _) = action_stable_key(&step.chosen);
+            you.push(idx.map_or_else(|| "?".to_string(), |i| action_label(i, &step.state)));
+            continue;
+        }
+        let hint = sess
+            .hint_scores
+            .get(&parent.id)
+            .filter(|(_, _, sims)| *sims >= params.sims);
+        let (mut scores, pv) = if let Some((rows, pv, _)) = hint {
+            (rows.clone(), pv.clone())
+        } else if searches < max_searches {
+            searches += 1;
+            let (result, pv) = score_with_pv(cs, &step.state, &cfg);
+            (result["scores"].as_array().cloned().unwrap_or_default(), pv)
+        } else {
+            // Past the cap: silent, whatever the rest of the turn holds.
+            return Ok(None);
+        };
+        top_up_played(cs, &mut scores, &step.chosen, &top_up);
+        if first.is_none() && !scores.is_empty() {
+            first = Some((cs, pv, scores.clone()));
+        }
+        let regret = assess_decision(&step, &scores, blunder_pct);
+        you.push(regret.as_ref().map_or_else(
+            || {
+                let (idx, _) = action_stable_key(&step.chosen);
+                idx.map_or_else(|| "?".to_string(), |i| action_label(i, &step.state))
+            },
+            |r| r["played_label"].as_str().unwrap_or("?").to_string(),
+        ));
+        regrets.push(regret);
+    }
+    let Some(grade) = grade_turn(&regrets) else {
+        return Ok(None);
+    };
+    let (head, _) = steps[0];
+    let named = resolve_state_names(Some(&head.state), sess.loc());
+    let mut why = None;
+    let ai = first.as_ref().map_or_else(Vec::new, |(cs, pv, scores)| {
+        let (line, ai_end) = walk_line(cs, pv, sess.loc());
+        if let (Some(start), Some(you_end)) = (head.combat.as_ref(), end.combat.as_ref()) {
+            why = turn_why(start, you_end, ai_end.as_ref(), &named);
+        }
+        if line.is_empty() {
+            let best = best_row(scores);
+            vec![best["action"].as_str().unwrap_or("?").to_string()]
+        } else {
+            line
+        }
+    });
+    let mut record = json!({
+        "kind": "turn",
+        "id": format!("turn:{}", head.id),
+        "node_id": head.id,
+        "turn": named.get("round").cloned().unwrap_or(Value::Null),
+        "floor": Value::Null,
+        "you": you,
+        "ai": ai,
+        "why": why,
+        "peeked": peeked,
+        "ungraded_actions": ungraded_actions,
+        "context": turn_context(&named),
+        "searches": searches,
+    });
+    if let (Some(r), Some(g)) = (record.as_object_mut(), grade.as_object()) {
+        for (k, v) in g {
+            r.insert(k.clone(), v.clone());
+        }
+    }
+    Ok(Some(record))
+}
+
 /// The root distribution of the search that actually chose `node`.
 ///
 /// `Session::run_mode_step` stashes the native agent's `combat_search` on the
@@ -1084,10 +1577,10 @@ pub fn agent_scores(
     let Some(search) = node.state.get("mcts").filter(|v| v.is_object()) else {
         return Vec::new();
     };
-    if !search
+    if search
         .get("actions")
         .and_then(Value::as_array)
-        .is_some_and(|a| !a.is_empty())
+        .is_none_or(std::vec::Vec::is_empty)
     {
         return Vec::new();
     }
@@ -1721,6 +2214,56 @@ mod tests {
     use super::*;
 
     #[test]
+    fn intent_text_shared_cases() {
+        let cases: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../sts2-pycli/tests/fixtures/coach/intent_text_cases.json"
+        )))
+        .unwrap();
+        for case in cases["cases"].as_array().unwrap() {
+            for key in ["type", "intent_type"] {
+                let intents: Vec<Value> = case["intents"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|i| {
+                        let mut i = i.clone();
+                        let kind = i["kind"].take();
+                        i.as_object_mut().unwrap().remove("kind");
+                        i[key] = kind;
+                        i
+                    })
+                    .collect();
+                assert_eq!(
+                    json!(intent_text(&intents)),
+                    case["expect"],
+                    "case {} ({key})",
+                    case["name"]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn grade_turn_shared_cases() {
+        let cases: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../sts2-pycli/tests/fixtures/coach/grade_turn_cases.json"
+        )))
+        .unwrap();
+        for case in cases["cases"].as_array().unwrap() {
+            let regrets: Vec<Option<Value>> = case["regrets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| (!r.is_null()).then(|| r.clone()))
+                .collect();
+            let got = grade_turn(&regrets).unwrap_or(Value::Null);
+            assert_eq!(got, case["expect"], "case {}", case["name"]);
+        }
+    }
+
+    #[test]
     fn labels_resolve_hand_potions_and_sentinels() {
         let state = json!({
             "hand": [{"index": 0, "name": "Strike"}, {"index": 3, "name": "Bash"}],
@@ -1838,6 +2381,34 @@ mod tests {
     }
 
     #[test]
+    fn targeted_label_and_turn_context_number_duplicated_enemies() {
+        let enemies = vec![
+            json!({"index": 0, "name": "Two-Tailed Rat"}),
+            json!({"index": 1, "name": "Louse"}),
+            json!({"index": 3, "name": "Two-Tailed Rat"}),
+        ];
+        let r = |t| row(0, Some(t), 0.5, false, "Strike");
+        assert_eq!(
+            targeted_label(&r(0), &enemies),
+            "Strike → Two-Tailed Rat #1"
+        );
+        assert_eq!(targeted_label(&r(1), &enemies), "Strike → Louse");
+        assert_eq!(
+            targeted_label(&r(3), &enemies),
+            "Strike → Two-Tailed Rat #2"
+        );
+        assert_eq!(targeted_label(&r(2), &enemies), "Strike");
+        let ctx = turn_context(&json!({"enemies": enemies}));
+        let names: Vec<&str> = ctx["enemies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["Two-Tailed Rat #1", "Louse", "Two-Tailed Rat #2"]);
+    }
+
+    #[test]
     fn assess_decision_matched_line_and_unresolvable() {
         let scores = vec![
             row(1, None, 0.6, true, "Defend"),
@@ -1943,6 +2514,38 @@ mod tests {
         let mut s = step(json!({"action": "end_turn"}), json!([]));
         s.best_line = best_line.iter().map(|x| (*x).to_string()).collect();
         assess_decision(&s, &[played, best], DEFAULT_BLUNDER_DROP_PCT).unwrap()
+    }
+
+    #[test]
+    fn hp_gap_within_noise_reads_zero() {
+        // GH #888: 2 HP apart, SE of the difference 4 HP -- noise.
+        let noisy = json!({"mean_final_hp": 60.0, "hp_sd": 20.0, "hp_n": 50});
+        let mut played = noisy.clone();
+        played["mean_final_hp"] = json!(58.0);
+        let d = hp_assess(noisy, played, &[]);
+        assert_eq!(d["hp_drop"], json!(0.0));
+        assert_eq!(d["verdict"], json!("tie"));
+        assert!(!d["message"].as_str().unwrap().contains("HP"));
+    }
+
+    #[test]
+    fn hp_gap_clearing_noise_counts() {
+        let d = hp_assess(json!({"hp_sd": 5.0}), json!({"hp_sd": 5.0}), &[]);
+        assert_eq!(d["hp_drop"], json!(12.0));
+        assert_eq!(d["verdict"], json!("blunder"));
+    }
+
+    #[test]
+    fn noise_gaps_do_not_sum_into_a_turn_grade() {
+        let noisy = json!({"mean_final_hp": 60.0, "hp_sd": 20.0, "hp_n": 50});
+        let mut played = noisy.clone();
+        played["mean_final_hp"] = json!(58.5);
+        let regrets: Vec<Option<Value>> = (0..3)
+            .map(|_| Some(hp_assess(noisy.clone(), played.clone(), &[])))
+            .collect();
+        let g = grade_turn(&regrets).unwrap();
+        assert!(g["hp_drop"].is_null(), "{g}");
+        assert_eq!(g["verdict"], json!("best"));
     }
 
     #[test]
@@ -2182,6 +2785,139 @@ mod tests {
             json!({"action": "end_turn"}),
         ];
         assert_eq!(label_line(&cs, &pv, &test_loc()), vec!["Pommel Strike"]);
+    }
+
+    /// The AI line's end board: the position its End turn is played in;
+    /// none when it stops at a draw first (GH #888).
+    #[test]
+    fn walk_line_ends_where_the_end_turn_is_played() {
+        let cs = ironclad_with_hand(&["BASH", "DEFEND_IRONCLAD", "STRIKE_IRONCLAD"]);
+        let defend = play_slot(&cs, 1);
+        let mut after = cs.clone();
+        let _ = sts2_core::apply(&mut after, legal_action_for(&cs, &defend).unwrap());
+        let pv = vec![defend, json!({"action": "end_turn"})];
+        let (line, end) = walk_line(&cs, &pv, &test_loc());
+        assert_eq!(line, vec!["Defend", "end turn"]);
+        assert_eq!(rmx::wire(&end.expect("end board")), rmx::wire(&after));
+        let drawn = ironclad_fight(&["POMMEL_STRIKE"], &["DEFEND_IRONCLAD", "BASH"]);
+        let pv = vec![play_slot(&drawn, 0), json!({"action": "end_turn"})];
+        assert!(walk_line(&drawn, &pv, &test_loc()).1.is_none());
+    }
+
+    /// On a real board: three Strikes break the sleeping Lagavulin's 12
+    /// block and wake it, a Defend does not — the reason line names it from
+    /// the turn context.
+    #[test]
+    fn turn_why_names_the_woken_enemy() {
+        let deck: Vec<String> = ["STRIKE_IRONCLAD"; 3]
+            .iter()
+            .chain(&["DEFEND_IRONCLAD"])
+            .map(|s| (*s).to_string())
+            .collect();
+        let cs = sts2_wire::scenario::build_scenario_state(
+            1,
+            "Ironclad",
+            &deck,
+            80,
+            80,
+            &[],
+            &[],
+            "LAGAVULIN_MATRIARCH_BOSS",
+            0,
+            None,
+            None,
+        )
+        .expect("scenario builds");
+        let after = |ids: &[&str]| {
+            let mut out = cs.clone();
+            for id in ids {
+                let slot = out
+                    .player
+                    .hand
+                    .iter()
+                    .position(|&u| {
+                        sts2_core::card_by_uid(&out.cards, u)
+                            .is_some_and(|c| c.card_id.to_python_name() == *id)
+                    })
+                    .expect("in hand");
+                let action =
+                    legal_action_for(&out, &play_slot(&out, u8::try_from(slot).unwrap())).unwrap();
+                let _ = sts2_core::apply(&mut out, action);
+            }
+            out
+        };
+        let strike = after(&["STRIKE_IRONCLAD"; 3]);
+        let defend = after(&["DEFEND_IRONCLAD"]);
+        let named = named_combat_state(&cs, &test_loc());
+        assert_eq!(
+            turn_why(&cs, &strike, Some(&defend), &named).as_deref(),
+            Some("Your line wakes Lagavulin Matriarch on turn 1")
+        );
+        assert_eq!(turn_why(&cs, &defend, Some(&defend), &named), None);
+        assert_eq!(turn_why(&cs, &strike, None, &named), None);
+    }
+
+    fn lagavulin(asleep: bool, dead: bool, uid: i64) -> Value {
+        let powers = if asleep {
+            json!([{"name": "ASLEEP", "amount": 3}])
+        } else {
+            json!([])
+        };
+        json!({"kind": "LAGAVULIN_MATRIARCH", "uid": uid, "is_dead": dead, "powers": powers})
+    }
+
+    fn board(enemies: &[Value], phase: &str) -> Value {
+        json!({"phase": phase, "encounter": enemies})
+    }
+
+    /// Twin of `test_realgame_coach.TestWhy` (GH #888).
+    #[test]
+    fn board_events_wake_kill_and_win() {
+        let p = "PlayerPhase";
+        let start = board(&[lagavulin(true, false, 7), lagavulin(false, false, 8)], p);
+        let end = board(&[lagavulin(false, false, 7), lagavulin(false, true, 8)], p);
+        assert_eq!(board_events(&start, &end), vec![("wakes", 0), ("kills", 1)]);
+        assert_eq!(
+            board_events(&start, &board(&[], "Victory")),
+            vec![("wins", -1)]
+        );
+        assert!(board_events(&start, &start).is_empty());
+        let mut slumber = lagavulin(false, false, 7);
+        slumber["powers"] = json!([{"name": "SLUMBER"}]);
+        assert_eq!(
+            board_events(
+                &board(&[slumber], p),
+                &board(&[lagavulin(false, false, 7)], p)
+            ),
+            vec![("wakes", 0)]
+        );
+    }
+
+    #[test]
+    fn why_text_names_each_sides_extra_events() {
+        let names = ["Lagavulin Matriarch".to_string(), "Cultist".to_string()];
+        assert_eq!(
+            why_text(&[("wakes", 0)], &[], &names, &json!(1)).as_deref(),
+            Some("Your line wakes Lagavulin Matriarch on turn 1")
+        );
+        assert_eq!(
+            why_text(
+                &[("wakes", 0)],
+                &[("wakes", 0), ("kills", 1)],
+                &names,
+                &json!(2)
+            )
+            .as_deref(),
+            Some("The AI's line kills Cultist on turn 2")
+        );
+        assert_eq!(
+            why_text(&[("wakes", 0)], &[("wins", -1)], &names, &json!(4)).as_deref(),
+            Some("Your line wakes Lagavulin Matriarch; the AI's line wins the fight on turn 4")
+        );
+        assert_eq!(
+            why_text(&[("kills", 1)], &[("kills", 1)], &names, &json!(1)),
+            None
+        );
     }
 
     fn end_turn_rows() -> Vec<Value> {

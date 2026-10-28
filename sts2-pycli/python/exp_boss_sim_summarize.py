@@ -9,7 +9,7 @@ from collections import Counter
 
 
 def summ(path: str) -> dict:
-    d = json.load(open(path))
+    d = json.load(open(path, encoding="utf-8"))
     res = d["results"]
     n = len(res)
     acts = Counter(r.get("act") for r in res)

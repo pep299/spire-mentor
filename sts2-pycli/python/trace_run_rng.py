@@ -55,7 +55,9 @@ def _stream_reads(lines: list[str], stream: str) -> list[tuple]:
 
 
 def _rust_reads(seed: str, character: str, ascension: int) -> list[str]:
-    tmp = tempfile.NamedTemporaryFile(mode="w+", suffix=".rusttrace", delete=False)
+    tmp = tempfile.NamedTemporaryFile(
+        encoding="utf-8", mode="w+", suffix=".rusttrace", delete=False
+    )
     saved = os.dup(2)
     os.dup2(tmp.fileno(), 2)
     try:

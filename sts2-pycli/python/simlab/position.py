@@ -22,11 +22,14 @@ JSON, so changes here are schema changes.
 from __future__ import annotations
 
 import copy
+import functools
 import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
+
+from enemy_labels import enemy_labels
 
 SCHEMA = "simlab-position/1"
 
@@ -202,6 +205,10 @@ def position_from_wire(
     pos["ascension"] = int((rng or {}).get("ascension") or 0)
     pos["turn"] = int(wire.get("round", wire.get("turn", 1)) or 1)
     pos["isElite"] = bool(wire.get("is_elite"))
+    # A non-default build's wire names it (``$.game_version``); the position
+    # carries it on so a rebuild plays the same build (GH #877).
+    if isinstance(wire.get("game_version"), str):
+        pos["game_version"] = wire["game_version"]
     pos["encounter"] = encounter
     pos["seed"] = int(seed if seed is not None else (rng or {}).get("seed") or 0) or 1
 
@@ -347,6 +354,7 @@ def _roll_intents(
     ascension: int,
     seed: int,
     forced: list[str | None],
+    game_version: str | None = None,
 ) -> list[dict[str, Any]]:
     """Ask the engine what each enemy opens with, honouring any forced moves.
 
@@ -372,8 +380,29 @@ def _roll_intents(
         potions=[],
         monsters=kinds,
         move_states=forced,
+        game_version=game_version,
     )
     return list(sts2_rs.state_to_dict(cs)["encounter"])
+
+
+def position_game_version(pos: dict[str, Any]) -> str | None:
+    """The game build a position plays (GH #877): its ``game_version`` field,
+    ``None`` for the default build. Written only for a non-default build, so
+    every v0.107.1 position is unchanged. Rust twin: ``position_game_version``.
+
+    Raises:
+        PositionError: The field names a build the engine does not support.
+    """
+    from sts2_client import DEFAULT_GAME_VERSION, SUPPORTED_GAME_VERSIONS
+
+    raw = pos.get("game_version")
+    if raw is None or raw == DEFAULT_GAME_VERSION:
+        return None
+    if raw not in SUPPORTED_GAME_VERSIONS:
+        raise PositionError(
+            f"unsupported game_version {raw!r} (supported: {', '.join(SUPPORTED_GAME_VERSIONS)})"
+        )
+    return str(raw)
 
 
 def wire_from_position(
@@ -401,6 +430,7 @@ def wire_from_position(
     if pos.get("schema") not in (None, SCHEMA):
         raise PositionError(f"unsupported schema {pos.get('schema')!r} (expected {SCHEMA})")
     character = character_from_class(str(pos.get("character") or "Ironclad"))
+    game_version = position_game_version(pos)
     ascension = _int(pos.get("ascension", 0) or 0, "ascension", minimum=0)
     turn = _int(pos.get("turn", 1) or 1, "turn", minimum=1)
     seed = _int(pos.get("seed", 1) or 1, "seed", minimum=0)
@@ -494,6 +524,9 @@ def wire_from_position(
     # Resolve every enemy's opening move. Named moves come from the move table;
     # unnamed ones are rolled by the engine for this exact lineup.
     forced: list[str | None] = [(str(m["intent"]) if m.get("intent") else None) for m in monsters]
+    if roll_intents is _roll_intents and game_version is not None:
+        # The engine rolls the openers in the position's own build.
+        roll_intents = functools.partial(_roll_intents, game_version=game_version)
     rolled = (
         roll_intents(character, monsters, ascension, seed, forced)
         if any(f is None for f in forced)
@@ -548,7 +581,7 @@ def wire_from_position(
             entry["move_state"] = move_state
         encounter.append(entry)
 
-    return {
+    wire: dict[str, Any] = {
         "wire_version": 1,
         "phase": "PlayerPlayPhase",
         "round": turn,
@@ -562,6 +595,10 @@ def wire_from_position(
         "encounter": encounter,
         "rng": {"seed": seed, "ascension": ascension, "run_seed": seed & 0xFFFF_FFFF},
     }
+    # Named only for a non-default build, exactly as ``state_to_dict`` does.
+    if game_version is not None:
+        wire["game_version"] = game_version
+    return wire
 
 
 # ---------------------------------------------------------------------------
@@ -626,6 +663,7 @@ def new_position(
     potions: list[str] | None = None,
     deck: list[str] | None = None,
     starter: dict[str, Any] | None = None,
+    game_version: str | None = None,
 ) -> BuiltPosition:
     """A fresh fight from turn 1, as the game would deal it.
 
@@ -639,6 +677,8 @@ def new_position(
             character's starter (``starter`` rows from the catalog).
         starter: ``{"hp", "deck", "relic"}`` for the character; taken from
             :mod:`simlab.catalog` when not given.
+        game_version: The game build to deal it in (``None`` = the default;
+            GH #877, the workbench selector's pick).
 
     Raises:
         PositionError: On an unknown encounter/character or an empty lineup.
@@ -674,6 +714,7 @@ def new_position(
             ascension=int(ascension),
             potions=list(potions or []),
             monsters=lineup or None,
+            game_version=game_version,
         )
         wire = sts2_rs.state_to_dict(cs)
     except Exception as exc:
@@ -775,16 +816,31 @@ def action_label(
 ) -> str:
     """Human label for an engine legal action against the board it applies to."""
     kind = action.get("action")
-    enemies = [m for m in wire.get("encounter") or [] if not m.get("is_dead")]
+    # The engine's ``target_index`` is an encounter SLOT, so it indexes the
+    # whole encounter, dead slots included — not the alive-filtered list (which
+    # shifts left past a dead enemy and named the wrong one). The name is the
+    # board label over the enemies the board shows (neither dead nor escaped,
+    # as ``position_from_wire`` keeps them) in slot order (``enemy_labels``):
+    # "Two-Tailed Rat #2". Rust twin: ``simlab.rs::action_label``.
+    alive = [
+        (slot, name_of("monster", str(m["kind"])))
+        for slot, m in enumerate(wire.get("encounter") or [])
+        if not (m.get("is_dead") or m.get("is_escaped")) and m.get("kind") is not None
+    ]
+    labels = enemy_labels([{"name": n} for _, n in alive])
 
     def target() -> str:
         t = action.get("target_index")
         if t is None:
             return ""
         try:
-            return " → " + name_of("monster", str(enemies[int(t)]["kind"]))
-        except (IndexError, KeyError, ValueError, TypeError):
+            t = int(t)
+        except (TypeError, ValueError):
             return f" → enemy {t}"
+        for i, (slot, _) in enumerate(alive):
+            if slot == t:
+                return f" → {labels[i]}"
+        return f" → enemy {t}"
 
     if kind == "play":
         hand = wire.get("deck", {}).get("hand") or []

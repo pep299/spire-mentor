@@ -34,10 +34,10 @@
    "args": {},
    "is_best": false,
    "label": "Skip card reward",
-   "prob": 0.0001
+   "prob": 0.0
   }
  ],
  "ppo_available": true,
  "surface": "card-pick",
- "value": 0.9655
+ "value": 0.9451
 }

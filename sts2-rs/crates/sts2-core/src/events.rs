@@ -858,7 +858,9 @@ impl EventEffect {
                 rs.relics.push(*id);
                 rs.last_obtained_relic = Some(*id);
             }
-            Self::AddCardToDeck(card) => rs.master_deck.push(*card),
+            Self::AddCardToDeck(card) => {
+                rs.add_card_to_deck_with_hooks(*card, crate::relic_effects::AddSource::EventGain);
+            }
         }
     }
 }

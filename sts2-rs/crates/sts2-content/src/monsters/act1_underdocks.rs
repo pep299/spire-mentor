@@ -42,7 +42,9 @@ use sts2_core::monsters::Intent;
 use sts2_core::powers::PowerKind;
 use sts2_core::CombatState;
 
-use super::dsl::{always_true, br, cb, cb_owner, mv, mv_eff, proto_ai, proto_ais, ProtoAis};
+use super::dsl::{
+    always_true, br, cb, cb_owner, mv, mv_eff, proto_ai, proto_ais, stun_mv, ProtoAis,
+};
 use super::{apply_power_to_player_via_legacy_surface, apply_signed_power_to_player};
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -140,10 +142,12 @@ fn corpse_slug_goop_effect(state: &mut CombatState, _owner: sts2_core::CreatureU
 /// `PowerCmd.Apply<StrengthPower>(base.Creature, EnlargeStr=2, …)`
 /// (`MegaCrit.Sts2.Core.Models.Monsters/PhantasmalGardener.cs:151`, `EnlargeStr`:46).
 fn phantasmal_gardener_enlarge_effect(state: &mut CombatState, owner: sts2_core::CreatureUid) {
-    let amount = sts2_core::ascension::get_value_if_ascension(
+    let amount = crate::ascension_scaling::scaled_buff(
         state.ascension,
-        sts2_core::ascension::AscensionLevel::DeadlyEnemies,
-        3,
+        state.game_version,
+        sts2_core::MonsterKind::PhantasmalGardener,
+        "ENLARGE",
+        PowerKind::Strength,
         2,
     );
     sts2_core::card_effects::apply_power_to_creature(state, owner, PowerKind::Strength, amount);
@@ -246,10 +250,12 @@ pub fn install_skittish_handlers() {
 /// `InertiaStrengthGain`:49 is `GetValueIfAscension(DeadlyEnemies, 4, 2)` —
 /// the A9 value is 4, not the 3 carried over from v0.103.2.
 fn skulking_colony_inertia_effect(state: &mut CombatState, owner: sts2_core::CreatureUid) {
-    let amount = sts2_core::ascension::get_value_if_ascension(
+    let amount = crate::ascension_scaling::scaled_buff(
         state.ascension,
-        sts2_core::ascension::AscensionLevel::DeadlyEnemies,
-        4,
+        state.game_version,
+        sts2_core::MonsterKind::SkulkingColony,
+        "INERTIA_MOVE",
+        PowerKind::Strength,
         2,
     );
     sts2_core::card_effects::apply_power_to_creature(state, owner, PowerKind::Strength, amount);
@@ -267,10 +273,12 @@ fn calcified_cultist_incantation_effect(state: &mut CombatState, owner: sts2_cor
 /// (`MegaCrit.Sts2.Core.Models.Monsters/DampCultist.cs:82`, `IncantationAmount`:33,
 /// non-ascension value 5).
 fn damp_cultist_incantation_effect(state: &mut CombatState, owner: sts2_core::CreatureUid) {
-    let amount = sts2_core::ascension::get_value_if_ascension(
+    let amount = crate::ascension_scaling::scaled_buff(
         state.ascension,
-        sts2_core::ascension::AscensionLevel::DeadlyEnemies,
-        6,
+        state.game_version,
+        sts2_core::MonsterKind::DampCultist,
+        "INCANTATION",
+        PowerKind::Ritual,
         5,
     );
     sts2_core::card_effects::apply_power_to_creature(state, owner, PowerKind::Ritual, amount);
@@ -346,11 +354,8 @@ pub fn create_corpse_slug_ai(starter_idx: u8) -> MonsterAi {
     // is `StateLog.Last().Id` — the interrupted telegraph, re-performed after
     // the stun turn. The prebuilt state's static follow-up is a defensive
     // WHIP_SLAP; the Ravenous arm queues the real resume via
-    // `Effect::ForceMonsterNextMove`.
-    s.insert(
-        "STUNNED",
-        mv("STUNNED", smallvec![Intent::Stun], "WHIP_SLAP"),
-    );
+    // `Effect::StunMonster`. Must-perform-once like every C# stun (#806).
+    s.insert("STUNNED", stun_mv("STUNNED", "WHIP_SLAP"));
     s.insert(
         "GLOMP",
         mv("GLOMP", smallvec![Intent::Attack { damage: 8 }], "GOOP"),
@@ -393,10 +398,12 @@ fn seapunk_bubble_burp_effect(state: &mut CombatState, owner: sts2_core::Creatur
     // head is Buff) silently dropped 7 block — the `Seapunk block +7` class
     // in all four 2026-08-03 live A1 corpora, always one round after the
     // intent divergence that caused it.
-    let block = sts2_core::ascension::get_value_if_ascension(
+    // `BubbleBlock => GetValueIfAscension(ToughEnemies, 8, 7)` — the same
+    // row that patches the Defend telegraph.
+    let block = crate::ascension_scaling::tough_block(
         state.ascension,
-        sts2_core::ascension::AscensionLevel::ToughEnemies,
-        8,
+        sts2_core::MonsterKind::Seapunk,
+        "BUBBLE_BURP",
         7,
     );
     sts2_core::hooks::apply_effects(
@@ -406,10 +413,12 @@ fn seapunk_bubble_burp_effect(state: &mut CombatState, owner: sts2_core::Creatur
             amount: block,
         }],
     );
-    let amount = sts2_core::ascension::get_value_if_ascension(
+    let amount = crate::ascension_scaling::scaled_buff(
         state.ascension,
-        sts2_core::ascension::AscensionLevel::DeadlyEnemies,
-        2,
+        state.game_version,
+        sts2_core::MonsterKind::Seapunk,
+        "BUBBLE_BURP",
+        PowerKind::Strength,
         1,
     );
     sts2_core::card_effects::apply_power_to_creature(state, owner, PowerKind::Strength, amount);
@@ -869,11 +878,14 @@ pub fn surprise_after_death_spawn(state: &mut CombatState, owner: sts2_core::Cre
         return;
     }
 
-    for (kind, ai) in [
-        (MonsterKind::SneakyGremlin, create_sneaky_gremlin_ai()),
-        (MonsterKind::FatGremlin, create_fat_gremlin_ai()),
-    ] {
+    for kind in [MonsterKind::SneakyGremlin, MonsterKind::FatGremlin] {
         let uid = state.spawn_enemy(kind);
+        // Scaled like the encounter's own monsters (GH #847).
+        let ai = crate::monster_dispatch::build_spawned_ai(
+            state,
+            kind,
+            crate::monster_dispatch::MonsterSpawnArgs::None,
+        );
         let initial_intent = if telegraph {
             ai.current_move().intents.first().copied()
         } else {
@@ -930,10 +942,16 @@ fn surprise_after_death_spawn_v0111(
         .position(|u| *u == fat)
         .unwrap_or(state.enemy_uids.len());
     let sneaky = state.spawn_enemy_at_index_with_taken(MonsterKind::SneakyGremlin, fat_at, &taken);
-    for (uid, ai) in [
-        (sneaky, create_sneaky_gremlin_ai()),
-        (fat, create_fat_gremlin_ai()),
+    for (uid, kind) in [
+        (sneaky, MonsterKind::SneakyGremlin),
+        (fat, MonsterKind::FatGremlin),
     ] {
+        // Scaled like the encounter's own monsters (GH #847).
+        let ai = crate::monster_dispatch::build_spawned_ai(
+            state,
+            kind,
+            crate::monster_dispatch::MonsterSpawnArgs::None,
+        );
         let initial_intent = if telegraph {
             ai.current_move().intents.first().copied()
         } else {
@@ -1043,9 +1061,12 @@ pub fn create_gremlin_merc_ai() -> MonsterAi {
 fn haunted_ship_haunt_effect(state: &mut CombatState, _owner: sts2_core::CreatureUid) {
     use sts2_core::card_effects::PileKind;
     apply_power_to_player_via_legacy_surface(state, PowerKind::Weak, 3);
-    for _ in 0..5 {
-        let _ = super::super::cards::status::spawn_dazed(state, PileKind::Discard);
-    }
+    // Co-op: every player the move targets gets these cards.
+    sts2_core::coop::each_player(state, |state| {
+        for _ in 0..5 {
+            let _ = super::super::cards::status::spawn_dazed(state, PileKind::Discard);
+        }
+    });
 }
 
 /// `HauntedShip` (v0.107.1) — HAUNT (initial) → SWIPE → STOMP → SWIPE → …
@@ -1200,7 +1221,13 @@ fn living_fog_bloat_effect(state: &mut CombatState, owner: sts2_core::CreatureUi
         .position(|&u| u == owner)
         .unwrap_or(state.enemy_uids.len());
     let uid = state.spawn_enemy_at_index(sts2_core::MonsterKind::GasBomb, at);
-    state.set_creature_ai(uid, create_gas_bomb_ai());
+    // EXPLODE scales at A9+ like an encounter member's attack (GH #847).
+    let ai = crate::monster_dispatch::build_spawned_ai(
+        state,
+        sts2_core::MonsterKind::GasBomb,
+        crate::monster_dispatch::MonsterSpawnArgs::None,
+    );
+    state.set_creature_ai(uid, ai);
 }
 
 /// `LivingFog` — ADVANCED_GAS (init) → BLOAT → SUPER_GAS_BLAST → BLOAT …
@@ -1487,11 +1514,18 @@ fn two_tailed_rat_call_for_backup_effect(state: &mut CombatState, _owner: sts2_c
     // `roll_next_enemy_intents` pass, in enemy order — NOT here at spawn time:
     // C# rolls the summoner's next move before the newcomer's, and resolving
     // early swaps which draw each rat gets (GH #544).
-    state.spawn_enemy_in_slot(
+    //
+    // Built through the dispatcher so SCRATCH / DISEASE_BITE scale at A9+
+    // like the seeded rats' (GH #847); the `Other` payload keeps the RAND
+    // opening (a bare `None` would fall back to slot index 0 = SCRATCH).
+    let ai = crate::monster_dispatch::build_spawned_ai(
+        state,
         sts2_core::MonsterKind::TwoTailedRat,
-        slot,
-        create_two_tailed_rat_ai(TwoTailedRatSlot::Other),
+        crate::monster_dispatch::MonsterSpawnArgs::TwoTailedRat {
+            slot: TwoTailedRatSlot::Other,
+        },
     );
+    state.spawn_enemy_in_slot(sts2_core::MonsterKind::TwoTailedRat, slot, ai);
 }
 
 /// Starter-move selector for [`create_two_tailed_rat_ai`], mirroring C#'s
@@ -1870,10 +1904,9 @@ pub fn create_terror_eel_ai() -> MonsterAi {
             terror_eel_thrash_effect,
         ),
     );
-    s.insert(
-        "STUN_MOVE",
-        mv("STUN_MOVE", smallvec![Intent::Stun], "TERROR_MOVE"),
-    );
+    // Only reached via Shriek's `CreatureCmd.Stun`, whose synthesized
+    // STUNNED is must-perform-once (Creature.cs:538-542, #806).
+    s.insert("STUN_MOVE", stun_mv("STUN_MOVE", "TERROR_MOVE"));
     s.insert(
         "TERROR_MOVE",
         mv_eff(
@@ -1930,10 +1963,12 @@ pub fn create_terror_eel_ai() -> MonsterAi {
 
 /// PRESSURIZE: `SteamEruptionPower` (+15) self. C# `PressurizeAmount=15`.
 fn waterfall_giant_pressurize_effect(state: &mut CombatState, owner: sts2_core::CreatureUid) {
-    let amount = sts2_core::ascension::get_value_if_ascension(
+    let amount = crate::ascension_scaling::scaled_buff(
         state.ascension,
-        sts2_core::ascension::AscensionLevel::DeadlyEnemies,
-        20,
+        state.game_version,
+        sts2_core::MonsterKind::WaterfallGiant,
+        "PRESSURIZE",
+        PowerKind::SteamEruption,
         15,
     );
     sts2_core::card_effects::apply_power_to_creature(
@@ -1968,7 +2003,8 @@ fn waterfall_giant_siphon_effect(state: &mut CombatState, owner: sts2_core::Crea
         15,
         10,
     );
-    state.creature_heal(owner, heal);
+    // `SiphonHeal * Players.Count` (WaterfallGiant.cs:267).
+    state.creature_heal(owner, heal * sts2_core::coop::player_count(state));
     sts2_core::card_effects::apply_power_to_creature(state, owner, PowerKind::SteamEruption, 3);
 }
 
@@ -2138,6 +2174,75 @@ fn steam_eruption_death_interrupt(state: &mut CombatState, owner: sts2_core::Cre
             state_id: "ABOUT_TO_BLOW",
         }],
     );
+    // The power strip is NOT done here: it is the kill's tail
+    // (`remove_all_powers_after_steam_eruption_death`, registered with
+    // `enemy_death_effects::register_after_kill`), which the damage chokepoint
+    // runs after the killing hit's AfterDamageGiven hooks.
+}
+
+/// C# `Creature.RemoveAllPowersAfterDeath` for the revived giant
+/// (`Creature.cs:673-676`). `CreatureCmd.KillWithoutCheckingWinCondition`
+/// runs `Hook.AfterDeath` first (`CreatureCmd.cs:519`: SteamEruption revives
+/// the giant to 999,999,999 and forces ABOUT_TO_BLOW) and only THEN calls
+/// `creature.RemoveAllPowersAfterDeath()` (`CreatureCmd.cs:533`), which strips
+/// every power except those whose `ShouldPowerBeRemovedAfterOwnerDeath()`
+/// returns false — for the giant only `SteamEruptionPower` (`:37-40`). So the
+/// giant comes back with ONLY its SteamEruption: a Weak, Vulnerable, Poison,
+/// Strength change (FIGHT_ME, Dark Shackles' Strength loss and its restore
+/// power, …) put on it before the kill is gone, and EXPLODE (a powered
+/// `DamageCmd.Attack`, `WaterfallGiant.cs:295`) only sees what is applied
+/// after the kill.
+///
+/// It is the SteamEruption kill tail
+/// ([`sts2_core::enemy_death_effects::finish_kill`]), not part of the
+/// interrupt: C# `CreatureCmd.Damage` runs the killing result's
+/// `Hook.AfterDamageGiven` (`CreatureCmd.cs:388-391`) before `Kill` (`:409`),
+/// so a power those hooks put on the dying giant (Envenom's Poison,
+/// `EnvenomPower.cs:20-26`; HandDrill's Vulnerable, `HandDrill.cs:22-29`) is
+/// stripped with the rest. Run inside the interrupt, the strip came first and
+/// that power survived the revive. The damage chokepoint runs the tail after
+/// those hooks and after the relic `AfterDeath` bus, matching the C#
+/// AfterDamageGiven → AfterDeath → strip order; the combat-end sweep, with no
+/// hit around it, runs it straight after the interrupt.
+///
+/// `Hook.ShouldPowerBeRemovedOnDeath`'s only
+/// override (`IllusionPower.cs:59`) needs an Illusion in combat and the
+/// giant is fought alone (`WaterfallGiantBoss`), and none of the powers the
+/// giant can hold has a gameplay `AfterRemoved` (`CreatureCmd.cs:534-537`).
+///
+/// The survivor set is every C# power that overrides
+/// `ShouldPowerBeRemovedAfterOwnerDeath => false` (SteamEruption, Adaptable,
+/// DieForYou, PainfulStabs, Minion, Reattach), so the strip stays correct
+/// should one of them ever sit on the giant.
+fn remove_all_powers_after_steam_eruption_death(
+    state: &mut CombatState,
+    owner: sts2_core::CreatureUid,
+) {
+    let survives = |kind: PowerKind| {
+        matches!(
+            kind,
+            PowerKind::SteamEruption
+                | PowerKind::Adaptable
+                | PowerKind::DieForYou
+                | PowerKind::PainfulStabs
+                | PowerKind::Minion
+                | PowerKind::Reattach
+        )
+    };
+    let Some(idx) = state.creatures.iter().position(|c| c.id == owner.0) else {
+        return;
+    };
+    let strip: smallvec::SmallVec<[std::num::NonZeroU32; 8]> = state.creatures[idx]
+        .powers
+        .iter()
+        .filter_map(|pu| state.powers.get_by_id(pu.0))
+        .filter(|p| !survives(p.kind))
+        .map(|p| p.id)
+        .collect();
+    for pid in strip {
+        state.powers.retain(|p| p.id != pid);
+        state.creatures[idx].powers.retain(|u| u.0 != pid);
+    }
 }
 
 /// Idempotent installer for the SteamEruption death-interrupt. Called via
@@ -2148,6 +2253,10 @@ fn install_steam_eruption_handlers() {
     sts2_core::enemy_death_effects::register(
         PowerKind::SteamEruption,
         steam_eruption_death_interrupt,
+    );
+    sts2_core::enemy_death_effects::register_after_kill(
+        PowerKind::SteamEruption,
+        remove_all_powers_after_steam_eruption_death,
     );
 }
 
@@ -2317,15 +2426,21 @@ fn soul_fysh_beckon_effect(state: &mut CombatState, _owner: sts2_core::CreatureU
     // Beckon in the wrong slot and left the `shuffle` cursor one read behind
     // C# for the rest of the combat, so the next reshuffle dealt a different
     // hand. Found by the Underdocks encounter sweep (GH #544).
-    crate::cards::status::spawn_beckon_into_draw_at_random(state);
-    crate::cards::status::spawn_beckon(state, sts2_core::card_effects::PileKind::Discard);
+    // Co-op: every player the move targets gets these cards.
+    sts2_core::coop::each_player(state, |state| {
+        crate::cards::status::spawn_beckon_into_draw_at_random(state);
+        crate::cards::status::spawn_beckon(state, sts2_core::card_effects::PileKind::Discard);
+    });
 }
 
 /// SoulFysh GAZE_MOVE status leg: add 1 Beckon status card to Discard
 /// (alongside its 7-damage attack). Mirrors C# `SoulFysh.cs::GazeMove`
 /// `StatusIntent(GazeMoveAmount=1)` → one Beckon to the Discard pile.
 fn soul_fysh_gaze_effect(state: &mut CombatState, _owner: sts2_core::CreatureUid) {
-    crate::cards::status::spawn_beckon(state, sts2_core::card_effects::PileKind::Discard);
+    // Co-op: every player the move targets gets these cards.
+    sts2_core::coop::each_player(state, |state| {
+        crate::cards::status::spawn_beckon(state, sts2_core::card_effects::PileKind::Discard);
+    });
 }
 
 /// SoulFysh FADE_MOVE: become intangible — Intangible(2) to self. Mirrors
@@ -2441,11 +2556,19 @@ fn lagavulin_asleep(combat: &CombatState, owner: sts2_core::CreatureUid) -> bool
 /// (`Slash2Block`=12 non-asc) `CreatureCmd.GainBlock(.., 12)`. Bead
 /// `sts2-rs-viwkh` (same class as SkulkingColony ZOOM, `sts2-rs-71kog`).
 fn lagavulin_matriarch_slash2_effect(state: &mut CombatState, owner: sts2_core::CreatureUid) {
+    // `Slash2Block => GetValueIfAscension(ToughEnemies, 14, 12)`
+    // (`LagavulinMatriarch.cs:57,219`, GH #858).
+    let amount = crate::ascension_scaling::tough_block(
+        state.ascension,
+        sts2_core::MonsterKind::LagavulinMatriarch,
+        "SLASH2",
+        12,
+    );
     sts2_core::hooks::apply_effects(
         state,
         &[sts2_core::hooks::Effect::GainBlockCreature {
             target: sts2_core::hooks::CreatureRef::Enemy(owner),
-            amount: 12,
+            amount,
         }],
     );
 }
@@ -4835,6 +4958,128 @@ mod tests {
         );
     }
 
+    /// GH #847: the CALL_FOR_BACKUP rat fights at its summoner's ascension.
+    /// C# `TwoTailedRat.cs:54,56` `ScratchDamage => (DeadlyEnemies, 9, 8)`,
+    /// `DiseaseBiteDamage => (.., 7, 6)` resolve run-globally for the
+    /// `CreatureCmd.Add<TwoTailedRat>` summon (`:184`). The opening stays the
+    /// unresolved RAND with a fresh summon timer (GH #544 roll order).
+    #[test]
+    fn two_tailed_rat_backup_attacks_at_deadly_damage_847() {
+        use crate::monster_dispatch::MonsterSpawnArgs;
+        use crate::monsters::test_util::{
+            ai_move_intent, assert_ai_is_dispatcher_build, creature_ai, SPAWN_ASC_MATRIX,
+        };
+        for (version, asc) in SPAWN_ASC_MATRIX {
+            let (mut state, uids) = combat_with_n_rats(3);
+            state.ascension = asc;
+            state.game_version = version;
+            two_tailed_rat_call_for_backup_effect(&mut state, uids[0]);
+            assert_eq!(state.enemy_uids.len(), 4, "A{asc} {version:?}: one summon");
+            let newest = state.enemy_uids[0];
+            assert!(!uids.contains(&newest), "the summon sorts first");
+            let (scratch, bite) = if asc >= 9 { (9, 7) } else { (8, 6) };
+            assert_eq!(
+                ai_move_intent(&state, newest, "SCRATCH"),
+                Intent::Attack { damage: scratch },
+                "A{asc} {version:?}: SCRATCH"
+            );
+            assert_eq!(
+                ai_move_intent(&state, newest, "DISEASE_BITE"),
+                Intent::Attack { damage: bite },
+                "A{asc} {version:?}: DISEASE_BITE"
+            );
+            assert_ai_is_dispatcher_build(
+                &state,
+                newest,
+                sts2_core::MonsterKind::TwoTailedRat,
+                MonsterSpawnArgs::TwoTailedRat {
+                    slot: TwoTailedRatSlot::Other,
+                },
+            );
+            let ai = creature_ai(&state, newest);
+            assert_eq!(ai.initial, "RAND", "summons open on the random branch");
+            assert_eq!(ai.counter(), 2, "fresh TurnsUntilSummonable");
+        }
+    }
+
+    /// GH #847: the LivingFog's GasBomb explodes at the summoner's ascension.
+    /// C# `GasBomb.cs:32` `ExplodeDamage => (DeadlyEnemies, 9, 8)`, read by
+    /// its `DeathBlowIntent` (`:62`), for the `CreatureCmd.Add` in
+    /// `LivingFog.cs:95`.
+    #[test]
+    fn living_fog_gas_bomb_explodes_at_deadly_damage_847() {
+        use crate::monster_dispatch::MonsterSpawnArgs;
+        use crate::monsters::test_util::{
+            ai_move_intent, assert_ai_is_dispatcher_build, enemies_of_kind, SPAWN_ASC_MATRIX,
+        };
+        for (version, asc) in SPAWN_ASC_MATRIX {
+            let mut state = CombatState {
+                ascension: asc,
+                game_version: version,
+                ..CombatState::default()
+            };
+            let fog = state.spawn_enemy(MonsterKind::LivingFog);
+            living_fog_bloat_effect(&mut state, fog);
+            let bombs = enemies_of_kind(&state, MonsterKind::GasBomb);
+            assert_eq!(bombs.len(), 1, "A{asc} {version:?}: one bomb");
+            let dmg = if asc >= 9 { 9 } else { 8 };
+            assert_eq!(
+                ai_move_intent(&state, bombs[0], "EXPLODE"),
+                Intent::DeathBlow { damage: dmg },
+                "A{asc} {version:?}: EXPLODE"
+            );
+            assert_ai_is_dispatcher_build(
+                &state,
+                bombs[0],
+                MonsterKind::GasBomb,
+                MonsterSpawnArgs::None,
+            );
+        }
+    }
+
+    /// GH #847: the SurprisePower gremlins fight at the merc's ascension. C#
+    /// `SneakyGremlin.cs:25` `TackleDamage => (DeadlyEnemies, 10, 9)`;
+    /// `FatGremlin.cs` has no DeadlyEnemies member. Both builds: v0.107.1 runs
+    /// the add-in-order loop, v0.111.0 [`surprise_after_death_spawn_v0111`].
+    #[test]
+    fn surprise_sneaky_gremlin_tackles_at_deadly_damage_847() {
+        use crate::monster_dispatch::MonsterSpawnArgs;
+        use crate::monsters::test_util::{
+            ai_move_intent, assert_ai_is_dispatcher_build, enemies_of_kind, SPAWN_ASC_MATRIX,
+        };
+        use sts2_core::hooks::{CreatureRef, ValueProps};
+        for (version, asc) in SPAWN_ASC_MATRIX {
+            let (mut state, owner) = gremlin_merc_combat(30);
+            state.ascension = asc;
+            state.game_version = version;
+            let _ = sts2_core::damage::apply_damage_with_final(
+                &mut state,
+                CreatureRef::Player,
+                owner,
+                999,
+                ValueProps::MOVE,
+            );
+            let sneaky = enemies_of_kind(&state, MonsterKind::SneakyGremlin);
+            let fat = enemies_of_kind(&state, MonsterKind::FatGremlin);
+            assert_eq!(sneaky.len(), 1, "A{asc} {version:?}: one sneaky");
+            assert_eq!(fat.len(), 1, "A{asc} {version:?}: one fat");
+            let tackle = if asc >= 9 { 10 } else { 9 };
+            assert_eq!(
+                ai_move_intent(&state, sneaky[0], "TACKLE"),
+                Intent::Attack { damage: tackle },
+                "A{asc} {version:?}: TACKLE"
+            );
+            for (uid, kind) in [
+                (sneaky[0], MonsterKind::SneakyGremlin),
+                (fat[0], MonsterKind::FatGremlin),
+            ] {
+                assert_ai_is_dispatcher_build(&state, uid, kind, MonsterSpawnArgs::None);
+                let c = state.creatures.iter().find(|c| c.id == uid.0).unwrap();
+                assert_eq!(c.intent, Some(Intent::Stun), "{kind:?} telegraphs SPAWNED");
+            }
+        }
+    }
+
     /// SCREECH applies Frail 1 to the player and decrements the summon
     /// timer; SCRATCH decrements the timer without touching the player.
     #[test]
@@ -5366,5 +5611,257 @@ mod tests {
             None,
         );
         assert_eq!(loss, 10, "the absorption budget refreshes each side turn");
+    }
+
+    // ── #806 G2: stun / forced-move timing ───────────────────────────────
+    //
+    // C# `CreatureCmd.Stun` → `Creature.StunInternal` builds a
+    // `MustPerformOnceBeforeTransitioning` STUNNED state and installs it via
+    // `SetMoveImmediate`, which is a no-op unless `NextMove.CanTransitionAway`
+    // (Creature.cs:524-544, MonsterModel.cs:562-575). The monster performs
+    // whatever `NextMove` is when ITS turn comes (MonsterModel.cs:583), and
+    // `MoveState.PerformMove` flags only the state that ran (MoveState.cs:57).
+    // All of it is identical in v0.107.1 and v0.111.0, so every test runs at
+    // both builds.
+
+    const BOTH_BUILDS: [sts2_core::GameVersion; 2] = [
+        sts2_core::GameVersion::V0_107_1,
+        sts2_core::GameVersion::V0_111_0,
+    ];
+
+    /// A combat with a real player creature (so Thorns has an owner) and the
+    /// given `(kind, ai, hp)` enemies in slot order, each telegraphing its
+    /// current move, the way `start_combat` leaves them.
+    fn stun_fixture(
+        version: sts2_core::GameVersion,
+        enemies: Vec<(MonsterKind, MonsterAi, i32)>,
+    ) -> (CombatState, CreatureUid, Vec<CreatureUid>) {
+        let mut state = CombatState {
+            game_version: version,
+            ..CombatState::default()
+        };
+        state.player.current_hp = 200;
+        state.player.max_hp = 200;
+        let player = state.init_player_creature();
+        let mut uids = Vec::new();
+        for (kind, mut ai, hp) in enemies {
+            let uid = state.spawn_enemy(kind);
+            ai.set_owner(uid);
+            let intent = ai.current_move().intents.first().copied();
+            state.set_creature_ai(uid, ai);
+            let c = state.creatures.iter_mut().find(|c| c.id == uid.0).unwrap();
+            c.current_hp = hp;
+            c.max_hp = hp;
+            c.block = 0;
+            c.intent = intent;
+            uids.push(uid);
+        }
+        state.round = 1;
+        (state, player, uids)
+    }
+
+    fn hp(state: &CombatState, uid: CreatureUid) -> i32 {
+        state
+            .creatures
+            .iter()
+            .find(|c| c.id == uid.0)
+            .unwrap()
+            .current_hp
+    }
+
+    fn ensure_power(state: &mut CombatState, uid: CreatureUid, kind: PowerKind, amount: i32) {
+        let have = creature_power_amount(state, uid, kind);
+        if have != amount {
+            sts2_core::card_effects::apply_power_to_creature(state, uid, kind, amount - have);
+        }
+    }
+
+    fn run_enemy_turn(state: &mut CombatState) {
+        state.phase = sts2_core::CombatPhase::EnemyTurnExec;
+        let _ = sts2_core::combat_loop::enemy_turn_exec(state);
+        let _ = sts2_core::combat_loop::enemy_turn_end(state);
+    }
+
+    fn kill(state: &mut CombatState, uid: CreatureUid) {
+        use sts2_core::damage::apply_damage;
+        use sts2_core::hooks::{CreatureRef, ValueProps};
+        let amount = hp(state, uid) + 10;
+        apply_damage(
+            state,
+            CreatureRef::Player,
+            uid,
+            amount,
+            ValueProps::UNPOWERED,
+            None,
+        );
+    }
+
+    /// Root cause 1 (must-perform-once) + the end-of-enemy-turn case: an ally
+    /// dying AFTER the slug has acted (Demise at AfterSideTurnEnd; here a
+    /// direct kill between the walk and the turn end) leaves STUNNED in place
+    /// through the boundary roll. Rust used to build STUNNED with
+    /// `must_perform_once: false`, so the roll went straight to the resume move
+    /// and the stun was never served.
+    #[test]
+    fn corpse_slug_stun_from_end_of_enemy_turn_devour_survives_the_roll() {
+        for version in BOTH_BUILDS {
+            // starter 1 → GLOMP; the ally is a second slug starting on GOOP.
+            let (mut state, player, uids) = stun_fixture(
+                version,
+                vec![
+                    (MonsterKind::CorpseSlug, create_corpse_slug_ai(1), 40),
+                    (MonsterKind::CorpseSlug, create_corpse_slug_ai(2), 40),
+                ],
+            );
+            let (slug, ally) = (uids[0], uids[1]);
+            ensure_power(&mut state, slug, PowerKind::Ravenous, 4);
+            ensure_power(&mut state, ally, PowerKind::Ravenous, 0);
+            state.phase = sts2_core::CombatPhase::EnemyTurnExec;
+            let _ = sts2_core::combat_loop::enemy_turn_exec(&mut state);
+            // The slug performed GLOMP this turn; now the ally dies.
+            kill(&mut state, ally);
+            assert_eq!(current_state(&state, slug), Some("STUNNED"), "{version:?}");
+            let _ = sts2_core::combat_loop::enemy_turn_end(&mut state);
+            assert_eq!(
+                current_state(&state, slug),
+                Some("STUNNED"),
+                "{version:?}: an unserved stun must survive the boundary roll",
+            );
+            assert_eq!(creature_intent(&state, slug), Some(Intent::Stun));
+            // Next enemy turn: the stun is served (no damage), THEN the slug
+            // resumes at the move it last rolled (GLOMP — StateLog.Last()).
+            let before = hp(&state, player);
+            run_enemy_turn(&mut state);
+            assert_eq!(
+                hp(&state, player),
+                before,
+                "{version:?}: a stunned slug deals nothing"
+            );
+            assert_eq!(current_state(&state, slug), Some("GLOMP"), "{version:?}");
+        }
+    }
+
+    /// Root cause 2 (`SetMoveImmediate`'s `CanTransitionAway` guard): a second
+    /// devour while the first stun is still unserved does not re-stun — and in
+    /// particular does not queue STUNNED as its own resume (the seed 312/611
+    /// "re-stun" loop). Strength is still granted: C#'s `PowerCmd.Apply` runs
+    /// after `Stun` regardless of the guard.
+    #[test]
+    fn corpse_slug_second_devour_while_stunned_does_not_restun() {
+        for version in BOTH_BUILDS {
+            let (mut state, _player, uids) = stun_fixture(
+                version,
+                vec![
+                    (MonsterKind::CorpseSlug, create_corpse_slug_ai(1), 40),
+                    (MonsterKind::CorpseSlug, create_corpse_slug_ai(0), 40),
+                    (MonsterKind::CorpseSlug, create_corpse_slug_ai(2), 40),
+                ],
+            );
+            let slug = uids[0];
+            ensure_power(&mut state, slug, PowerKind::Ravenous, 4);
+            // Strip the allies' Ravenous so only `slug` devours.
+            for &a in &uids[1..] {
+                ensure_power(&mut state, a, PowerKind::Ravenous, 0);
+            }
+            // A real first enemy turn, so the opening move counts as performed.
+            run_enemy_turn(&mut state);
+            let telegraphed = current_state(&state, slug).unwrap();
+            kill(&mut state, uids[1]);
+            kill(&mut state, uids[2]);
+            assert_eq!(creature_power_amount(&state, slug, PowerKind::Strength), 8);
+            let ai = state
+                .creatures
+                .iter()
+                .find(|c| c.id == slug.0)
+                .and_then(|c| c.ai.as_ref())
+                .unwrap();
+            assert_eq!(ai.current_state_id(), "STUNNED", "{version:?}");
+            assert_eq!(
+                ai.forced_next_state(),
+                Some(telegraphed),
+                "{version:?}: the resume is still the interrupted telegraph",
+            );
+            // Serve the stun; the slug resumes, it is not stunned again.
+            run_enemy_turn(&mut state);
+            assert_eq!(
+                current_state(&state, slug),
+                Some(telegraphed),
+                "{version:?}"
+            );
+        }
+    }
+
+    /// Root cause 3 (mark the move that RAN): Shriek tripping on Thorns damage
+    /// in the middle of the eel's own Thrash installs a fresh, unperformed
+    /// stun. Marking the CURRENT state performed after the walk flagged that
+    /// stun as served, and the boundary roll skipped it.
+    #[test]
+    fn terror_eel_shriek_during_own_thrash_keeps_the_stun() {
+        for version in BOTH_BUILDS {
+            let mut ai = create_terror_eel_ai();
+            ai.force_current_state("ThrashMove");
+            let (mut state, player, uids) =
+                stun_fixture(version, vec![(MonsterKind::TerrorEel, ai, 76)]);
+            let eel = uids[0];
+            ensure_power(&mut state, eel, PowerKind::Shriek, 70);
+            ensure_power(&mut state, player, PowerKind::Thorns, 3);
+            run_enemy_turn(&mut state);
+            // 76 → 73 → 70 ≤ 70: Shriek trips on the second Thorns reflect.
+            assert_eq!(creature_power_amount(&state, eel, PowerKind::Shriek), 0);
+            assert_eq!(
+                current_state(&state, eel),
+                Some("STUN_MOVE"),
+                "{version:?}: the mid-move stun must not be rolled away",
+            );
+            assert_eq!(creature_intent(&state, eel), Some(Intent::Stun));
+            // Served next turn, then TERROR_MOVE.
+            run_enemy_turn(&mut state);
+            assert_eq!(
+                current_state(&state, eel),
+                Some("TERROR_MOVE"),
+                "{version:?}"
+            );
+        }
+    }
+
+    /// Root cause 4 (perform the LIVE move): an ally killed by Thorns during
+    /// its own attack stuns the slug that acts after it in the same walk. C#
+    /// `TakeTurn` reads `NextMove` when the slug's turn comes, so the slug
+    /// performs STUNNED right away and resumes next turn; Rust performed the
+    /// turn-start intent snapshot and still landed its stale attack.
+    #[test]
+    fn corpse_slug_stunned_earlier_in_the_walk_performs_the_stun() {
+        for version in BOTH_BUILDS {
+            let (mut state, player, uids) = stun_fixture(
+                version,
+                vec![
+                    // The ally attacks first (WHIP_SLAP 3x2) and dies to Thorns.
+                    (MonsterKind::CorpseSlug, create_corpse_slug_ai(0), 3),
+                    // The devourer telegraphs GLOMP (8).
+                    (MonsterKind::CorpseSlug, create_corpse_slug_ai(1), 40),
+                ],
+            );
+            let (ally, slug) = (uids[0], uids[1]);
+            ensure_power(&mut state, slug, PowerKind::Ravenous, 4);
+            ensure_power(&mut state, ally, PowerKind::Ravenous, 0);
+            ensure_power(&mut state, player, PowerKind::Thorns, 5);
+            let before = hp(&state, player);
+            run_enemy_turn(&mut state);
+            assert!(
+                hp(&state, ally) <= 0,
+                "the ally dies to Thorns on its first hit"
+            );
+            assert_eq!(
+                hp(&state, player),
+                before - 3,
+                "{version:?}: only the ally's first hit lands; the stunned slug does not GLOMP",
+            );
+            // The stun was served this very turn, so the boundary roll resumes.
+            assert_eq!(current_state(&state, slug), Some("GLOMP"), "{version:?}");
+            assert_eq!(
+                creature_intent(&state, slug),
+                Some(Intent::Attack { damage: 8 })
+            );
+        }
     }
 }

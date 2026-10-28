@@ -76,17 +76,23 @@ const fn class_str_from_character(c: Option<CharacterId>) -> &'static str {
 /// Canonical local-cost program, shared by serialization and input signatures.
 #[must_use]
 pub fn local_cost_value(model: LocalEnergyCost) -> Value {
-    let functions = model.functions.map(|function| serde_json::json!({
-        "offset": function.offset, "ceiling": function.ceiling,
-        "absolute_offset": function.absolute_offset, "uses_base": function.uses_base,
-    }));
+    let functions = model.functions.map(|function| {
+        serde_json::json!({
+            "offset": function.offset, "ceiling": function.ceiling,
+            "absolute_offset": function.absolute_offset, "uses_base": function.uses_base,
+        })
+    });
     serde_json::json!({"base": model.base, "costs_x": model.costs_x, "functions": functions})
 }
 
 /// Serialize a runtime card, keeping local cost separate from global hooks.
 #[must_use]
 pub fn card_to_value(state: &CombatState, card: &Card) -> Value {
-    card_to_value_with_cost(state, card, sts2_core::hooks::effective_card_cost(state, card.uid))
+    card_to_value_with_cost(
+        state,
+        card,
+        sts2_core::hooks::effective_card_cost(state, card.uid),
+    )
 }
 
 /// 所在を持たない公開候補は、観測された実効費用とカード自身の状態を直列化する。
@@ -109,21 +115,20 @@ pub fn card_to_value_with_cost(state: &CombatState, card: &Card, effective_cost:
     };
     set(&mut d, "kind", kind);
     set(&mut d, "upgraded", card.upgraded);
-    set(
-        &mut d,
-        "cost_override",
-        effective_cost,
-    );
+    set(&mut d, "cost_override", effective_cost);
     // The instance's own cost, separate from the effective one above, plus
     // the per-instance scratch that explains the difference. Emitting only
     // the effective cost made every transient discount permanent on rebuild;
     // see `ParsedCard::base_cost`.
     set(&mut d, "base_cost", i32::from(card.cost));
     let [local, after_turn, after_play, after_both] = card.local_costs_after_expiration();
-    d.insert("public_costs".to_owned(), serde_json::json!({
-        "local": local, "afterTurn": after_turn, "afterPlay": after_play,
-        "afterTurnAndPlay": after_both,
-    }));
+    d.insert(
+        "public_costs".to_owned(),
+        serde_json::json!({
+            "local": local, "afterTurn": after_turn, "afterPlay": after_play,
+            "afterTurnAndPlay": after_both,
+        }),
+    );
     if let Some(model) = card.local_energy_cost {
         d.insert("local_cost".to_owned(), local_cost_value(model));
     }
@@ -187,8 +192,9 @@ pub fn card_to_value_with_cost(state: &CombatState, card: &Card, effective_cost:
             // with the keyword subtracted, so a card that is BOTH intrinsically
             // Sly and Hand-Tricked emits `sly` alone — as C# does, since
             // `IsSlyThisTurn` short-circuits on the keyword.
-            let sly_keyword = sts2_core::card_effects::card_sly_in(card.card_id, state.game_version)
-                || state.player.sly_this_combat.contains(&card.uid);
+            let sly_keyword =
+                sts2_core::card_effects::card_sly_in(card.card_id, state.game_version)
+                    || state.player.sly_this_combat.contains(&card.uid);
             if sly_keyword {
                 flags.push("sly");
             } else if state.player.sly_this_turn.contains(&card.uid) {
@@ -495,8 +501,14 @@ pub fn powers_to_value(uids: &[PowerUid], arena: &[Power], path: &str) -> Result
         // played and reset at the owner's turn start).
         let display_amount = match pow.kind {
             PowerKind::Tender | PowerKind::Sloth => pow.counter,
-            PowerKind::Panache => if pow.counter < 0 { 5 } else { pow.counter },
-            PowerKind::Automation => 10 - pow.counter.clamp(0,10),
+            PowerKind::Panache => {
+                if pow.counter < 0 {
+                    5
+                } else {
+                    pow.counter
+                }
+            }
+            PowerKind::Automation => 10 - pow.counter.clamp(0, 10),
             PowerKind::WitheringPresence => pow.amount.saturating_sub(pow.counter).max(0),
             PowerKind::Slow => pow.counter.saturating_mul(10),
             // GH #363 A1: C# `OrbitPower.DisplayAmount => 4 - energySpent % 4`
@@ -682,6 +694,16 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
         .map(|k| val(k.python_name()))
         .collect();
     player.insert("potions".to_owned(), Value::Array(potions_list));
+    // The belt CAPACITY (C# `Player.MaxPotionCount`), which `potions` cannot
+    // carry since it lists filled slots only. Omitted while unset (`0`, the
+    // `Default` sentinel), so the parser keeps that sentinel too.
+    if state.player.potion_slots != 0 {
+        set(
+            &mut player,
+            "potion_slots",
+            i32::from(state.player.potion_slots),
+        );
+    }
 
     if state.player.stars != 0 {
         set(&mut player, "stars", i32::from(state.player.stars));
@@ -691,7 +713,9 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
     // so start-of-turn dicts keep the historical shape. The parser side
     // documents why dropping these stalls round-tripped searches (Ringing/
     // Normality/Sloth ShouldPlay gates).
-    if state.combat_log.public_finished_history || state.player.cards_played_this_turn.iter().any(|&n| n > 0) {
+    if state.combat_log.public_finished_history
+        || state.player.cards_played_this_turn.iter().any(|&n| n > 0)
+    {
         set(
             &mut player,
             "cards_played_this_turn",
@@ -700,10 +724,18 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
     }
     let log = &state.combat_log;
     if log.public_started_history || log.cards_started_this_turn.iter().any(|&n| n > 0) {
-        set(&mut player, "cards_started_this_turn", log.cards_started_this_turn.to_vec());
+        set(
+            &mut player,
+            "cards_started_this_turn",
+            log.cards_started_this_turn.to_vec(),
+        );
     }
     if log.public_block_history || !log.unmovable_card_block_plays.is_empty() {
-        set(&mut player, "block_gained_card_plays_this_turn", log.unmovable_card_block_plays.to_vec());
+        set(
+            &mut player,
+            "block_gained_card_plays_this_turn",
+            log.unmovable_card_block_plays.to_vec(),
+        );
     }
     if let Some(tag) = log.current_card_play {
         set(&mut player, "current_card_play", tag);
@@ -718,8 +750,12 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
             ("discard", state.player.discard.as_slice()),
             ("exhaust", state.player.exhaust.as_slice()),
             ("play", state.player.play.as_slice()),
-        ].into_iter().find_map(|(pile, cards)| {
-            cards.iter().position(|&c| c == uid)
+        ]
+        .into_iter()
+        .find_map(|(pile, cards)| {
+            cards
+                .iter()
+                .position(|&c| c == uid)
                 .map(|index| serde_json::json!({"pile": pile, "index": index}))
         })
     };
@@ -728,8 +764,17 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
             player.insert("pen_nib_attack_to_double".to_owned(), location);
         }
     }
-    if let Some(relic) = state.relics.iter().find(|r| r.kind == sts2_core::RelicKind::Vambrace && r.counter < 0) {
-        if let Some(location) = relic.counter.checked_neg().and_then(|n| CardUid::new(n as u32)).and_then(card_location) {
+    if let Some(relic) = state
+        .relics
+        .iter()
+        .find(|r| r.kind == sts2_core::RelicKind::Vambrace && r.counter < 0)
+    {
+        if let Some(location) = relic
+            .counter
+            .checked_neg()
+            .and_then(|n| CardUid::new(n as u32))
+            .and_then(card_location)
+        {
             player.insert("vambrace_triggering_card".to_owned(), location);
         }
     }
@@ -1074,6 +1119,84 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
     }
     d.insert("encounter".to_owned(), Value::Array(enc));
 
+    // Co-op teammates, in the shape `$.allies` parses. Omitted when solo,
+    // so every single-player state emits the dict it always did.
+    // A whole seat (the wire carried its hand) round-trips whole.
+    if !state.allies.is_empty() {
+        let seats = !state.coop.stash.is_empty();
+        let mut allies = Vec::with_capacity(state.allies.len());
+        for (i, a) in state.allies.iter().enumerate() {
+            let mut m = obj();
+            set(&mut m, "hp", a.current_hp);
+            set(&mut m, "max_hp", a.max_hp);
+            set(&mut m, "block", a.block);
+            if seats {
+                let path = format!("$.allies[{i}]");
+                set(&mut m, "class", class_str_from_character(a.character));
+                set(&mut m, "energy", i32::from(a.energy));
+                set(&mut m, "max_energy", i32::from(a.max_energy));
+                m.insert(
+                    "powers".to_owned(),
+                    powers_to_value(
+                        &state.coop.stash[i].powers,
+                        &state.powers,
+                        &format!("{path}.powers"),
+                    )?,
+                );
+                m.insert(
+                    "hand".to_owned(),
+                    pile_to_value(state, &a.hand, &state.cards, &format!("{path}.hand"))?,
+                );
+                // The rest of a whole seat (a full co-op fight), when there is any:
+                // omitted otherwise, so an advisor board's wire is unchanged.
+                for (key, pile) in [
+                    ("draw_pile", a.draw.as_slice()),
+                    ("discard_pile", a.discard.as_slice()),
+                    ("exhaust_pile", a.exhaust.as_slice()),
+                    ("play_pile", a.play.as_slice()),
+                ] {
+                    if !pile.is_empty() {
+                        m.insert(
+                            key.to_owned(),
+                            pile_to_value(state, pile, &state.cards, &format!("{path}.{key}"))?,
+                        );
+                    }
+                }
+                if a.stars != 0 {
+                    set(&mut m, "stars", i32::from(a.stars));
+                }
+                if !a.potions.is_empty() {
+                    let list = a.potions.iter().map(|k| val(k.python_name())).collect();
+                    m.insert("potions".to_owned(), Value::Array(list));
+                }
+                let relics = &state.coop.stash[i].relics;
+                if !relics.is_empty() {
+                    let list = relics
+                        .iter()
+                        .map(|r| {
+                            let mut rd = obj();
+                            set(&mut rd, "id", r.kind.python_name());
+                            if r.counter != 0 {
+                                set(&mut rd, "counter", r.counter);
+                            }
+                            Value::Object(rd)
+                        })
+                        .collect();
+                    m.insert("relics".to_owned(), Value::Array(list));
+                }
+                set(&mut m, "ended_turn", state.coop.to_play & (1 << i) == 0);
+            }
+            allies.push(Value::Object(m));
+        }
+        d.insert("allies".to_owned(), Value::Array(allies));
+        if state.coop.full {
+            set(&mut d, "coop_full", true);
+            if state.coop.seat_index > 0 {
+                set(&mut d, "coop_seat_index", state.coop.seat_index);
+            }
+        }
+    }
+
     // --- rng / ascension ---
     let mut rng = obj();
     // We can't recover the original seed from the in-process RNG, so
@@ -1335,8 +1458,14 @@ pub fn staged_for_play(state: &CombatState, card_uid: CardUid) -> CombatState {
     staged.player.play.push(card_uid);
     staged.resolving_card = Some(card_uid);
     if staged.combat_log.pen_nib_attack_to_double.is_none()
-        && staged.cards.get(card_uid.get() as usize - 1).is_some_and(|c| c.card_type == CardType::Attack)
-        && staged.relics.iter().any(|r| !r.is_melted && r.kind == sts2_core::RelicKind::PenNib && r.counter == 9)
+        && staged
+            .cards
+            .get(card_uid.get() as usize - 1)
+            .is_some_and(|c| c.card_type == CardType::Attack)
+        && staged
+            .relics
+            .iter()
+            .any(|r| !r.is_melted && r.kind == sts2_core::RelicKind::PenNib && r.counter == 9)
     {
         staged.combat_log.pen_nib_attack_to_double = Some(card_uid);
     }

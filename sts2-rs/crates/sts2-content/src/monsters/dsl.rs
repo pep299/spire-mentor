@@ -27,6 +27,23 @@ pub(crate) fn mv(
     })
 }
 
+/// Stun move-state builder: the prebuilt analogue of the
+/// `MoveState("STUNNED", …, new StunIntent())` that C#
+/// `Creature.StunInternal` synthesizes (Creature.cs:538-542). A no-op
+/// `Intent::Stun` telegraph with `must_perform_once: true` — C# sets
+/// `MustPerformOnceBeforeTransitioning = true` on every stun, so the machine
+/// cannot roll away from it before the stunned turn has been served. Reach it
+/// through `Effect::StunMonster`, never as a normal follow-up.
+pub(crate) fn stun_mv(id: &'static str, follow_up: &'static str) -> MonsterState {
+    MonsterState::Move(MoveState {
+        id,
+        effect: noop_effect,
+        intents: smallvec::smallvec![Intent::Stun],
+        follow_up: Some(follow_up),
+        must_perform_once: true,
+    })
+}
+
 /// [`mv`] variant that attaches a non-noop `effect_fn` (bead
 /// `sts2-rs-vn0m`). Used by summoner moves (e.g. Fogmog ILLUSION, Vantom
 /// CONSUME) whose effect must actually call `combat.spawn_enemy`, and by

@@ -107,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
 
     done: set[int] = set()
     if args.resume and os.path.exists(args.out):
-        with open(args.out) as f:
+        with open(args.out, encoding="utf-8") as f:
             for line in f:
                 r = json.loads(line)
                 if r["kind"] == "run" and "error" not in r:

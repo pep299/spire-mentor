@@ -33,6 +33,7 @@ using MegaCrit.Sts2.Core.Entities.Merchant;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Potions;
 using MegaCrit.Sts2.Core.Nodes.Cards;
 using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
 using MegaCrit.Sts2.Core.Nodes.Combat;
@@ -119,6 +120,13 @@ internal sealed class SimScreenDecision
 
     /// <summary>The advice to display/execute when <see cref="Local"/>.</summary>
     public SimAdvice? LocalAdvice;
+
+    /// <summary>
+    /// The mod's own "this is not really a decision" verdict, for what the
+    /// advisor never sees (GH #874): the crystal sphere's reveals, which it
+    /// answers blind. Same meaning as the advisor's `advice.hand_back`.
+    /// </summary>
+    public string? HandBack;
 
     /// <summary>Executes "pick option i". Main thread. Returns false if it
     /// could not be executed (screen gone, index invalid).</summary>
@@ -440,6 +448,13 @@ internal static class SimScreenAdvice
                 });
         }
 
+        if (SimMp.HasVotedOnTreasure(LocalContext.GetMe(RunManager.Instance.DebugOnlyGetState())))
+        {
+            // Co-op: the relics are voted on (ties by rock-paper-scissors);
+            // ours is in and the holders stay up for the others'.
+            return null;
+        }
+
         var options = new List<Dictionary<string, object>>();
         var labels = new List<string>();
         for (int i = 0; i < holders.Count; ++i)
@@ -526,9 +541,12 @@ internal static class SimScreenAdvice
         // An option still has to be in room.Options: after a selection the
         // game drops it from the list first and swaps the buttons later
         // (UpdateRestSiteOptions), and clicking a stale button throws (#731).
+        // Co-op's Mend (heal a teammate) opens a teammate picker autoplay
+        // cannot answer, and the advisor does not see teammates' HP to judge
+        // it; it stays a human-only option.
         var buttons = UiHelper.FindAll<NRestSiteButton>(room)
             .Where(b => GodotObject.IsInstanceValid(b) && b.Option.IsEnabled
-                && room.Options.Contains(b.Option))
+                && room.Options.Contains(b.Option) && b.Option.OptionId != "MEND")
             .ToList();
         if (buttons.Count == 0)
         {
@@ -693,7 +711,7 @@ internal static class SimScreenAdvice
 
         bool reveal = hidden.Count > 0 && !canProceed;
         string label = reveal ? "reveal a cell" : "proceed";
-        return LocalDecision(
+        SimScreenDecision decision = LocalDecision(
             NonCombatBridgeProtocol.CrystalSphereState, screen, nameof(NCrystalSphereScreen),
             $"crystal sphere: {label} (every cell is hidden — nothing to rank)", label,
             _ =>
@@ -714,6 +732,13 @@ internal static class SimScreenAdvice
             // runaway guard) would read the second reveal as the first one
             // repeating.
             signature: $"crystal_sphere:{label}:{hidden.Count}");
+        if (reveal)
+        {
+            // Which cell to reveal is a real choice for a player who reads the
+            // board; "the first hidden cell" is not one (GH #872).
+            decision.HandBack = "the AI has no policy for the Crystal Sphere yet";
+        }
+        return decision;
     }
 
     /// <summary>
@@ -801,6 +826,13 @@ internal static class SimScreenAdvice
 
         RunState? runState = RunManager.Instance.DebugOnlyGetState();
         Player? me = LocalContext.GetMe(runState);
+        if (SimMp.HasVotedOnEvent(me))
+        {
+            // Co-op shared event: our vote is in; the options stay up for the
+            // others'. Pressing again (or the looping-event escape pressing
+            // another option) would change it.
+            return null;
+        }
         Dictionary<string, object> state = new()
         {
             [NonCombatBridgeProtocol.TypeField] = NonCombatBridgeProtocol.EventState,
@@ -832,38 +864,26 @@ internal static class SimScreenAdvice
     // The Fake Merchant (the one event with no event buttons)
     // ------------------------------------------------------------------
 
-    /// <summary>The Fake Merchant we have already asked to open, and how many
-    /// polls ago. Opening is animated, so `IsOpen` stays false for a few
-    /// polls; without the latch every poll would fire the signal again, and
-    /// without the counter a shopfront that never opens would stall the run
-    /// forever -- which is the exact failure this describer exists to end.</summary>
-    private static NFakeMerchant? _openingFakeMerchant;
-    private static int _fakeMerchantOpenPolls;
-
-    /// <summary>How many polls to wait for the shopfront before giving up and
-    /// proceeding. ~10 s at the 500 ms advice poll: longer than the open
-    /// animation, far shorter than the driver's 180 s stall watch.</summary>
-    private const int FakeMerchantOpenPollLimit = 20;
-
     /// <summary>
     /// `FakeMerchant` is the ONLY event in v0.107.1 with
     /// <c>EventLayoutType.Custom</c> (every other one is Normal or Combat), and
     /// its custom node puts a merchant shopfront in an event room instead of
-    /// the usual option buttons. Both describers therefore missed it:
+    /// the usual option buttons. Both generic describers miss it:
     /// `DescribeShop` looks up the `MerchantRoom` node by path and this is an
-    /// `EventRoom`, and `DescribeEvent` finds zero `NEventOptionButton`s and
-    /// returns null.
+    /// `EventRoom`, and `DescribeEvent` finds zero `NEventOptionButton`s.
     ///
-    /// The result was a hard stall -- run 007 of the ascension climb sat in
+    /// Missing it was a hard stall -- run 007 of the ascension climb sat in
     /// front of it for 180 s, and because `current_run.save` is written on
     /// entering the room, every resume walked straight back into the same
-    /// event. That is a resume LOOP: it burns all three attempts and forfeits
-    /// a run the AI was still winning.
+    /// event: a resume LOOP. So while the merchant is up this always returns
+    /// a decision, and Leave is always enabled.
     ///
-    /// Described as a normal shop (`ShopState`), because that is what it is to
-    /// a decision-maker: stock, prices, and the gold to spend. That the relics
-    /// are fakes is the event's joke, not a different question -- and it is
-    /// already visible to the ranker in the relic ids.
+    /// Described as the engine presents it in training, an `event` with
+    /// `buy`, `throw_foul`, `leave` in that order (GH #886) -- the SAME options
+    /// the F7 autopilot sends (`SimEventRoomHandler.FakeMerchantOptions`), so
+    /// the two lanes cannot disagree. Nothing is opened to describe it: the
+    /// slots are built in `NFakeMerchant._Ready`, and the throw needs the
+    /// shopfront closed anyway.
     /// </summary>
     private static SimScreenDecision? DescribeFakeMerchant()
     {
@@ -889,100 +909,51 @@ internal static class SimScreenAdvice
             return null;
         }
 
-        if (!ReferenceEquals(_openingFakeMerchant, merchant))
-        {
-            _openingFakeMerchant = null;
-            _fakeMerchantOpenPolls = 0;
-        }
-
         Player? me = LocalContext.GetMe(runState);
         NMerchantInventory inventory = merchant.Inventory;
-        bool inventoryUsable = inventory != null && GodotObject.IsInstanceValid(inventory);
-
-        if (inventoryUsable && !inventory!.IsOpen)
+        if (inventory == null || !GodotObject.IsInstanceValid(inventory))
         {
-            // Open it the way a player does. `MerchantButton` publishes
-            // `MerchantOpened`, which the node connects to its own private
-            // `OpenInventory` (NFakeMerchant.cs:333) -- and that method does
-            // the bookkeeping a direct `Inventory.Open()` would skip
-            // (disabling Proceed, re-showing it when the shopfront closes).
-            // Same lesson as the card holders: emit the signal the control
-            // actually publishes.
-            NMerchantButton? button = merchant.MerchantButton;
-            bool canOpen = button != null && GodotObject.IsInstanceValid(button) &&
-                           button.IsVisibleInTree();
-            if (canOpen && _openingFakeMerchant == null)
-            {
-                Logger.Log("[SimScreenAdvice] Opening the fake merchant's shopfront.");
-                _openingFakeMerchant = merchant;
-                _fakeMerchantOpenPolls = 0;
-                button!.EmitSignal(NMerchantButton.SignalName.MerchantOpened, button);
-                return null;
-            }
-            if (canOpen && _fakeMerchantOpenPolls++ < FakeMerchantOpenPollLimit)
-            {
-                // Still animating open. Not a decision yet, and not a stall.
-                return null;
-            }
-            // Either the merchant is gone for good -- `MerchantButton` is
-            // hidden once the event's fight has started (NFakeMerchant.cs:203),
-            // and then there is nothing to buy -- or it refused to open. Leave
-            // rather than stand here.
-            return FakeMerchantLeaveDecision(merchant, runState, me,
-                canOpen ? "fake merchant: shopfront will not open — leave"
-                        : "fake merchant: nothing to buy — leave");
+            return FakeMerchantLeaveDecision(merchant, "fake merchant: no shopfront — leave");
         }
 
-        List<NMerchantSlot> slots = inventoryUsable
-            ? inventory!.GetAllSlots()
-                .Where(slot => slot.Entry.IsStocked && slot.Entry.EnoughGold
-                    && !(me != null && slot.Entry is MerchantPotionEntry p && !SimPotionRules.CanProcure(me, p.Model)))
-                .ToList()
-            : new List<NMerchantSlot>();
-        if (slots.Count == 0)
-        {
-            return FakeMerchantLeaveDecision(merchant, runState, me,
-                "fake merchant: nothing affordable — leave");
-        }
-
-        var options = new List<Dictionary<string, object>>
-        {
-            new()
-            {
-                ["index"] = 0,
-                ["id"] = NonCombatBridgeProtocol.LeaveShopAction,
-                ["action"] = NonCombatBridgeProtocol.LeaveShopAction,
-                ["label"] = "Leave",
-                ["enabled"] = true,
-            },
-        };
-        options.AddRange(slots.Select((slot, i) => SimShopRoomHandler.ShopOption(slot, i + 1)));
+        NMerchantSlot? buySlot = SimEventRoomHandler.FakeMerchantBuySlot(merchant);
+        // The game's own usability check fails while the shopfront is open
+        // (`FoulPotion.GetFoulPotionMerchantTarget`), and a player may have
+        // opened it. Holding the potion is what decides the option; the
+        // throw closes the shopfront first.
+        bool canThrow = SimEventRoomHandler.FakeMerchantFoulPotion(merchant, me) != null ||
+                        inventory.IsOpen && merchant.MerchantButton is { } button &&
+                        button.IsVisibleInTree() && me != null && me.Potions.OfType<FoulPotion>().Any();
+        List<Dictionary<string, object?>> options = SimEventRoomHandler.FakeMerchantOptions(buySlot, canThrow);
 
         Dictionary<string, object> state = new()
         {
-            [NonCombatBridgeProtocol.TypeField] = NonCombatBridgeProtocol.ShopState,
+            [NonCombatBridgeProtocol.TypeField] = NonCombatBridgeProtocol.EventState,
             ["options"] = options,
             ["player_gold"] = me?.Gold ?? 0,
+            ["stock"] = inventory.GetAllSlots().Select(SimShopRoomHandler.ShopStockRow).ToList(),
         };
         SimStateExtractor.ApplyEnvelope(state, runState, me);
 
         return new SimScreenDecision
         {
-            AdviceFor = NonCombatBridgeProtocol.ShopState,
+            AdviceFor = NonCombatBridgeProtocol.EventState,
             State = state,
             OptionCount = options.Count,
-            Signature = $"fakemerchant:{me?.Gold ?? 0}:" +
-                        string.Join("|", options.Select(o => o.TryGetValue("id", out object? id) ? id : "?")),
+            OptionLabels = options.Select(o => (string)o["label"]!).ToList(),
+            // A purchase changes the gold and the next relic, and may take
+            // the buy or the throw away; each is a new decision.
+            Signature = $"fakemerchant:{me?.Gold ?? 0}:{options[SimEventRoomHandler.FakeMerchantBuy]["relic_id"]}:" +
+                        string.Join("|", options.Select(o => o["enabled"] is true ? "1" : "0")),
             Screen = merchant,
             ScreenName = nameof(NFakeMerchant),
-            Choose = index => ChooseFakeMerchantOption(merchant, slots, index),
+            Choose = index => ChooseFakeMerchantOption(merchant, room, options, buySlot, me, index),
         };
     }
 
-    private static SimScreenDecision FakeMerchantLeaveDecision(
-        NFakeMerchant merchant, RunState? runState, Player? me, string label) =>
+    private static SimScreenDecision FakeMerchantLeaveDecision(NFakeMerchant merchant, string label) =>
         LocalDecision(
-            NonCombatBridgeProtocol.ShopState, merchant, nameof(NFakeMerchant),
+            NonCombatBridgeProtocol.EventState, merchant, nameof(NFakeMerchant),
             label, "leave",
             _ =>
             {
@@ -991,29 +962,55 @@ internal static class SimScreenAdvice
             });
 
     private static bool ChooseFakeMerchantOption(
-        NFakeMerchant merchant, List<NMerchantSlot> slots, int index)
+        NFakeMerchant merchant, Node room, List<Dictionary<string, object?>> options,
+        NMerchantSlot? buySlot, Player? me, int index)
     {
-        if (!GodotObject.IsInstanceValid(merchant))
+        if (!GodotObject.IsInstanceValid(merchant) || index < 0 || index >= options.Count ||
+            options[index]["enabled"] is not true)
         {
             return false;
         }
-        if (index <= 0)
+        switch (index)
         {
-            TaskHelper.RunSafely(LeaveFakeMerchantAsync(merchant));
-            return true;
+            case SimEventRoomHandler.FakeMerchantBuy:
+                TaskHelper.RunSafely(SimEventRoomHandler.BuyFromFakeMerchantAsync(
+                    merchant, buySlot!, CancellationToken.None));
+                return true;
+            case SimEventRoomHandler.FakeMerchantThrowFoul:
+                TaskHelper.RunSafely(ThrowAtFakeMerchantAsync(merchant, room, me));
+                return true;
+            default:
+                TaskHelper.RunSafely(LeaveFakeMerchantAsync(merchant));
+                return true;
         }
-        int slotIndex = index - 1;
-        if (slotIndex >= slots.Count)
+    }
+
+    /// <summary>
+    /// Close the shopfront if a player left it open (the potion cannot target
+    /// the merchant otherwise), then throw. The fight that follows is a
+    /// normal combat screen for the coach.
+    /// </summary>
+    private static async System.Threading.Tasks.Task ThrowAtFakeMerchantAsync(
+        NFakeMerchant merchant, Node room, Player? me)
+    {
+        NMerchantInventory inventory = merchant.Inventory;
+        if (inventory.IsOpen)
         {
-            return false;
+            NBackButton? back = UiHelper.FindFirst<NBackButton>(merchant);
+            if (back != null && GodotObject.IsInstanceValid(back) && back.IsVisibleInTree())
+            {
+                await UiHelper.Click(back);
+            }
+            await WaitHelper.Until(() => !inventory.IsOpen, CancellationToken.None,
+                TimeSpan.FromSeconds(10), "FakeMerchant shopfront did not close");
         }
-        NMerchantSlot slot = slots[slotIndex];
-        if (!slot.Entry.IsStocked || !slot.Entry.EnoughGold)
+        FoulPotion? foul = SimEventRoomHandler.FakeMerchantFoulPotion(merchant, me);
+        if (foul == null)
         {
-            return false;
+            Logger.Log("[SimScreenAdvice] No throwable Foul Potion after all; asking again.");
+            return;
         }
-        TaskHelper.RunSafely(slot.Entry.OnTryPurchaseWrapper(merchant.Inventory.Inventory));
-        return true;
+        await SimEventRoomHandler.ThrowFoulPotionAsync(foul, room, CancellationToken.None);
     }
 
     /// <summary>
@@ -1319,8 +1316,9 @@ internal static class SimScreenAdvice
             return null;
         }
         RunState? runState = RunManager.Instance.DebugOnlyGetState();
-        if (runState == null)
+        if (runState == null || SimMp.HasVotedOnMap(LocalContext.GetMe(runState)))
         {
+            // Co-op: our vote is in; the map stays open for the others'.
             return null;
         }
         List<NMapPoint> available = SimMapHandler.AvailableNodes(map, runState);

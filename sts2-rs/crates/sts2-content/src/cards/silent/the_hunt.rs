@@ -36,11 +36,11 @@ pub(crate) fn play_the_hunt(state: &mut CombatState, target: Option<CreatureUid>
     let should_trigger_fatal = sts2_core::card_effects::should_owner_death_trigger_fatal(state, t);
 
     let base = current_card_damage(state);
-    let _ = deal_damage_player_to_enemy(state, t, base);
-    let killed = state
-        .creatures
-        .iter()
-        .any(|c| c.id == t.0 && c.current_hp <= 0);
+    // C# `TheHunt.cs:45` reads `DamageResult.WasTargetKilled` (THIS hit took
+    // a living target to 0, `Creature.cs:447`), so a target revived inside the
+    // hit (the pressurized Waterfall Giant) still counts as killed.
+    let killed =
+        sts2_core::card_effects::deal_damage_player_to_enemy_full(state, t, base).was_target_killed;
 
     if should_trigger_fatal && killed {
         // DEFERRED (sts2-rs-mtjox / P9 reward routing): C# also calls

@@ -169,7 +169,7 @@ def _trained_wheel(arm_dir: str) -> dict | None:
     """The sts2_rs identity the arm's last logged iteration's workers ran
     (`stats.jsonl` `wheel`), or None when it predates that record."""
     try:
-        with open(os.path.join(arm_dir, "main.stats.jsonl")) as f:
+        with open(os.path.join(arm_dir, "main.stats.jsonl"), encoding="utf-8") as f:
             rows = [json.loads(line) for line in f if line.strip()]
     except (OSError, ValueError):
         return None
@@ -184,7 +184,7 @@ def _eval_wheel(path: str) -> dict | None:
     """The sts2_rs identity an eval file's runs reported (their rows' `wheel`),
     or None when it predates that record."""
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             rows = [json.loads(line) for line in f if line.strip()]
     except (OSError, ValueError):
         return None
@@ -212,7 +212,7 @@ def run_arm(arm: Arm, cfg: dict[str, Any], out_dir: str, dry_run: bool) -> str:
     print(f"[{arm.name}] {shlex.join(cmd)}", flush=True)
     print(f"[{arm.name}] log -> {log_path}", flush=True)
     t0 = time.time()
-    with open(log_path, "w") as log:
+    with open(log_path, "w", encoding="utf-8") as log:
         proc = subprocess.run(cmd, env=env, stdout=log, stderr=subprocess.STDOUT, check=False)
     if proc.returncode != 0:
         raise SystemExit(f"[{arm.name}] trainer failed (rc={proc.returncode}); see {log_path}")
@@ -269,7 +269,7 @@ def eval_arm(
         proc = subprocess.run([sys.executable, "-c", code], env=env, check=False)
         if proc.returncode != 0:
             raise SystemExit(f"[{arm.name}] eval failed (rc={proc.returncode})")
-    rows = [json.loads(line) for line in open(out_path)]
+    rows = [json.loads(line) for line in open(out_path, encoding="utf-8")]
     if fresh and wheel is not None:
         expected = wheel_identity(wheel)
         mismatch = worker_wheel_mismatch(rows, expected)
@@ -351,7 +351,7 @@ with open(os.environ["SCREEN_OUT"], "w") as f:
 def read_stats(path: str) -> list[dict]:
     if not os.path.exists(path):
         return []
-    return [json.loads(line) for line in open(path)]
+    return [json.loads(line) for line in open(path, encoding="utf-8")]
 
 
 def tail_pooled(stats: list[dict], k: int) -> tuple[float, int]:
@@ -360,6 +360,16 @@ def tail_pooled(stats: list[dict], k: int) -> tuple[float, int]:
     wins = sum(r["win_rate"] * r["n_runs"] for r in rows)
     n = sum(r["n_runs"] for r in rows)
     return (wins / n if n else 0.0), n
+
+
+def wall_hours(stats: list[dict]) -> dict[str, float]:
+    """Training wall clock and its split, in hours. With `async_collect` the
+    collect and train phases overlap, so `collect_h + train_h` exceeds `iter_h`;
+    `iter_h` is the arm's real cost."""
+    return {
+        key: round(sum(r.get(field, 0.0) for r in stats) / 3600.0, 3)
+        for key, field in (("iter_h", "iter_s"), ("collect_h", "collect_s"), ("train_h", "train_s"))
+    }
 
 
 def report(
@@ -429,6 +439,12 @@ def report(
         # against a live env.
         dec = {k: v for k, v in last.items() if k.startswith("dec_per_run/")}
         print(f"  dec_per_run                                {dec}")
+        wall = wall_hours(stats)
+        print(
+            f"  wall h (iter / collect / train)            "
+            f"{wall['iter_h']} / {wall['collect_h']} / {wall['train_h']}"
+        )
+        out.update({f"{arm.name}_{k}": v for k, v in wall.items()})
         out[f"{arm.name}_train_wr_tail20"] = round(pooled, 4)
         out[f"{arm.name}_explained_variance"] = last.get("explained_variance")
 
@@ -437,7 +453,7 @@ def report(
     print("paired seeds per level, fresh panel, pre-registered rule.")
 
     path = os.path.join(out_dir, "report.json")
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(out, f, indent=2)
     print(f"\nreport -> {path}")
     return out
@@ -560,7 +576,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     os.makedirs(args.out, exist_ok=True)
-    with open(os.path.join(args.out, "screen.json"), "w") as f:
+    with open(os.path.join(args.out, "screen.json"), "w", encoding="utf-8") as f:
         json.dump(
             {
                 "name": args.name,

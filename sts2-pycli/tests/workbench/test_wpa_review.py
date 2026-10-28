@@ -170,7 +170,7 @@ def test_quit_persists_wpa_records_and_replay_review_reads_them(tmp_path, monkey
     assert log_path
 
     # The log carries one wpa record per valued decision, attached to its state.
-    with open(log_path) as f:
+    with open(log_path, encoding="utf-8") as f:
         lines = [json.loads(x) for x in f if x.strip()]
     wpa_records = [e for e in lines if e.get("type") == "wpa"]
     assert [r["data"]["value"] for r in wpa_records] == [0.50, 0.52, 0.10, 0.40]

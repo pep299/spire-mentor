@@ -8,24 +8,18 @@ use super::prelude::*;
 pub(crate) fn play_sunder(state: &mut CombatState, target: Option<CreatureUid>) -> EffectResult {
     let t = target.expect("Sunder: Enemy-targeted");
     let base = current_card_damage(state);
-    // C# `Creature.LoseHpInternal` (:445-458) sets `WasTargetKilled` only on the
-    // alive->dead transition (`currentHp > 0` before, `<= 0` after). Capture the
-    // pre-hit HP: an already-dead target (e.g. an EchoForm/HistoryCourse replay
-    // onto a corpse still in `creatures`) must NOT grant the on-kill energy.
-    // Checking only post-hit `current_hp <= 0` wrongly refunded on such replays
-    // (defect-misc-singles fix B, seed 4365).
-    let pre_hp = state
-        .creatures
-        .iter()
-        .find(|c| c.id == t.0)
-        .map_or(0, |c| c.current_hp);
-    let _ = deal_damage_player_to_enemy(state, t, base);
-    let post_hp = state
-        .creatures
-        .iter()
-        .find(|c| c.id == t.0)
-        .map_or(0, |c| c.current_hp);
-    if pre_hp > 0 && post_hp <= 0 {
+    // C# `Sunder.cs:33-35` reads `DamageResult.WasTargetKilled`, which
+    // `Creature.LoseHpInternal` (`Creature.cs:445-455`) sets only on the
+    // alive->dead transition of THIS hit: an already-dead target (e.g. an
+    // EchoForm/HistoryCourse replay onto a corpse still in `creatures`) must
+    // NOT grant the on-kill energy (defect-misc-singles fix B, seed 4365), and
+    // a target revived inside the hit (the pressurized Waterfall Giant, back
+    // at 999,999,999 before the damage call returns) still counts as killed.
+    // Read the flag off the hit (`DamageOutcome::was_target_killed`) rather
+    // than diffing HP around it.
+    let killed =
+        sts2_core::card_effects::deal_damage_player_to_enemy_full(state, t, base).was_target_killed;
+    if killed {
         state.player.energy = state.player.energy.saturating_add(3);
     }
     EffectResult::Resolved

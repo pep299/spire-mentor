@@ -11,6 +11,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from enemy_labels import enemy_labels
+
 # Sentinel verb for a step taken by the NATIVE run agent (run-mode autoplay).
 # Its ``args`` are a raw Rust ``RunAction`` dict rather than workbench-verb
 # args. Defined here (not in ``workbench.branching``, which imports this
@@ -345,6 +347,26 @@ def _named(items: list[dict[str, Any]] | None, idx: int | None, kind: str) -> st
     return it.get("name", f"{kind} {idx}") if it is not None else f"{kind} {idx}"
 
 
+def _enemy_named(items: list[dict[str, Any]] | None, idx: int | None) -> str:
+    """:func:`_named` for an enemy target: the enemy's board label.
+
+    A name shared by several enemies carries its ``" #k"``
+    (:func:`enemy_labels.enemy_labels`), so "Play Strike → Two-Tailed Rat #2"
+    says WHICH rat. The Rust twin is ``render.rs::enemy_named``.
+    """
+    if not items or idx is None:
+        return f"enemy {idx}"
+    pos = next((i for i, e in enumerate(items) if e.get("index") == idx), None)
+    # The positional fallback is only for a list with no stable ``index`` at
+    # all: when the view carries indices, a missing one is a slot that is not
+    # on the board, and its list position names a DIFFERENT enemy.
+    if pos is None and not any("index" in e for e in items) and 0 <= idx < len(items):
+        pos = idx
+    if pos is None or "name" not in items[pos]:
+        return f"enemy {idx}"
+    return enemy_labels(items)[pos]
+
+
 def _card_name(cards: list[dict[str, Any]] | None, idx: int | None) -> str:
     """Like :func:`_named` but marks upgraded cards with a trailing ``+``."""
     it = _find(cards, idx)
@@ -398,7 +420,7 @@ def describe_action(state: dict[str, Any] | None, action: dict[str, Any] | None)
         name = _card_name(state.get("hand"), card_idx)
         target = args.get("target_index")
         if target is not None:
-            return f"Play {name} → {_named(state.get('enemies'), target, 'enemy')}"
+            return f"Play {name} → {_enemy_named(state.get('enemies'), target)}"
         return f"Play {name}"
     if act == "end_turn":
         return "End turn"
@@ -414,7 +436,7 @@ def describe_action(state: dict[str, Any] | None, action: dict[str, Any] | None)
         name = _named(belt, slot, "potion")
         target = args.get("target_index")
         if target is not None:
-            return f"Drink {name} → {_named(state.get('enemies'), target, 'enemy')}"
+            return f"Drink {name} → {_enemy_named(state.get('enemies'), target)}"
         return f"Drink {name}"
     if act == "select_map_node":
         return f"Map → ({args.get('col')},{args.get('row')})"

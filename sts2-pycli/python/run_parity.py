@@ -1875,11 +1875,11 @@ def sweep(
     ts = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     out_dir = os.path.join(out, ts)
     os.makedirs(out_dir, exist_ok=True)
-    with open(os.path.join(out_dir, "buckets.json"), "w") as f:
+    with open(os.path.join(out_dir, "buckets.json"), "w", encoding="utf-8") as f:
         json.dump(dict(buckets.most_common()), f, indent=2)
-    with open(os.path.join(out_dir, "examples.json"), "w") as f:
+    with open(os.path.join(out_dir, "examples.json"), "w", encoding="utf-8") as f:
         json.dump(examples, f, indent=2, default=str)
-    with open(os.path.join(out_dir, "rows.json"), "w") as f:
+    with open(os.path.join(out_dir, "rows.json"), "w", encoding="utf-8") as f:
         json.dump(rows, f, indent=2, default=str)
 
     print(f"\n=== {out_dir} ===")

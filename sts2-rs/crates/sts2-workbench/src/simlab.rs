@@ -339,6 +339,11 @@ pub fn position_from_wire(
         .unwrap_or(1);
     p.insert("turn".into(), json!(turn));
     p.insert("isElite".into(), json!(truthy(wire.get("is_elite"))));
+    // A non-default build's wire names it; the position carries it on so a
+    // rebuild plays the same build (GH #877).
+    if let Some(v) = wire.get("game_version").filter(|v| v.is_string()) {
+        p.insert("game_version".into(), v.clone());
+    }
     p.insert(
         "encounter".into(),
         encounter.map_or(Value::Null, |e| json!(e)),
@@ -549,6 +554,7 @@ fn wire_powers(rows: Option<&Value>, where_: &str) -> PResult<Value> {
 /// each enemy's wire (the only way to respect the AI's random/positional
 /// branches). Mirrors `position.py::_roll_intents`.
 fn roll_intents(
+    version: sts2_core::GameVersion,
     character: &str,
     monsters: &[Value],
     ascension: i64,
@@ -560,8 +566,7 @@ fn roll_intents(
         .map(|m| as_str(m.get("monster"), "").to_string())
         .collect();
     let cs = sts2_wire::scenario::build_scenario_state_for_version(
-        // SimLab has no session: positions are the default build's.
-        sts2_core::GameVersion::default(),
+        version,
         u64::try_from(seed.max(1)).unwrap_or(1),
         character,
         &["STRIKE_IRONCLAD".to_string()],
@@ -600,6 +605,7 @@ pub fn wire_from_position(pos: &Value) -> PResult<Value> {
         }
     }
     let character = character_from_class(as_str(obj.get("character"), "Ironclad"))?;
+    let version = position_game_version(pos)?;
     let ascension = int_field(obj.get("ascension"), "ascension", Some(0))?;
     let turn = int_field(obj.get("turn").or(Some(&json!(1))), "turn", Some(1))?;
     let seed = int_field(obj.get("seed").or(Some(&json!(1))), "seed", Some(0))?;
@@ -774,7 +780,7 @@ pub fn wire_from_position(pos: &Value) -> PResult<Value> {
         })
         .collect();
     let rolled = if forced.iter().any(Option::is_none) {
-        roll_intents(character, &monsters, ascension, seed, &forced)?
+        roll_intents(version, character, &monsters, ascension, seed, &forced)?
     } else {
         Vec::new()
     };
@@ -878,7 +884,7 @@ pub fn wire_from_position(pos: &Value) -> PResult<Value> {
         encounter.push(Value::Object(entry));
     }
 
-    Ok(json!({
+    let mut wire = json!({
         "wire_version": 1,
         "phase": "PlayerPlayPhase",
         "round": turn,
@@ -891,7 +897,21 @@ pub fn wire_from_position(pos: &Value) -> PResult<Value> {
         "deck": Value::Object(wire_deck),
         "encounter": Value::Array(encounter),
         "rng": {"seed": seed, "ascension": ascension, "run_seed": seed & 0xFFFF_FFFF},
-    }))
+    });
+    // The engine wire names a non-default build (`$.game_version`), exactly
+    // as `state_to_dict` writes it — absent for the default build.
+    if !version.is_default() {
+        wire["game_version"] = json!(version.as_str());
+    }
+    Ok(wire)
+}
+
+/// The game build a position plays (GH #877): its `game_version` field,
+/// absent / `null` = the default build. Written only for a non-default build
+/// (by [`position_from_wire`], from the wire's own `game_version`), so every
+/// v0.107.1 position is unchanged.
+pub fn position_game_version(pos: &Value) -> PResult<sts2_core::GameVersion> {
+    crate::session::parse_game_version(pos.get("game_version")).map_err(PositionError::new)
 }
 
 // ---------------------------------------------------------------------------
@@ -939,6 +959,7 @@ pub fn build_position(pos: &Value) -> PResult<BuiltPosition> {
 /// character's `{hp, deck, relic}` row (from the catalog).
 #[allow(clippy::too_many_arguments)]
 pub fn new_position(
+    version: sts2_core::GameVersion,
     character: &str,
     encounter: Option<&str>,
     monsters: Option<&[String]>,
@@ -972,8 +993,8 @@ pub fn new_position(
         ));
     }
     let cs = sts2_wire::scenario::build_scenario_state_for_version(
-        // SimLab has no session: positions are the default build's.
-        sts2_core::GameVersion::default(),
+        // The selector's build (`game_version` on the request, GH #877).
+        version,
         u64::try_from(seed.max(0)).unwrap_or(0),
         character,
         &deck_ids,
@@ -1117,20 +1138,43 @@ pub fn title_case(ident: &str) -> String {
 /// Human label for an engine legal action against the board it applies to.
 pub fn action_label(action: &Value, wire: &Value, name_of: &NameOf<'_>) -> String {
     let kind = action.get("action").and_then(Value::as_str).unwrap_or("");
-    let enemies: Vec<&Value> = wire
+    // The engine's `target_index` is an encounter SLOT (`Action::PlayCard {
+    // target }`), so it indexes the whole encounter, dead slots included —
+    // not the alive-filtered list (which shifts left past a dead enemy and
+    // named the wrong one). The name is the board label over the enemies the
+    // board shows (neither dead nor escaped) in slot order
+    // ([`crate::enemy_labels`]): "Two-Tailed Rat #2".
+    let alive: Vec<(usize, String)> = wire
         .get("encounter")
         .and_then(Value::as_array)
-        .map(|es| es.iter().filter(|m| !truthy(m.get("is_dead"))).collect())
+        .map(|es| {
+            es.iter()
+                .enumerate()
+                .filter(|(_, m)| !truthy(m.get("is_dead")) && !truthy(m.get("is_escaped")))
+                .filter_map(|(slot, m)| {
+                    m.get("kind")
+                        .and_then(Value::as_str)
+                        .map(|k| (slot, name_of("monster", k)))
+                })
+                .collect()
+        })
         .unwrap_or_default();
+    let names: Vec<&str> = alive.iter().map(|(_, n)| n.as_str()).collect();
+    let labels = crate::enemy_labels::labels_from_names(&names);
     let target = || -> String {
-        match action.get("target_index").and_then(Value::as_i64) {
+        // `int(t)` in the Python twin: a numeric string resolves too.
+        let t = action.get("target_index").filter(|v| !v.is_null());
+        match t.map(|v| {
+            v.as_i64()
+                .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+        }) {
             None => String::new(),
-            Some(t) => match enemies
-                .get(t as usize)
-                .and_then(|m| m.get("kind"))
-                .and_then(Value::as_str)
+            Some(None) => format!(" → enemy {}", crate::render::py::opt_str(t)),
+            Some(Some(t)) => match alive
+                .iter()
+                .position(|(slot, _)| usize::try_from(t).is_ok_and(|t| t == *slot))
             {
-                Some(k) => format!(" → {}", name_of("monster", k)),
+                Some(i) => format!(" → {}", labels[i]),
                 None => format!(" → enemy {t}"),
             },
         }
@@ -1282,7 +1326,6 @@ fn monster_move_table(kind: &str, ascension: i64) -> PResult<Vec<Value>> {
 }
 
 /// The default title-case name resolver, for callers with no catalog handy.
-#[must_use]
 pub fn default_names() -> Box<NameOf<'static>> {
     Box::new(default_name_of)
 }
@@ -1296,11 +1339,60 @@ mod tests {
         |k: &str, i: &str| name_of(k, i)
     }
 
+    #[test]
+    fn action_label_targets_by_slot_and_numbers_duplicated_enemies() {
+        // Slot 1 is dead: the engine's target is the encounter SLOT, so
+        // target 2 is the second live rat — the alive-filtered list's [2]
+        // would have been the Louse.
+        let wire = json!({
+            "deck": {"hand": [{"id": "STRIKE_R"}]},
+            "encounter": [
+                {"kind": "TWO_TAILED_RAT"},
+                {"kind": "TWO_TAILED_RAT", "is_dead": true},
+                {"kind": "TWO_TAILED_RAT"},
+                {"kind": "LOUSE"},
+            ],
+        });
+        let label = |t: i64| {
+            let action = json!({"action": "play", "card_index": 0, "target_index": t});
+            action_label(&action, &wire, &default_name_of)
+        };
+        assert_eq!(label(0), "Play Strike R → Two Tailed Rat #1");
+        assert_eq!(label(2), "Play Strike R → Two Tailed Rat #2");
+        assert_eq!(label(3), "Play Strike R → Louse");
+        assert_eq!(label(1), "Play Strike R → enemy 1");
+        // A numeric-string target resolves like the int (Python's `int(t)`).
+        let action = json!({"action": "play", "card_index": 0, "target_index": "2"});
+        assert_eq!(
+            action_label(&action, &wire, &default_name_of),
+            "Play Strike R → Two Tailed Rat #2"
+        );
+    }
+
+    #[test]
+    fn action_label_skips_escaped_enemies() {
+        // The sandbox board drops an escaped Thief, so the one left is bare.
+        let wire = json!({
+            "deck": {"hand": [{"id": "STRIKE_R"}]},
+            "encounter": [{"kind": "THIEF", "is_escaped": true}, {"kind": "THIEF"}],
+        });
+        let action = json!({"action": "play", "card_index": 0, "target_index": 1});
+        assert_eq!(
+            action_label(&action, &wire, &default_name_of),
+            "Play Strike R → Thief"
+        );
+    }
+
     /// A real Ironclad turn-1 board against a filler encounter, via the shared
     /// scenario builder — the fixture every round-trip test starts from.
     fn fresh() -> BuiltPosition {
+        fresh_in(sts2_core::GameVersion::default())
+    }
+
+    fn fresh_in(version: sts2_core::GameVersion) -> BuiltPosition {
         let (hp, deck, relic, _) = starter_for("Ironclad");
         new_position(
+            version,
             "Ironclad",
             Some(MONSTER_BASE),
             None,
@@ -1316,6 +1408,35 @@ mod tests {
             Some(relic),
         )
         .expect("new_position builds")
+    }
+
+    /// GH #877: a sandbox position remembers its game build through the
+    /// wire round trip; a default-build position never names one.
+    #[test]
+    fn a_position_carries_its_game_version_through_the_engine() {
+        let base = fresh();
+        assert!(base.position.get("game_version").is_none());
+        assert!(base.wire.get("game_version").is_none());
+        assert!(wire_from_position(&base.position)
+            .unwrap()
+            .get("game_version")
+            .is_none());
+
+        let v111 = sts2_core::GameVersion::V0_111_0;
+        let built = fresh_in(v111);
+        assert_eq!(built.position["game_version"], json!("v0.111.0"));
+        assert_eq!(built.wire["game_version"], json!("v0.111.0"));
+        assert_eq!(
+            wire_from_position(&built.position).unwrap()["game_version"],
+            json!("v0.111.0")
+        );
+        let again = build_position(&built.position).expect("rebuilds");
+        assert_eq!(again.position["game_version"], json!("v0.111.0"));
+        assert_eq!(position_game_version(&again.position).unwrap(), v111);
+
+        let mut bad = built.position.clone();
+        bad["game_version"] = json!("v9");
+        assert!(wire_from_position(&bad).is_err());
     }
 
     #[test]

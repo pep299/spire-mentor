@@ -84,6 +84,12 @@ function pairKey(a: string, b: string): string {
 
 // Per-character edge map cache: character → ("A|B" → edge). Promise-cached so
 // concurrent CardReward mounts share one fetch.
+//
+// One catalog per character, NOT per game build (GH #877): the catalogs are
+// built from a scraped v0.107 run corpus and cannot be regenerated for
+// v0.111.0 until a corpus of that build exists. A v0.111.0 run therefore
+// reads the v0.107 tables -- a card new in v0.111.0 has no pairs, so it simply
+// gets no synergy chip, and a changed card is judged by its v0.107 pairs.
 const cache = new Map<string, Promise<Map<string, CatalogEdge>>>();
 
 function loadEdges(character: string): Promise<Map<string, CatalogEdge>> {

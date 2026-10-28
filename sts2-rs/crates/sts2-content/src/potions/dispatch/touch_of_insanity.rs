@@ -35,7 +35,9 @@ pub(crate) fn drink_touch_of_insanity(
             // selected the free RAMPAGE+1 off raw `cost > 0` and made it
             // free for the whole combat). The raw cost stays as a guard so
             // X-cost (-1) cards remain excluded.
-            if c.local_energy_cost.is_none() && c.combat_var(sts2_core::cards::VarKey::FreeThisTurn) != 0 {
+            if c.local_energy_cost.is_none()
+                && c.combat_var(sts2_core::cards::VarKey::FreeThisTurn) != 0
+            {
                 return false;
             }
             // C# filters on `CostsEnergyOrStars` — energy OR stars. A Regent

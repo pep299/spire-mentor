@@ -209,7 +209,7 @@ pub fn amalgamator_allowed(state: &RunState) -> bool {
     use sts2_core::cards::CardTag;
     let rank = sts2_core::lookup_card_rarity_rank();
     let version = state.game_version;
-    let is_basic = |c: &sts2_core::cards::Card| rank.map_or(true, |f| f(c.card_id, version) == 1);
+    let is_basic = |c: &sts2_core::cards::Card| rank.is_none_or(|f| f(c.card_id, version) == 1);
     let strikes = state
         .master_deck
         .iter()
@@ -241,41 +241,33 @@ pub fn round_tea_party_allowed(state: &RunState) -> bool {
     state.current_hp >= 12
 }
 
-/// `PunchOff`: C# `TotalFloor >= 6`. Rust `total_floor` is ONE LESS than
-/// C#'s `MapPointHistory` floor (Neow uncounted), hence the `+ 1` in the
-/// v0.107.1 arm. v0.111.0 uses [`event_pick_total_floor`] instead.
+/// `PunchOff`: C# `TotalFloor >= 6`, read at event-pick time
+/// ([`event_pick_total_floor`]).
 #[must_use]
 pub fn punch_off_allowed(state: &RunState) -> bool {
-    if state.game_version >= sts2_core::GameVersion::V0_111_0 {
-        return event_pick_total_floor(state) >= 6;
-    }
-    state.total_floor + 1 >= 6
+    event_pick_total_floor(state) >= 6
 }
 
 /// C# `RunState.TotalFloor` as an event's `IsAllowed` sees it while the event
-/// is pulled. v0.111.0: `TotalFloor` sums `MapPointHistory`
-/// (`Runs/RunState.cs:423`), and `RunManager` pulls the event inside
-/// `CreateRoom` BEFORE `AppendToMapPointHistory` adds the room being entered
-/// (`Runs/RunManager.cs:925-929`), so the gate counts the rooms already left
-/// behind. Rust bumps `total_floor` in `enter_room` before the lazy
-/// `pick_event`, and its count is one below C#'s (Neow uncounted), so the two
-/// offsets cancel: the value is `total_floor` itself. (The v0.107.1 arms keep
-/// their `+ 1`, which lets SlipperyBridge in one floor early; v0.107.1 C# has
-/// the same order, so the fix is tracked for that build in #806.)
+/// is pulled. `TotalFloor` sums `MapPointHistory` (`Runs/RunState.cs:423`),
+/// and `RunManager` pulls the event inside `CreateRoom` BEFORE
+/// `AppendToMapPointHistory` adds the room being entered (v0.111.0
+/// `Runs/RunManager.cs:925-929`, v0.107.1 :844-848), so the gate counts the
+/// rooms already left behind. Rust bumps `total_floor` in `enter_room` before
+/// the lazy `pick_event`, and its count is one below C#'s (Neow uncounted), so
+/// the two offsets cancel: the value is `total_floor` itself. Both builds
+/// (GH #806; the old `+ 1` let SlipperyBridge in one floor early).
 #[must_use]
 pub fn event_pick_total_floor(state: &RunState) -> i32 {
     state.total_floor
 }
 
 /// `SlipperyBridge`: C# `TotalFloor > 6 && deck.Any(IsRemovable)` (the
-/// deck is never empty of removable cards in practice). Same `+ 1`
-/// floor-base translation as [`punch_off_allowed`].
+/// deck is never empty of removable cards in practice). Same pick-time floor
+/// as [`punch_off_allowed`].
 #[must_use]
 pub fn slippery_bridge_allowed(state: &RunState) -> bool {
-    if state.game_version >= sts2_core::GameVersion::V0_111_0 {
-        return event_pick_total_floor(state) > 6 && !state.master_deck.is_empty();
-    }
-    state.total_floor + 1 > 6 && !state.master_deck.is_empty()
+    event_pick_total_floor(state) > 6 && !state.master_deck.is_empty()
 }
 
 /// `EndlessConveyor`: C# `Gold >= 120`.
@@ -824,52 +816,57 @@ mod tests {
     }
 
     #[test]
-    fn punch_off_needs_total_floor_5() {
-        // gate is `total_floor + 1 >= 6`, i.e. total_floor >= 5.
+    fn punch_off_needs_total_floor_6() {
+        // gate is `total_floor >= 6` at pick time (GH #806).
         let mut rs = RunState::new();
-        rs.total_floor = 4;
-        assert!(!punch_off_allowed(&rs)); // 4+1=5 < 6
         rs.total_floor = 5;
-        assert!(punch_off_allowed(&rs)); // 5+1=6 boundary (kills `>=`→`<`, `+`→`-`/`*`)
+        assert!(!punch_off_allowed(&rs)); // 5 < 6
+        rs.total_floor = 6;
+        assert!(punch_off_allowed(&rs)); // boundary (kills `>=`→`<`)
     }
 
     #[test]
     fn slippery_bridge_needs_floor_over_6_and_nonempty_deck() {
-        // gate is `total_floor + 1 > 6` (total_floor >= 6) AND deck non-empty.
+        // gate is `total_floor > 6` at pick time AND deck non-empty (GH #806).
         let mut rs = RunState::new();
         rs.master_deck.push(deck_card(
             CardId::StrikeIronclad,
             CardType::Attack,
             sts2_core::cards::CardTags::NONE,
         ));
-        rs.total_floor = 5;
-        assert!(!slippery_bridge_allowed(&rs)); // 5+1=6 not > 6 (kills `>`→`>=`/`==`, `+`→`-`/`*`)
         rs.total_floor = 6;
-        assert!(slippery_bridge_allowed(&rs)); // 6+1=7 > 6 (kills `>`→`<`)
+        assert!(!slippery_bridge_allowed(&rs)); // 6 not > 6 (kills `>`→`>=`/`==`)
+        rs.total_floor = 7;
+        assert!(slippery_bridge_allowed(&rs)); // 7 > 6 (kills `>`→`<`)
         rs.master_deck.clear();
         assert!(!slippery_bridge_allowed(&rs)); // empty deck (kills `delete !`, `&&`→`||`)
     }
 
-    /// v0.111.0: the gates read the floor count C# has while it pulls the
-    /// event (rooms already left), i.e. Rust's `total_floor` with no `+ 1`:
-    /// SlipperyBridge (`SlipperyBridge.cs:84`, `TotalFloor > 6`) opens one
-    /// pick later than the v0.107.1 arm, PunchOff (`TotalFloor >= 6`) too.
+    /// The gates read the floor count C# has while it pulls the event (rooms
+    /// already left), i.e. Rust's `total_floor` with no `+ 1`: SlipperyBridge
+    /// (`SlipperyBridge.cs:84`, `TotalFloor > 6`) and PunchOff
+    /// (`TotalFloor >= 6`). Same C# in both builds (GH #806).
     #[test]
-    fn floor_gates_read_pick_time_total_floor_v0111() {
-        let mut rs = RunState::new();
-        rs.game_version = sts2_core::GameVersion::V0_111_0;
-        rs.master_deck.push(deck_card(
-            CardId::StrikeIronclad,
-            CardType::Attack,
-            sts2_core::cards::CardTags::NONE,
-        ));
-        rs.total_floor = 6;
-        assert!(!slippery_bridge_allowed(&rs));
-        assert!(punch_off_allowed(&rs));
-        rs.total_floor = 5;
-        assert!(!punch_off_allowed(&rs));
-        rs.total_floor = 7;
-        assert!(slippery_bridge_allowed(&rs));
+    fn floor_gates_read_pick_time_total_floor_both_versions() {
+        for version in [
+            sts2_core::GameVersion::V0_107_1,
+            sts2_core::GameVersion::V0_111_0,
+        ] {
+            let mut rs = RunState::new();
+            rs.game_version = version;
+            rs.master_deck.push(deck_card(
+                CardId::StrikeIronclad,
+                CardType::Attack,
+                sts2_core::cards::CardTags::NONE,
+            ));
+            rs.total_floor = 6;
+            assert!(!slippery_bridge_allowed(&rs), "{version:?}");
+            assert!(punch_off_allowed(&rs), "{version:?}");
+            rs.total_floor = 5;
+            assert!(!punch_off_allowed(&rs), "{version:?}");
+            rs.total_floor = 7;
+            assert!(slippery_bridge_allowed(&rs), "{version:?}");
+        }
     }
 
     #[test]

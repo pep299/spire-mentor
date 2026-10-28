@@ -26,13 +26,16 @@ pub(crate) fn play_feed(state: &mut CombatState, target: Option<CreatureUid>) ->
     // matching C#'s `cardPlay.Target.Powers.All(...)` evaluated pre-Execute.
     let should_trigger_fatal = card_effects::should_owner_death_trigger_fatal(state, t);
 
-    let _ = deal_damage_player_to_enemy(state, t, current_damage(state));
-    let dead_post = state
-        .creatures
-        .iter()
-        .any(|c| c.id == t.0 && c.current_hp <= 0);
+    // C# `Feed.cs:42`: `attackCommand.Results…Any(r => r.WasTargetKilled)` —
+    // whether THIS hit killed the target (`Creature.LoseHpInternal`,
+    // `Creature.cs:447`), not whether it is dead afterwards. A pressurized
+    // Waterfall Giant is revived to 999,999,999 inside the hit
+    // (`SteamEruptionPower.AfterDeath`) yet still counts as killed.
+    let killed =
+        sts2_core::card_effects::deal_damage_player_to_enemy_full(state, t, current_damage(state))
+            .was_target_killed;
 
-    if should_trigger_fatal && dead_post {
+    if should_trigger_fatal && killed {
         if let Some(player_uid) = state.player.creature_uid {
             // Bead `sts2-rs-6d29d`: C# `Feed.cs` `MaxHpVar(3m)` with
             // `OnUpgrade UpgradeValueBy(1m)` → +3 base / +4 upgraded.

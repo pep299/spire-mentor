@@ -55,7 +55,8 @@ message-specific ones:
 | `act` | int | 1-based act number (`CurrentActIndex + 1`), `1` if no active run. |
 | `floor` | int | `RunState.TotalFloor` (floor across the whole run), `0` if no active run. |
 | `mod_version` | string | Spire Mentor mod version (e.g. `"0.1.0"`). |
-| `game_version` | string | **New (GH #800).** The running game build, `"v<major>.<minor>.<patch>"` (`"v0.107.1"` stable, `"v0.111.0"` beta): the game's own `ReleaseInfoManager.Instance.ReleaseInfo.Version` (its `release_info.json`), lower-case `v`, no leading zeros (`SimGameVersion` / `GameVersionFormat`). Falls back to the build the DLL was compiled for when the game has no `release_info.json`; any other shape is sent as read (`v`-prefixed) rather than guessed at. **Absent means `v0.107.1`** -- every mod build before the field -- so a consumer must treat a missing field exactly like `"v0.107.1"`. The advisor builds its engine for this build (`realgame_adapter.envelope_game_version` -> the engine wire's `$.game_version`) and answers a build it does not support with an `advice` whose `note` names the build and the supported ones, plus `unsupported_game_version`, and no `best`/`options` (section 5). |
+| `game_version` | string | **New (GH #800).** The running game build, `"v<major>.<minor>.<patch>"` (`"v0.107.1"` stable, `"v0.111.0"` beta): the game's own `ReleaseInfoManager.Instance.ReleaseInfo.Version` (its `release_info.json`), lower-case `v`, no leading zeros (`SimGameVersion` / `GameVersionFormat`). Falls back to `"v0.107.1"` when the game has no `release_info.json`; any other shape is sent as read (`v`-prefixed) rather than guessed at. **Absent means `v0.107.1`** -- every mod build before the field -- so a consumer must treat a missing field exactly like `"v0.107.1"`. The advisor builds its engine for this build (`realgame_adapter.envelope_game_version` -> the engine wire's `$.game_version`) and answers a build it does not support with an `advice` whose `note` names the build and the supported ones, plus `unsupported_game_version`, and no `best`/`options` (section 5). |
+| `player_count` | int | **New (co-op, `docs/plans/2026-10-23-coop-multiplayer.md`).** Players in the run (`RunState.Players.Count`); `1` outside a run. In co-op (`> 1`) everything else in the envelope is still the **local** player's view, and the advice is for the local player only. Teammates' plays move the board between our messages, and the `rng` block is sent **empty** (shared streams are drawn by teammates, per-player streams are seeded by slot), which consumers already read as "this producer does not carry the run's dice". **Absent means `1`** -- every mod build before the field. |
 | `run_state` | object | See below. Always present, degrades to defaults/empty collections if no run/player is active. |
 | `state_id` | int | **New, phase 1b.** Monotonically increasing id, assigned fresh every time this envelope is built (`SimStateExtractor.ApplyEnvelope`/`SimProtocolHelpers.NextStateId`). See section 4's "stale-state guard" for how inbound actions may reference it. |
 | `request_id` | string | Present on every message that expects a reply (everything except `game_over`/`run_complete`/`error`/`pong`); injected by the transport layer, not by the handler. |
@@ -71,6 +72,8 @@ message-specific ones:
 | `potion_slot_count` | int | Total number of potion slots (`Player.MaxPotionCount`). |
 | `relics` | array | Every owned relic -- see "Relic object" below. |
 | `master_deck` | array | The player's full deck (`Player.Deck.Cards`), in engine order -- see "Card object" below. |
+| `is_last_act` | bool\|null | **New.** `CurrentActIndex` is the run's last act (`Acts.Count - 1`). With `awaiting_second_boss`, tells the advisor a boss fight is the run's LAST one, where the Rust run agent values only winning (`sts2_mcts::boss_win_carry`). `null` when there is no run. |
+| `awaiting_second_boss` | bool\|null | **New.** The map has a second boss point (A10 DoubleBoss) and the player stands on the first boss node, so one more boss remains (Rust `RunState::awaiting_second_boss`). `null` when there is no run. |
 | `ascension` | int | Ascension level (0-10). |
 | `character` | string\|null | Character `Id.Entry` (e.g. `"IRONCLAD"`), null if no active run. |
 | `unlocked_epochs` | array\<string\>\|null | **New (GH #374).** The epoch ids this run's save has REVEALED — `RunState.UnlockState.ToSerializable().UnlockedEpochs`, falling back to `Player.UnlockState` when there is no run. C# prunes cards behind *un*revealed epochs out of every card pool (`CardPoolModel.GetUnlockedCards`), so a consumer that models epoch gating must invert this against its own epoch coverage; the raw revealed list is emitted rather than a locked list because C# carries epochs a consumer may not model (`Relic1-5`, `Silent1/3/4/6`, `Underdocks`, `Darv`, ...). **`null` means "could not determine", NOT "nothing revealed"** — an empty array is a legitimate `UnlockState.none`, so a consumer must not conflate them. Read from the RUN's unlock state, not `SaveManager.Instance.Progress`, per `UnlockState`'s own doc-comment: the latter can include epochs unlocked between a save and a load. |
@@ -237,6 +240,7 @@ Sent once per card-play decision (~4x/s during combat).
 | `available_actions` | string[] | `["PLAY","END_TURN"]` plus `"POTION"` iff any potion slot has `can_use=true`. |
 | `round` | int | `CombatState.RoundNumber`. |
 | `room_type` | string | The live `RunState.CurrentRoom.RoomType` (`Monster`\|`Elite`\|`Boss`\|`Event`\|...), same enum string the headless `RunContext` emits as `context.room_type`. The client maps `"Elite"` onto the engine's `is_elite` flag (an eval-net feature). Defaults to `"Combat"` when no room is known. |
+| `allies` | object[] | **New (co-op phase 3).** One entry per OTHER player in the run, as this peer simulates them; empty in single-player. Each: `character` (string id), `hp` / `max_hp` / `block` (int), `is_dead` (bool), `energy` / `max_energy` (int), `powers` (Power[]), `hand` (Card[], serialized without legality), `ended_turn` (bool, `CombatManager.IsPlayerReadyToEndTurn`); since the co-op replay fields also `net_id` (string), `draw_pile` / `discard_pile` / `exhaust_pile` / `play_pile` (Pile, as ours), `relics` (Relic[]) and `stars` (int), and `player.net_id` names us. Every peer runs every player's draws, so the teammate's hand is real data even though the game's UI only shows its size. Monster attacks hit every player (`TargetingAllOpponents`), so `enemies[].intents` damage is already ours. **Absent** in every mod build before the field. |
 | `player.stars` | int | **Regent only** (same condition as headless `RunSimulator.CombatPlayState`: `pcs.Stars >= 0` and character `REGENT`). The star economy for star-cost cards; the client hoists it to the headless dialect's top-level `stars`. |
 
 ### `map_select`
@@ -321,6 +325,28 @@ and a fresh re-send; the disabled button is never clicked.
 A `choose` whose `index` is out of range, or names an option that has become
 locked by the time the reply arrives, gets `error:"invalid_index"` and a
 fresh re-send (like every other `choose` handler).
+
+**The Fake Merchant (GH #873).** This event has no option buttons; its room
+is a shopfront. The autopilot asks it as an `event` whose options are the
+headless engine's (`act2_hive.rs` `FAKE_MERCHANT_OPTIONS`), always all three
+and always in this order, because the run policy reads an option by its
+position:
+
+| index | `text_key` | Meaning |
+|---|---|---|
+| 0 | `FAKE_MERCHANT.options.BUY` | Buy the first stocked relic the player can afford, in inventory order. `relic_id` names it. |
+| 1 | `FAKE_MERCHANT.options.THROW_FOUL` | Throw a held Foul Potion at the merchant. Starts the merchant fight. Winning it gives the Rug, every relic still in stock and 300 gold; the event does not resume afterwards. |
+| 2 | `FAKE_MERCHANT.options.LEAVE` | Leave. |
+
+An option that is not available right now stays in its slot with
+`enabled:false`: buy with nothing affordable, throw with no Foul Potion (or
+after the fight has started). Each option also carries the structured deltas
+the engine previews for it: `gold_delta`, `hp_delta`, `max_hp_delta`,
+`relics_gained` and `potions_lost`. The message adds `player_gold` and
+`stock`, the whole shopfront as `{kind, label, price, stocked, affordable,
+item?}` rows. After a purchase the event is asked again, until the agent
+throws or leaves. Coach mode asks the same message, built by the same code
+(GH #886).
 
 ### `treasure`
 
@@ -630,6 +656,36 @@ that caused it, and the kind's own fields (`dealer` / `receiver` / `unblocked` /
 (`IRONCLAD`, `Nibbit`) — never a display name: localization belongs to the
 workbench and it needs a stable key.
 
+Co-op replay fields: a `card_play_started` row also carries `owner` (the
+card's player as `net_id`, a string; `null` if unreadable), `target`
+(`{kind, id, uid}` or `null`), `target_index` (the target's position in the
+combat's enemies, `null` for a player, a pet or no target) and `play_index`
+(> 0 for a repeat of the same play — Echo Form, Burst — not a new one). A
+`potion` row carries `owner` and `target_index` the same way. Creatures on rows
+also carry `combat_id` (C# `Creature.CombatId`), matching `combat_id` on the
+board's enemies: a row's `target_index` is computed when the rows are drained,
+after C# may have dropped a killed target from its list.
+
+Also for replaying co-op fights: `player.seat_index` is our position in the
+run's player order (who sets up and draws first each turn); `coop_rng` (co-op
+only) is the `rng` block's shape and content, kept off `rng` because live the
+teammates draw from the shared streams between our decisions; a Bolas /
+Thrumming Hatchet card carries `combat_vars.return_if_played_round` (the round
+it was played this turn or last, from the game's History), the engine's
+`VarKey` wire name.
+
+A `player_choice` row is a pick a player made mid-combat (a Survivor discard,
+a Discovery card, a Toolbox pick), ours or a teammate's, as the game syncs it
+between peers (C# `PlayerChoiceSynchronizer.PlayerChoiceReceived`). It is not a
+History entry: it sits before the first entry recorded after the pick. Fields:
+`owner` (net id), `choice_id` (the per-player sequence number), `choice_type`
+(C# `PlayerChoiceType`: `CombatCard`, `CanonicalCard`, `DeckCard`,
+`MutableCard`, `Index`, `Player`), `cards` (`[{id, upgraded}]`, in the order
+picked; empty for a skip or a non-card choice), `indexes` (an `Index` choice)
+and `player` (a `Player` choice's net id). A teammate's pick lands when it
+arrives over the network, which can be a little before the play that asks for
+it.
+
 Rows are DRAINED, not resent: each request carries only what happened since the
 last one, and the drain resets itself when the history shrinks (the only way
 that happens is a new combat). A fight's final rows — the killing blow, the
@@ -710,6 +766,7 @@ never appears as an `advice_request`.
 | `advice.options[].col/row` | int | `map_select` only: the option's map-graph coordinate, so the HUD can pin its score to the node on the map instead of printing a coordinate in a panel. |
 | `advice.path[]` | array | `map_select` only: the **projected route** through the act — `{col, row, type, hop, hp}`, `hop` 0 being the node being chosen now and `hp` the HP the projection expects to *arrive* at that node with (before its own room resolves). Produced by re-querying the same policy hop by hop with `map_coord` walked along the graph and HP walked forward through the run-AI's expected-cost tables, so the route runs the whole act rather than stopping a few floors out. Deck, gold, relics and potions stay frozen and the HP deltas are flat per-act expectations, so it is a projection, not a plan, and the HUD says so. `hp` is absent when the engine could not supply its cost tables (older wheel) — the route then draws with HP frozen, as it did before. Absent entirely when the net cannot see a route (single-child chains still count). |
 | `advice.pv` | array of string | Principal variation, rendered as the "line:" row. |
+| `advice.hand_back` | string | **New (GH #874).** Present when the answer is not really the AI deciding: an unranked surface (`best` is the first option, "NOT a recommendation"), a borrowed head (`treasure`, `card_bundle` — GH #379), no run-policy net, an inference failure, an advisor error. The value is a short player-facing reason. Under the mod's `pause_on: "unsupported"` (the default) F7 autoplay stops on it and hands the decision to the player; everything else (HUD, `best`, F6) is unchanged. Absent on a real recommendation and on older advisors. The mod applies the same verdict itself to what it answers without a round trip (the crystal sphere's reveals). |
 | `capabilities` | object | **New in v5 / coach.** Top level of the `advice` message, next to `advice` (not inside it). What this advisor build understands: `{"coach": 1}` = it accepts the v5 `human_action` kinds (`end_turn`, non-combat choices) and grades them; `{"coach": 2}` (v5.1) = also accepts `combat_ended` / Advisor-mode `game_over` and answers them with `recap` / `autopsy` records. Absent on older advisors: treat as `{}`. The mod reads it from every reply (`SimAdvisor.AdvisorCoachCapability`) and also accepts `advice.capabilities`. |
 | `advice.unsupported_game_version` | string \| any | **New (GH #800).** Present only on a **refusal**: the request's envelope `game_version` (section 1) names a build the advisor has no engine for. The value is that `game_version` as sent; `advice.note` is the player-facing explanation (the build, the supported builds, what to do), and there is no `best` / `options` / `p_win` -- nothing to render or execute. A missing or `"v0.107.1"` `game_version` is never refused. |
 
@@ -860,7 +917,7 @@ an object is dropped.
 
 | `kind` | Fields |
 |---|---|
-| `turn` | `id, node_id, turn, floor, verdict` (`best \| tie \| slip \| blunder`), `you: [str]` (the human's turn, ending `"end turn"`), `ai: [str]` (the AI's line from the turn's first position), `hp_drop: number \| null` (expected extra HP lost), `win_before, win_after: number` (win chance of best / played at the turn's first graded decision), `peeked: bool`, `ungraded_actions: int` |
+| `turn` | `id, node_id, turn, floor, verdict` (`best \| tie \| slip \| blunder`), `you: [str]` (the human's turn, ending `"end turn"`), `ai: [str]` (the AI's line from the turn's first position), `why: str \| null` (optional: what one line visibly did on the board that the other did not -- an enemy woken or killed, the fight won -- e.g. `"Your line wakes Lagavulin Matriarch on turn 1"`; render as its own line when present, GH #888), `hp_drop: number \| null` (expected extra HP lost; 0 when the gap is within search noise, GH #888), `win_before, win_after: number` (win chance of best / played at the turn's first graded decision), `peeked: bool`, `ungraded_actions: int` |
 | `choice` | `id, node_id, decision` (the `decision_type`), `label_kind` (display name: "Card reward", "Map", ...), `verdict` (`agree \| tossup \| flag`), `strength` (e.g. "strong preference"), `played: {label, prob, rank}`, `top: {label, prob}`, `alternatives: [{label, prob}]`, `peeked: bool`, `path: {"you": [...], "ai": [...]}` (map only, may be absent; each entry like `advice.path[]`, with `hp` when known) |
 | `recap` | **v5.1.** `id` (`"recap:<node_id>"`), `node_id`, `log_name`, `log_idx` (the fight's first decision), `floor, room_type, hp_start, hp_end, hp_lost`, `ai_hp_lost: number \| null` (reserved for the HP the AI's own line would lose; current advisors always send `null` -- the opening search's mean final HP overstated it, GH #856. Render `null` as the HP loss alone), `turns, turns_graded, turns_ungraded, unfinished_turns: int`, `costliest: [<turn record>]` (at most 2, `slip`/`blunder` only, by `severity`, each with `context`). Sent after a won fight. |
 | `autopsy` | **v5.1.** `id` (`"autopsy:<run key>"`), `log_name, floor, act`, `items: [{"kind": "turn" \| "choice", "record": <turn \| choice record>}]` (at most 3, display order), `turns_ungraded, decisions_graded: int`. Sent on death. `items` may be empty. |

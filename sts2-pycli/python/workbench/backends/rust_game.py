@@ -33,6 +33,7 @@ from sts2_hint import display_maps
 
 from workbench import localization
 from workbench.backends.base import GameBackend
+from workbench.seed import json_exact_seed
 
 _log = logging.getLogger(__name__)
 
@@ -1125,7 +1126,7 @@ class RustGame(GameBackend):
         if callable(seed_of):
             seed_of = seed_of()
         if seed_of is not None:
-            state["bg_seed"] = int(seed_of)
+            state["bg_seed"] = json_exact_seed(int(seed_of))
         coord = coord_of() if callable(coord_of) else None
         if coord is not None:
             state["bg_col"], state["bg_row"] = int(coord[0]), int(coord[1])

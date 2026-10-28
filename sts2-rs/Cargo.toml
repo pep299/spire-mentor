@@ -23,7 +23,7 @@ exclude = ["fuzz"]
 [workspace.package]
 version = "0.0.1"
 edition = "2021"
-rust-version = "1.96"
+rust-version = "1.99"
 license = "MIT"
 authors = ["Thomas Friedel"]
 repository = "https://github.com/tfriedel/sts2-rs"
@@ -141,6 +141,9 @@ format_push_string = "allow"
 doc_markdown = "allow"
 doc_overindented_list_items = "allow"
 doc_lazy_continuation = "allow"
+# New in clippy 1.99: `assert!(x.is_empty())` → `assert_eq!(x, [] as [T; 0])`.
+# ~200 test asserts; the suggested rewrite reads worse and needs `T: PartialEq`.
+assert_is_empty = "allow"
 # `excessive_precision` was previously allow-listed because the texel
 # writeback flow (`scripts/texel_writeback.py`) emitted `repr(float)` into
 # f32 slots, re-introducing f64-precision literals on every tuning pass
@@ -173,6 +176,16 @@ panic = "abort"
 inherits = "release"
 debug = true
 
+# The editable sts2_rs wheel that `uv run` rebuilds after every Rust edit
+# (sts2-py's `[tool.uv] cache-keys`), selected in sts2-pycli/pyproject.toml.
+# Fat LTO at one codegen unit made that rebuild ~190 s of every pytest gate.
+# Explicit `maturin --release` builds (Dockerfile, setup.sh, wheel-venv.sh)
+# keep the full release profile.
+[profile.pyext]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+
 # Optimized-but-checked profile for fuzz / corpus-gen / parity sweeps.
 #
 # The default `release` profile keeps `overflow-checks` OFF for the perf
@@ -200,3 +213,18 @@ opt-level = 1
 [profile.dev]
 debug = "line-tables-only"
 split-debuginfo = "unpacked"
+
+# Optimise the engine crates in dev/test builds too (deps are already at 1,
+# above). The engine-heavy tests are what bounds the nextest wall clock:
+# 82 s -> 30 s, and the PPO arena test's won 3-act run 76 s -> 17 s, for
+# ~20 s more on a rebuild after an engine edit. Debug assertions and
+# overflow checks stay on: those are `debug-assertions`/`overflow-checks`,
+# not `opt-level`.
+[profile.dev.package.sts2-core]
+opt-level = 1
+[profile.dev.package.sts2-content]
+opt-level = 1
+[profile.dev.package.sts2-mcts]
+opt-level = 1
+[profile.dev.package.sts2-runai]
+opt-level = 1

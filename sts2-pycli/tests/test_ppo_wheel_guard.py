@@ -361,7 +361,7 @@ def test_an_iteration_no_run_reached_the_engine_records_a_null_wheel(monkeypatch
     monkeypatch.setattr(trainer, "collect_rows", lambda *a, **k: [dict(r) for r in rows])
     save = tmp_path / "run"
     trainer.train(_cfg(save))
-    with open(f"{save}.stats.jsonl") as fh:
+    with open(f"{save}.stats.jsonl", encoding="utf-8") as fh:
         [row] = [json.loads(line) for line in fh]
     assert row["errors"] == 2
     assert row["wheel"] is None and row["wheel_pgo"] is None
@@ -492,7 +492,7 @@ def test_a_training_run_records_what_its_workers_ran(tmp_path, with_record):
     # plain venv and a PGO one alike, so a stats row copied from it shows.
     rec = {**wheel_guard.wheel_build_info(), "wheel_pgo": not me["pgo"], "allow_plain_wheel": True}
     train(_cfg(save), wheel=rec if with_record else None)
-    with open(f"{save}.stats.jsonl") as fh:
+    with open(f"{save}.stats.jsonl", encoding="utf-8") as fh:
         rows = [json.loads(line) for line in fh]
     assert [r["wheel"] for r in rows] == [me]
     # What the workers ran, not what the record or the opt-out said.
@@ -823,7 +823,7 @@ def test_screen_json_says_which_arm_was_reused_and_what_it_ran(monkeypatch, tmp_
     (out / "a").mkdir(parents=True)
     (out / "a" / "main.pt").touch()
     earlier = wheel_identity(PLAIN)
-    with open(out / "a" / "main.stats.jsonl", "w") as f:
+    with open(out / "a" / "main.stats.jsonl", "w", encoding="utf-8") as f:
         f.write(json.dumps({"iteration": 0, "wheel": wheel_identity(PGO)}) + "\n")
         f.write(json.dumps({"iteration": 1, "wheel": earlier}) + "\n")
     screen.main(["--name", "t", "--out", str(out), "--init-ckpt", "x.pt"])
@@ -868,7 +868,7 @@ def test_a_fresh_eval_must_have_run_the_pinned_wheel(monkeypatch, tmp_path, ran)
         (out / "eval-a.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
 
     def run(cmd, env, check):
-        with open(env["SCREEN_OUT"], "w") as f:
+        with open(env["SCREEN_OUT"], "w", encoding="utf-8") as f:
             f.writelines(json.dumps(r) + "\n" for r in rows)
         return subprocess.CompletedProcess(cmd, 0)
 

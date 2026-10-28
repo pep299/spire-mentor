@@ -186,9 +186,18 @@ export interface MctsRow {
 }
 
 import type { Position } from "./position";
+import { gameVersionBody } from "../gameVersion";
 
 export const api = {
-  catalog: (): Promise<Catalog> => apiFetch("/api/simlab/catalog").then(j),
+  /** The workbench's `/api/capabilities` — which game builds this server
+   *  runs (GH #801), so the sandbox offers the same builds as the launcher. */
+  capabilities: (): Promise<{ game_versions?: string[]; default_game_version?: string }> =>
+    apiFetch("/api/capabilities").then(j),
+  /** The catalog named in game build `gameVersion`'s text (GH #877). */
+  catalog: (gameVersion?: string | null): Promise<Catalog> => {
+    const v = gameVersionBody(gameVersion).game_version;
+    return apiFetch(`/api/simlab/catalog${v ? `?game_version=${encodeURIComponent(v)}` : ""}`).then(j);
+  },
   buildPosition: (position: Position): Promise<BuiltPosition> =>
     apiFetch("/api/simlab/position/build", {
       method: "POST",
@@ -206,6 +215,8 @@ export const api = {
     relics?: string[];
     potions?: string[];
     deck?: string[];
+    /** The build to deal it in (GH #877); omitted for the default build. */
+    game_version?: string;
   }): Promise<BuiltPosition> =>
     apiFetch("/api/simlab/position/new", {
       method: "POST",

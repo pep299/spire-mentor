@@ -484,6 +484,10 @@ def write_conf(character: str, ascension: int, resume: bool, time_scale: float) 
         "agent_timeout_seconds": 0,
         "auto_start": True,
         "advisor_autoplay": True,
+        # Never hand a decision back: nobody is at the keyboard to take it
+        # (GH #874). advisor_autoplay already forces this; written anyway so
+        # the conf says what the run does.
+        "pause_on": "",
         "resume_run": resume,
         "fast_mode": "instant",
         "time_scale": time_scale,

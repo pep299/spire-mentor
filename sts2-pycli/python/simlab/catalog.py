@@ -96,9 +96,15 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def localization_dir() -> Path | None:
-    """``sts2-pycli/localization_eng`` (the Dockerfile copies it beside ``python/``)."""
-    for candidate in (repo_root() / "localization_eng", Path("/app/localization_eng")):
+def localization_dir(game_version: str | None = None) -> Path | None:
+    """``sts2-pycli/localization_eng`` (the Dockerfile copies it beside
+    ``python/``); a non-default build's ``localization_eng_<ver>/`` (GH #877)."""
+    name = (
+        "localization_eng"
+        if game_version in (None, _ENGINE_WIKI_VERSION)
+        else f"localization_eng_{game_version}"
+    )
+    for candidate in (repo_root() / name, Path("/app") / name):
         if candidate.is_dir():
             return candidate
     return None
@@ -133,8 +139,10 @@ def _loc(loc_dir: Path | None, name: str) -> dict[str, str]:
     return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
 
 
-def _wiki(wiki_dir: Path | None, name: str) -> list[dict[str, Any]]:
-    data = _load_json(wiki_dir / _ENGINE_WIKI_VERSION / f"{name}.json") if wiki_dir else None
+def _wiki(
+    wiki_dir: Path | None, name: str, version: str = _ENGINE_WIKI_VERSION
+) -> list[dict[str, Any]]:
+    data = _load_json(wiki_dir / version / f"{name}.json") if wiki_dir else None
     return [d for d in data if isinstance(d, dict)] if isinstance(data, list) else []
 
 
@@ -242,8 +250,11 @@ def _encounter_rows(loc: dict[str, str]) -> list[dict[str, Any]]:
     return rows
 
 
-def build_catalog(loc_dir: Path | None, wiki_dir: Path | None) -> dict[str, Any]:
-    """Assemble the catalog from the engine registries plus the data files."""
+def build_catalog(
+    loc_dir: Path | None, wiki_dir: Path | None, wiki_version: str = _ENGINE_WIKI_VERSION
+) -> dict[str, Any]:
+    """Assemble the catalog from the engine registries plus the data files of
+    game build ``wiki_version`` (the wiki ``data/<ver>/`` dir)."""
     import sts2_rs
 
     from simlab.agents import AGENTS
@@ -266,29 +277,31 @@ def build_catalog(loc_dir: Path | None, wiki_dir: Path | None) -> dict[str, Any]
     return {
         "characters": characters,
         "cards": _card_rows(
-            sorted(sts2_rs.list_registry_names("card")), cards_loc, _wiki(wiki_dir, "cards")
+            sorted(sts2_rs.list_registry_names("card")),
+            cards_loc,
+            _wiki(wiki_dir, "cards", wiki_version),
         ),
         "relics": _named_rows(
             sorted(sts2_rs.list_registry_names("relic")),
             _loc(loc_dir, "relics"),
-            _wiki(wiki_dir, "relics"),
+            _wiki(wiki_dir, "relics", wiki_version),
         ),
         "potions": _named_rows(
             sorted(sts2_rs.list_registry_names("potion")),
             _loc(loc_dir, "potions"),
-            _wiki(wiki_dir, "potions"),
+            _wiki(wiki_dir, "potions", wiki_version),
         ),
         "powers": _named_rows(
             sorted(sts2_rs.list_registry_names("power")),
             _loc(loc_dir, "powers"),
-            _wiki(wiki_dir, "powers"),
+            _wiki(wiki_dir, "powers", wiki_version),
             suffix="_POWER",
         ),
         "orbs": [{"id": k, "name": k, "passive": p, "evoke": e} for k, (p, e) in ORB_BASE.items()],
         "monsters": _monster_rows(
             sorted(sts2_rs.list_registry_names("monster")),
             _loc(loc_dir, "monsters"),
-            _wiki(wiki_dir, "monsters"),
+            _wiki(wiki_dir, "monsters", wiki_version),
         ),
         "encounters": _encounter_rows(_loc(loc_dir, "encounters")),
         "strategies": sorted(AGENTS),
@@ -296,20 +309,30 @@ def build_catalog(loc_dir: Path | None, wiki_dir: Path | None) -> dict[str, Any]
 
 
 @functools.lru_cache(maxsize=4)
-def _cached(loc_dir: str | None, wiki_dir: str | None) -> dict[str, Any]:
-    return build_catalog(Path(loc_dir) if loc_dir else None, Path(wiki_dir) if wiki_dir else None)
+def _cached(
+    loc_dir: str | None, wiki_dir: str | None, wiki_version: str = _ENGINE_WIKI_VERSION
+) -> dict[str, Any]:
+    return build_catalog(
+        Path(loc_dir) if loc_dir else None, Path(wiki_dir) if wiki_dir else None, wiki_version
+    )
 
 
-def catalog() -> dict[str, Any]:
-    """The catalog for this process's data files (built once)."""
-    loc = localization_dir()
+def catalog(game_version: str | None = None) -> dict[str, Any]:
+    """The catalog for this process's data files (built once per build).
+
+    ``game_version`` names the build whose text names the rows (GH #877; ``None``
+    = the default build). A build whose vendored loc is absent falls back to the
+    default build's names. Rust twin: ``simlab_catalog::catalog_for``.
+    """
+    version = game_version or _ENGINE_WIKI_VERSION
+    loc = localization_dir(version) or localization_dir()
     wiki = wiki_data_dir()
-    return _cached(str(loc) if loc else None, str(wiki) if wiki else None)
+    return _cached(str(loc) if loc else None, str(wiki) if wiki else None, version)
 
 
-def name_of(kind: str, ident: str) -> str:
+def name_of(kind: str, ident: str, game_version: str | None = None) -> str:
     """Display name for one id (``kind`` in card/relic/potion/power/monster)."""
-    cat = catalog()
+    cat = catalog(game_version)
     table = {
         "card": "cards",
         "relic": "relics",

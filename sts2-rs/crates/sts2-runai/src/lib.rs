@@ -73,4 +73,5 @@ pub mod proxy_study;
 pub mod rollout;
 #[cfg(feature = "sweeps")]
 pub mod trajectory;
+pub mod turn_plan_teacher;
 pub mod view;

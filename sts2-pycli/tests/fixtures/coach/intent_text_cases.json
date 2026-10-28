@@ -1,0 +1,13 @@
+{
+  "_doc": "Shared cases for an enemy's intent as display text: realgame_coach.intent_text (Python, the mod's wire: intent_type) and advisors::intent_text (Rust, the workbench view: type) both load this file. Each case is run with the kind under BOTH keys.",
+  "cases": [
+    {"name": "single_attack", "intents": [{"kind": "Attack", "damage": 6}], "expect": "attack 6"},
+    {"name": "multi_hit_attack", "intents": [{"kind": "Attack", "damage": 6, "hits": 2}], "expect": "attack 6×2"},
+    {"name": "one_hit_is_not_x1", "intents": [{"kind": "Attack", "damage": 9, "hits": 1}], "expect": "attack 9"},
+    {"name": "attack_plus_debuff", "intents": [{"kind": "Attack", "damage": 6, "hits": 2}, {"kind": "Debuff"}], "expect": "attack 6×2 + debuff"},
+    {"name": "buff_only", "intents": [{"kind": "Buff"}], "expect": "buff"},
+    {"name": "duplicates_collapse", "intents": [{"kind": "Defend"}, {"kind": "Defend"}], "expect": "defend"},
+    {"name": "no_intents", "intents": [], "expect": "unknown"},
+    {"name": "blank_kind_skipped", "intents": [{"kind": ""}, {"kind": "Sleep"}], "expect": "sleep"}
+  ]
+}

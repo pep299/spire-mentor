@@ -69,6 +69,9 @@ export interface Position {
   player: PlayerBlock;
   piles: Record<PileName, CardRow[]>;
   monsters: MonsterRow[];
+  /** The game build this fight plays (GH #877); absent = the default build.
+   *  The server writes it only for a non-default build. */
+  game_version?: string;
 }
 
 export function emptyPosition(character = "Ironclad", hp = 80): Position {

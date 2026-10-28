@@ -64,7 +64,8 @@ test("capture posts the engine's dump, the report view shows it, and loading it 
   await expect(report).toBeVisible();
   page.once("dialog", (d) => d.accept("e2e: neow looks off"));
   await report.click();
-  await expect(page.locator(".bugreport-result")).toContainText(ID);
+  // The capture toast (`BugReportToast`) shows the stored report's id.
+  await expect(page.getByRole("dialog", { name: "Bug report" })).toContainText(ID);
 
   expect(posted).toHaveLength(1);
   const dump = posted[0];

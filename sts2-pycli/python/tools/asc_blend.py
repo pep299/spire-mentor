@@ -25,7 +25,7 @@ def blended(per_level):
 
 
 def load_rows(path):
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]
 
 

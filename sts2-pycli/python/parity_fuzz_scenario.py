@@ -1268,9 +1268,7 @@ def _for_build(cards: list[str], added: list[str], game_version: str | None) -> 
 
 def class_cards_for_build(character: str, game_version: str | None = None) -> list[str]:
     """A character's class cards at `game_version` (default: the sweep build)."""
-    return _for_build(
-        _V2_CLASS_CARDS[character], _V0111_ADDED_CLASS_CARDS[character], game_version
-    )
+    return _for_build(_V2_CLASS_CARDS[character], _V0111_ADDED_CLASS_CARDS[character], game_version)
 
 
 def colorless_cards_for_build(game_version: str | None = None) -> list[str]:
@@ -1285,9 +1283,7 @@ def event_cards_for_build(game_version: str | None = None) -> list[str]:
 
 def _v2_card_pool(character: str, game_version: str | None = None) -> list[str]:
     """Class cards + colorless — the deck pool for a character's v2 sweep."""
-    return class_cards_for_build(character, game_version) + colorless_cards_for_build(
-        game_version
-    )
+    return class_cards_for_build(character, game_version) + colorless_cards_for_build(game_version)
 
 
 @dataclass(frozen=True)

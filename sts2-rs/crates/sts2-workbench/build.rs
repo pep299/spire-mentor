@@ -16,7 +16,7 @@
 //! `cfg(workbench_game_data_<ver>)` (dots as underscores) marks a complete
 //! one. A versioned file byte-identical to the default build's is staged as
 //! a ZERO-byte file — `data.rs` reads that as "same as the default" — so a
-//! table both builds share (the art manifest, `card_db.json`, unchanged loc
+//! table both builds share (the art manifest, `creature_scales.json`, unchanged loc
 //! dumps) is embedded once, not once per build. A missing file's stub is
 //! never empty (it carries a trailing newline), so the two cannot collide.
 
@@ -45,6 +45,15 @@ const GAME_FILES: &[(&str, &str)] = &[
     ("creature_scales.json", "{}"),
     ("card_db.json", "{}"),
 ];
+
+/// Files only a NON-default build's bundle carries, and their stub. They do
+/// not count toward the bundle being complete: a missing one means "nothing
+/// to add to the default build's table".
+///
+/// * `card_tags.json` — the deck analyzer's curated tags OVERLAY for that
+///   build (GH #877), merged over the curated `data/card_tags.json` by
+///   `data.rs` (an entry replaces the default's; `null` drops a card).
+const VERSIONED_ONLY_FILES: &[(&str, &str)] = &[("card_tags.json", "{}")];
 
 /// The non-default game builds with a sibling bundle under `data/game/<ver>/`.
 /// Keep in step with `sts2_core::GameVersion::ALL` (a `data.rs` test
@@ -84,6 +93,16 @@ fn main() {
         if stage(&src, &dst_root.join(ver), Some(&src_root)) {
             println!("cargo:rustc-cfg={}", version_cfg(ver));
             complete.push(ver);
+        }
+        for (rel, stub) in VERSIONED_ONLY_FILES {
+            let (from, to) = (src.join(rel), dst_root.join(ver).join(rel));
+            println!("cargo:rerun-if-changed={}", from.display());
+            if from.is_file() {
+                fs::copy(&from, &to)
+                    .unwrap_or_else(|e| panic!("copy {} -> {}: {e}", from.display(), to.display()));
+            } else {
+                write_stub(&to, stub);
+            }
         }
     }
     println!(

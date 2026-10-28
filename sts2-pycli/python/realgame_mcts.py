@@ -57,6 +57,7 @@ from realgame_adapter import (
     character_display_name,
     install_live_unlock_state,
     install_unlock_state_from_wire,
+    run_ascension,
     to_headless_combat_play,
 )
 from realgame_bridge import DEFAULT_HOST, DEFAULT_PORT, RealGameBridgeClient
@@ -298,7 +299,9 @@ def pick_combat_action_mcts(
     try:
         run_state = state.get("run_state") or {}
         character = character_display_name(run_state.get("character")) or cfg.character
-        call_cfg = dataclasses.replace(cfg, character=character)
+        call_cfg = dataclasses.replace(
+            cfg, character=character, ascension=run_ascension(run_state, cfg.ascension)
+        )
         if sims is not None:
             # Per-encounter budget (regular vs boss); see combat_sims_for.
             call_cfg = dataclasses.replace(call_cfg, sims=sims)
@@ -437,7 +440,9 @@ def pick_card_select_mirrored(
 
     run_state = state.get("run_state") or {}
     character = character_display_name(run_state.get("character")) or cfg.character
-    call_cfg = dataclasses.replace(cfg, character=character)
+    call_cfg = dataclasses.replace(
+        cfg, character=character, ascension=run_ascension(run_state, cfg.ascension)
+    )
     if sims is not None:
         call_cfg = dataclasses.replace(call_cfg, sims=sims)
 

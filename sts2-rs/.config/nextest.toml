@@ -22,6 +22,13 @@ slow-timeout = { period = "60s", terminate-after = 3 }
 # Skip `slow_`-prefixed tests in day-to-day runs.
 default-filter = "not test(/(?:^|::)slow_/)"
 
+# The run's wall clock is its longest test, not the sum: 849 test-seconds
+# finish in ~30 s on 32 cores, but a 50 s test started late ends the run
+# late. Start the known long poles first.
+[[profile.default.overrides]]
+filter = "test(=golden_parity_all_scenarios) | test(/^ppo_policy_completes_short_run_seed/) | test(=chained_horizon_emits_rows_with_chain_score) | test(=last_turn_grade_flags_an_under_played_turn) | test(=heuristic_calibration_mse_non_regressing)"
+priority = 100
+
 [profile.ci]
 # CI gets a stricter timeout so a hung test doesn't burn billed minutes.
 slow-timeout = { period = "120s", terminate-after = 2 }
@@ -36,9 +43,10 @@ default-filter = "not test(/(?:^|::)slow_/)"
 # The two longest whole-pipeline tests already ran 190 s and 230 s on the
 # GH runner against the 240 s cap above, and the 2026-10-18 sync (more
 # tests in the run, a larger golden set) pushed both over it. Give just
-# these two a 480 s cap rather than loosening it for every test.
+# these two a 480 s cap rather than loosening it for every test. (The PPO
+# test is now one test per seed.)
 [[profile.ci.overrides]]
-filter = "test(=golden_parity_all_scenarios) | test(=ppo_policy_completes_short_runs)"
+filter = "test(=golden_parity_all_scenarios) | test(/^ppo_policy_completes_short_run_seed/)"
 slow-timeout = { period = "120s", terminate-after = 4 }
 
 # Nightly / on-demand: run ONLY the slow-tagged tests.

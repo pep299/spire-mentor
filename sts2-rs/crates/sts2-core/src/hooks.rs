@@ -634,6 +634,7 @@ impl PowerHook {
                     PowerKind::Skittish,
                     PowerKind::Slumber,
                     PowerKind::Asleep,
+                    PowerKind::Hellraiser,
                 ])),
             Self::BeforeSideTurnStart => BEFORE_SIDE_TURN_START_KINDS,
             Self::AfterSideTurnStart => {
@@ -1245,14 +1246,30 @@ pub enum Effect {
         /// Move-state id to install as the new current move.
         state_id: crate::monster_ai::StateId,
     },
+    /// Stun `target` into its prebuilt `state_id` stun move — C#
+    /// `CreatureCmd.Stun` → `Creature.StunInternal` → `SetMoveImmediate`
+    /// (Creature.cs:524-544, MonsterModel.cs:562-575). Routes to
+    /// [`crate::monster_ai::MonsterAi::stun_immediate`], which honours the
+    /// `if (NextMove.CanTransitionAway)` guard that [`Effect::ForceMonsterMove`]
+    /// (the `forceTransition: true` analogue) skips, and queues `next_move`
+    /// (`None` = C#'s `StateLog.Last().Id` default) as the post-stun resume.
+    /// Re-points the telegraphed `creature.intent` when the stun lands.
+    StunMonster {
+        /// Creature to stun.
+        target: CreatureUid,
+        /// The stun move-state id (built `must_perform_once: true`).
+        state_id: crate::monster_ai::StateId,
+        /// C# `nextMoveId`; `None` resumes at the last rolled move.
+        next_move: Option<crate::monster_ai::StateId>,
+    },
     /// Queue `state_id` as `target`'s forced NEXT move-state (consumed at
     /// the owner's next turn-end roll) — the C# `Creature.StunInternal`
     /// `FollowUpStateId` half of a stun redirect. Must be applied AFTER any
     /// [`Effect::ForceMonsterMove`] for the same target in the same batch:
-    /// `force_current_state` clears the queued forced-next override. Used by
-    /// `RavenousPower.AfterDeath` (CorpseSlug), whose C# stun passes a null
-    /// `nextMoveId` and therefore resumes at `StateLog.Last().Id` — the move
-    /// the slug had telegraphed when it started devouring.
+    /// `force_current_state` clears the queued forced-next override. (The
+    /// CorpseSlug Ravenous stun that used to pair it with `ForceMonsterMove`
+    /// now goes through [`Effect::StunMonster`], which queues the resume
+    /// itself.)
     ForceMonsterNextMove {
         /// Creature whose AI next-move to queue.
         target: CreatureUid,
@@ -1800,6 +1817,19 @@ pub fn apply_effect(state: &mut CombatState, effect: Effect) {
                 }
             }
         }
+        Effect::StunMonster {
+            target,
+            state_id,
+            next_move,
+        } => {
+            if let Some(c) = state.creatures.iter_mut().find(|c| c.id == target.0) {
+                if let Some(ai) = c.ai.as_mut() {
+                    if ai.stun_immediate(state_id, next_move) {
+                        c.intent = ai.current_move().intents.first().copied();
+                    }
+                }
+            }
+        }
         Effect::ForceMonsterNextMove { target, state_id } => {
             // C# `StunInternal` FollowUpStateId: queue the post-stun resume.
             // Applied after `ForceMonsterMove` in the same batch (which
@@ -2121,16 +2151,15 @@ fn apply_dealhploss(
             // damage), absorb through block (unless UNBLOCKABLE), and
             // write HP loss. Mirrors the read-only path of Python's
             // `apply_damage` for self-targeted unpowered hits.
-            // v0.111.0: `CreatureCmd.Damage` runs `Hook.ModifyDamage(...,
-            // ModifyDamageHookType.All, ...)` before block (decomp
-            // CreatureCmd.cs:283), whose Cap step takes every listener's
-            // `ModifyDamageCap` (Hook.cs:2697) — so Intangible caps a
+            // `CreatureCmd.Damage` runs `Hook.ModifyDamage(...,
+            // ModifyDamageHookType.All, ...)` before block (decomp v0.111.0
+            // CreatureCmd.cs:283; v0.107.1 :261, same body), whose Cap step
+            // takes every listener's `ModifyDamageCap` — so Intangible caps a
             // Constrict / Poison self-tick at 1 BEFORE block absorbs it
             // (IntangiblePower.cs:47). The shortcut skipped the cap: Constrict
             // 6 under Intangible stripped 3 Block and then lost 1 HP where
-            // C# spends 1 Block. v0.107.1 C# has the same rule; its gap is
-            // left alone so the default build stays bit-identical.
-            let amount = if state.game_version >= crate::GameVersion::V0_111_0 {
+            // C# spends 1 Block. Both builds (GH #806).
+            let amount = {
                 let cap_ctx = DamageCtx {
                     card_source: None,
                     dealer,
@@ -2138,8 +2167,6 @@ fn apply_dealhploss(
                     props,
                 };
                 amount.min(dispatch_modify_damage_cap(state, &cap_ctx))
-            } else {
-                amount
             };
             let unblockable = props.contains(ValueProps::UNBLOCKABLE);
             let absorbed = if unblockable {
@@ -2235,16 +2262,15 @@ fn apply_dealhploss(
             // a Buffer-absorbed tick has `LoseHpInternal(0)` in C#, so
             // `UnblockedDamage == 0` and damage-received reactions stay
             // silent (bead `sts2-rs-ytgbq` follow-up).
-            // v0.111.0: C# skips `AfterDamageReceived` for a target the hit
-            // killed (`if (!WasTargetKilled || !IsDead)`, decomp
-            // CreatureCmd.cs:414) — the death check and any FairyInABottle
-            // revive run after it, in `Kill`. So a lethal Inferno self-tick
-            // revived by the Fairy fans no Inferno damage (Ironclad mid seed
-            // 833, SOUL_FYSH_BOSS: monsters[0].hp cs=185 rs=179). v0.107.1 C#
-            // has the same rule; left alone there for bit-identity.
-            let killed_v0111 =
-                state.game_version >= crate::GameVersion::V0_111_0 && state.player.current_hp == 0;
-            if modified > 0 && !killed_v0111 {
+            // C# skips `AfterDamageReceived` for a target the hit killed
+            // (`if (!WasTargetKilled || !IsDead)`, decomp v0.111.0
+            // CreatureCmd.cs:414; v0.107.1 :392) — the death check and any
+            // FairyInABottle revive run after it, in `Kill`. So a lethal
+            // Inferno self-tick revived by the Fairy fans no Inferno damage
+            // (Ironclad mid seed 833, SOUL_FYSH_BOSS: monsters[0].hp cs=185
+            // rs=179). Both builds (GH #806).
+            let killed = state.player.current_hp == 0;
+            if modified > 0 && !killed {
                 let dctx = DamageCtx {
                     card_source: None,
                     dealer,
@@ -2286,12 +2312,10 @@ fn apply_dealhploss(
                     prevented = crate::relic_effects::dispatch_should_die_late(state) || prevented;
                 }
                 if !prevented || state.player.current_hp <= 0 {
-                    state.is_over = true;
-                    state.player_won = false;
                     // C# `RemoveAllPowersAfterDeath` on player death — this is
                     // the path the Constrict/Poison/Thorns end-of-turn
                     // self-damage takes (bead `sts2-rs-2e9q2`).
-                    crate::combat_loop::clear_player_powers_on_death(state);
+                    let _ = crate::coop::seated_player_died(state);
                 }
             }
         }
@@ -3930,6 +3954,20 @@ fn power_modify_damage_multiplicative(
                 DamageMul::ONE
             }
         }
+        PowerKind::Intercept => {
+            // C# `InterceptPower.ModifyDamageMultiplicative`
+            // (InterceptPower.cs, v0.107.1 = v0.111.0): a powered attack on
+            // the owner is multiplied by `coveredCreatures.Count + 1` — the
+            // owner also takes the hits meant for the teammates it covers
+            // (their `CoveredPower` zeroes them). Intercept always covers one
+            // teammate here (`CombatState::any_ally_card_target`), and the
+            // C# list dedups the same teammate, so the multiplier is 2.
+            if owner == Some(ctx.target) && ctx.props.is_powered() {
+                DamageMul::DOUBLE
+            } else {
+                DamageMul::ONE
+            }
+        }
         PowerKind::Guarded => {
             // Python `GuardedPower.modify_damage_multiplicative`:
             // 0.5x for powered attacks targeting owner.
@@ -4053,7 +4091,14 @@ fn power_modify_damage_multiplicative(
             // to scope it to the FIRST attack — once consumed the
             // power is gone, so the second attack sees no instance.
             // Bead `sts2-rs-2e9q2` follow-up (Gigantification Potion).
-            if owner == Some(ctx.dealer) && ctx.props.is_powered() {
+            //
+            // GH #806: C# keys on `cardSource.Owner.Creature == Owner`, not on
+            // the dealer, so the Osty's card attacks (`FromOsty(osty, card)`,
+            // a player-owned card) are tripled too. Every Osty attack comes
+            // from a card, so an Osty dealer implies a player card source.
+            let osty_card_hit = owner == Some(CreatureRef::Player)
+                && matches!(ctx.dealer, CreatureRef::Enemy(uid) if state.player.pet_uid == Some(uid));
+            if (owner == Some(ctx.dealer) || osty_card_hit) && ctx.props.is_powered() {
                 DamageMul::new(3, 1)
             } else {
                 DamageMul::ONE
@@ -4376,8 +4421,16 @@ fn power_modify_block_additive(
 ) -> i32 {
     match power.kind {
         PowerKind::Dexterity => {
-            // Python: `if target is owner and props.is_powered(): return self.amount`
-            if owner == Some(ctx.target) && ctx.props.is_powered() {
+            // Python: `if target is owner and props.is_powered(): return self.amount`.
+            // C# gates on the card's OWNER when there is a card source
+            // (`cardSource.Owner.Creature != Owner`), which only differs for
+            // block a player card gives a co-op teammate (Lift, Constellation,
+            // DemonicShield): the player's Dexterity applies to it. Every card
+            // in the simulation is the player's.
+            let to_teammate = matches!(ctx.target, CreatureRef::Ally(_))
+                && owner == Some(CreatureRef::Player)
+                && ctx.card_source.is_some();
+            if (owner == Some(ctx.target) || to_teammate) && ctx.props.is_powered() {
                 power.amount
             } else {
                 0
@@ -4496,7 +4549,9 @@ fn power_modify_block_multiplicative(
             }
             // `num` = this-turn card-block-gain history entries from a
             // DIFFERENT CardPlay (identified by the play-sequence tag).
-            let current_play = state.combat_log.current_card_play
+            let current_play = state
+                .combat_log
+                .current_card_play
                 .unwrap_or(state.combat_log.player_card_plays_this_combat);
             let num = state
                 .combat_log
@@ -5591,6 +5646,12 @@ pub fn modify_card_cost(
     };
     let power = state.powers.get_by_id(uid.0)?;
     let card_type = ctx.card_type?;
+    // Every arm here re-prices only its owner's cards (C#
+    // `card.Owner.Creature != Owner → false`): a teammate's Corruption does
+    // not make our Skills free.
+    if owner_of_listener(state, listener) != Some(ctx.owner) {
+        return None;
+    }
     match power.kind {
         PowerKind::Corruption => {
             if card_type == CardType::Skill {
@@ -5652,7 +5713,7 @@ pub fn modify_card_cost(
             // to all cards this turn), removed at the player's turn end (see the
             // `PowerKind::BorrowedTime` arm in [`after_turn_end`]). Additive,
             // hence `CardCostMod::Add`.
-            if power.amount > 0 && owner_of_listener(state, listener) == Some(CreatureRef::Player) {
+            if power.amount > 0 {
                 Some(CardCostMod::Add(power.amount))
             } else {
                 None
@@ -5673,8 +5734,7 @@ pub fn modify_card_cost(
             // instance via its uid and reuse the canonical ethereal predicate
             // (`card_ethereal_inst` — keyword OR per-instance EtherealThisCombat).
             // Bead `sts2-rs-4wppb`.
-            if power.amount <= 0 || owner_of_listener(state, listener) != Some(CreatureRef::Player)
-            {
+            if power.amount <= 0 {
                 return None;
             }
             let cuid = ctx.card_uid?;
@@ -5700,11 +5760,8 @@ pub fn modify_card_cost(
             // iteration. Reading it burned free cards on Mayhem auto-plays and
             // Bombardment's self-auto-play from exhaust (8 records, all
             // mirror-low, on the 2026-08-03 live Regent A1 corpus). Read the
-            // instance tally that `combat_loop` now maintains instead. Owner-
-            // gated to the player. Bead `sts2-rs-jxz`.
-            if owner_of_listener(state, listener) != Some(CreatureRef::Player) {
-                return None;
-            }
+            // instance tally that `combat_loop` now maintains instead. Bead
+            // `sts2-rs-jxz`.
             let played = crate::combat_loop::void_form_cards_played_this_turn(state);
             crate::powers::regent::void_form_cost_override(power.amount, played, true)
                 .map(CardCostMod::Override)
@@ -5731,11 +5788,7 @@ pub fn modify_card_cost(
             // `FreeUntilPlayed`) into `base_cost` before the global walk, the
             // same order as C# `CardEnergyCost.GetWithModifiers` (local
             // modifiers, then `Hook.ModifyEnergyCostInCombat`).
-            if power.amount > 0
-                && card_type == CardType::Power
-                && ctx.base_cost > 0
-                && owner_of_listener(state, listener) == Some(CreatureRef::Player)
-            {
+            if power.amount > 0 && card_type == CardType::Power && ctx.base_cost > 0 {
                 Some(CardCostMod::Add(-power.amount))
             } else {
                 None
@@ -6431,6 +6484,16 @@ pub fn after_turn_end(
                     delta: -1,
                 });
             }
+            Some(effects)
+        }
+        PowerKind::Intercept => {
+            // C# `InterceptPower.AfterSideTurnEnd`: `if side == Enemy`
+            // remove — it lasts through the enemy turn it was bought for.
+            if ctx.side != Side::Enemy {
+                return None;
+            }
+            let mut effects = SmallVec::new();
+            effects.push(Effect::RemovePower { listener });
             Some(effects)
         }
         PowerKind::Flanking => {
@@ -8250,7 +8313,9 @@ pub fn after_side_turn_start(
             // of player Accelerant — under-dealing poison and under-decrementing
             // the stack (Silent seeds 296/142: monster hp + poison-amount skew).
             let accel_sum: i32 = match owner_side {
-                Side::Enemy => state.player_power_amount(PowerKind::Accelerant).max(0),
+                Side::Enemy => {
+                    crate::coop::players_power_amount(state, PowerKind::Accelerant).max(0)
+                }
                 Side::Player => state
                     .enemy_uids
                     .iter()
@@ -9209,13 +9274,6 @@ pub fn after_death(
             if creature_ref_side(owner) != ctx.dead_side {
                 return None;
             }
-            // C# resume target: the currently-telegraphed state id.
-            let resume = state
-                .creatures
-                .iter()
-                .find(|c| c.id == owner_uid.0)
-                .and_then(|c| c.ai.as_ref())
-                .map(crate::monster_ai::MonsterAi::current_state_id);
             let mut effects: SmallVec<[Effect; 2]> = SmallVec::new();
             // C# `RavenousPower.cs:28` flashes inside this same guard, before
             // the stun/Strength grant.
@@ -9231,18 +9289,19 @@ pub fn after_death(
                 amount: power.amount,
                 applier: None,
             });
-            // Order is load-bearing: ForceMonsterMove clears any queued
-            // forced-next, so the resume must be queued AFTER it.
-            effects.push(Effect::ForceMonsterMove {
+            // `CreatureCmd.Stun(Owner, StunnedMove)` — null `nextMoveId`, so
+            // the resume defaults to `StateLog.Last().Id` (the move the slug
+            // had telegraphed). `StunMonster` honours `SetMoveImmediate`'s
+            // `CanTransitionAway` guard: a slug still holding an unserved
+            // STUNNED (a second ally died first) is NOT re-stunned, but the
+            // Strength above is still granted — exactly C#, where the guard
+            // lives inside `SetMoveImmediate` and the `PowerCmd.Apply` runs
+            // regardless. Issue #806.
+            effects.push(Effect::StunMonster {
                 target: owner_uid,
                 state_id: "STUNNED",
+                next_move: None,
             });
-            if let Some(resume) = resume {
-                effects.push(Effect::ForceMonsterNextMove {
-                    target: owner_uid,
-                    state_id: resume,
-                });
-            }
             Some(effects)
         }
         PowerKind::Surrounded => {
@@ -9320,10 +9379,13 @@ pub fn update_surrounded_facing(state: &mut CombatState, target: CreatureUid) {
 /// The body of [`update_surrounded_facing`], run when its liveness bit is
 /// set.
 fn update_surrounded_facing_body(state: &mut CombatState, target: CreatureUid) {
+    // The seated player's instance: each player turns to face what THEY
+    // target (C# `SurroundedPower.cs:74-88`).
+    let seated = state.player_power_uids();
     let Some((puid, facing)) = state
         .powers
         .iter()
-        .find(|p| p.kind == PowerKind::Surrounded)
+        .find(|p| p.kind == PowerKind::Surrounded && seated.contains(&PowerUid(p.id)))
         .map(|p| (p.id, p.counter))
     else {
         return;
@@ -9343,6 +9405,15 @@ fn update_surrounded_facing_body(state: &mut CombatState, target: CreatureUid) {
 /// Fire [`after_death`] on every power listener for a single death and apply
 /// any deferred effects. Called from the `just_died` damage chokepoint.
 pub fn dispatch_after_death(state: &mut CombatState, ctx: &AfterDeathCtx) {
+    dispatch_after_death_seated(state, ctx);
+    crate::coop::seat_pass(state, ctx, |state, ctx| {
+        dispatch_after_death_seated(state, ctx);
+    });
+}
+
+/// [`dispatch_after_death`] for the seated player (and, outside a co-op seat pass,
+/// the enemies). Co-op teammates hear it in [`crate::coop::seat_pass`].
+fn dispatch_after_death_seated(state: &mut CombatState, ctx: &AfterDeathCtx) {
     let mut effects: SmallVec<[Effect; 4]> = SmallVec::new();
     for listener in iter_power_listeners(state) {
         if let Some(listener_effects) = after_death(state, listener, ctx) {
@@ -9743,7 +9814,15 @@ pub fn iter_power_listeners(state: &CombatState) -> impl Iterator<Item = Listene
             .filter(move |uid| !creature_powers.contains(uid)),
     );
     let ally_powers = state.allies.iter().flat_map(|a| a.powers.iter().copied());
-    let enemy_powers = state.enemy_uids.iter().flat_map(move |uid| {
+    // In a co-op seat pass the enemies already heard the event in the main
+    // walk; the pass is for the seated teammate's own listeners
+    // (`crate::coop::seat_pass`).
+    let enemy_uids: &[CreatureUid] = if state.coop.seat_pass {
+        &[]
+    } else {
+        &state.enemy_uids
+    };
+    let enemy_powers = enemy_uids.iter().flat_map(move |uid| {
         crate::creature_by_id(&state.creatures, uid.0)
             .map(|c| c.powers.iter().copied())
             .into_iter()
@@ -9941,6 +10020,7 @@ const MODIFY_DAMAGE_MULTIPLICATIVE_KINDS: crate::PowerKindSet = crate::PowerKind
     PowerKind::Flutter,
     PowerKind::Tank,
     PowerKind::Guarded,
+    PowerKind::Intercept,
     PowerKind::DiamondDiadem,
     PowerKind::Tracking,
     PowerKind::Soar,
@@ -10138,13 +10218,71 @@ fn after_damage_received_staged(
     }
 
     power_hook_dispatch(state, hook, |state| {
-        after_damage_received_lanes(state, ctx, damage);
+        after_damage_received_lanes(
+            state,
+            ctx,
+            damage,
+            hook != PowerHook::AfterDamageReceivedEnemyTarget,
+        );
     });
+}
+
+/// HardenedShell's `AfterDamageReceived` tally (HardenedShellPower.cs:50-68):
+/// add the hit's unblocked damage to `damageReceivedThisTurn` (the power's
+/// `counter`). C# `CreatureCmd.Damage` fires `AfterDamageGiven` BEFORE
+/// `AfterDamageReceived` for each result (v0.107.1 CreatureCmd.cs:388-393,
+/// identical in v0.111.0), so a hit nested inside the given-side hooks
+/// (ReaperForm's Doom -> SleightOfFlesh) is capped against the tally from
+/// before the outer hit; `damage::apply_damage` therefore calls this after
+/// its given dispatch (GH #806).
+pub(crate) fn tally_hardened_shell_damage(
+    state: &mut CombatState,
+    target: CreatureRef,
+    damage: i32,
+) {
+    if damage > 0 && power_kind_live(state, PowerKind::HardenedShell) {
+        let target_uid = match target {
+            CreatureRef::Player => state.player.creature_uid,
+            CreatureRef::Enemy(uid) => Some(uid),
+            // No STS2 ally carries HardenedShell at this pin; Nobody owns
+            // nothing.
+            CreatureRef::Ally(_) | CreatureRef::Nobody => None,
+        };
+        if let Some(target_uid) = target_uid {
+            let shell_pid = state
+                .creatures
+                .iter()
+                .find(|c| c.id == target_uid.0)
+                .and_then(|c| {
+                    c.powers.iter().copied().find_map(|u| {
+                        state
+                            .powers
+                            .iter()
+                            .find(|p| p.id == u.0 && p.kind == PowerKind::HardenedShell)
+                            .map(|p| p.id)
+                    })
+                });
+            if let Some(pid) = shell_pid {
+                if let Some(pow) = state.powers.get_mut_by_id(pid) {
+                    pow.counter = pow.counter.saturating_add(damage);
+                }
+            }
+        }
+    }
 }
 
 /// The post-walk lanes of [`dispatch_after_damage_received`], which need the
 /// post-mitigation `damage` the per-listener fn cannot see.
-fn after_damage_received_lanes(state: &mut CombatState, ctx: &DamageCtx, damage: i32) {
+///
+/// `tally_hardened_shell` is false on the `apply_damage` path, which tallies
+/// HardenedShell itself AFTER `AfterDamageGiven` (see
+/// [`tally_hardened_shell_damage`]).
+fn after_damage_received_lanes(
+    state: &mut CombatState,
+    ctx: &DamageCtx,
+    damage: i32,
+    tally_hardened_shell: bool,
+) {
     // ── Slippery post-walk reaction ─────────────────────────────────────
     // Bead `sts2-rs-12xvk`; v0.107.1 retiming `§1a.8` (bead `…wb8lk.1`). Per
     // C# decomp v0.107.1
@@ -10324,34 +10462,8 @@ fn after_damage_received_lanes(state: &mut CombatState, ctx: &DamageCtx, damage:
     // `before_side_turn_start` arm. Inline like Slumber/Flutter because
     // the per-listener fn can't see the post-block amount.
     // present_kinds lane gate (perf): no live HardenedShell ⇒ provably no-op.
-    if damage > 0 && power_kind_live(state, PowerKind::HardenedShell) {
-        let target_uid = match ctx.target {
-            CreatureRef::Player => state.player.creature_uid,
-            CreatureRef::Enemy(uid) => Some(uid),
-            // No STS2 ally carries HardenedShell at this pin; Nobody owns
-            // nothing.
-            CreatureRef::Ally(_) | CreatureRef::Nobody => None,
-        };
-        if let Some(target_uid) = target_uid {
-            let shell_pid = state
-                .creatures
-                .iter()
-                .find(|c| c.id == target_uid.0)
-                .and_then(|c| {
-                    c.powers.iter().copied().find_map(|u| {
-                        state
-                            .powers
-                            .iter()
-                            .find(|p| p.id == u.0 && p.kind == PowerKind::HardenedShell)
-                            .map(|p| p.id)
-                    })
-                });
-            if let Some(pid) = shell_pid {
-                if let Some(pow) = state.powers.get_mut_by_id(pid) {
-                    pow.counter = pow.counter.saturating_add(damage);
-                }
-            }
-        }
+    if tally_hardened_shell {
+        tally_hardened_shell_damage(state, ctx.target, damage);
     }
 
     // ── ShriekPower threshold stun (TerrorEel) ──────────────────────────
@@ -10470,9 +10582,7 @@ fn after_damage_received_lanes(state: &mut CombatState, ctx: &DamageCtx, damage:
                 prevented = crate::relic_effects::dispatch_should_die_late(state) || prevented;
             }
             if !prevented || state.player.current_hp <= 0 {
-                state.is_over = true;
-                state.player_won = false;
-                crate::combat_loop::clear_player_powers_on_death(state);
+                let _ = crate::coop::seated_player_died(state);
             }
             return;
         }
@@ -11298,9 +11408,12 @@ fn damage_power_stage(
 #[inline(always)]
 fn block_power_stage(state: &CombatState, ctx: &BlockCtx) -> (i32, DamageMul) {
     let (mut additive, mut mul) = (0i32, DamageMul::ONE);
+    // Block a player card gives a co-op teammate also reads the player's
+    // Dexterity (see the `PowerKind::Dexterity` arm).
+    let card_to_teammate = matches!(ctx.target, CreatureRef::Ally(_)) && ctx.card_source.is_some();
     for_each_power_owned_by(
         state,
-        |owner| owner == ctx.target,
+        |owner| owner == ctx.target || (card_to_teammate && owner == CreatureRef::Player),
         |power, owner| {
             let owner = Some(owner);
             if MODIFY_BLOCK_ADDITIVE_ARMS.contains(power.kind) {
@@ -12085,6 +12198,14 @@ pub fn modify_block(state: &CombatState, base_block: i32, ctx: &BlockCtx) -> i32
         DamageMul::ONE
     };
     let mul = power_mul.compose(relic_mul);
+    // C# `MultiplayerScalingModel.ModifyBlockMultiplicative`: an enemy's powered
+    // or move block grows with the player count.
+    let mul = match (ctx.target, crate::coop::enemy_block_scaling(state)) {
+        (CreatureRef::Enemy(_), Some((num, den))) if ctx.props.is_powered() => {
+            mul.compose(DamageMul::new(i64::from(num), i64::from(den)))
+        }
+        _ => mul,
+    };
 
     // Step 3: single floor at end via div_euclid.
     let after_mul = mul.apply(after_add);
@@ -12176,7 +12297,9 @@ pub fn dispatch_after_block_gained(state: &mut CombatState, ctx: &BlockGainedCtx
     // 2329: the gate hid the turn-start block gain, so Rust's `num=0`
     // doubled RALLY where C#'s `num=1 >= Amount` passed it through).
     if ctx.amount > 0 && matches!(ctx.target, CreatureRef::Player) && ctx.card_source.is_some() {
-        let tag = state.combat_log.current_card_play
+        let tag = state
+            .combat_log
+            .current_card_play
             .unwrap_or(state.combat_log.player_card_plays_this_combat);
         state.combat_log.unmovable_card_block_plays.push(tag);
     }
@@ -12986,8 +13109,7 @@ const MODIFY_CARD_COST_KINDS: crate::PowerKindSet = crate::PowerKindSet::from_ki
 #[must_use]
 pub fn card_cost_locally_zeroed(state: &CombatState, card: &crate::cards::Card) -> bool {
     if let Some(model) = card.local_energy_cost {
-        return card.cost == 0
-            && model.functions[0] != crate::cards::LocalCostFunction::default();
+        return card.cost == 0 && model.functions[0] != crate::cards::LocalCostFunction::default();
     }
     (card.card_id == crate::cards::CardId::Flatten && state.combat_log.osty_attacks_this_turn > 0)
         || card.combat_var(crate::cards::VarKey::FreeThisTurn) != 0
@@ -13095,8 +13217,12 @@ pub fn effective_card_cost_inst_with_mask(
         // local modifier, so it lands before the global walk; the final
         // `max(0)` below is C#'s `Math.Max(0, num)` (CardEnergyCost.cs:83).
         // The var is never set at v0.107.1, so this subtracts 0 there.
-        i32::from(card.cost) - if card.local_energy_cost.is_some() { 0 }
-            else { card.combat_var(crate::cards::VarKey::CostReductionUntilPlayed) }
+        i32::from(card.cost)
+            - if card.local_energy_cost.is_some() {
+                0
+            } else {
+                card.combat_var(crate::cards::VarKey::CostReductionUntilPlayed)
+            }
     };
     // Perf 2026-07-04: the same presence-mask early-out
     // [`dispatch_modify_card_cost`] opens with, hoisted BEFORE the ctx
@@ -13542,7 +13668,32 @@ fn dispatch_before_card_played_powers_body(
     // these powers read `counter` for anything else, and the after-play disarm
     // keeps it 0 at every action boundary, so no observable state carries the
     // transient flag.
+    //
+    // Co-op: only the seated player's own powers and the enemy debuffs THEY
+    // applied arm (C# guards every one on the card's owner); a teammate's
+    // instance waits for their own cards.
+    let foreign: SmallVec<[std::num::NonZeroU32; 2]> = if crate::coop::has_seats(state) {
+        state
+            .powers
+            .iter()
+            .filter(|p| {
+                crate::coop::tracks_applier_seat(p.kind)
+                    && !crate::coop::applied_by_seated(state, p.id)
+            })
+            .map(|p| p.id)
+            .collect()
+    } else {
+        SmallVec::new()
+    };
     for p in &mut state.powers {
+        if foreign.contains(&p.id) {
+            continue;
+        }
+        if matches!(p.kind, PowerKind::SerpentForm | PowerKind::Afterimage)
+            && !player_power_uids.contains(&PowerUid(p.id))
+        {
+            continue;
+        }
         match p.kind {
             // Strangle / SerpentForm / Oblivion arm with a boolean flag (their
             // after-play bodies read the live `amount`). Oblivion (Necrobinder)
@@ -13629,8 +13780,13 @@ fn dispatch_before_card_played_powers_body(
 /// (gain energy per Power card) use the same BeforeCardPlayed/AfterCardPlayed
 /// snapshot dictionary in C#, so they share this transient `counter` lane.
 pub fn arm_storm_snapshot(state: &mut CombatState) {
+    // The seated player's instances only: a teammate's Storm waits for their
+    // own Power cards (C# `StormPower.cs:41`).
+    let seated = state.player_power_uids();
     for p in &mut state.powers {
-        if matches!(p.kind, PowerKind::Storm | PowerKind::Subroutine) {
+        if matches!(p.kind, PowerKind::Storm | PowerKind::Subroutine)
+            && seated.contains(&PowerUid(p.id))
+        {
             p.counter = p.amount;
         }
     }
@@ -14294,6 +14450,12 @@ pub(crate) fn withering_presence_after_card_played(state: &mut CombatState, _ctx
                     .powers
                     .get_by_id(pu.0)
                     .filter(|p| p.kind == PowerKind::WitheringPresence)
+                    // Co-op: only the instance that targets the card's player
+                    // (`cardPlay.Card.Owner == Target.Player`), heard once.
+                    .filter(|p| {
+                        crate::coop::actor_is_seated(state)
+                            && crate::coop::applied_by_seated(state, p.id)
+                    })
                     .map(|p| p.id)
             })?;
             Some((c.id, pid))
@@ -14599,6 +14761,14 @@ pub fn dispatch_after_card_played(state: &mut CombatState, ctx: &CardCtx) {
     // still consumes — NOT the reverted `ph5mx` powered-hit gate.
     let attack_command_suppressed = state.player.attack_command_suppressed_this_play;
     let is_player_attack = is_attack && !is_osty_attack && !attack_command_suppressed;
+    // GH #806: Gigantification differs from Vigor. Its `BeforeAttack` keys on
+    // `cardModel.Owner.Creature == Owner` (GigantificationPower.cs:27-50), not
+    // on `command.Attacker`, so an Osty-attack card's command latches it — when
+    // the Osty actually attacked (no Osty means no `AttackCommand`).
+    let osty_attacked_this_play =
+        state.combat_log.osty_attacks_this_turn > state.combat_log.osty_attacks_at_card_play_start;
+    let is_gigantification_attack =
+        is_player_attack || (is_attack && is_osty_attack && osty_attacked_this_play);
     // Storm is snapshot-armed at before-play (`counter` holds the pre-`OnPlay`
     // stack count; see [`arm_storm_snapshot`]). C# `StormPower.BeforeCardPlayed`
     // only records an entry for POWER cards, and `AfterCardPlayed` channels the
@@ -14819,7 +14989,12 @@ pub fn dispatch_after_card_played(state: &mut CombatState, ctx: &CardCtx) {
                 // playing SIC_EM spent the player's Gigantification (e.g. from
                 // a Gigantification potion) end-to-end (Necrobinder sweep seed
                 // 396: player.powers GIGANTIFICATION cs=[1] rs=[]).
-                if is_player_attack && amount > 0 => {
+                // GH #806 correction: Osty hits ARE powered (`DamageCmd.Attack`
+                // defaults to `ValueProp.Move`, AttackCommand.cs:121) and the
+                // latch keys on the card's owner, so an Osty-attack card spends
+                // the buff whenever the Osty actually attacked; seed 396 is the
+                // Osty-missing case, where no command runs.
+                if is_gigantification_attack && amount > 0 => {
                     let mut remove_pid = None;
                     for uid in player_power_uids.iter().copied() {
                         if let Some(power) = state.powers.get_mut_by_id(uid.0) {
@@ -15621,7 +15796,9 @@ fn reduce_midnight_costs_v0111(state: &mut CombatState) {
             if c.local_energy_cost.is_some() {
                 c.add_local_cost_modifier(crate::cards::LocalCostModifier {
                     kind: crate::cards::LocalCostModifierKind::Relative,
-                    amount: -1, reduce_only: false, expiration: 0,
+                    amount: -1,
+                    reduce_only: false,
+                    expiration: 0,
                 });
             } else if c.cost > 0 {
                 c.cost -= 1;
@@ -15849,6 +16026,15 @@ pub fn dispatch_on_card_drawn(state: &CombatState, ctx: &CardDrawnCtx) {
 #[allow(clippy::inline_always)]
 #[inline(always)]
 pub fn dispatch_before_turn_end(state: &mut CombatState, ctx: &TurnSideCtx) {
+    dispatch_before_turn_end_seated(state, ctx);
+    crate::coop::seat_pass(state, ctx, |state, ctx| {
+        dispatch_before_turn_end_seated(state, ctx);
+    });
+}
+
+/// [`dispatch_before_turn_end`] for the seated player (and, outside a co-op seat pass,
+/// the enemies). Co-op teammates hear it in [`crate::coop::seat_pass`].
+fn dispatch_before_turn_end_seated(state: &mut CombatState, ctx: &TurnSideCtx) {
     power_hook_dispatch(state, PowerHook::BeforeTurnEnd, |state| {
         let effects = collect_before_turn_end(state, ctx);
         apply_effects(state, &effects);
@@ -16204,13 +16390,20 @@ fn shriek_stun_below_threshold(state: &mut CombatState, creature_uid: CreatureUi
     // (the ForceMonsterMove/Flutter discipline — `enemy_turn_exec` performs
     // the snapshotted `creature.intent`, so the stale attack telegraph must
     // be replaced or it lands anyway).
-    if let Some(c) = state.creatures.iter_mut().find(|c| c.id == creature_uid.0) {
-        if let Some(ai) = c.ai.as_mut() {
-            if ai.force_current_state_by_name("STUN_MOVE") {
-                c.intent = ai.current_move().intents.first().copied();
-            }
-        }
-    }
+    //
+    // `Stun(Owner, TerrorState.StateId)`: C# synthesizes a must-perform
+    // STUNNED whose follow-up is TERROR_MOVE; the eel's prebuilt `STUN_MOVE`
+    // (must_perform_once, follow-up TERROR_MOVE) is that state. Routed through
+    // `StunMonster` for the `SetMoveImmediate` `CanTransitionAway` guard
+    // (issue #806).
+    apply_effects(
+        state,
+        &[Effect::StunMonster {
+            target: creature_uid,
+            state_id: "STUN_MOVE",
+            next_move: Some("TERROR_MOVE"),
+        }],
+    );
     true
 }
 
@@ -16380,6 +16573,7 @@ const AFTER_TURN_END_KINDS: crate::PowerKindSet = crate::PowerKindSet::from_kind
     PowerKind::HighVoltage,
     PowerKind::Hotfix,
     PowerKind::Intangible,
+    PowerKind::Intercept,
     PowerKind::Juggling,
     PowerKind::Knockdown,
     PowerKind::ManglePower,
@@ -16441,6 +16635,15 @@ const AFTER_TURN_END_ARMS: crate::PowerKindSet =
 #[allow(clippy::inline_always)]
 #[inline(always)]
 pub fn dispatch_after_turn_end(state: &mut CombatState, ctx: &TurnSideCtx) {
+    dispatch_after_turn_end_seated(state, ctx);
+    crate::coop::seat_pass(state, ctx, |state, ctx| {
+        dispatch_after_turn_end_seated(state, ctx);
+    });
+}
+
+/// [`dispatch_after_turn_end`] for the seated player (and, outside a co-op seat pass,
+/// the enemies). Co-op teammates hear it in [`crate::coop::seat_pass`].
+fn dispatch_after_turn_end_seated(state: &mut CombatState, ctx: &TurnSideCtx) {
     power_hook_dispatch(state, PowerHook::AfterTurnEnd, |state| {
         dispatch_after_turn_end_body(state, ctx);
     });
@@ -16584,15 +16787,34 @@ fn dispatch_after_turn_end_body(state: &mut CombatState, ctx: &TurnSideCtx) {
         }
     }
 
+    // ── Hellraiser infinite-HP auto-play counter reset ─────────────────
+    // C# `HellraiserPower.AfterSideTurnEnd` (`HellraiserPower.cs:70-78`):
+    // `if (participants.Contains(base.Owner)) ResetInfiniteAutoPlayData();`.
+    // Hellraiser is a player power, so this is the player's turn end. The
+    // counter (`Data.infiniteAutoPlaysThisTurn`, in `counter`) caps on-draw
+    // Strike auto-plays at 9 per turn while every hittable enemy shows
+    // infinite HP (`CombatState::hellraiser_infinite_auto_play_gate`).
+    if ctx.side == Side::Player && power_kind_live(state, PowerKind::Hellraiser) {
+        for p in &mut state.powers {
+            if p.kind == PowerKind::Hellraiser {
+                p.counter = 0;
+            }
+        }
+    }
+
     // Synthetic on_turn_end_enemy_side walk: only fires when the side
     // boundary is the enemy turn-end. Python's hooks.py:396-401 guards
     // `if side == CombatSide.ENEMY` around the introspective method-table
     // check; Rust collapses the introspection into a separate listener fn
     // and gates it on the same condition.
+    // In a co-op seat pass the walk yields only the seated teammate's
+    // listeners, so their Weak / Vulnerable / Frail tick here like ours.
     if ctx.side == Side::Enemy {
         let effects = collect_on_turn_end_enemy_side(state, &TurnSelfCtx::default());
         apply_effects(state, &effects);
-
+    }
+    // The enemies' own turn-end lanes: once, never in a co-op seat pass.
+    if ctx.side == Side::Enemy && !state.coop.seat_pass {
         // SlumberPower tick (SlumberingBeetle): C# `SlumberPower.AfterTurnEnd`
         // decrements once per enemy turn-end and wakes the beetle at 0. Inline
         // (not an Effect arm) because the wake removes a SECOND power (Plating)
@@ -16715,6 +16937,15 @@ const ON_TURN_END_ENEMY_SIDE_KINDS: crate::PowerKindSet = crate::PowerKindSet::f
 #[allow(clippy::inline_always)]
 #[inline(always)]
 pub fn dispatch_before_side_turn_start(state: &mut CombatState, ctx: &TurnSideCtx) {
+    dispatch_before_side_turn_start_seated(state, ctx);
+    crate::coop::seat_pass(state, ctx, |state, ctx| {
+        dispatch_before_side_turn_start_seated(state, ctx);
+    });
+}
+
+/// [`dispatch_before_side_turn_start`] for the seated player (and, outside a co-op seat pass,
+/// the enemies). Co-op teammates hear it in [`crate::coop::seat_pass`].
+fn dispatch_before_side_turn_start_seated(state: &mut CombatState, ctx: &TurnSideCtx) {
     power_hook_dispatch(state, PowerHook::BeforeSideTurnStart, |state| {
         let effects = collect_before_side_turn_start(state, ctx);
         apply_effects(state, &effects);
@@ -16779,6 +17010,15 @@ const BEFORE_SIDE_TURN_START_KINDS: crate::PowerKindSet = crate::PowerKindSet::f
 #[allow(clippy::inline_always)]
 #[inline(always)]
 pub fn dispatch_after_side_turn_start(state: &mut CombatState, ctx: &TurnSideCtx) {
+    dispatch_after_side_turn_start_seated(state, ctx);
+    crate::coop::seat_pass(state, ctx, |state, ctx| {
+        dispatch_after_side_turn_start_seated(state, ctx);
+    });
+}
+
+/// [`dispatch_after_side_turn_start`] for the seated player (and, outside a co-op seat pass,
+/// the enemies). Co-op teammates hear it in [`crate::coop::seat_pass`].
+fn dispatch_after_side_turn_start_seated(state: &mut CombatState, ctx: &TurnSideCtx) {
     power_hook_dispatch(state, PowerHook::AfterSideTurnStart, |state| {
         dispatch_after_side_turn_start_body(state, ctx);
     });
@@ -16805,7 +17045,11 @@ fn dispatch_after_side_turn_start_body(state: &mut CombatState, ctx: &TurnSideCt
     // a loss, `RemoveAllPowersAfterDeath` teardown. Bead `sts2-rs-ytgbq`
     // (coverage-sweep `encounter:THE_INSATIABLE_BOSS`).
     // present_kinds lane gate (perf): no live Sandpit ⇒ nothing to tick.
-    if ctx.side == Side::Enemy && power_kind_live(state, PowerKind::Sandpit) {
+    // Enemy-owned: never re-run in a co-op seat pass.
+    if ctx.side == Side::Enemy
+        && !state.coop.seat_pass
+        && power_kind_live(state, PowerKind::Sandpit)
+    {
         let sandpits: SmallVec<[(PowerUid, CreatureUid); 2]> = state
             .enemy_uids
             .iter()
@@ -16814,18 +17058,26 @@ fn dispatch_after_side_turn_start_body(state: &mut CombatState, ctx: &TurnSideCt
                     .creatures
                     .iter()
                     .find(|c| c.id == uid.0 && c.current_hp > 0)
-                    .and_then(|c| {
-                        c.powers.iter().copied().find(|pu| {
-                            state
-                                .powers
-                                .iter()
-                                .any(|p| p.id == pu.0 && p.kind == PowerKind::Sandpit)
-                        })
+                    .map(|c| {
+                        // Co-op: one instance per targeted player.
+                        c.powers
+                            .iter()
+                            .copied()
+                            .filter(|pu| {
+                                state
+                                    .powers
+                                    .iter()
+                                    .any(|p| p.id == pu.0 && p.kind == PowerKind::Sandpit)
+                            })
+                            .map(|pu| (pu, *uid))
+                            .collect::<SmallVec<[(PowerUid, CreatureUid); 2]>>()
                     })
-                    .map(|pu| (pu, *uid))
             })
+            .flatten()
             .collect();
         for (pu, _owner) in sandpits {
+            // The player this instance targets (co-op; seat 0 solo).
+            let target = crate::coop::seat_of_power(state, pu.0);
             let mut expired = false;
             if let Some(pow) = state.powers.get_mut_by_id(pu.0) {
                 pow.amount = pow.amount.saturating_sub(1);
@@ -16849,13 +17101,13 @@ fn dispatch_after_side_turn_start_body(state: &mut CombatState, ctx: &TurnSideCt
                 // is unpreventable — Fairy and LizardTail do not get a vote.
                 // Contrast the damage path above and the Gambit path, which
                 // both use the UNFORCED `Kill` and therefore do.
-                if state.player.current_hp > 0 {
-                    state.player.current_hp = 0;
-                    state.sync_creature_current_hp_from_player();
-                    state.is_over = true;
-                    state.player_won = false;
-                    crate::combat_loop::clear_player_powers_on_death(state);
-                }
+                crate::coop::with_seat(state, target, |state| {
+                    if state.player.current_hp > 0 {
+                        state.player.current_hp = 0;
+                        state.sync_creature_current_hp_from_player();
+                        let _ = crate::coop::seated_player_died(state);
+                    }
+                });
             }
         }
     }
@@ -23495,45 +23747,29 @@ mod tests {
         before - hp_of(&state)
     }
 
-    /// v0.107.1 Rust fires `after_damage_received` on the killing tick, so
-    /// Inferno fans its 6 to every enemy.
+    /// `CreatureCmd.Damage` skips `AfterDamageReceived` for a killed target
+    /// (v0.111.0 CreatureCmd.cs:414, v0.107.1 :392), so Inferno does not fan.
+    /// Same C# in both builds (GH #806).
     #[test]
-    fn inferno_fans_on_lethal_self_tick_v0107() {
-        assert_eq!(
-            inferno_fan_on_lethal_self_tick(crate::GameVersion::V0_107_1),
-            6
-        );
+    fn inferno_skips_lethal_self_tick_both_versions() {
+        for version in [crate::GameVersion::V0_107_1, crate::GameVersion::V0_111_0] {
+            assert_eq!(inferno_fan_on_lethal_self_tick(version), 0, "{version:?}");
+        }
     }
 
-    /// v0.111.0: `CreatureCmd.Damage` skips `AfterDamageReceived` for a killed
-    /// target (CreatureCmd.cs:414), so Inferno does not fan.
+    /// `CreatureCmd.Damage` caps the tick at 1 before Block (`Hook.ModifyDamage`
+    /// Cap step, v0.111.0 CreatureCmd.cs:283, v0.107.1 :261), so 1 Block is
+    /// spent and no HP is lost (the Silent `card+:WRAITH_FORM` sweep subject).
+    /// Same C# in both builds (GH #806).
     #[test]
-    fn inferno_skips_lethal_self_tick_v0111() {
-        assert_eq!(
-            inferno_fan_on_lethal_self_tick(crate::GameVersion::V0_111_0),
-            0
-        );
-    }
-
-    /// v0.107.1 Rust: the self-tick skips the damage cap, so Block absorbs 3
-    /// of the 6 and the Intangible HP-loss cap lets 1 through.
-    #[test]
-    fn constrict_under_intangible_skips_damage_cap_v0107() {
-        assert_eq!(
-            constrict_tick_under_intangible(crate::GameVersion::V0_107_1),
-            (49, 0)
-        );
-    }
-
-    /// v0.111.0: `CreatureCmd.Damage` caps the tick at 1 before Block
-    /// (`Hook.ModifyDamage` Cap step, CreatureCmd.cs:283), so 1 Block is spent
-    /// and no HP is lost (the Silent `card+:WRAITH_FORM` sweep subject).
-    #[test]
-    fn constrict_under_intangible_is_capped_before_block_v0111() {
-        assert_eq!(
-            constrict_tick_under_intangible(crate::GameVersion::V0_111_0),
-            (50, 2)
-        );
+    fn constrict_under_intangible_is_capped_before_block_both_versions() {
+        for version in [crate::GameVersion::V0_107_1, crate::GameVersion::V0_111_0] {
+            assert_eq!(
+                constrict_tick_under_intangible(version),
+                (50, 2),
+                "{version:?}"
+            );
+        }
     }
 
     /// Bead `sts2-rs-2e9q2`: when Constrict's end-of-turn self-damage zeroes
@@ -31408,7 +31644,7 @@ mod power_hook_liveness {
         },
         HookSource {
             hook: PowerHook::BeforeTurnEnd,
-            wrapper: "dispatch_before_turn_end",
+            wrapper: "dispatch_before_turn_end_seated",
             bodies: &["collect_before_turn_end"],
             gates: &[("BEFORE_TURN_END_ARMS", super::BEFORE_TURN_END_ARMS)],
             applied_only: &[],
@@ -31416,7 +31652,7 @@ mod power_hook_liveness {
         },
         HookSource {
             hook: PowerHook::AfterTurnEnd,
-            wrapper: "dispatch_after_turn_end",
+            wrapper: "dispatch_after_turn_end_seated",
             bodies: &[
                 "dispatch_after_turn_end_body",
                 "collect_on_turn_end_enemy_side",
@@ -31433,7 +31669,7 @@ mod power_hook_liveness {
         },
         HookSource {
             hook: PowerHook::BeforeSideTurnStart,
-            wrapper: "dispatch_before_side_turn_start",
+            wrapper: "dispatch_before_side_turn_start_seated",
             bodies: &["collect_before_side_turn_start"],
             gates: &[(
                 "BEFORE_SIDE_TURN_START_KINDS",
@@ -31444,7 +31680,7 @@ mod power_hook_liveness {
         },
         HookSource {
             hook: PowerHook::AfterSideTurnStart,
-            wrapper: "dispatch_after_side_turn_start",
+            wrapper: "dispatch_after_side_turn_start_seated",
             bodies: &[
                 "dispatch_after_side_turn_start_body",
                 "collect_after_side_turn_start",
@@ -31651,7 +31887,7 @@ mod power_hook_liveness {
             PowerHook::AfterDamageReceived | PowerHook::AfterDamageReceivedEnemyTarget => {
                 let effects = super::collect_after_damage_received(s, &damage);
                 super::apply_effects(s, &effects);
-                super::after_damage_received_lanes(s, &damage, 3);
+                super::after_damage_received_lanes(s, &damage, 3, true);
             }
             PowerHook::AfterDamageGiven | PowerHook::AfterDamageGivenEnemyTarget => {
                 for fully_blocked in [false, true] {

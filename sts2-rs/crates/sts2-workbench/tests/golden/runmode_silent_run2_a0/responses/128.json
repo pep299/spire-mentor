@@ -29,50 +29,50 @@
   {
    "act": 1,
    "decision": "card_reward",
-   "delta_prev": -0.019,
+   "delta_prev": -0.0394,
    "floor": 1,
-   "idx": 29,
-   "node_id": 29,
+   "idx": 32,
+   "node_id": 32,
    "taken_label": "Take Snakebite",
-   "value": 0.9655
+   "value": 0.9451
   },
   {
    "act": 1,
    "decision": "shop",
-   "delta_prev": 0.0013,
+   "delta_prev": 0.0026,
    "floor": 2,
-   "idx": 31,
-   "node_id": 31,
+   "idx": 34,
+   "node_id": 34,
    "taken_label": "Buy Finisher",
-   "value": 0.9667
+   "value": 0.9477
   },
   {
    "act": 1,
    "decision": "event_choice",
-   "delta_prev": -0.0604,
+   "delta_prev": -0.0427,
    "floor": 3,
-   "idx": 34,
-   "node_id": 34,
+   "idx": 37,
+   "node_id": 37,
    "taken_label": "Choose: Consume",
-   "value": 0.9064
+   "value": 0.905
   },
   {
    "act": 1,
    "decision": "card_select",
-   "delta_prev": -0.0076,
+   "delta_prev": 0.0005,
    "floor": 3,
-   "idx": 35,
-   "node_id": 35,
+   "idx": 38,
+   "node_id": 38,
    "taken_label": "Upgrade Strike",
-   "value": 0.8988
+   "value": 0.9055
   },
   {
    "act": 1,
    "decision": "card_reward",
-   "delta_prev": -0.1009,
+   "delta_prev": -0.1077,
    "floor": 4,
-   "idx": 55,
-   "node_id": 55,
+   "idx": 62,
+   "node_id": 62,
    "taken_label": "Take Reflex",
    "value": 0.7978
   },
@@ -81,8 +81,8 @@
    "decision": "map_select",
    "delta_prev": -0.0477,
    "floor": 4,
-   "idx": 56,
-   "node_id": 56,
+   "idx": 63,
+   "node_id": 63,
    "taken_label": "Map → (2,5)",
    "value": 0.7501
   },
@@ -91,38 +91,18 @@
    "decision": "card_reward",
    "delta_prev": -0.062,
    "floor": 5,
-   "idx": 75,
-   "node_id": 75,
-   "taken_label": "Take Deadly Poison",
+   "idx": 88,
+   "node_id": 88,
+   "taken_label": "?",
    "value": 0.6881
-  },
-  {
-   "act": 1,
-   "decision": "rest_site",
-   "delta_prev": 0.0183,
-   "floor": 6,
-   "idx": 77,
-   "node_id": 77,
-   "taken_label": "Choose: Smith",
-   "value": 0.7065
-  },
-  {
-   "act": 1,
-   "decision": "card_select",
-   "delta_prev": 0.0218,
-   "floor": 6,
-   "idx": 78,
-   "node_id": 78,
-   "taken_label": "Upgrade Strike",
-   "value": 0.7282
   }
  ],
  "summary": {
-  "biggest_drop": -0.1009,
-  "biggest_gain": 0.0218,
-  "final_value": 0.7282,
+  "biggest_drop": -0.1077,
+  "biggest_gain": 0.0026,
+  "final_value": 0.6881,
   "first_value": 0.9873,
-  "n_points": 11,
+  "n_points": 9,
   "n_turning_points": 3
  },
  "turning_points": [
@@ -130,21 +110,21 @@
    "act": 1,
    "decision": "card_select",
    "floor": 3,
-   "idx": 35,
-   "message": "floor 3 (card_select): after “Upgrade Strike” your outlook dropped -0.101 (0.899 → 0.798) (spans the fight that followed)",
-   "node_id": 35,
-   "swing": -0.1009,
+   "idx": 38,
+   "message": "floor 3 (card_select): after “Upgrade Strike” your outlook dropped -0.108 (0.906 → 0.798) (spans the fight that followed)",
+   "node_id": 38,
+   "swing": -0.1077,
    "taken_label": "Upgrade Strike",
    "value_after": 0.7978,
-   "value_before": 0.8988
+   "value_before": 0.9055
   },
   {
    "act": 1,
    "decision": "map_select",
    "floor": 4,
-   "idx": 56,
+   "idx": 63,
    "message": "floor 4 (map_select): after “Map → (2,5)” your outlook dropped -0.062 (0.750 → 0.688) (spans the fight that followed)",
-   "node_id": 56,
+   "node_id": 63,
    "swing": -0.062,
    "taken_label": "Map → (2,5)",
    "value_after": 0.6881,
@@ -152,15 +132,15 @@
   },
   {
    "act": 1,
-   "decision": "shop",
-   "floor": 2,
-   "idx": 31,
-   "message": "floor 2 (shop): after “Buy Finisher” your outlook dropped -0.060 (0.967 → 0.906) (spans the fight that followed)",
-   "node_id": 31,
-   "swing": -0.0604,
-   "taken_label": "Buy Finisher",
-   "value_after": 0.9064,
-   "value_before": 0.9667
+   "decision": "card_reward",
+   "floor": 4,
+   "idx": 62,
+   "message": "floor 4 (card_reward): after “Take Reflex” your outlook dropped -0.048 (0.798 → 0.750)",
+   "node_id": 62,
+   "swing": -0.0477,
+   "taken_label": "Take Reflex",
+   "value_after": 0.7501,
+   "value_before": 0.7978
   }
  ]
 }

@@ -235,7 +235,7 @@ def main() -> int:
                 )
             )[-1]
         )
-        subs = json.load(open(mani))["subjects"]
+        subs = json.load(open(mani, encoding="utf-8"))["subjects"]
         want = [
             int(k.split(":")[1])
             for k, v in subs.items()

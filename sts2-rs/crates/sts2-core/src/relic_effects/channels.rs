@@ -2455,13 +2455,17 @@ pub fn dispatch_before_hand_draw(state: &mut CombatState) -> EffectResult {
 pub fn dispatch_before_hand_draw_from(state: &mut CombatState, from: u8) -> Option<u8> {
     let owned = collect_equip_order_listeners(registry_before_hand_draw(), state);
     for (idx, _, listener) in owned {
-        if idx < usize::from(from) { continue; }
+        if idx < usize::from(from) {
+            continue;
+        }
         let had_choice = state.pending_choice.is_some();
         listener(state);
         if !had_choice && state.pending_choice.is_some() {
             return Some(u8::try_from(idx + 1).expect("relic equip index fits u8"));
         }
-        if state.is_over { break; }
+        if state.is_over {
+            break;
+        }
     }
     None
 }

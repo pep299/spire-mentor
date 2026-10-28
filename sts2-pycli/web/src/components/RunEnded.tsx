@@ -7,11 +7,13 @@ import "../skins/runend.css";
  *  run-end scene but leads with clear next actions so the user isn't left
  *  fumbling with the Live/Replay toggle. `onReviewReplay` is only offered
  *  when a recorded run file exists (`logPath`). */
-export default function RunEnded({ step, logPath, onNewRun, onReviewReplay }: {
+export default function RunEnded({ step, logPath, onNewRun, onReviewReplay, onCoachReview }: {
   step: Step;
   logPath: string | null;
   onNewRun: () => void;
   onReviewReplay: () => void;
+  /** Open the Coach review (the autopsy, on a death). */
+  onCoachReview?: () => void;
 }) {
   const s = step.state;
   const over = s.decision === "game_over";
@@ -28,10 +30,19 @@ export default function RunEnded({ step, logPath, onNewRun, onReviewReplay }: {
           <span className="gs-runend-btnface">New run</span>
         </button>
       }
-      secondaryActions={logPath && (
-        <button className="gs-runend-btn gs-runend-btn--secondary" onClick={onReviewReplay}>
-          <span className="gs-runend-btnface">Review replay</span>
+      secondaryActions={(logPath || onCoachReview) && (
+        <>
+          {logPath && (
+            <button className="gs-runend-btn gs-runend-btn--secondary" onClick={onReviewReplay}>
+              <span className="gs-runend-btnface">Review replay</span>
+            </button>
+          )}
+      {onCoachReview && (
+        <button className="gs-runend-btn gs-runend-btn--secondary" onClick={onCoachReview}>
+          <span className="gs-runend-btnface">Coach review</span>
         </button>
+      )}
+        </>
       )}
     />
   );

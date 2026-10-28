@@ -1,0 +1,83 @@
+{
+  "_doc": "Shared cases for the per-turn grading rule: regret_review.grade_turn (Python) and advisors::grade_turn (Rust) both load this file. A regret is the subset of a DecisionRegret the rule reads; null is an action that could not be graded. expect null = the turn is silent.",
+  "cases": [
+    {
+      "name": "all_on_line",
+      "regrets": [
+        {"verdict": "best", "severity": 0.0, "drop_pct": 0, "hp_drop": 0.0, "best_win_prob": 0.9, "played_win_prob": 0.9},
+        {"verdict": "best", "severity": 0.0, "drop_pct": 0, "hp_drop": 0.0, "best_win_prob": 0.91, "played_win_prob": 0.91}
+      ],
+      "expect": {"verdict": "best", "hp_drop": null, "severity": 0.0, "win_before": 0.9, "win_after": 0.9}
+    },
+    {
+      "name": "jitter_below_floor_across_five_moves",
+      "regrets": [
+        {"verdict": "tie", "severity": 0.8, "drop_pct": 1, "hp_drop": 0.5, "best_win_prob": 0.8, "played_win_prob": 0.792},
+        {"verdict": "tie", "severity": 0.8, "drop_pct": 1, "hp_drop": 0.5, "best_win_prob": 0.8, "played_win_prob": 0.792},
+        {"verdict": "tie", "severity": 0.8, "drop_pct": 1, "hp_drop": 0.5, "best_win_prob": 0.8, "played_win_prob": 0.792},
+        {"verdict": "tie", "severity": 0.8, "drop_pct": 1, "hp_drop": 0.5, "best_win_prob": 0.8, "played_win_prob": 0.792},
+        {"verdict": "tie", "severity": 0.8, "drop_pct": 1, "hp_drop": 0.5, "best_win_prob": 0.8, "played_win_prob": 0.792}
+      ],
+      "expect": {"verdict": "best", "hp_drop": null, "severity": 0.0, "win_before": 0.8, "win_after": 0.792}
+    },
+    {
+      "name": "one_4hp_slip",
+      "regrets": [
+        {"verdict": "best", "severity": 0.0, "drop_pct": 0, "hp_drop": 0.0, "best_win_prob": 0.95, "played_win_prob": 0.95},
+        {"verdict": "slip", "severity": 4.0, "drop_pct": 2, "hp_drop": 4.0, "best_win_prob": 0.95, "played_win_prob": 0.93}
+      ],
+      "expect": {"verdict": "slip", "hp_drop": 4.0, "severity": 4.0, "win_before": 0.95, "win_after": 0.95}
+    },
+    {
+      "name": "a_12hp_blunder",
+      "regrets": [
+        {"verdict": "blunder", "severity": 12.0, "drop_pct": 5, "hp_drop": 12.0, "best_win_prob": 0.9, "played_win_prob": 0.85}
+      ],
+      "expect": {"verdict": "blunder", "hp_drop": 12.0, "severity": 12.0, "win_before": 0.9, "win_after": 0.85}
+    },
+    {
+      "name": "points_only_sum_to_a_slip",
+      "regrets": [
+        {"verdict": "tie", "severity": 2.0, "drop_pct": 2, "hp_drop": null, "best_win_prob": 0.7, "played_win_prob": 0.68},
+        {"verdict": "tie", "severity": 2.0, "drop_pct": 2, "hp_drop": null, "best_win_prob": 0.68, "played_win_prob": 0.66}
+      ],
+      "expect": {"verdict": "slip", "hp_drop": null, "severity": 4.0, "win_before": 0.7, "win_after": 0.68}
+    },
+    {
+      "name": "uncertain_move_silences_the_turn",
+      "regrets": [
+        {"verdict": "slip", "severity": 5.0, "drop_pct": 5, "hp_drop": null, "best_win_prob": 0.7, "played_win_prob": 0.65},
+        {"verdict": "uncertain", "severity": 9.0, "drop_pct": 9, "hp_drop": null, "best_win_prob": 0.7, "played_win_prob": 0.61}
+      ],
+      "expect": null
+    },
+    {
+      "name": "ungraded_move_silences_the_turn",
+      "regrets": [
+        {"verdict": "best", "severity": 0.0, "drop_pct": 0, "hp_drop": 0.0, "best_win_prob": 0.9, "played_win_prob": 0.9},
+        null
+      ],
+      "expect": null
+    },
+    {
+      "name": "mixed_hp_and_points_only",
+      "regrets": [
+        {"verdict": "tie", "severity": 3.0, "drop_pct": 1, "hp_drop": 3.0, "best_win_prob": 0.6, "played_win_prob": 0.59},
+        {"verdict": "tie", "severity": 2.0, "drop_pct": 2, "hp_drop": null, "best_win_prob": 0.59, "played_win_prob": 0.57}
+      ],
+      "expect": {"verdict": "slip", "hp_drop": 3.0, "severity": 3.0, "win_before": 0.6, "win_after": 0.59}
+    },
+    {
+      "name": "small_hp_loss_is_a_tie",
+      "regrets": [
+        {"verdict": "tie", "severity": 2.0, "drop_pct": 1, "hp_drop": 2.0, "best_win_prob": 0.97, "played_win_prob": 0.96}
+      ],
+      "expect": {"verdict": "tie", "hp_drop": 2.0, "severity": 2.0, "win_before": 0.97, "win_after": 0.96}
+    },
+    {
+      "name": "only_forced_moves",
+      "regrets": [],
+      "expect": {"verdict": "best", "hp_drop": null, "severity": 0.0, "win_before": null, "win_after": null}
+    }
+  ]
+}

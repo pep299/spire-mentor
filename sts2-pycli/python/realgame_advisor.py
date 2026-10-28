@@ -17,7 +17,9 @@ Pipeline per ``advice_request`` (combat only in v1):
    and the run agent's EndTurn widening 5.787 / 0.436, which the engine
    applies with the mode — NOT the leaky clairvoyant default) via
    ``sts2_rs.mcts_recommend``, keeping the raw result so the principal
-   variation survives (``recommend_all`` drops it).
+   variation survives (``recommend_all`` drops it). Budget, tree shape, pick
+   rule and the last-boss win value are the Rust run agent's
+   (:func:`fight_search_cfg`; ``--sims`` / ``--boss-sims`` / ``--threads``).
 3. Map the ranked rows through :func:`sts2_hint.recommender.tags_from_result`
    and build the wire ``advice`` object: ``p_win``, ``best`` (executable),
    ``options[]`` (label / p_win / q / visits / visit_share / W-L-T /
@@ -34,7 +36,7 @@ it must never answer them.
 Usage::
 
     uv run python python/realgame_advisor.py [--host 127.0.0.1] [--port 9002]
-        [--sims 1000] [--boss-sims 4000] [--threads 1]
+        [--sims 4000] [--boss-sims 16000] [--threads 1]
         [--log-dir logs/realgame_advisor]
 """
 
@@ -54,10 +56,13 @@ from typing import Any
 
 import realgame_hand_select
 import runtime_paths
+from coop_coordination import apply_ally_wait
+from enemy_labels import enemy_label
 from realgame_adapter import (
     UnsupportedGameVersionError,
     character_display_name,
     envelope_game_version,
+    run_ascension,
     to_headless_combat_play,
 )
 from realgame_advisor_mirror import AdvisorMirror
@@ -92,6 +97,11 @@ logger = logging.getLogger(__name__)
 #: optimum rises with the budget and `--sims` is chosen independently of this
 #: dict. At every deployed budget the two agree; they diverge only when the
 #: budget is trimmed, which is the case this protects.
+#:
+#: This stays on the BASE dialect on purpose (GH #830). The run agent adds an
+#: Ironclad layer on top (`sts2_runai::policy::IRONCLAD_SEARCH_KNOBS` and a BC
+#: move prior in elite and boss fights) that the advisor does not take, so for
+#: Ironclad "the deployed search" means two things: this one, and the run agent's.
 HONEST_SEARCH = {
     "hidden_info": "beliefdraw",
     "c_puct": 2.5,
@@ -106,24 +116,45 @@ HONEST_SEARCH = {
 #: only to an advisor at 2 or above.
 ADVISOR_CAPABILITIES = {"coach": 2}
 
-# Upper bound on root-parallel workers for the combat search. Beyond ~8 the
-# per-tree budget gets thin enough to cost decision quality faster than the
-# extra workers buy wall-clock (2026-08-10 sweep, see
-# `sts2-rs/docs/experiments/2026-08-10-root-parallel-decision-quality.md`).
-MAX_SEARCH_THREADS = 8
+#: Acts in a standard run; the fallback for a mod too old to send
+#: ``run_state.is_last_act``.
+STANDARD_ACT_COUNT = 3
 
 
-def default_search_threads() -> int:
-    """Root-parallel workers to use by default on this host.
+def fight_search_cfg(cfg: RecommendConfig, state: dict[str, Any]) -> RecommendConfig:
+    """``cfg`` with the boss win value the run agent uses for THIS fight.
 
-    `par_search` SPLITS the sim budget across workers, so the count is a
-    latency knob, not a strength knob — and it can only convert into latency
-    if the cores are actually there. Asking for more workers than the machine
-    has adds context-switching on top of a game that is rendering on the same
-    box, so clamp to the core count. Deliberately NOT the raw core count on
-    big hosts: past `MAX_SEARCH_THREADS` the per-tree budget is what suffers.
+    The run agent (``MctsCombatPolicy::pick_search_setup``, default
+    ``STS2_RUNAI_BOSS_CARRY``) changes one thing per fight: on the run's LAST
+    boss nothing carries forward, so only winning counts
+    (``sts2_mcts::boss_win_carry``). Every other fight keeps the default value.
+
+    The last-boss test reads the mod's ``run_state.is_last_act`` /
+    ``awaiting_second_boss``. A mod too old to send them falls back to "act 3,
+    and no A10 second boss can be pending" — below A10 the act-3 boss is the
+    last one; at A10 it cannot tell which of the two this is, so it keeps the
+    default value rather than guess.
     """
-    return max(1, min(MAX_SEARCH_THREADS, os.cpu_count() or 1))
+    import sts2_rs
+
+    if (state.get("room_type") or "") != "Boss":
+        return cfg
+    run_state = state.get("run_state") or {}
+    ascension = int(run_state.get("ascension") or 0)
+    is_last_act = run_state.get("is_last_act")
+    awaiting_second = run_state.get("awaiting_second_boss")
+    if is_last_act is None:
+        is_last_act = int(state.get("act") or 0) >= STANDARD_ACT_COUNT
+    if awaiting_second is None:
+        if ascension >= 10 and is_last_act:
+            return cfg
+        awaiting_second = False
+    if not is_last_act or awaiting_second:
+        return cfg
+    carry = sts2_rs.boss_win_carry(True, True, False, ascension)
+    if carry is None:
+        return cfg
+    return dataclasses.replace(cfg, win_hp_carry=carry[0], win_potion_carry=carry[1])
 
 
 def _tag_label(tag: HintTag, state: dict[str, Any]) -> str:
@@ -168,8 +199,8 @@ def _tag_label(tag: HintTag, state: dict[str, Any]) -> str:
         return f"choose option {i}"
     else:
         return f"action {tag.stable_idx}"
-    if tag.target_index is not None and 0 <= tag.target_index < len(enemies):
-        target = enemies[tag.target_index].get("name") or f"enemy {tag.target_index}"
+    target = enemy_label(enemies, tag.target_index)
+    if target is not None:
         label += f" → {target}"
     return label
 
@@ -205,9 +236,9 @@ def _pv_labels(pv: list[Any], state: dict[str, Any]) -> list[str]:
             label = str(hand[idx].get("name") or hand[idx].get("id") or "?")
         else:
             label = kind.replace("_", " ")
-        target = action.get("target_index")
-        if isinstance(target, int) and 0 <= target < len(enemies):
-            label += f" → {enemies[target].get('name') or f'enemy {target}'}"
+        target = enemy_label(enemies, action.get("target_index"))
+        if target is not None:
+            label += f" → {target}"
         labels.append(label)
     return labels
 
@@ -396,7 +427,13 @@ def compute_combat_advice(
     # to `RecommendConfig.resolved_c_puct`, which reads it off the budget THIS
     # decision actually gets (`call_cfg.sims`), so a trimmed boss/regular
     # budget can no longer keep a constant tuned for a budget it never runs.
-    call_cfg = dataclasses.replace(cfg, character=character, sims=sims, c_puct=None)
+    call_cfg = dataclasses.replace(
+        cfg,
+        character=character,
+        ascension=run_ascension(run_state, cfg.ascension),
+        sims=sims,
+        c_puct=None,
+    )
 
     headless = to_headless_combat_play(state)
     wire = adapter.translate(
@@ -461,6 +498,8 @@ def compute_combat_advice(
             endturn_widening_c=call_cfg.endturn_widening_c,
             endturn_widening_alpha=call_cfg.endturn_widening_alpha,
             common_random_numbers=call_cfg.common_random_numbers,
+            win_hp_carry=call_cfg.win_hp_carry,
+            win_potion_carry=call_cfg.win_potion_carry,
         )
     tags = tags_from_result(result, wire["deck"]["hand"])
     pv = _pv_labels(list(result.get("pv") or [])[:4], state)
@@ -488,7 +527,7 @@ def combat_rows(
       move nobody could make.
     * Each row takes the advice option's label (potion and target names the
       advisor resolves against the wire board), and in return the options
-      gain the rows' ``mean_final_hp`` / ``hp_n`` (additive keys).
+      gain the rows' ``mean_final_hp`` / ``hp_sd`` / ``hp_n`` (additive keys).
     """
     from workbench.reasoning import rows_from_mcts
 
@@ -502,6 +541,7 @@ def combat_rows(
         if o.get("label"):
             row["action"] = o["label"]
         o["mean_final_hp"] = row.get("mean_final_hp")
+        o["hp_sd"] = row.get("hp_sd")
         o["hp_n"] = row.get("hp_n", 0)
     best = next((o for o in options if o.get("is_best")), None)
     if best is not None:
@@ -542,6 +582,17 @@ _SURFACE_STANDINS = {
     "treasure": ("boss_relic", "scored with the boss-relic head"),
 }
 
+#: Surfaces the advisor answers but has no policy FOR, keyed to the player-facing
+#: reason that rides on ``advice.hand_back`` (GH #874). A borrowed head is
+#: honest in the HUD note, but it is still not the AI deciding, so F7 hands the
+#: screen back instead of playing it. Delete an entry when its surface gets a
+#: trained head (GH #379); the mod keeps no list of its own, so the pause goes
+#: away with it.
+_HAND_BACK_SURFACES = {
+    "treasure": "the chest relic pick has no trained policy",
+    "card_bundle": "card bundles have no trained policy",
+}
+
 
 #: Characters whose run-policy net has already been warmed this session.
 _WARMED: set[str] = set()
@@ -580,10 +631,15 @@ def _unranked(state: dict[str, Any], why: str) -> dict[str, Any]:
     is the failure this whole pass is about. So the first option is named as
     the pick and the note says plainly that nothing ranked it: an arbitrary
     choice the player can see is arbitrary beats a silent stall.
+
+    Every answer from here also carries ``hand_back`` (GH #874): with the
+    mod's default ``pause_on: "unsupported"`` F7 stops here and gives the
+    player the screen, so the first-option pick only plays when they opted
+    out of pausing (unattended runs).
     """
     options = state.get("options") or state.get("cards") or state.get("nodes") or []
     if not options:
-        return {"note": f"{why} (nothing to pick)"}
+        return {"note": f"{why} (nothing to pick)", "hand_back": why}
     labels = [
         str(o.get("label") or o.get("name") or o.get("id") or f"option {i}")
         for i, o in enumerate(options)
@@ -598,6 +654,7 @@ def _unranked(state: dict[str, Any], why: str) -> dict[str, Any]:
             for i, label in enumerate(labels)
         ],
         "best": {"action": "choose", "index": 0, "label": labels[0]},
+        "hand_back": why,
     }
 
 
@@ -698,6 +755,7 @@ def compute_screen_advice(
             :func:`_searched_card_select_advice`.
         cfg / sims: Search knobs for that path; both required for it to run.
     """
+    import ppo_decode
     import realgame_ppo
 
     state = realgame_ppo.apply_session_context(state, session)
@@ -705,7 +763,7 @@ def compute_screen_advice(
     character = character_display_name(run_state.get("character")) or "Ironclad"
     policy, error = policies.get(character)
     if policy is None:
-        return {"note": f"no run-policy net: {error}"}
+        return {"note": f"no run-policy net: {error}", "hand_back": "no run-policy net is loaded"}
 
     standin_note = ""
     if advice_for == "card_select":
@@ -788,7 +846,12 @@ def compute_screen_advice(
     # did, because it does not route through `pick_noncombat_action_ppo`, so
     # every live shop removal was re-decided (0 carries across
     # `logs/f7-mirror-check18` and `check19`).
-    best_i = carried if carried is not None else max(range(len(probs)), key=probs.__getitem__)
+    # Decoded the way the run agent decodes (`ppo_decode.select_index`: the A8
+    # §8 group-mass rule — pool the mass of equivalent candidates, e.g. one
+    # shop removal per deck card, then take the best member). A plain argmax
+    # here let a split "remove a starter" preference lose to a single
+    # stronger-looking buy that the agent would never pick.
+    best_i = carried if carried is not None else ppo_decode.select_index(decision.actions, probs)
     # Map options carry their graph coordinate so the HUD can pin the score to
     # the node itself instead of printing it in a side panel -- a ranked list
     # of coordinates is not something a player can act on while looking at a
@@ -840,6 +903,8 @@ def compute_screen_advice(
         note += " · scored as a deck pick; this copy only lasts the fight"
 
     advice = {"note": note, "options": options, "best": best}
+    if advice_for in _HAND_BACK_SURFACES:
+        advice["hand_back"] = _HAND_BACK_SURFACES[advice_for]
 
     if advice_for == "map_select":
         path = _project_map_path(state, policy, best_i, hp_table=_projection_hp_table())
@@ -1577,12 +1642,20 @@ def _handle_advice_request(
         state["type"] = advice_for
         is_boss = (state.get("room_type") or "") == "Boss"
         sims = args.boss_sims if is_boss else args.sims
+        fight_cfg = fight_search_cfg(cfg, state)
         if advice_for in SCREEN_ADVICE_FOR:
             advice = compute_screen_advice(
-                state, advice_for, policies, session=session, mirror=mirror, cfg=cfg, sims=sims
+                state,
+                advice_for,
+                policies,
+                session=session,
+                mirror=mirror,
+                cfg=fight_cfg,
+                sims=sims,
             )
         elif advice_for == "combat_action":
-            advice, cs, call_cfg, rows = compute_combat_advice(state, cfg, sims, mirror)
+            advice, cs, call_cfg, rows = compute_combat_advice(state, fight_cfg, sims, mirror)
+            advice = apply_ally_wait(state, advice)
             LAST_COMBAT.put(state_id, cs, call_cfg)
             if args.log_search_tree > 0 and logged_step:
                 try:
@@ -1601,7 +1674,7 @@ def _handle_advice_request(
         # len()` cost a whole debugging round on 2026-08-24 for exactly that
         # reason.
         logger.error("advice_request failed: %s", e, exc_info=True)
-        advice = {"note": f"advisor error: {e}"}
+        advice = {"note": f"advisor error: {e}", "hand_back": "the advisor hit an error"}
 
     elapsed = time.monotonic() - t0
     reply = {
@@ -1768,41 +1841,28 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    # 4000/8000, not the 1000/4000 "eval-cheap" budget PPO trained against.
-    # `par_search` splits the budget across workers, so at threads=8 the old
-    # 1000 was only 125 sims/tree and agreed with a 50k-sim oracle 5.8 pp LESS
-    # often than the single-tree search the champion was trained with — i.e.
-    # the threads win was being paid for in decision quality. Restoring it via
-    # sims is nearly free HERE specifically: unattended pacing is ~0.5 s per
-    # decision (SimAdvisor.cs debounce 0.10 + grace 0.15 + WaitTime 0.25) while
-    # the think is tens of ms.
+    # The Rust run agent's search, so a win rate measured in Rust is the one
+    # the mod plays: ONE tree (`MctsCombatPolicy` never runs root-parallel)
+    # at 4x the `eval-cheap` budget — 4000 sims per decision, 16000 in boss
+    # fights, elites on the common budget as in `CombatBudget`. 4x is the
+    # strongest budget measured on whole runs (A10 17.0% vs 10.8% at
+    # 1000/4000, A9 45.2% vs 40.2%; 16x adds only +1.5pp at 4.2x the time —
+    # docs/experiments/2026-10-20-combat-pro-ladder-findings.md, "Full-run
+    # check"). Cost on one 2.8 GHz core: ~0.7 s per decision, ~2.3 s per boss
+    # decision.
     #
-    # 8000 (not 4000): at threads=8 that is 1000 sims/tree and agrees with the
-    # 50k oracle 0.896 of the time vs 0.855 at 4000 — +4.1 pp on every combat
-    # decision, for 136 ms/search vs 68 ms. 8000 is also where the measured
-    # grid STOPS; do not raise it further without extending that grid.
-    #
-    # The cost is real and was previously understated here as "~10% of run
-    # wall-clock". Measured directly on the 2026-08-10 A1 win (47 floors,
-    # 251 s, 1030 advice calls): the advisor's own reported think time sums to
-    # 138 s = 55% of the run, because the game blocks on each advice call. So
-    # doubling the sim budget costs ~55% more wall-clock per run, not ~10%.
-    # Worth it for live play, where a run is minutes and quality is the whole
-    # point; sweep lanes that pay this per-run across hundreds of runs should
-    # pass --sims explicitly.
-    # Measurements: sts2-rs/docs/experiments/2026-08-10-root-parallel-decision-quality.md
-    parser.add_argument("--sims", type=int, default=8000)
-    # Equal to --sims by default: 8000 is the top of the measured grid, so
-    # there is no evidence-backed higher setting to give boss fights.
-    parser.add_argument("--boss-sims", type=int, default=8000)
-    # Root-parallel workers for the combat search (sts2_rs par_search: sims
-    # split across independent trees, deterministic per (seed, threads)).
-    # threads=1 was the historical value and made boss searches take 9-22 s
-    # EACH on the live box (2026-08-10 gap analysis over climb runs 029-034:
-    # think = 42% of wall time, boss thinks dominating). Capped at the host's
-    # core count — see `default_search_threads`. Pass --threads 1 for
-    # byte-comparable searches; sweep/measurement lanes must.
-    parser.add_argument("--threads", type=int, default=default_search_threads())
+    # The advisor used to default to 8000/8000 split across up to 8
+    # root-parallel trees (2026-08-10, for latency). That made the advice
+    # depend on the player's core count, merged its trees by a different pick
+    # rule, and dropped the single-tree lost-position override; no run-level
+    # win rate was ever measured for it.
+    parser.add_argument("--sims", type=int, default=4000)
+    parser.add_argument("--boss-sims", type=int, default=16000)
+    # Root-parallel workers (sts2_rs par_search: sims split across independent
+    # trees). 1 = the run agent's single tree. More trees trade decision
+    # fidelity to the measured agent for wall-clock; only for a box too slow
+    # for the single-tree budget.
+    parser.add_argument("--threads", type=int, default=1)
     parser.add_argument(
         "--log-dir",
         # Frozen exe: the CWD is the install dir (Program Files on a default
@@ -1924,7 +1984,7 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
-    # Clamp an explicit --threads too, not just the default: more workers than
+    # Clamp --threads to the core count: more workers than
     # cores cannot buy wall-clock, and each extra worker still shrinks the
     # per-tree sim budget, so oversubscription is a pure quality loss.
     cores = os.cpu_count() or 1

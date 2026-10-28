@@ -122,7 +122,7 @@ def test_cache_format_bump_invalidates(tmp_path, monkeypatch) -> None:
     c = rp._RunTraceCache(str(tmp_path), "nsY")
     path = c._dir + "/" + c._key("S", "Ironclad", 0, 30) + ".json"
     # Write a stale-format trace by hand.
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         json.dump({"v": rp._RUN_TRACE_FORMAT - 1, "entries": []}, f)
     _rec, st = c.get_or_record("S", "Ironclad", 0, 30)
     assert st == "miss"  # stale format ignored → re-recorded

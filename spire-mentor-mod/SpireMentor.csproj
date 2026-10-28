@@ -54,29 +54,12 @@
   </PropertyGroup>
 
   <!--
-    Game build to compile for (GH #800): v0.107.1 (stable) or v0.111.0 (beta).
-    Some sts2 members the mod calls changed signature between the two
-    (RunRngSet.Seed uint->ulong, Rng.Counter removed, CardSelectCmd.UseSelector
-    gained a parameter), so one DLL cannot bind against both: a build only runs
-    on the game it was compiled for. -p:GameVersion=v0.111.0 overrides; the
-    default is the installed game's own release_info.json "version", else
-    v0.107.1. v0.111.0 defines GAME_V0111 for the #if-guarded API drift, as in
-    ../sts2-pycli/src/Sts2Headless/Sts2Headless.csproj.
+    One DLL for every supported game build (GH #800): v0.107.1 (stable) and
+    v0.111.0 (beta). It compiles against whichever sts2.dll is installed; the
+    members whose signature differs between the builds are reached through
+    SimGameApi.cs, and tests/compile/build_mod.sh checks the DLL binds against
+    every build present.
   -->
-  <PropertyGroup>
-    <Sts2ReleaseInfo>$(STS2_GAME_DIR)/release_info.json</Sts2ReleaseInfo>
-    <GameVersion Condition="'$(GameVersion)' == '' and Exists('$(Sts2ReleaseInfo)')">$([System.Text.RegularExpressions.Regex]::Replace($([System.IO.File]::ReadAllText('$(Sts2ReleaseInfo)')), '(?s)^.*?"version"\s*:\s*"v?([0-9.]+)".*$', 'v$1'))</GameVersion>
-    <!-- No "version" field: the Replace left the file text, which is no version. -->
-    <GameVersion Condition="$(GameVersion.Contains('{'))"></GameVersion>
-    <GameVersion Condition="'$(GameVersion)' == ''">v0.107.1</GameVersion>
-    <DefineConstants Condition="'$(GameVersion)' == 'v0.111.0'">$(DefineConstants);GAME_V0111</DefineConstants>
-  </PropertyGroup>
-
-  <Target Name="CheckGameVersion" BeforeTargets="Build;Restore">
-    <Error Condition="'$(GameVersion)' != 'v0.107.1' and '$(GameVersion)' != 'v0.111.0'"
-           Text="Unsupported GameVersion '$(GameVersion)' (supported: v0.107.1, v0.111.0). Pass -p:GameVersion=v0.107.1 or -p:GameVersion=v0.111.0." />
-    <Message Text="SpireMentor: compiling for game $(GameVersion)" Importance="high" />
-  </Target>
 
   <Target Name="CheckDependencyPaths" BeforeTargets="Build;Restore">
     <Error

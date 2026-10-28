@@ -570,6 +570,37 @@ impl MonsterAi {
         self.forced_next_state
     }
 
+    /// Set the `amount` of move `move_id`'s `Intent::Buff { kind: power, .. }`
+    /// telegraph(s), for a move whose granted amount changes during combat
+    /// (C# re-reads it on every telegraph; the engine stores it on the
+    /// move). Copy-on-write, and a no-op when the amount already matches or
+    /// the move has no such intent.
+    pub fn set_buff_amount(&mut self, move_id: &str, power: crate::PowerKind, amount: i32) {
+        let needs = self.states.values().any(|s| match s {
+            MonsterState::Move(m) if m.id == move_id => m.intents.iter().any(
+                |i| matches!(i, Intent::Buff { kind, amount: a } if *kind == power && *a != amount),
+            ),
+            _ => false,
+        });
+        if !needs {
+            return;
+        }
+        for s in std::sync::Arc::make_mut(&mut self.states).values_mut() {
+            if let MonsterState::Move(m) = s {
+                if m.id != move_id {
+                    continue;
+                }
+                for i in &mut m.intents {
+                    if let Intent::Buff { kind, amount: a } = i {
+                        if *kind == power {
+                            *a = amount;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// **Immediate** state override — replace the *current* move right
     /// now, NOT at the next roll. The faithful analogue of C#
     /// `CreatureCmd.Stun` → `Creature.StunInternal` →
@@ -872,13 +903,118 @@ impl MonsterAi {
         self.roll_move_with_combat(&mut rng, combat)
     }
 
+    /// Perform the current move atomically: [`Self::begin_move`] then
+    /// [`Self::on_move_performed_state`] for that same state. For callers that
+    /// run no game logic between the start and the end of the move (tests,
+    /// look-ahead features, a revive handler marking the move it just ran).
+    /// The combat loop calls the two halves separately, around the move body,
+    /// because a body can force the machine onto another state mid-move.
     pub fn on_move_performed(&mut self) {
-        self.performed_first_move = true;
+        self.begin_move();
+        self.on_move_performed_state(self.current);
+    }
+
+    /// C# `MoveState.PerformMove` (`MoveState.cs:55-60`) sets that state's
+    /// `_performedAtLeastOnce` BEFORE the move body runs, and
+    /// `SetCurrentState` clears the flag of the state it leaves
+    /// (`MoveState.OnExitState`, `MoveState.cs:62-65`;
+    /// `MonsterMoveStateMachine.cs:84-89`). The flag is per state, but only the
+    /// current state's flag is ever read (`CanTransitionAway`), so a single
+    /// flag tracks it exactly as long as it is raised here, at the start of the
+    /// move, and cleared by every transition ([`Self::force_current_state`],
+    /// the roll). A move body that forces another state mid-move (the
+    /// Waterfall Giant killed by thorns during its own attack is forced onto
+    /// ABOUT_TO_BLOW) therefore leaves the forced state unperformed, so a
+    /// `must_perform_once` target is held for the next turn; and a stun the
+    /// body triggers on its own monster ([`Self::stun_immediate`]) passes the
+    /// `CanTransitionAway` guard even on the first run of a must-perform move.
+    ///
+    /// The post-move half is [`Self::on_move_performed_state`].
+    pub fn begin_move(&mut self) {
         self.performed_at_least_once = true;
-        let state = self.cur();
-        if state.should_appear_in_logs() {
-            self.state_log.push(self.current);
+    }
+
+    /// [`Self::on_move_performed`] for the move that ACTUALLY ran, which may
+    /// no longer be the current state: the post-move half, after
+    /// [`Self::begin_move`].
+    ///
+    /// C# marks the `MoveState` object it performed, not whatever the machine
+    /// points at afterwards: `MoveState.PerformMove` sets that state's own
+    /// `_performedAtLeastOnce` (MoveState.cs:57), and
+    /// `MonsterModel.PerformMove` captures `move = NextMove` before running it
+    /// (MonsterModel.cs:583). A stun that lands while the monster's own move
+    /// is running (`CreatureCmd.Stun` → `SetMoveImmediate`, e.g. Shriek
+    /// tripping on Thorns damage mid-Thrash) installs a FRESH, unperformed
+    /// `STUNNED` state — marking the current state here instead would flag
+    /// that stun as already performed and the next roll would skip it.
+    ///
+    /// So the performed flag is only set when `performed` is still current;
+    /// otherwise the newly installed state keeps the `false` its force left.
+    /// (After [`Self::begin_move`] the flag is already up for a `performed`
+    /// that is still current; the combat walk calls both.)
+    pub fn on_move_performed_state(&mut self, performed: StateId) {
+        self.performed_first_move = true;
+        if performed == self.current {
+            self.performed_at_least_once = true;
         }
+        if self
+            .states
+            .get(performed)
+            .is_some_and(MonsterState::should_appear_in_logs)
+        {
+            self.state_log.push(performed);
+        }
+    }
+
+    /// C# `CreatureCmd.Stun` → `Creature.StunInternal` →
+    /// `MonsterModel.SetMoveImmediate(state)` (Creature.cs:524-544,
+    /// MonsterModel.cs:562-575, identical in v0.107.1 and v0.111.0).
+    ///
+    /// `stun_state` is the content machine's prebuilt analogue of the
+    /// `MoveState("STUNNED", …)` that `StunInternal` synthesizes; it must be
+    /// built with `must_perform_once: true` (C# sets
+    /// `MustPerformOnceBeforeTransitioning = true` on every stun state).
+    ///
+    /// Unlike [`Self::force_current_state`] (the `forceTransition: true`
+    /// analogue), this honours `SetMoveImmediate`'s
+    /// `if (NextMove.CanTransitionAway)` guard: a monster whose current move
+    /// is a `must_perform_once` state it has not performed yet — most often a
+    /// stun it has not served — is left untouched. That is what keeps a second
+    /// Corpse Slug devour from re-stunning (and re-queuing `STUNNED` as its own
+    /// resume) before the first stun has run.
+    ///
+    /// `next_move` is `StunInternal`'s `nextMoveId`; `None` defaults to
+    /// `StateLog.Last().Id`, the move the machine last rolled. C# appends to
+    /// `StateLog` at roll time and never logs a forced stun, so that is the
+    /// current move — unless the current move is `stun_state` itself (served
+    /// this turn, not yet rolled away), in which case it is the move queued to
+    /// resume after it.
+    ///
+    /// Returns whether the stun was installed.
+    pub fn stun_immediate(&mut self, stun_state: StateId, next_move: Option<StateId>) -> bool {
+        if !self
+            .states
+            .get(stun_state)
+            .is_some_and(MonsterState::is_move)
+        {
+            return false;
+        }
+        if !self.can_transition_away() {
+            return false;
+        }
+        let resume = next_move.or_else(|| {
+            if self.current == stun_state {
+                self.forced_next_state
+                    .or_else(|| self.current_move_opt().and_then(|m| m.follow_up))
+            } else {
+                Some(self.current)
+            }
+        });
+        self.force_current_state(stun_state);
+        if let Some(resume) = resume {
+            self.force_next_state(resume);
+        }
+        true
     }
 
     /// Peek the next `k` move intents without mutating self.
@@ -1296,6 +1432,101 @@ mod tests {
         let uid_b = CreatureUid(NonZeroU32::new(2).unwrap());
         ai.set_owner(uid_b);
         assert_eq!(ai.owner_uid(), Some(uid_b), "set_owner overwrites");
+    }
+
+    /// [`make_linear_chain`] plus a must-perform stun `S` → `B`, the prebuilt
+    /// analogue of C# `StunInternal`'s STUNNED.
+    fn make_stunnable_chain() -> MonsterAi {
+        let mut ai = make_linear_chain();
+        std::sync::Arc::make_mut(&mut ai.states).insert(
+            "S",
+            MonsterState::Move(MoveState {
+                id: "S",
+                effect: noop_effect,
+                intents: smallvec![Intent::Stun],
+                follow_up: Some("B"),
+                must_perform_once: true,
+            }),
+        );
+        ai
+    }
+
+    /// #806 root cause 2: C# `SetMoveImmediate` only replaces `NextMove` when
+    /// `NextMove.CanTransitionAway` (MonsterModel.cs:564). An unperformed
+    /// must-perform move blocks the stun; once performed, the stun lands and
+    /// resumes at the move last rolled (`StateLog.Last().Id`).
+    #[test]
+    fn stun_immediate_honours_can_transition_away() {
+        let mut ai = make_stunnable_chain();
+        assert!(
+            !ai.stun_immediate("S", None),
+            "unperformed A blocks the stun"
+        );
+        assert_eq!(ai.current_state_id(), "A");
+        assert_eq!(ai.forced_next_state(), None);
+        ai.on_move_performed();
+        assert!(ai.stun_immediate("S", None));
+        assert_eq!(ai.current_state_id(), "S");
+        assert_eq!(
+            ai.forced_next_state(),
+            Some("A"),
+            "default resume = last rolled"
+        );
+        // A second stun before S is served is a no-op (S is must-perform).
+        assert!(!ai.stun_immediate("S", Some("B")));
+        assert_eq!(ai.forced_next_state(), Some("A"));
+        // The stun holds through rolls until served, then resumes.
+        assert_eq!(ai.roll_move_seeded(0).id, "S");
+        ai.on_move_performed();
+        assert_eq!(ai.roll_move_seeded(0).id, "A");
+    }
+
+    /// #830 (#862) x #806 (#894): `begin_move` marks the move BEFORE its
+    /// body (MoveState.cs:57), so a stun the body triggers on its own monster
+    /// passes `SetMoveImmediate`'s `CanTransitionAway` guard
+    /// (MonsterModel.cs:564) even on the first run of a must-perform move, and
+    /// `on_move_performed_state` then leaves that stun unserved. Control:
+    /// without the pre-body mark the guard refuses the stun.
+    #[test]
+    fn begin_move_lets_a_stun_into_a_first_must_perform_move() {
+        let mut control = make_stunnable_chain();
+        assert!(
+            !control.stun_immediate("S", None),
+            "control: an unperformed must-perform A refuses the stun"
+        );
+
+        let mut ai = make_stunnable_chain();
+        let performed = ai.current_state_id();
+        ai.begin_move(); // A's body starts (A is must-perform, never performed)...
+        assert!(
+            ai.stun_immediate("S", None),
+            "...and counts as performed while it runs"
+        );
+        ai.on_move_performed_state(performed); // ...then A completes.
+        assert_eq!(ai.move_history().last(), Some(&"A"), "A is what ran");
+        assert_eq!(ai.roll_move_seeded(0).id, "S", "the stun is held");
+        ai.on_move_performed();
+        assert_eq!(ai.roll_move_seeded(0).id, "A", "served; resumes at A");
+    }
+
+    /// #806 root cause 3: C# flags the `MoveState` that ran (MoveState.cs:57),
+    /// so a stun installed while `B` was performing stays unserved.
+    #[test]
+    fn on_move_performed_state_flags_only_the_move_that_ran() {
+        let mut ai = make_stunnable_chain();
+        ai.on_move_performed();
+        assert_eq!(ai.roll_move_seeded(0).id, "B");
+        ai.on_move_performed();
+        // B starts performing; a stun lands mid-move.
+        let performed = ai.current_state_id();
+        assert!(ai.stun_immediate("S", None));
+        ai.on_move_performed_state(performed);
+        assert_eq!(ai.move_history().last(), Some(&"B"), "B is what ran");
+        assert_eq!(
+            ai.roll_move_seeded(0).id,
+            "S",
+            "the stun is not rolled away"
+        );
     }
 
     #[test]

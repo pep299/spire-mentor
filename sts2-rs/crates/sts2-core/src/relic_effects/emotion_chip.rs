@@ -61,16 +61,11 @@ pub(crate) fn on_after_side_turn_start_emotion_chip(
     if !triggered {
         return EffectResult::NotImplemented;
     }
-    if state.game_version >= crate::GameVersion::V0_111_0 {
-        trigger_every_orb_passive_v0111(state);
-    } else {
-        crate::orbs::passive_tick(state);
-    }
+    trigger_every_orb_passive(state);
     EffectResult::Resolved
 }
 
-/// v0.111.0 EmotionChip orb walk: each channeled orb's passive, in queue
-/// order, counted through `ModifyOrbPassiveTriggerCount`.
+/// EmotionChip orb walk: each channeled orb's passive, in queue order.
 ///
 /// v0.111.0 `EmotionChip.AfterPlayerTurnStart` passes
 /// `countAffectedByHooks: true` (decomp `EmotionChip.cs:54`), which routes
@@ -84,10 +79,11 @@ pub(crate) fn on_after_side_turn_start_emotion_chip(
 /// `orb.Passive` directly, so Cables never doubled an EmotionChip trigger.
 ///
 /// Every orb kind fires, Plasma's `+1 energy` included — `PlasmaOrb.Passive`
-/// is `GainEnergy(PassiveVal)` in both builds. (The v0.107.1 branch above
-/// reuses the turn-end [`crate::orbs::passive_tick`], which skips Plasma;
-/// it is left unchanged so that build stays bit-identical.)
-fn trigger_every_orb_passive_v0111(state: &mut CombatState) {
+/// is `GainEnergy(PassiveVal)` in both builds (v0.107.1 `EmotionChip.cs:52-56`
+/// calls `OrbCmd.Passive` on every orb). The turn-end
+/// [`crate::orbs::passive_tick`] skips Plasma, so it can't be reused here
+/// (GH #806).
+fn trigger_every_orb_passive(state: &mut CombatState) {
     let filled: smallvec::SmallVec<[usize; 10]> = state
         .player
         .orbs
@@ -97,7 +93,8 @@ fn trigger_every_orb_passive_v0111(state: &mut CombatState) {
         .filter(|(_, o)| !o.is_empty())
         .map(|(i, _)| i)
         .collect();
-    let cables = player_owns_relic(state, crate::RelicKind::GoldPlatedCables);
+    let cables = state.game_version >= crate::GameVersion::V0_111_0
+        && player_owns_relic(state, crate::RelicKind::GoldPlatedCables);
     for (n, idx) in filled.into_iter().enumerate() {
         let count = if n == 0 && cables { 2 } else { 1 };
         for _ in 0..count {

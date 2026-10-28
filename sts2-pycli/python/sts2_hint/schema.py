@@ -255,6 +255,9 @@ class PlayerSpec(TypedDict):
     relics: list[RelicSpec]
     powers: list[PowerSpec]
     potions: list[str | None]
+    #: Belt capacity (C# ``Player.MaxPotionCount``). ``potions`` is not the
+    #: slot count on every producer, so it rides in its own key (GH #893).
+    potion_slots: NotRequired[int]
     orbs: NotRequired[list[OrbSpec] | None]
     orb_slots: NotRequired[int | None]
     stars: NotRequired[int | None]
@@ -286,6 +289,7 @@ PlayerSpecRuntime = TypedDict(
         "relics": list[RelicSpec],
         "powers": list[PowerSpec],
         "potions": list[str | None],
+        "potion_slots": NotRequired[int],
         "orbs": NotRequired[list[OrbSpec] | None],
         "orb_slots": NotRequired[int | None],
         "stars": NotRequired[int | None],

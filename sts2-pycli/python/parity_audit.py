@@ -236,7 +236,7 @@ def assert_wheel_fresh(rs_root: str | None = None) -> None:
             os.path.join(os.path.dirname(pkg_dir), "sts2_rs-*.dist-info", "direct_url.json")
         ):
             try:
-                with open(du) as f:
+                with open(du, encoding="utf-8") as f:
                     url = json.load(f).get("url", "")
             except (OSError, ValueError):
                 continue
@@ -268,7 +268,7 @@ def assert_wheel_fresh(rs_root: str | None = None) -> None:
         # old / CI wheel with no stamp to compare against → skip.
         librs = os.path.join(crates, "sts2-py", "src", "lib.rs")
         try:
-            with open(librs) as f:
+            with open(librs, encoding="utf-8") as f:
                 source_stamps = "STS2_PY_SRC_HASH" in f.read()
         except OSError:
             source_stamps = False
@@ -2503,9 +2503,9 @@ def main(argv: list[str] | None = None) -> int:
             for r in pool.map(_run_one, trials, chunksize=1):
                 _record(r)
 
-    with open(os.path.join(out_dir, "buckets.json"), "w") as f:
+    with open(os.path.join(out_dir, "buckets.json"), "w", encoding="utf-8") as f:
         json.dump(dict(buckets.most_common()), f, indent=2)
-    with open(os.path.join(out_dir, "examples.json"), "w") as f:
+    with open(os.path.join(out_dir, "examples.json"), "w", encoding="utf-8") as f:
         json.dump(examples, f, indent=2, default=str)
     print(f"\n=== {out_dir} ===", file=sys.stderr)
     for k, v in buckets.most_common():
@@ -2552,7 +2552,7 @@ def main(argv: list[str] | None = None) -> int:
         prev_path = args.compare_to or sm.latest_manifest(manifest_dir, args.tier, before=path)
         print(f"[manifest] {path}", file=sys.stderr)
         if prev_path:
-            with open(prev_path) as f:
+            with open(prev_path, encoding="utf-8") as f:
                 d = sm.compare_manifests(json.load(f), manifest)
             for k in ("regressions", "fixes", "new", "gone"):
                 if d[k]:
@@ -2585,7 +2585,7 @@ def main(argv: list[str] | None = None) -> int:
             "powers_seen": sorted(powers_seen),
             "monsters_seen": sorted(monsters_seen),
         }
-        with open(os.path.join(out_dir, "coverage_report.json"), "w") as f:
+        with open(os.path.join(out_dir, "coverage_report.json"), "w", encoding="utf-8") as f:
             json.dump(report, f, indent=2)
         print(
             f"[coverage] {report['cards_played_distinct']}/{len(pool)} pool cards "

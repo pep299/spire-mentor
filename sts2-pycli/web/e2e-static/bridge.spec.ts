@@ -2,6 +2,7 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { test, expect } from "@playwright/test";
 import { menuItem, closeMenu } from "../e2e/topbarMenu";
+import { chromiumPath } from "../playwright.static.config";
 
 /**
  * The live-game bridge in the browser-only build (GH #709): the page calls the
@@ -20,7 +21,16 @@ import { menuItem, closeMenu } from "../e2e/topbarMenu";
  * the user allowing the prompt, which the measurements in
  * docs/browser-workbench.md § "Live-game bridge" cover.
  */
-test.use({ launchOptions: { args: ["--disable-features=LocalNetworkAccessChecks"] } });
+//
+// `test.use({ launchOptions })` REPLACES the project's `launchOptions`, so the
+// config's `executablePath` (from PLAYWRIGHT_CHROMIUM_PATH) is carried over
+// here, or a host without bundled browsers can't launch this spec (GH #879).
+test.use({
+  launchOptions: {
+    ...(chromiumPath ? { executablePath: chromiumPath } : {}),
+    args: ["--disable-features=LocalNetworkAccessChecks"],
+  },
+});
 
 const PAGE_ORIGIN = "http://localhost:4173";
 

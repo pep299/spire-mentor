@@ -468,7 +468,7 @@ describe("engine routes — run logs and the replay viewer (M4)", () => {
     expect((await engine.handle("POST", "/api/load", { path: "nope.jsonl" })).status).toBe(404);
     expect((await engine.handle("POST", "/api/load", {})).status).toBe(422);
     // The replay routes reach the wasm.
-    for (const key of ["GET /api/timeline", "GET /api/map", "GET /api/step/3", "GET /api/step/3/deck-analysis", "GET /api/deck/trend", "POST /api/regret-review", "POST /api/wpa-review", "POST /api/recommend"]) {
+    for (const key of ["GET /api/timeline", "GET /api/map", "GET /api/coach", "GET /api/step/3", "GET /api/step/3/deck-analysis", "GET /api/deck/trend", "POST /api/regret-review", "POST /api/wpa-review", "POST /api/recommend"]) {
       const [m, route] = key.split(" ");
       const r = await engine.handle(m, route, {});
       expect(r.status).toBe(200);

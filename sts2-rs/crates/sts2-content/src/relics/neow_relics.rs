@@ -177,7 +177,7 @@ fn listener_dowsing_rod(rs: &mut RunState) -> EffectResult {
         return EffectResult::NotImplemented;
     }
     if let Some(card) = card_pod_from_id(CardId::Dowsing, false) {
-        rs.master_deck.push(card);
+        rs.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::RelicGain);
     }
     EffectResult::Resolved
 }
@@ -197,7 +197,7 @@ fn listener_neows_sacrifice(rs: &mut RunState) -> EffectResult {
         sts2_core::potions::PotionKind::Ambergris,
     ));
     if let Some(card) = card_pod_from_id(CardId::Guilty, false) {
-        rs.master_deck.push(card);
+        rs.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::RelicGain);
     }
     EffectResult::Resolved
 }
@@ -231,9 +231,8 @@ fn listener_silken_tress_card_reward(rs: &mut RunState, cards: &mut Vec<Card>) -
     if !rs.owns_active_relic(RelicId::SilkenTress) {
         return EffectResult::NotImplemented;
     }
-    // v0.111.0: only a slate with `IsCardReward` (decomp
-    // `Models.Relics/SilkenTress.cs:53`); the flag is only ever set by a
-    // v0.111.0 caller, see `RunState::offer_card_slate`.
+    // Only a slate with `IsCardReward` (decomp `Models.Relics/SilkenTress.cs:53`,
+    // both builds); see `RunState::offer_card_slate`.
     if rs.card_slate_not_card_reward {
         return EffectResult::NotImplemented;
     }
@@ -547,7 +546,7 @@ fn listener_hefty_tablet(rs: &mut RunState) -> EffectResult {
     if options.is_empty() {
         // No Rare cards to offer (unreachable for shipped pools) — the
         // screen would show nothing; C# still always adds the Injury.
-        rs.master_deck.extend(post_add);
+        rs.add_cards_to_deck_with_hooks(post_add, sts2_core::relic_effects::AddSource::RelicGain);
     } else {
         rs.pending_card_selects
             .push(sts2_core::runstate::PendingCardSelect::with_post_add(

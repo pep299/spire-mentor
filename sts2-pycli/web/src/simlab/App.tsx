@@ -7,6 +7,8 @@ import PositionEditor, { type NewPositionRequest } from "./PositionEditor";
 import ResultsView from "./ResultsView";
 import StudiesForm from "./StudiesForm";
 import { decodeHash, emptyPosition, encodeHash, formatPosition, sweepFromSearch, type Position } from "./position";
+import { usePanelChoice } from "../panelPrefs";
+import { DEFAULT_GAME_VERSION, effectiveGameVersion, gameVersionBody, gameVersionLabel } from "../gameVersion";
 
 // The distribution sweeps run on both hosts since GH #707 (the wasm steps
 // them between requests); the flag stays so a host could switch them off
@@ -33,6 +35,35 @@ export default function App() {
   const [selected, setSelected] = useState<string | null>(() => sweepFromSearch(window.location.search));
   const [busy, setBusy] = useState(false);
   const flashTimer = useRef<number | null>(null);
+  // GH #877: the game build a new fight is dealt in -- the workbench run
+  // launcher's own remembered pick (same preference key), so SimLab plays the
+  // build the selector names, like /api/live/start. Until the server's list
+  // lands the pick is taken as-is; a pick the server cannot run then falls
+  // back to its default (the pick itself is left alone).
+  const [gameVersionPick, setGameVersionPick] = usePanelChoice("wb.gameVersion", DEFAULT_GAME_VERSION);
+  const [gameVersions, setGameVersions] = useState<string[] | null>(null);
+  const [serverDefaultVersion, setServerDefaultVersion] = useState(DEFAULT_GAME_VERSION);
+  const gameVersion = gameVersions
+    ? effectiveGameVersion(gameVersionPick, gameVersions, serverDefaultVersion)
+    : gameVersionPick;
+  // The board on screen names its own build; the catalog follows it.
+  const shownVersion = position ? (position.game_version ?? DEFAULT_GAME_VERSION) : gameVersion;
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .capabilities()
+      .then((c) => {
+        if (cancelled) return;
+        setGameVersions(c.game_versions?.length ? c.game_versions : [DEFAULT_GAME_VERSION]);
+        if (c.default_game_version) setServerDefaultVersion(c.default_game_version);
+      })
+      .catch(() => {
+        if (!cancelled) setGameVersions([DEFAULT_GAME_VERSION]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const say = useCallback((msg: string) => {
     setFlash(msg);
@@ -40,11 +71,11 @@ export default function App() {
     flashTimer.current = window.setTimeout(() => setFlash(null), 4000);
   }, []);
 
-  // Catalog once; the editor renders with bare ids until it lands.
+  // Catalog once per build; the editor renders with bare ids until it lands.
   useEffect(() => {
     let cancelled = false;
     api
-      .catalog()
+      .catalog(shownVersion)
       .then((c) => {
         if (!cancelled) setCatalog(c);
       })
@@ -54,14 +85,14 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [shownVersion]);
 
   // A tab opened with no position gets a real fight rather than a blank form.
   useEffect(() => {
     if (position) return;
     let cancelled = false;
     api
-      .newPosition({ character: "Ironclad", encounter: DEFAULT_ENCOUNTER, ascension: 0, seed: 1 })
+      .newPosition({ character: "Ironclad", encounter: DEFAULT_ENCOUNTER, ascension: 0, seed: 1, ...gameVersionBody(gameVersion) })
       .then((b) => {
         if (!cancelled) setPosition(b.position);
       })
@@ -114,10 +145,13 @@ export default function App() {
   );
 
   const onNew = useCallback(
-    async (req: NewPositionRequest) => {
+    async (req: NewPositionRequest, version: string = gameVersion) => {
       setBusy(true);
       try {
-        const b = await api.newPosition({ character: req.character, encounter: req.encounter, ascension: req.ascension, seed: req.seed });
+        const b = await api.newPosition({
+          character: req.character, encounter: req.encounter, ascension: req.ascension, seed: req.seed,
+          ...gameVersionBody(version),
+        });
         setPosition(b.position);
         if (b.notes.length) say(b.notes.join(" "));
       } catch (e) {
@@ -126,7 +160,20 @@ export default function App() {
         setBusy(false);
       }
     },
-    [say],
+    [say, gameVersion],
+  );
+
+  // Switching the build re-deals the same fight in it (and remembers the
+  // pick for the launcher too). A hand-built lineup has no encounter to
+  // re-deal, so it just takes the build from the next new fight.
+  const onGameVersion = useCallback(
+    (v: string) => {
+      setGameVersionPick(v);
+      if (position?.encounter && !position.encounter.startsWith("monsters:")) {
+        void onNew({ character: position.character, encounter: position.encounter, ascension: position.ascension, seed: position.seed }, v);
+      }
+    },
+    [setGameVersionPick, position, onNew],
   );
 
   const onImportText = useCallback(
@@ -180,6 +227,14 @@ export default function App() {
         </div>
         <div className="sl-header-right">
           {flash && <span className="sl-muted">{flash}</span>}
+          {gameVersions && gameVersions.length > 1 && (
+            <select aria-label="game version" value={shownVersion} onChange={(e) => onGameVersion(e.target.value)}
+              title="the game build this fight plays (the workbench run launcher's pick)">
+              {gameVersions.map((v) => (
+                <option key={v} value={v}>{gameVersionLabel(v)}</option>
+              ))}
+            </select>
+          )}
           {tab === "sandbox" && position && (
             <>
               <button type="button" onClick={() => copy("link")} title="a link that opens SimLab on this exact position">

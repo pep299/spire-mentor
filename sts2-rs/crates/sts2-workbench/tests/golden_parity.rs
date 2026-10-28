@@ -349,7 +349,7 @@ fn replay_scenario(dir: &Path) -> Vec<String> {
                     status == req.status,
                     py_keys
                         .as_ref()
-                        .map_or(true, |py| rust_keys.iter().all(|k| py.contains(k))),
+                        .is_none_or(|py| rust_keys.iter().all(|k| py.contains(k))),
                 ),
                 // The coach assesses every move the oracle does and more:
                 // Python's wire round-trip loses a potion's slot and can lose
@@ -357,11 +357,11 @@ fn replay_scenario(dir: &Path) -> Vec<String> {
                 // snapshot scores the move. Never the reverse.
                 "/api/live/last-move-regret" => (
                     status == req.status || (req.status == 409 && status == 200),
-                    status != req.status || py_keys.as_ref().map_or(true, |py| *py == rust_keys),
+                    status != req.status || py_keys.as_ref().is_none_or(|py| *py == rust_keys),
                 ),
                 _ => (
                     status == req.status,
-                    py_keys.as_ref().map_or(true, |py| *py == rust_keys),
+                    py_keys.as_ref().is_none_or(|py| *py == rust_keys),
                 ),
             };
             if !status_ok || !shape_ok {
@@ -432,10 +432,7 @@ fn build_bundle_present(dir: &Path) -> bool {
         .as_ref()
         .and_then(|r| r["body"]["game_version"].as_str())
         .unwrap_or_default();
-    let present = match version {
-        "v0.111.0" => cfg!(workbench_game_data_v0_111_0),
-        _ => true,
-    };
+    let present = version != "v0.111.0" || cfg!(workbench_game_data_v0_111_0);
     if !present {
         eprintln!(
             "skip {}: no {version} workbench bundle in this checkout",
@@ -479,19 +476,26 @@ fn golden_fixtures_are_present() {
 /// thread finished first.
 fn replay_all_scenarios(dirs: &[PathBuf]) -> Vec<(usize, String)> {
     // Each worker holds a Workbench and, for the `ppo` scenarios, a tract net,
-    // so this is capped well below the core count on purpose: the win here is
-    // getting under a 60s wall clock, not saturating the box.
+    // so this is capped below the core count on purpose. This test is the
+    // nextest run's long pole, so the cap bounds the gate's wall clock.
     let threads = std::thread::available_parallelism()
-        .map_or(4, |n| n.get().min(8))
+        .map_or(4, |n| n.get().min(16))
         .min(dirs.len().max(1));
+    // Longest scenario first (request-log size as the proxy). Handed out in
+    // name order, `long_defect_*` (2x the next one) started late and ran alone.
+    let mut order: Vec<usize> = (0..dirs.len()).collect();
+    order.sort_by_cached_key(|&i| {
+        std::cmp::Reverse(fs::metadata(dirs[i].join("requests.jsonl")).map_or(0, |m| m.len()))
+    });
     let next = std::sync::atomic::AtomicUsize::new(0);
     let out = std::sync::Mutex::new(Vec::new());
 
     std::thread::scope(|scope| {
         for _ in 0..threads {
             scope.spawn(|| loop {
-                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let Some(dir) = dirs.get(i) else { return };
+                let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(&i) = order.get(k) else { return };
+                let dir = &dirs[i];
                 let name = dir
                     .file_name()
                     .and_then(|n| n.to_str())

@@ -13,6 +13,7 @@
   {
    "action": "Tremble",
    "hp_n": 6,
+   "hp_sd": 0.0,
    "is_best": true,
    "losses": 0,
    "low_confidence": false,
@@ -29,6 +30,7 @@
   {
    "action": "Bash",
    "hp_n": 6,
+   "hp_sd": 0.0,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
@@ -45,6 +47,7 @@
   {
    "action": "Strike",
    "hp_n": 6,
+   "hp_sd": 0.0,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
@@ -61,6 +64,7 @@
   {
    "action": "Tremble",
    "hp_n": 5,
+   "hp_sd": 1.2,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
@@ -77,6 +81,7 @@
   {
    "action": "Strike",
    "hp_n": 5,
+   "hp_sd": 1.2,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
@@ -93,6 +98,7 @@
   {
    "action": "Strike",
    "hp_n": 5,
+   "hp_sd": 1.2,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
@@ -109,6 +115,7 @@
   {
    "action": "Bash",
    "hp_n": 5,
+   "hp_sd": 2.0,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
@@ -125,6 +132,7 @@
   {
    "action": "Strike",
    "hp_n": 5,
+   "hp_sd": 8.0,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
@@ -141,6 +149,7 @@
   {
    "action": "end turn",
    "hp_n": 5,
+   "hp_sd": 4.4091,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,

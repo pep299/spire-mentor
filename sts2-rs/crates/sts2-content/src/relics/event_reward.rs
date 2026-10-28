@@ -432,6 +432,12 @@ fn install_listeners() {
     // CombatState::add_to_master_deck; re-entry guarded by
     // AddSource::BingBongDuplicate on the dispatch ctx).
     register_on_card_added_to_deck(RelicId::BingBong, listener_bing_bong as OnCardAddedToDeckFn);
+    // The run-side half: a deck add between fights (event grant, relic
+    // pickup, card reward) clones the card too (GH #806).
+    register_on_card_added_to_deck_run(
+        RelicId::BingBong,
+        listener_bing_bong_run as OnCardAddedToDeckRunFn,
+    );
 
     // Wave 6 (sts2-rs-9wx7) — reward-flow hooks for DreamCatcher /
     // FresnelLens / WongosMysteryTicket. All five channels live in
@@ -717,7 +723,10 @@ fn listener_the_boot(state: &CombatState, ctx: &ModifyHpLostCtx, amount: i32) ->
     let Some(player_uid) = state.player.creature_uid else {
         return amount;
     };
-    if dealer != player_uid || ctx.target == player_uid {
+    // C# `TheBoot.ModifyHpLostAfterOstyLate` (TheBoot.cs:27-31): the dealer
+    // may be the owner OR the owner's Osty (GH #806).
+    let dealer_is_owner_or_osty = dealer == player_uid || state.player.pet_uid == Some(dealer);
+    if !dealer_is_owner_or_osty || ctx.target == player_uid {
         return amount;
     }
     if !ctx.props.contains(ValueProps::MOVE) || ctx.props.contains(ValueProps::UNPOWERED) {
@@ -1047,17 +1056,12 @@ fn listener_history_course(state: &mut CombatState) -> EffectResult {
     // target otherwise. The prior port picked the first alive enemy
     // deterministically, which both mis-targeted multi-enemy boards and
     // skipped the RNG read — desyncing every later combat roll.
-    // v0.111.0: `AutoPlay` reads the card's live `TargetType` (decomp
-    // CardCmd.cs:74), and a Shiv under FanOfKnives is `AllEnemies`
-    // (Shiv.cs:23-32), so its dupe rolls no `CombatTargets` target. Reading
-    // the POD's `Enemy` spent a combat_targets draw C# never makes (Silent mid
-    // seed 1472, SEAPUNK_WEAK). v0.107.1 C# is the same; left alone there for
-    // bit-identity.
-    let dupe_target_type = if state.game_version >= sts2_core::GameVersion::V0_111_0 {
-        sts2_core::cards::effective_target_type(state, &dupe)
-    } else {
-        dupe.target_type
-    };
+    // `AutoPlay` reads the card's live `TargetType` (decomp CardCmd.cs:74),
+    // and a Shiv under FanOfKnives is `AllEnemies` (Shiv.cs:23-32), so its
+    // dupe rolls no `CombatTargets` target. Reading the POD's `Enemy` spent a
+    // combat_targets draw C# never makes (Silent mid seed 1472, SEAPUNK_WEAK).
+    // Same C# in v0.107.1 and v0.111.0, so both builds (GH #806).
+    let dupe_target_type = sts2_core::cards::effective_target_type(state, &dupe);
     // Captured before the dupe is moved into `state.cards` — needed to build
     // the `after_card_played` contexts below (bead `sts2-rs-50un1` follow-up).
     let dupe_card_type = dupe.card_type;
@@ -1195,6 +1199,7 @@ fn listener_history_course(state: &mut CombatState) -> EffectResult {
     // powered Attack kept a Vigor that C# consumes (`VigorPower.cs:29-52,78-85`;
     // sweep seed 5816).
     state.player.powered_hits_at_card_play_start = state.player.powered_hits_this_turn;
+    state.combat_log.osty_attacks_at_card_play_start = state.combat_log.osty_attacks_this_turn;
     // Bead necro-player-misc B: C# `CardModel.OnPlayWrapper` fires
     // `Hook.BeforeCardPlayed` for the dupe auto-play too (isAutoPlay=true,
     // CardModel.cs:1930), so the played dupe must trigger the SAME
@@ -1295,9 +1300,13 @@ fn listener_history_course(state: &mut CombatState) -> EffectResult {
     // counts every finished play this turn, dupes included (decomp
     // PaleBlueDotPower.cs:27). v0.107.1 keeps its tally untouched.
     bump_card_plays_finished_this_turn_v0111(state);
-    state.combat_log.player_card_plays_this_combat = state.combat_log.player_card_plays_this_combat.saturating_add(1);
+    state.combat_log.player_card_plays_this_combat = state
+        .combat_log
+        .player_card_plays_this_combat
+        .saturating_add(1);
     let kind = dupe_card_type.index();
-    state.player.cards_played_this_turn[kind] = state.player.cards_played_this_turn[kind].saturating_add(1);
+    state.player.cards_played_this_turn[kind] =
+        state.player.cards_played_this_turn[kind].saturating_add(1);
     let _ = sts2_core::relic_effects::dispatch_after_card_played(state, &played_ctx);
     let hook_played_ctx = sts2_core::hooks::CardCtx {
         card_id: Some(card_id),
@@ -1380,15 +1389,23 @@ fn listener_history_course(state: &mut CombatState) -> EffectResult {
             }
             let _ = sts2_core::combat_loop::start_card_play(state, dupe_card_type);
             let _ = sts2_core::relic_effects::dispatch_before_card_played(state, &played_ctx);
-            sts2_core::hooks::dispatch_before_card_played_powers(state, dupe_resolved_cost, dupe_is_ethereal);
+            sts2_core::hooks::dispatch_before_card_played_powers(
+                state,
+                dupe_resolved_cost,
+                dupe_is_ethereal,
+            );
             sts2_core::hooks::juggling_before_card_played_v0111(state, new_uid, dupe_card_type);
             let _ = sts2_core::card_effects::dispatch_for_auto_played_card(
                 state, new_uid, card_id, target,
             );
             bump_card_plays_finished_this_turn_v0111(state);
-            state.combat_log.player_card_plays_this_combat = state.combat_log.player_card_plays_this_combat.saturating_add(1);
+            state.combat_log.player_card_plays_this_combat = state
+                .combat_log
+                .player_card_plays_this_combat
+                .saturating_add(1);
             let kind = dupe_card_type.index();
-            state.player.cards_played_this_turn[kind] = state.player.cards_played_this_turn[kind].saturating_add(1);
+            state.player.cards_played_this_turn[kind] =
+                state.player.cards_played_this_turn[kind].saturating_add(1);
             let _ = sts2_core::relic_effects::dispatch_after_card_played(state, &played_ctx);
             sts2_core::hooks::dispatch_after_card_played(state, &hook_played_ctx);
             sts2_core::combat_loop::flush_rupture_deferred_strength(state);
@@ -1813,6 +1830,40 @@ fn listener_darkstone_periapt(rs: &mut RunState, ctx: &CardAddedRunCtx) -> Effec
     EffectResult::Resolved
 }
 
+/// Run-side `BingBong.AfterCardChangedPiles` (`BingBong.cs:28-38`, both builds):
+///
+/// [decompiled C# omitted — see the cited path]
+///
+/// The clone is a full hooked deck add at the bottom (eggs, LuckyFysh, …), whose
+/// own `AfterCardChangedPiles` carries `clonedBy = this`, so BingBong skips
+/// it: here [`AddSource::BingBongDuplicate`]. The added card is the newest deck
+/// card with the context's id (a batch add appends every card before any
+/// listener runs, `CardPileCmd.cs:497-636`).
+///
+/// [`AddSource::BingBongDuplicate`]: sts2_core::relic_effects::AddSource::BingBongDuplicate
+fn listener_bing_bong_run(rs: &mut RunState, ctx: &CardAddedRunCtx) -> EffectResult {
+    if ctx.source == sts2_core::relic_effects::AddSource::BingBongDuplicate {
+        return EffectResult::NotImplemented;
+    }
+    if !run_owns(rs, RelicId::BingBong) {
+        return EffectResult::NotImplemented;
+    }
+    let Some(clone) = rs
+        .master_deck
+        .iter()
+        .rev()
+        .find(|c| c.card_id == ctx.card_id)
+        .copied()
+    else {
+        return EffectResult::NotImplemented;
+    };
+    rs.add_card_to_deck_with_hooks(
+        clone,
+        sts2_core::relic_effects::AddSource::BingBongDuplicate,
+    );
+    EffectResult::Resolved
+}
+
 // ---------------------------------------------------------------------------
 // Listener bodies — Wave 6 (sts2-rs-9wx7) — reward-flow retrofits
 // ---------------------------------------------------------------------------
@@ -1870,9 +1921,31 @@ fn listener_fresnel_lens_card_reward(rs: &mut RunState, cards: &mut Vec<Card>) -
         return EffectResult::NotImplemented;
     }
     for card in cards {
-        card.add_enchantment(EnchantmentId::Nimble, FRESNEL_LENS_NIMBLE);
+        if nimble_can_enchant(card) {
+            card.add_enchantment(EnchantmentId::Nimble, FRESNEL_LENS_NIMBLE);
+        }
     }
     EffectResult::Resolved
+}
+
+/// C# `ModelDb.Enchantment<Nimble>().CanEnchant(card)`, the gate on every
+/// FresnelLens hook (`FresnelLens.cs:47,58`): the base `EnchantmentModel`
+/// rules (no Status / Curse / Quest, no Unplayable, `EnchantmentModel.cs:273-294`)
+/// plus `card.GainsBlock` (`Nimble.cs:7-14`), via
+/// [`crate::enchantments::can_enchant_card`]. No enchantment is stackable
+/// (`EnchantmentModel.IsStackable => false`, `:173`), so a card that already
+/// carries one, including the Nimble the reward slate stamped, is refused:
+/// the picked reward card keeps Nimble 2 instead of the deck-add hook stacking
+/// it to 4. Every run-side deck add runs the deck-add hook now (GH #806), so
+/// without this gate FresnelLens also stamped Nimble on added curses.
+fn nimble_can_enchant(card: &Card) -> bool {
+    card.enchantments.is_empty()
+        && crate::names::deck_card_spec_pool()
+            .iter()
+            .find(|s| s.id == card.card_id)
+            .is_some_and(|spec| {
+                crate::enchantments::can_enchant_card(spec, card, EnchantmentId::Nimble)
+            })
 }
 
 /// `FresnelLens::modify_card_being_added_to_deck` — the added card
@@ -1880,6 +1953,9 @@ fn listener_fresnel_lens_card_reward(rs: &mut RunState, cards: &mut Vec<Card>) -
 /// Bead `sts2-rs-9wx7`.
 fn listener_fresnel_lens_deck_add(rs: &mut RunState, card: &mut Card) -> EffectResult {
     if !run_owns(rs, RelicId::FresnelLens) {
+        return EffectResult::NotImplemented;
+    }
+    if !nimble_can_enchant(card) {
         return EffectResult::NotImplemented;
     }
     card.add_enchantment(EnchantmentId::Nimble, FRESNEL_LENS_NIMBLE);
@@ -1897,6 +1973,10 @@ fn listener_fresnel_lens_merchant(
     _is_colorless: bool,
 ) -> EffectResult {
     if !run_owns(rs, RelicId::FresnelLens) {
+        return EffectResult::NotImplemented;
+    }
+    // `EnchantValidCards` (`FresnelLens.cs:56-66`): Nimble-eligible only.
+    if !nimble_can_enchant(card) {
         return EffectResult::NotImplemented;
     }
     card.add_enchantment(EnchantmentId::Nimble, FRESNEL_LENS_NIMBLE);
@@ -2092,6 +2172,23 @@ fn listener_lava_lamp_card_reward(rs: &mut RunState, cards: &mut Vec<Card>) -> E
     if !run_owns(rs, RelicId::LavaLamp) {
         return EffectResult::NotImplemented;
     }
+    // C# `if (!(base.Owner.RunState.CurrentRoom is CombatRoom)) return false;`
+    // (`LavaLamp.cs:66`, both builds). The flag alone does not imply a combat
+    // room: a no-damage fight leaves it clear for the shop / event / Neow
+    // slates that follow (Orrery, Lost Coffer, event grants, the Gorge), which
+    // C# never upgrades. An event FIGHT is a real C# `CombatRoom`: Rust keeps
+    // the `?` room's `Event` type through it, but `finish_event_combat` tears
+    // the event down (`current_event = None`) before rolling the room
+    // rewards, so only a live event counts as a non-combat room. A room-less
+    // RunState (unit fixtures) still passes.
+    let non_combat_room = match rs.current_room.map(|r| r.room_type) {
+        Some(RoomType::Shop | RoomType::RestSite | RoomType::Treasure) => true,
+        Some(RoomType::Event) => rs.current_event.is_some(),
+        _ => false,
+    };
+    if non_combat_room {
+        return EffectResult::NotImplemented;
+    }
     let took_damage = rs
         .relic_counters
         .get(&RelicId::LavaLamp)
@@ -2233,7 +2330,7 @@ fn listener_paels_tooth_after_combat_end(rs: &mut RunState) -> EffectResult {
     let mut card = rs.paels_tooth_stored.remove(idx);
     // GH #793: the run build's upgrade delta.
     let _ = card.upgrade_for(rs.game_version);
-    rs.master_deck.push(card);
+    rs.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::RelicGain);
     EffectResult::Resolved
 }
 
@@ -4140,17 +4237,29 @@ mod tests {
         rs.relics.push(RelicId::FresnelLens);
         let mut card = Card {
             uid: CardUid(std::num::NonZeroU32::new(42).unwrap()),
-            card_id: sts2_core::cards::CardId::StrikeIronclad,
+            card_id: sts2_core::cards::CardId::DefendIronclad,
             cost: 1,
-            card_type: CT::Attack,
-            target_type: TargetType::Enemy,
+            card_type: CT::Skill,
+            target_type: TargetType::Self_,
             upgraded: false,
-            base_damage: 6,
-            base_block: 0,
+            base_damage: 0,
+            base_block: 5,
             ..Card::pod_defaults()
         };
         rs.modify_card_being_added_to_deck(&mut card);
         assert_eq!(card.enchantment(EnchantmentId::Nimble), 2);
+        // Already enchanted: no enchantment stacks (`EnchantmentModel.cs:173`),
+        // so a second add does not stack it to 4.
+        rs.modify_card_being_added_to_deck(&mut card);
+        assert_eq!(card.enchantment(EnchantmentId::Nimble), 2);
+        // A Strike gains no block, so Nimble cannot enchant it (`Nimble.cs:11`).
+        let mut strike = crate::cards::spec_index::card_pod_from_id(
+            sts2_core::cards::CardId::StrikeIronclad,
+            false,
+        )
+        .expect("strike");
+        rs.modify_card_being_added_to_deck(&mut strike);
+        assert!(strike.enchantments.is_empty());
     }
 
     /// `FresnelLens::modify_card_reward_options_late` enchants every
@@ -4164,13 +4273,13 @@ mod tests {
         rs.relics.push(RelicId::FresnelLens);
         let mk = |uid: u32| Card {
             uid: CardUid(std::num::NonZeroU32::new(uid).unwrap()),
-            card_id: sts2_core::cards::CardId::StrikeIronclad,
+            card_id: sts2_core::cards::CardId::DefendIronclad,
             cost: 1,
-            card_type: CT::Attack,
-            target_type: TargetType::Enemy,
+            card_type: CT::Skill,
+            target_type: TargetType::Self_,
             upgraded: false,
-            base_damage: 6,
-            base_block: 0,
+            base_damage: 0,
+            base_block: 5,
             ..Card::pod_defaults()
         };
         let options = vec![mk(1), mk(2), mk(3)];
@@ -4192,13 +4301,13 @@ mod tests {
         rs.relics.push(RelicId::FresnelLens);
         let mut card = Card {
             uid: CardUid(std::num::NonZeroU32::new(42).unwrap()),
-            card_id: sts2_core::cards::CardId::StrikeIronclad,
+            card_id: sts2_core::cards::CardId::DefendIronclad,
             cost: 1,
-            card_type: CT::Attack,
-            target_type: TargetType::Enemy,
+            card_type: CT::Skill,
+            target_type: TargetType::Self_,
             upgraded: false,
-            base_damage: 6,
-            base_block: 0,
+            base_damage: 0,
+            base_block: 5,
             ..Card::pod_defaults()
         };
         rs.modify_merchant_card_creation_results(&mut card, true);

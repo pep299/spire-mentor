@@ -9,7 +9,7 @@
    },
    "is_best": true,
    "label": "Choose: Consume",
-   "prob": 0.9992
+   "prob": 0.9997
   },
   {
    "action": "choose_option",
@@ -18,10 +18,10 @@
    },
    "is_best": false,
    "label": "Choose: Plant and Nourish",
-   "prob": 0.0008
+   "prob": 0.0003
   }
  ],
  "ppo_available": true,
  "surface": "event",
- "value": 0.9064
+ "value": 0.905
 }

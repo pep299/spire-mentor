@@ -9,6 +9,7 @@
      },
      "bucket": "likely-loss",
      "hp_n": 0,
+     "hp_sd": null,
      "is_best": true,
      "losses": 0,
      "low_confidence": false,
@@ -69,6 +70,7 @@
    {
     "action": "end turn",
     "hp_n": 0,
+    "hp_sd": null,
     "is_best": true,
     "losses": 0,
     "low_confidence": false,
@@ -377,6 +379,7 @@
       },
       "bucket": "likely-loss",
       "hp_n": 0,
+      "hp_sd": null,
       "is_best": true,
       "losses": 0,
       "low_confidence": false,

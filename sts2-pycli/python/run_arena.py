@@ -92,7 +92,7 @@ def ensure_binary_fresh(no_build: bool = False) -> Path:
 
 def load_report(path: Path) -> list[dict]:
     rows = []
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:

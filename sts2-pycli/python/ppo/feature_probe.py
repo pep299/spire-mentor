@@ -188,7 +188,7 @@ def corpus_variation(corpus: str, feature: str, limit: int = 0) -> dict:
         return {"supported": False}
     counts: dict[str, int] = {}
     n_runs = 0
-    with open(corpus) as fh:
+    with open(corpus, encoding="utf-8") as fh:
         for line in fh:
             row = json.loads(line)
             decisions = row.get("decisions") or []
@@ -372,7 +372,7 @@ def main(argv: list[str] | None = None) -> int:
     if arm is not None:
         # Child: fit under this interpreter's schema and hand the result back.
         result = run_fits(args)
-        with open(arm, "w") as f:
+        with open(arm, "w", encoding="utf-8") as f:
             json.dump(result, f)
         return 0
 
@@ -394,12 +394,12 @@ def main(argv: list[str] | None = None) -> int:
                 raise SystemExit(f"{label} arm failed (rc={proc.returncode})")
         else:
             print(f"reusing {path}", flush=True)
-        results[label] = json.load(open(path))
+        results[label] = json.load(open(path, encoding="utf-8"))
 
     variation = corpus_variation(args.corpus, args.feature, limit=args.limit)
     summary = report(results["baseline"], results["with_feature"], args.feature, variation)
     path = os.path.join(out_dir, "report.json")
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
     print(f"\nreport -> {path}")
     return 0

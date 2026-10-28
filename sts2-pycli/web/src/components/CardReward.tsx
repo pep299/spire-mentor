@@ -13,6 +13,7 @@ import {
 import CardFrame from "./CardFrame";
 import "../skins/cardreward.css";
 import { detectCharacter, synergyFor, type PartnerHint } from "../synergy";
+import { declaredGameVersion } from "../gameVersion";
 import { loadArchetypes, archetypeChipsFor, type ArchetypeChip } from "../archetype";
 import { useHints } from "../hints/HintsContext";
 import { fitRewardCardWidth } from "../rewardFit";
@@ -239,6 +240,8 @@ export default function CardReward({ step, onChoose }: { step: Step; onChoose?: 
       .deckRewardPreview(
         deck.map((c) => ({ id: c.id, upgraded: c.upgraded })),
         cards.map((c) => ({ index: c.index, id: c.id, upgraded: c.upgraded })),
+        // The run's own build's card tables (GH #877).
+        declaredGameVersion(step),
       )
       .then((r) => { if (live) setPreview(r); })
       .catch(() => {});

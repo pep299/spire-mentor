@@ -272,7 +272,7 @@ def _id_to_name(model_id):
 
 def show_native_save(save_path):
     """Parse and display a native current_run.save file."""
-    with open(save_path) as f:
+    with open(save_path, encoding="utf-8") as f:
         data = json.load(f)
 
     print(f"\n{'═' * 60}")
@@ -1345,7 +1345,7 @@ def _load_loc():
                 if not f.endswith(".json"):
                     continue
                 try:
-                    data = json.load(open(os.path.join(d, f)))
+                    data = json.load(open(os.path.join(d, f), encoding="utf-8"))
                 except Exception:
                     continue
                 table = f[:-5]
@@ -1747,13 +1747,13 @@ def _save_game(save_path, character, seed, action_log):
     """Write action replay save file."""
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     data = {"character": character, "seed": seed, "actions": action_log}
-    with open(save_path, "w") as f:
+    with open(save_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
 
 def _load_game(save_path):
     """Read action replay save file. Returns (character, seed, actions)."""
-    with open(save_path) as f:
+    with open(save_path, encoding="utf-8") as f:
         data = json.load(f)
     return data["character"], data["seed"], data["actions"]
 
@@ -1767,7 +1767,7 @@ def _list_saves():
         if f.endswith(".json"):
             path = os.path.join(SAVE_DIR, f)
             try:
-                with open(path) as fh:
+                with open(path, encoding="utf-8") as fh:
                     d = json.load(fh)
                 saves.append(
                     {

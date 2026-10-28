@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from enemy_labels import enemy_labels
+
 
 def _intent_text(enemy: dict[str, Any]) -> str:
     """One-line intent summary from a canonical enemy's ``intents`` list.
@@ -98,11 +100,13 @@ def render_run_markdown(path: str) -> str:
         )
         hand = ", ".join(c.get("name", c.get("id", "?")) for c in st.get("hand", []))
         out.append(f"- hand: {hand}")
-        for m in st.get("enemies", []):
+        enemies = st.get("enemies", [])
+        # A name shared by several enemies carries its " #k" (enemy_labels).
+        labels = enemy_labels(enemies)
+        for m, label in zip(enemies, labels, strict=True):
             intent = _intent_text(m)
-            out.append(
-                f"- {m.get('name')} {m.get('hp')}/{m.get('max_hp')} blk {m.get('block')} → {intent}"
-            )
+            name = label if m.get("name") else m.get("name")
+            out.append(f"- {name} {m.get('hp')}/{m.get('max_hp')} blk {m.get('block')} → {intent}")
         sim = st.get("reward_sim")
         if sim:
             out.append(
@@ -142,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     md = render_run_markdown(a.log)
     if a.out:
-        Path(a.out).write_text(md)
+        Path(a.out).write_text(md, encoding="utf-8")
     else:
         sys.stdout.write(md)
     return 0

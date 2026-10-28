@@ -13,18 +13,19 @@
   {
    "action": "end turn",
    "hp_n": 48,
+   "hp_sd": 4.9476,
    "is_best": true,
-   "losses": 3,
+   "losses": 1,
    "low_confidence": false,
-   "mean_final_hp": 11.2292,
-   "q": 0.8961,
+   "mean_final_hp": 13.6458,
+   "q": 1.0022,
    "q_saturated": false,
    "stable_idx": -1,
    "target_index": null,
    "ties": 0,
    "visits": 48,
-   "win_prob": 0.9375,
-   "wins": 45
+   "win_prob": 0.9792,
+   "wins": 47
   }
  ]
 }

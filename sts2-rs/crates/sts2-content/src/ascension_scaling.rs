@@ -2,7 +2,8 @@
 //!
 //! C# scales individual monster attack damages at `AscensionLevel.DeadlyEnemies`
 //! (>= ascension 9) via `AscensionHelper.GetValueIfAscension(DeadlyEnemies,
-//! deadly, base)`. Rather than thread `ascension` into all ~123 monster AI
+//! deadly, base)` — and a handful of move values at `ToughEnemies` (>= A8),
+//! kept in the `ASCENSION_TOUGH_*` tables (GH #858). Rather than thread `ascension` into all ~123 monster AI
 //! factories, we keep the factories ascension-blind (they encode the A0/base
 //! damage) and patch the built `MonsterAi` in [`crate::monster_dispatch::
 //! build_ai_with_ascension`]: at ascension >= 9 each scaled move's attack
@@ -22,6 +23,7 @@
 
 use sts2_core::monster_ai::{MonsterAi, MonsterState};
 use sts2_core::monsters::{Intent, MonsterKind};
+use sts2_core::powers::PowerKind;
 use sts2_core::AscensionLevel;
 
 /// `(MonsterKind, MoveState id, base damage, DeadlyEnemies damage)`.
@@ -103,9 +105,8 @@ pub(crate) const ASCENSION_ATTACK_SCALING: &[(MonsterKind, &str, i32, i32)] = &[
     (MonsterKind::GlobeHead, "GALVANIC_BURST", 16, 17),
     (MonsterKind::GlobeHead, "SHOCKING_SLAP", 13, 14),
     (MonsterKind::GlobeHead, "THUNDER_STRIKE", 6, 7),
-    (MonsterKind::GremlinMerc, "DOUBLE_SMASH", 6, 7),
-    (MonsterKind::GremlinMerc, "GIMME", 7, 8),
-    (MonsterKind::GremlinMerc, "HEHE", 8, 9),
+    // GremlinMerc GIMME / DOUBLE_SMASH / HEHE are ToughEnemies (A8) in C#,
+    // so they live in ASCENSION_TOUGH_ATTACK_SCALING (GH #858).
     // `…wb8lk.11`: v0.107.1 HauntedShip attacks scale at A9. SwipeDamage
     // GetValueIfAscension(DeadlyEnemies, 14, 13) ⇒ A0 13 / A9 14; StompDamage
     // (..5, 4) ⇒ A0 4 / A9 5 (per hit, × StompRepeat 3). Decomp
@@ -271,6 +272,67 @@ pub(crate) const ASCENSION_ATTACK_SCALING: &[(MonsterKind, &str, i32, i32)] = &[
     (MonsterKind::Zapbot, "ZAP", 14, 15),
 ];
 
+/// Attack damages C# scales at `AscensionLevel.ToughEnemies` (A8), not
+/// `DeadlyEnemies` — the A8 sibling of [`ASCENSION_ATTACK_SCALING`], same
+/// `(kind, move_id, base, tough)` shape. Identical in v0.107.1 and v0.111.0.
+#[rustfmt::skip]
+pub(crate) const ASCENSION_TOUGH_ATTACK_SCALING: &[(MonsterKind, &str, i32, i32)] = &[
+    // C# `GremlinMerc.cs:36,40,44`: `GimmeDamage => (ToughEnemies, 8, 7)`,
+    // `DoubleSmashDamage => (.., 7, 6)`, `HeheDamage => (.., 9, 8)`. These sat
+    // in the A9 table, so A8 was one point soft on all three (GH #858).
+    (MonsterKind::GremlinMerc, "DOUBLE_SMASH", 6, 7),
+    (MonsterKind::GremlinMerc, "GIMME", 7, 8),
+    (MonsterKind::GremlinMerc, "HEHE", 8, 9),
+];
+
+/// Move BLOCKS C# scales at `AscensionLevel.ToughEnemies` (A8) — the A8
+/// sibling of [`ASCENSION_BLOCK_SCALING`], and used the same way: the patch
+/// rewrites the move's `Intent::Defend` (a primary Defend is what
+/// `perform_intent` grants), and the effect_fns that grant a SECONDARY
+/// Defend read the same row through [`tough_block`]. Identical in v0.107.1
+/// and v0.111.0. `(kind, move_id, base_block, tough_block)`. GH #858.
+#[rustfmt::skip]
+pub(crate) const ASCENSION_TOUGH_BLOCK_SCALING: &[(MonsterKind, &str, i32, i32)] = &[
+    // C# `InfestedPrism.cs:44,113` `PulsateBlock => (ToughEnemies, 22, 20)`;
+    // secondary, granted by `infested_prism_pulsate_effect`.
+    (MonsterKind::InfestedPrism, "PULSATE", 20, 22),
+    // C# `LagavulinMatriarch.cs:57,219` `Slash2Block => (.., 14, 12)`;
+    // secondary, granted by `lagavulin_matriarch_slash2_effect`.
+    (MonsterKind::LagavulinMatriarch, "SLASH2", 12, 14),
+    // C# `LouseProgenitor.cs:65,106` `CurlBlock => (.., 18, 14)` — a PRIMARY
+    // Defend. The same property is the spawn CurlUp amount
+    // (`MonsterKind::on_spawn_self_buff_tough`).
+    (MonsterKind::LouseProgenitor, "CURL_AND_GROW_MOVE", 14, 18),
+    // C# `MagiKnight.cs:49,104,111` `PowerShieldBlock => (.., 9, 5)`, read by
+    // POWER_SHIELD (secondary, `magi_knight_power_shield_effect`) and PREP
+    // (primary).
+    (MonsterKind::MagiKnight, "FIRST_POWER_SHIELD", 5, 9),
+    (MonsterKind::MagiKnight, "PREP", 5, 9),
+    // C# `Seapunk.cs:38,86` `BubbleBlock => (.., 8, 7)`; secondary (the head
+    // intent is the Buff), granted by `seapunk_bubble_burp_effect`. The grant
+    // already read the A8 pair inline but the Defend telegraph kept 7 (GH #893).
+    (MonsterKind::Seapunk, "BUBBLE_BURP", 7, 8),
+    // C# `Tunneler.cs:52,100` `BlockGain => (.., 37, 32)`; secondary,
+    // granted by `tunneler_burrow_effect`.
+    (MonsterKind::Tunneler, "BURROW_MOVE", 32, 37),
+];
+
+/// The `ascension`-resolved block for `(kind, move_id)` from
+/// [`ASCENSION_TOUGH_BLOCK_SCALING`] — the value C#'s `…Block` property
+/// yields. Returns `base` below `ToughEnemies` and for any move with no row.
+/// The ToughEnemies counterpart of [`deadly_block`], for the secondary-defend
+/// effect_fns whose grant the intent patch cannot reach.
+#[must_use]
+pub fn tough_block(ascension: u8, kind: MonsterKind, move_id: &str, base: i32) -> i32 {
+    if ascension < AscensionLevel::ToughEnemies as u8 {
+        return base;
+    }
+    ASCENSION_TOUGH_BLOCK_SCALING
+        .iter()
+        .find(|e| e.0 == kind && e.1 == move_id)
+        .map_or(base, |e| e.3)
+}
+
 /// Monsters whose `DeadlyEnemies` (A9) scaling bumps a move's BLOCK.
 ///
 /// C# reads a `…Block` property in `CreatureCmd.GainBlock`, and the move's
@@ -340,40 +402,200 @@ const ASCENSION_HITS_SCALING: &[(MonsterKind, &str, u8, u8)] = &[
     (MonsterKind::TrackerRubyRaider, "HOUNDS", 8, 9),
 ];
 
-/// Patch `ai` in place so every scaled attack move deals its
-/// `DeadlyEnemies` damage when `ascension >= 9`. No-op below the
-/// `DeadlyEnemies` threshold (the factory-built A0 damage stands).
+/// One move's granted-power amount: `(kind, move_id, power, base, scaled)`.
+pub(crate) type BuffRow = (MonsterKind, &'static str, PowerKind, i32, i32);
+
+/// Power amounts a move grants that C# scales at `DeadlyEnemies` (A9), as
+/// `(kind, move_id, power, base, deadly)` — the buff sibling of
+/// [`ASCENSION_ATTACK_SCALING`] / [`ASCENSION_BLOCK_SCALING`], used the same
+/// way: [`apply_ascension_attack_scaling`] rewrites the move's
+/// `Intent::Buff { kind: power, amount }`, and the move's effect_fn reads the
+/// same row through [`scaled_buff`], so the telegraphed number is the
+/// applied one (GH #893: the effect_fns read their own inline pairs, so the
+/// intent kept its A0 number at A9+ while the grant scaled). C#'s
+/// `BuffIntent` carries no number; ours reaches the wire
+/// (`sts2-wire/src/emit/combat.rs`). Same values in both builds; the
+/// v0.111.0-only buff is in [`V0111_BUFF_VALUES`].
+#[rustfmt::skip]
+pub(crate) const ASCENSION_BUFF_SCALING: &[BuffRow] = &[
+    // Aeonglass `IncreasingIntensityBaseStrength => (.., 4, 3)` on the FIRST
+    // use (AdditionalStrength == 0); the effect adds the upgrade count after
+    // that and re-telegraphs the next use.
+    (MonsterKind::Aeonglass, "INCREASING_INTENSITY_MOVE", PowerKind::Strength, 3, 4),
+    (MonsterKind::BowlbugNectar, "BUFF", PowerKind::Strength, 15, 16),
+    (MonsterKind::CeremonialBeast, "CRUSH", PowerKind::Strength, 3, 4),
+    (MonsterKind::CeremonialBeast, "STAMP", PowerKind::Plow, 150, 160),
+    (MonsterKind::Crusher, "ADAPT", PowerKind::Strength, 2, 3),
+    (MonsterKind::DampCultist, "INCANTATION", PowerKind::Ritual, 5, 6),
+    // `…wb8lk.11`: v0.107.1 PULSATE re-applies VitalSpark (the Tainted
+    // applier), not Strength. `VitalSparkAmount => (.., 3, 2)`.
+    (MonsterKind::InfestedPrism, "PULSATE", PowerKind::VitalSpark, 2, 3),
+    (MonsterKind::KinFollower, "POWER_DANCE", PowerKind::Strength, 2, 3),
+    (MonsterKind::KinPriest, "RITUAL_MOVE", PowerKind::Strength, 2, 3),
+    (MonsterKind::KnowledgeDemon, "PONDER", PowerKind::Strength, 2, 3),
+    // NOTE: MagiKnight FIRST_POWER_SHIELD's PowerShieldBlock (5→9) is a
+    // ToughEnemies BLOCK (ASCENSION_TOUGH_BLOCK_SCALING, GH #858); its
+    // attack damage (6→7) is covered by the attack table.
+    (MonsterKind::Myte, "SUCK_MOVE", PowerKind::Strength, 2, 3),
+    (MonsterKind::Nibbit, "HISS", PowerKind::Strength, 2, 3),
+    (MonsterKind::Ovicopter, "NUTRITIONAL_PASTE_MOVE", PowerKind::Strength, 3, 4),
+    (MonsterKind::PhantasmalGardener, "ENLARGE", PowerKind::Strength, 2, 3),
+    (MonsterKind::Rocket, "CHARGE_UP_MOVE", PowerKind::Strength, 2, 3),
+    // C# `Seapunk.cs:40` `BubbleStr => (.., 2, 1)`.
+    (MonsterKind::Seapunk, "BUBBLE_BURP", PowerKind::Strength, 1, 2),
+    // v0.107.1 `SkulkingColony.cs:49` is (4, 2) — A9 gives 4, not 3.
+    (MonsterKind::SkulkingColony, "INERTIA_MOVE", PowerKind::Strength, 2, 4),
+    // C# `TestSubject.cs:104` `BurningGrowlStrengthGain => (.., 3, 2)`.
+    (MonsterKind::TestSubject, "BURNING_GROWL", PowerKind::Strength, 2, 3),
+    (MonsterKind::TheInsatiable, "SALIVATE", PowerKind::Strength, 2, 3),
+    (MonsterKind::WaterfallGiant, "PRESSURIZE", PowerKind::SteamEruption, 15, 20),
+];
+
+/// v0.111.0 buff amounts that differ from v0.107.1, as the full
+/// `(kind, move_id, power, base, deadly)` pair of the 0.111 property. Applied
+/// by [`apply_v0111_attack_values`] and [`scaled_buff`] only when the
+/// combat's `game_version` is `V0_111_0` or later.
+#[rustfmt::skip]
+pub(crate) const V0111_BUFF_VALUES: &[BuffRow] = &[
+    // v0.111.0: `GrowStrength => GetValueIfAscension(DeadlyEnemies, 7, 5)`;
+    // v0.107.1 applied a flat 5 (decomp LouseProgenitor.cs:65,107).
+    (MonsterKind::LouseProgenitor, "CURL_AND_GROW_MOVE", PowerKind::Strength, 5, 7),
+];
+
+fn buff_row(
+    rows: &[BuffRow],
+    kind: MonsterKind,
+    move_id: &str,
+    power: PowerKind,
+) -> Option<BuffRow> {
+    rows.iter()
+        .find(|e| e.0 == kind && e.1 == move_id && e.2 == power)
+        .copied()
+}
+
+/// The `ascension`-resolved amount of `power` that move `(kind, move_id)`
+/// grants on build `version` — what C#'s amount property yields — or `base`
+/// when no row scales it. The move's effect_fn applies this, and the
+/// spawn-time patch telegraphs the same value on its `Intent::Buff`.
+#[must_use]
+pub fn scaled_buff(
+    ascension: u8,
+    version: sts2_core::GameVersion,
+    kind: MonsterKind,
+    move_id: &str,
+    power: PowerKind,
+    base: i32,
+) -> i32 {
+    let deadly = ascension >= AscensionLevel::DeadlyEnemies as u8;
+    let pick = |r: BuffRow| if deadly { r.4 } else { r.3 };
+    if version >= sts2_core::GameVersion::V0_111_0 {
+        if let Some(r) = buff_row(V0111_BUFF_VALUES, kind, move_id, power) {
+            return pick(r);
+        }
+    }
+    buff_row(ASCENSION_BUFF_SCALING, kind, move_id, power).map_or(base, pick)
+}
+
+/// The `ascension`-resolved attack damage of move `(kind, move_id)` on
+/// build `version` — the value the spawn-time patch
+/// ([`apply_ascension_attack_scaling`] then [`apply_v0111_attack_values`])
+/// telegraphs — or `base` when no row scales it. For an effect_fn that
+/// re-derives a stored attack intent mid-combat (TheForgotten's DREAD), so
+/// the recompute starts from the scaled value, not the A0 constant.
+#[must_use]
+pub fn scaled_damage(
+    ascension: u8,
+    version: sts2_core::GameVersion,
+    kind: MonsterKind,
+    move_id: &str,
+    base: i32,
+) -> i32 {
+    let row = |t: &[(MonsterKind, &'static str, i32, i32)]| {
+        t.iter()
+            .find(|e| e.0 == kind && e.1 == move_id)
+            .map(|e| (e.2, e.3))
+    };
+    let deadly = ascension >= AscensionLevel::DeadlyEnemies as u8;
+    if version >= sts2_core::GameVersion::V0_111_0 {
+        if let Some((v0111_base, v0111_deadly)) = row(V0111_ATTACK_VALUES) {
+            return if deadly { v0111_deadly } else { v0111_base };
+        }
+    }
+    let mut value = base;
+    if ascension >= AscensionLevel::ToughEnemies as u8 {
+        if let Some((_, tough)) = row(ASCENSION_TOUGH_ATTACK_SCALING) {
+            value = tough;
+        }
+    }
+    if deadly {
+        if let Some((_, deadly_value)) = row(ASCENSION_ATTACK_SCALING) {
+            value = deadly_value;
+        }
+    }
+    value
+}
+
+/// Patch `ai` in place to the moves C# telegraphs at `ascension`: the
+/// `ToughEnemies` (A8) attack / block rows, then the `DeadlyEnemies` (A9)
+/// attack / block / hit-count / buff rows. No-op below A8 (the factory-built
+/// A0 values stand) and for a kind with no row.
 pub fn apply_ascension_attack_scaling(ai: &mut MonsterAi, kind: MonsterKind, ascension: u8) {
-    if ascension < AscensionLevel::DeadlyEnemies as u8 {
+    let tough = ascension >= AscensionLevel::ToughEnemies as u8;
+    let deadly = ascension >= AscensionLevel::DeadlyEnemies as u8;
+    if !tough {
         return;
     }
+    // Most kinds carry no row: leave the shared (prototype) table alone
+    // rather than copy it on write for nothing — a summon of a row-less kind
+    // (EyeWithTeeth, FatGremlin, Guardbot, Noisebot) stays a refcount bump.
+    let has_row = |t: &[(MonsterKind, &str, i32, i32)]| t.iter().any(|e| e.0 == kind);
+    let tough_rows =
+        has_row(ASCENSION_TOUGH_ATTACK_SCALING) || has_row(ASCENSION_TOUGH_BLOCK_SCALING);
+    let deadly_rows = has_row(ASCENSION_ATTACK_SCALING)
+        || has_row(ASCENSION_BLOCK_SCALING)
+        || ASCENSION_HITS_SCALING.iter().any(|e| e.0 == kind)
+        || ASCENSION_BUFF_SCALING.iter().any(|e| e.0 == kind);
+    if !(tough_rows || (deadly && deadly_rows)) {
+        return;
+    }
+    let row = |t: &[(MonsterKind, &str, i32, i32)], id: &str| {
+        t.iter().find(|e| e.0 == kind && e.1 == id).map(|e| e.3)
+    };
+    let set_damage = |intents: &mut [Intent], value: i32| {
+        for intent in intents {
+            match intent {
+                Intent::Attack { damage }
+                | Intent::DeathBlow { damage }
+                | Intent::MultiAttack { damage, .. } => *damage = value,
+                _ => {}
+            }
+        }
+    };
+    let set_block = |intents: &mut [Intent], value: i32| {
+        for intent in intents {
+            if let Intent::Defend { block } = intent {
+                *block = value;
+            }
+        }
+    };
     for state in std::sync::Arc::make_mut(&mut ai.states).values_mut() {
         let MonsterState::Move(m) = state else {
             continue;
         };
-        if let Some(entry) = ASCENSION_ATTACK_SCALING
-            .iter()
-            .find(|e| e.0 == kind && e.1 == m.id)
-        {
-            let deadly = entry.3;
-            for intent in &mut m.intents {
-                match intent {
-                    Intent::Attack { damage } | Intent::DeathBlow { damage } => *damage = deadly,
-                    Intent::MultiAttack { damage, .. } => *damage = deadly,
-                    _ => {}
-                }
-            }
+        if let Some(v) = row(ASCENSION_TOUGH_ATTACK_SCALING, m.id) {
+            set_damage(&mut m.intents[..], v);
         }
-        if let Some(entry) = ASCENSION_BLOCK_SCALING
-            .iter()
-            .find(|e| e.0 == kind && e.1 == m.id)
-        {
-            let deadly = entry.3;
-            for intent in &mut m.intents {
-                if let Intent::Defend { block } = intent {
-                    *block = deadly;
-                }
-            }
+        if let Some(v) = row(ASCENSION_TOUGH_BLOCK_SCALING, m.id) {
+            set_block(&mut m.intents[..], v);
+        }
+        if !deadly {
+            continue;
+        }
+        if let Some(v) = row(ASCENSION_ATTACK_SCALING, m.id) {
+            set_damage(&mut m.intents[..], v);
+        }
+        if let Some(v) = row(ASCENSION_BLOCK_SCALING, m.id) {
+            set_block(&mut m.intents[..], v);
         }
         if let Some(entry) = ASCENSION_HITS_SCALING
             .iter()
@@ -383,6 +605,17 @@ pub fn apply_ascension_attack_scaling(ai: &mut MonsterAi, kind: MonsterKind, asc
             for intent in &mut m.intents {
                 if let Intent::MultiAttack { hits, .. } = intent {
                     *hits = deadly_hits;
+                }
+            }
+        }
+        for intent in &mut m.intents {
+            if let Intent::Buff {
+                kind: power,
+                amount,
+            } = intent
+            {
+                if let Some(r) = buff_row(ASCENSION_BUFF_SCALING, kind, m.id, *power) {
+                    *amount = r.4;
                 }
             }
         }
@@ -418,8 +651,9 @@ pub(crate) const V0111_ATTACK_VALUES: &[(MonsterKind, &str, i32, i32)] = &[
     (MonsterKind::TorchHeadAmalgam, "TACKLE_4", 14, 16),
 ];
 
-/// Overwrite every [`V0111_ATTACK_VALUES`] move's attack damage with its
-/// v0.111.0 value at `ascension`. A no-op for any other build, so v0.107.1
+/// Overwrite every [`V0111_ATTACK_VALUES`] move's attack damage and every
+/// [`V0111_BUFF_VALUES`] move's `Intent::Buff` amount with its v0.111.0
+/// value at `ascension`. A no-op for any other build, so v0.107.1
 /// combats keep exactly what [`apply_ascension_attack_scaling`] produced.
 pub fn apply_v0111_attack_values(
     ai: &mut MonsterAi,
@@ -430,7 +664,9 @@ pub fn apply_v0111_attack_values(
     if version < sts2_core::GameVersion::V0_111_0 {
         return;
     }
-    if !V0111_ATTACK_VALUES.iter().any(|e| e.0 == kind) {
+    if !V0111_ATTACK_VALUES.iter().any(|e| e.0 == kind)
+        && !V0111_BUFF_VALUES.iter().any(|e| e.0 == kind)
+    {
         return;
     }
     let deadly = ascension >= AscensionLevel::DeadlyEnemies as u8;
@@ -438,19 +674,30 @@ pub fn apply_v0111_attack_values(
         let MonsterState::Move(m) = state else {
             continue;
         };
-        let Some(&(_, _, base, deadly_value)) = V0111_ATTACK_VALUES
+        if let Some(&(_, _, base, deadly_value)) = V0111_ATTACK_VALUES
             .iter()
             .find(|e| e.0 == kind && e.1 == m.id)
-        else {
-            continue;
-        };
-        let value = if deadly { deadly_value } else { base };
+        {
+            let value = if deadly { deadly_value } else { base };
+            for intent in &mut m.intents {
+                match intent {
+                    Intent::Attack { damage }
+                    | Intent::DeathBlow { damage }
+                    | Intent::MultiAttack { damage, .. } => *damage = value,
+                    _ => {}
+                }
+            }
+        }
+        // v0.111.0 buff amounts (the whole pair, so A0 too).
         for intent in &mut m.intents {
-            match intent {
-                Intent::Attack { damage }
-                | Intent::DeathBlow { damage }
-                | Intent::MultiAttack { damage, .. } => *damage = value,
-                _ => {}
+            if let Intent::Buff {
+                kind: power,
+                amount,
+            } = intent
+            {
+                if let Some(r) = buff_row(V0111_BUFF_VALUES, kind, m.id, *power) {
+                    *amount = if deadly { r.4 } else { r.3 };
+                }
             }
         }
     }
@@ -459,148 +706,6 @@ pub fn apply_v0111_attack_values(
 #[cfg(test)]
 mod tests {
     use sts2_core::powers::PowerKind;
-
-    /// DeadlyEnemies (A9) power amounts applied by a move's `effect_fn`,
-    /// as `(kind, move_id, power, base, deadly)`. The engine reads
-    /// `state.ascension` inside each effect_fn — this is the transcribed
-    /// expectation, exercised by [`ascension_buff_scaling_matches_csharp`]
-    /// and counted by
-    /// [`ascension_attack_table_covers_every_scaling_decomp_property`].
-    const ASCENSION_BUFF_SCALING: &[(MonsterKind, &str, PowerKind, i32, i32)] = &[
-        (
-            MonsterKind::BowlbugNectar,
-            "BUFF",
-            PowerKind::Strength,
-            15,
-            16,
-        ),
-        (
-            MonsterKind::CeremonialBeast,
-            "CRUSH",
-            PowerKind::Strength,
-            3,
-            4,
-        ),
-        (
-            MonsterKind::CeremonialBeast,
-            "STAMP",
-            PowerKind::Plow,
-            150,
-            160,
-        ),
-        (MonsterKind::Crusher, "ADAPT", PowerKind::Strength, 2, 3),
-        (
-            MonsterKind::DampCultist,
-            "INCANTATION",
-            PowerKind::Ritual,
-            5,
-            6,
-        ),
-        // Aeonglass IncreasingIntensity grants base Strength
-        // GetValueIfAscension(DeadlyEnemies, 4, 3) on the first move
-        // (AdditionalStrength == 0); the effect adds `base + count`.
-        (
-            MonsterKind::Aeonglass,
-            "INCREASING_INTENSITY_MOVE",
-            PowerKind::Strength,
-            3,
-            4,
-        ),
-        // `…wb8lk.11`: v0.107.1 PULSATE re-applies VitalSpark (the Tainted
-        // applier), not Strength. VitalSparkAmount A0 2 / A9 3.
-        (
-            MonsterKind::InfestedPrism,
-            "PULSATE",
-            PowerKind::VitalSpark,
-            2,
-            3,
-        ),
-        (
-            MonsterKind::KinFollower,
-            "POWER_DANCE",
-            PowerKind::Strength,
-            2,
-            3,
-        ),
-        (
-            MonsterKind::KinPriest,
-            "RITUAL_MOVE",
-            PowerKind::Strength,
-            2,
-            3,
-        ),
-        (
-            MonsterKind::KnowledgeDemon,
-            "PONDER",
-            PowerKind::Strength,
-            2,
-            3,
-        ),
-        // NOTE: MagiKnight FIRST_POWER_SHIELD's Plating(5→9) is NOT ported in
-        // the Rust effect_fn (applies 0), a pre-existing gap unrelated to
-        // ascension; its attack damage (6→7) is covered by the attack table.
-        (MonsterKind::Myte, "SUCK_MOVE", PowerKind::Strength, 2, 3),
-        (MonsterKind::Nibbit, "HISS", PowerKind::Strength, 2, 3),
-        (
-            MonsterKind::Ovicopter,
-            "NUTRITIONAL_PASTE_MOVE",
-            PowerKind::Strength,
-            3,
-            4,
-        ),
-        (
-            MonsterKind::PhantasmalGardener,
-            "ENLARGE",
-            PowerKind::Strength,
-            2,
-            3,
-        ),
-        (
-            MonsterKind::Rocket,
-            "CHARGE_UP_MOVE",
-            PowerKind::Strength,
-            2,
-            3,
-        ),
-        (
-            MonsterKind::Seapunk,
-            "BUBBLE_BURP",
-            PowerKind::Strength,
-            1,
-            2,
-        ),
-        // v0.107.1 `SkulkingColony.cs:49` is (4, 2) — A9 gives 4, not
-        // the 3 this case asserted while the effect_fn read (3, 2).
-        (
-            MonsterKind::SkulkingColony,
-            "INERTIA_MOVE",
-            PowerKind::Strength,
-            2,
-            4,
-        ),
-        (
-            MonsterKind::TheInsatiable,
-            "SALIVATE",
-            PowerKind::Strength,
-            2,
-            3,
-        ),
-        (
-            MonsterKind::WaterfallGiant,
-            "PRESSURIZE",
-            PowerKind::SteamEruption,
-            15,
-            20,
-        ),
-        // C# `TestSubject.cs:104` `BurningGrowlStrengthGain => (.., 3, 2)`.
-        (
-            MonsterKind::TestSubject,
-            "BURNING_GROWL",
-            PowerKind::Strength,
-            2,
-            3,
-        ),
-    ];
 
     use super::*;
     use crate::monster_dispatch::{
@@ -648,6 +753,71 @@ mod tests {
                         fails.push(format!(
                             "{kind:?} {move_id}: A9 damage {dmg9} != table deadly {deadly}"
                         ));
+                    }
+                }
+            }
+        }
+        assert!(
+            fails.is_empty(),
+            "{} bad rows:\n{}",
+            fails.len(),
+            fails.join("\n")
+        );
+    }
+
+    /// Every ToughEnemies (A8) row resolves to a real move whose A0 value is
+    /// `base` and whose A8 value is `tough` — and stays `base` at A7 — through
+    /// `build_ai_for_version`, the path combat uses; `tough_block` agrees
+    /// with the block table on both sides of the threshold. The A8 sibling of
+    /// `ascension_attack_table_matches_real_moves` / `_block_table_` (GH #858).
+    #[test]
+    fn ascension_tough_tables_match_real_moves() {
+        fn first_value(ai: &MonsterAi, move_id: &str, block: bool) -> Option<i32> {
+            let Some(MonsterState::Move(m)) = ai.states.get(move_id) else {
+                return None;
+            };
+            m.intents.iter().find_map(|i| match (block, i) {
+                (true, Intent::Defend { block }) => Some(*block),
+                (false, Intent::Attack { damage } | Intent::MultiAttack { damage, .. }) => {
+                    Some(*damage)
+                }
+                _ => None,
+            })
+        }
+        let mut fails = Vec::new();
+        for (table, block) in [
+            (ASCENSION_TOUGH_ATTACK_SCALING, false),
+            (ASCENSION_TOUGH_BLOCK_SCALING, true),
+        ] {
+            for &(kind, move_id, base, tough) in table {
+                if tough <= base {
+                    fails.push(format!("{kind:?} {move_id}: tough {tough} <= base {base}"));
+                }
+                for version in sts2_core::GameVersion::ALL {
+                    for (asc, want) in [(0u8, base), (7, base), (8, tough), (10, tough)] {
+                        let ai = crate::monster_dispatch::build_ai_for_version(
+                            kind,
+                            MonsterSpawnArgs::None,
+                            SpawnPosition::default(),
+                            asc,
+                            version,
+                        );
+                        let got = first_value(&ai, move_id, block);
+                        if got != Some(want) {
+                            fails.push(format!(
+                                "{kind:?} {move_id} A{asc} {version:?}: {got:?} != {want}"
+                            ));
+                        }
+                    }
+                }
+                if block {
+                    for (asc, want) in [(7u8, base), (8u8, tough)] {
+                        let got = tough_block(asc, kind, move_id, base);
+                        if got != want {
+                            fails.push(format!(
+                                "{kind:?} {move_id}: tough_block(A{asc}) = {got} != {want}"
+                            ));
+                        }
                     }
                 }
             }
@@ -1064,6 +1234,776 @@ mod tests {
         }
     }
 
+    /// The summed `power` stacks a fresh `kind` carries straight after
+    /// `CombatState::spawn_enemy` — the real spawn path, which runs
+    /// `apply_creature_spawn_buffs` — at `asc` on `version`.
+    fn spawned_power(
+        kind: MonsterKind,
+        asc: u8,
+        version: sts2_core::GameVersion,
+        power: PowerKind,
+    ) -> i32 {
+        let mut state = sts2_core::CombatState {
+            ascension: asc,
+            game_version: version,
+            ..sts2_core::CombatState::default()
+        };
+        let uid = state.spawn_enemy(kind);
+        let creature = state.creatures.iter().find(|c| c.id == uid.0).unwrap();
+        creature
+            .powers
+            .iter()
+            .filter_map(|pu| state.powers.get_by_id(pu.0))
+            .filter(|p| p.kind == power)
+            .map(|p| p.amount)
+            .sum()
+    }
+
+    /// The decomp dir for `version` (`None` when the `sts2-wiki` sibling is
+    /// not checked out, e.g. the public snapshot).
+    fn decomp_monsters_dir(version: sts2_core::GameVersion) -> Option<std::path::PathBuf> {
+        let tag = match version {
+            sts2_core::GameVersion::V0_107_1 => "v0.107.1",
+            sts2_core::GameVersion::V0_111_0 => "v0.111.0",
+        };
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "../../../sts2-wiki/decompiled/{tag}/MegaCrit.Sts2.Core.Models.Monsters"
+        ));
+        dir.is_dir().then_some(dir)
+    }
+
+    /// Every ported monster class in `dir`, as `(kind, C# source)`.
+    fn ported_monster_sources(dir: &std::path::Path) -> Vec<(MonsterKind, String)> {
+        let mut out = Vec::new();
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .expect("decomp dir readable")
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        entries.sort();
+        for path in entries {
+            if path.extension().is_none_or(|e| e != "cs") {
+                continue;
+            }
+            let Some(class) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let Some(&kind) = MonsterKind::ALL_KNOWN
+                .iter()
+                .find(|k| k.python_name() == class)
+            else {
+                continue;
+            };
+            out.push((
+                kind,
+                std::fs::read_to_string(&path).expect("decomp readable"),
+            ));
+        }
+        out
+    }
+
+    /// `(level, scaled, base)` of a `… GetValueIfAscension(AscensionLevel.<L>,
+    /// scaled, base)` on `line`, if it has one.
+    fn ascension_pair(line: &str) -> Option<(&str, i32, i32)> {
+        let (_, rest) = line.split_once("AscensionHelper.GetValueIfAscension(AscensionLevel.")?;
+        let (level, rest) = rest.split_once(", ")?;
+        let args = rest.split(')').next()?;
+        let (scaled, base) = args.split_once(", ")?;
+        Some((
+            level,
+            scaled.trim().parse().ok()?,
+            base.trim().parse().ok()?,
+        ))
+    }
+
+    /// GH #858 decomp guard: every `PowerCmd.Apply<XPower>(…, base.Creature,
+    /// <amount>, …)` in a ported monster's `AfterAddedToRoom` whose amount is
+    /// a `GetValueIfAscension` property or local must spawn — through the
+    /// real `CombatState::spawn_enemy` path — at its base amount one level
+    /// below the threshold and at its scaled amount at it, on both builds.
+    ///
+    /// The DeadlyEnemies table guard counts PROPERTIES, so InfestedPrism's
+    /// `VitalSparkAmount` passed it through its PULSATE use while its spawn
+    /// use stayed A0; this checks every spawn-time USE. Floors pin today's
+    /// scan (10 rows on v0.107.1, 11 on v0.111.0 with GlobeHead's Galvanic),
+    /// so a parse that silently skips rows fails. Skips without the decomp.
+    #[test]
+    fn on_spawn_powers_match_every_scaling_after_added_to_room_amount() {
+        use sts2_core::GameVersion;
+
+        for (version, floor) in [(GameVersion::V0_107_1, 10), (GameVersion::V0_111_0, 11)] {
+            let Some(dir) = decomp_monsters_dir(version) else {
+                eprintln!("skipping: decomp for {version:?} not present");
+                return;
+            };
+            let mut rows = 0usize;
+            let mut fails = Vec::new();
+            for (kind, src) in ported_monster_sources(&dir) {
+                // Class-level properties: name -> (level, scaled, base).
+                let mut pairs: Vec<(String, (String, i32, i32))> = Vec::new();
+                for line in src.lines() {
+                    let Some((level, scaled, base)) = ascension_pair(line) else {
+                        continue;
+                    };
+                    let head = line
+                        .split("AscensionHelper.")
+                        .next()
+                        .unwrap_or("")
+                        .trim_end()
+                        .trim_end_matches(['=', '>', ' ']);
+                    let name = head
+                        .rsplit(|c: char| !c.is_alphanumeric() && c != '_')
+                        .next()
+                        .unwrap_or("")
+                        .to_string();
+                    pairs.push((name, (level.to_string(), scaled, base)));
+                }
+                // The `AfterAddedToRoom` body, by brace matching.
+                let Some(start) = src.find("Task AfterAddedToRoom()") else {
+                    continue;
+                };
+                let open = start + src[start..].find('{').expect("body brace");
+                let mut depth = 0i32;
+                let mut end = open;
+                for (i, c) in src[open..].char_indices() {
+                    match c {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = open + i;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                for line in src[open..end].lines() {
+                    let Some((_, after)) = line.split_once("PowerCmd.Apply<") else {
+                        continue;
+                    };
+                    let Some((power_class, args)) = after.split_once(">(") else {
+                        continue;
+                    };
+                    // The amount follows the TARGET `base.Creature, `.
+                    let Some((_, amount_tail)) = args.split_once("base.Creature, ") else {
+                        continue;
+                    };
+                    let amount = amount_tail.split(',').next().unwrap_or("").trim();
+                    let Some((_, (level, scaled, base))) = pairs.iter().find(|(n, _)| n == amount)
+                    else {
+                        continue; // a literal amount
+                    };
+                    if scaled == base {
+                        continue;
+                    }
+                    rows += 1;
+                    let stem = power_class
+                        .strip_suffix("Power")
+                        .unwrap_or(power_class)
+                        .to_ascii_uppercase();
+                    let Some(power) = PowerKind::all_for(version)
+                        .into_iter()
+                        .find(|p| p.python_name().replace('_', "") == stem)
+                    else {
+                        fails.push(format!("{kind:?}: no PowerKind for {power_class}"));
+                        continue;
+                    };
+                    let threshold = match level.as_str() {
+                        "ToughEnemies" => sts2_core::AscensionLevel::ToughEnemies as u8,
+                        "DeadlyEnemies" => sts2_core::AscensionLevel::DeadlyEnemies as u8,
+                        other => {
+                            fails.push(format!("{kind:?} {power:?}: unexpected level {other}"));
+                            continue;
+                        }
+                    };
+                    if !kind.on_spawn_self_buffs().contains(&(power, *base)) {
+                        fails.push(format!(
+                            "{kind:?}: on_spawn_self_buffs lacks ({power:?}, {base})"
+                        ));
+                    }
+                    for (asc, want) in [(threshold - 1, *base), (threshold, *scaled), (10, *scaled)]
+                    {
+                        let got = spawned_power(kind, asc, version, power);
+                        if got != want {
+                            fails.push(format!(
+                                "{kind:?} {power:?} A{asc} {version:?}: spawned {got} != C# {want}"
+                            ));
+                        }
+                    }
+                }
+            }
+            assert!(
+                rows >= floor,
+                "{version:?}: only {rows} scaled AfterAddedToRoom applies parsed (floor {floor})"
+            );
+            assert!(
+                fails.is_empty(),
+                "{version:?}: {} on-spawn amount(s) differ from the decomp:\n{}",
+                fails.len(),
+                fails.join("\n")
+            );
+        }
+    }
+
+    /// The first intent of `move_id` matching `pick`, and its index.
+    fn move_intent_where(
+        ai: &MonsterAi,
+        move_id: &str,
+        pick: impl Fn(&Intent) -> bool,
+    ) -> Option<(usize, Intent)> {
+        let Some(MonsterState::Move(m)) = ai.states.get(move_id) else {
+            return None;
+        };
+        m.intents
+            .iter()
+            .enumerate()
+            .find(|(_, i)| pick(i))
+            .map(|(n, i)| (n, *i))
+    }
+
+    /// Run `kind`'s `move_id` effect_fn on a fresh `kind` (spawned at `asc` on
+    /// `version`, then cut to 1 HP) and return the block + HP it gained.
+    fn effect_gain(
+        kind: MonsterKind,
+        move_id: &str,
+        asc: u8,
+        version: sts2_core::GameVersion,
+    ) -> Option<i32> {
+        let mut state = sts2_core::CombatState {
+            ascension: asc,
+            game_version: version,
+            ..sts2_core::CombatState::default()
+        };
+        let uid = state.spawn_enemy(kind);
+        let ai = crate::monster_dispatch::build_ai_for_version(
+            kind,
+            MonsterSpawnArgs::None,
+            SpawnPosition::default(),
+            asc,
+            version,
+        );
+        let Some(MonsterState::Move(m)) = ai.states.get(move_id) else {
+            return None;
+        };
+        let effect = m.effect;
+        let snapshot = |st: &sts2_core::CombatState| {
+            st.creatures
+                .iter()
+                .find(|c| c.id == uid.0)
+                .map(|c| (c.block, c.current_hp))
+                .unwrap()
+        };
+        if let Some(c) = state.creatures.iter_mut().find(|c| c.id == uid.0) {
+            c.current_hp = 1;
+        }
+        let (b0, h0) = snapshot(&state);
+        effect(&mut state, uid);
+        let (b1, h1) = snapshot(&state);
+        Some((b1 - b0) + (h1 - h0))
+    }
+
+    /// The block a move grants at `asc`: its `Intent::Defend` telegraph, and —
+    /// when the Defend is not the primary intent, so `perform_intent` drops
+    /// it — what its effect_fn actually grants (the two must agree).
+    fn move_block(
+        kind: MonsterKind,
+        move_id: &str,
+        asc: u8,
+        version: sts2_core::GameVersion,
+    ) -> Result<i32, String> {
+        let ai = crate::monster_dispatch::build_ai_for_version(
+            kind,
+            MonsterSpawnArgs::None,
+            SpawnPosition::default(),
+            asc,
+            version,
+        );
+        let Some((at, Intent::Defend { block })) =
+            move_intent_where(&ai, move_id, |i| matches!(i, Intent::Defend { .. }))
+        else {
+            return Err(format!("{kind:?} {move_id}: no Defend intent"));
+        };
+        if at == 0 {
+            return Ok(block);
+        }
+        let granted = effect_gain(kind, move_id, asc, version)
+            .ok_or_else(|| format!("{kind:?} {move_id}: no such move"))?;
+        if granted == block {
+            Ok(block)
+        } else {
+            Err(format!(
+                "{kind:?} {move_id} A{asc} {version:?}: telegraphs {block} but grants {granted}"
+            ))
+        }
+    }
+
+    /// GH #858 siblings: ToughEnemies (A8) BLOCK members the engine kept at
+    /// their A0 value. C#: `LouseProgenitor.cs:65,106` `CurlBlock => (.., 18,
+    /// 14)` (CURL_AND_GROW, primary Defend); `InfestedPrism.cs:44,113`
+    /// `PulsateBlock => (.., 22, 20)`; `Tunneler.cs:52,100` `BlockGain =>
+    /// (.., 37, 32)`; `MagiKnight.cs:49,104,111` `PowerShieldBlock => (.., 9,
+    /// 5)` (POWER_SHIELD and PREP); `LagavulinMatriarch.cs:57,219`
+    /// `Slash2Block => (.., 14, 12)`. Identical in v0.111.0.
+    #[test]
+    fn tough_enemies_move_blocks_scale_at_a8_858() {
+        use sts2_core::GameVersion;
+        let cases: &[(MonsterKind, &str, i32, i32)] = &[
+            (MonsterKind::LouseProgenitor, "CURL_AND_GROW_MOVE", 14, 18),
+            (MonsterKind::InfestedPrism, "PULSATE", 20, 22),
+            (MonsterKind::Tunneler, "BURROW_MOVE", 32, 37),
+            (MonsterKind::MagiKnight, "FIRST_POWER_SHIELD", 5, 9),
+            (MonsterKind::MagiKnight, "PREP", 5, 9),
+            (MonsterKind::LagavulinMatriarch, "SLASH2", 12, 14),
+        ];
+        let mut fails = Vec::new();
+        for &(kind, move_id, base, tough) in cases {
+            for version in GameVersion::ALL {
+                for (asc, want) in [(0u8, base), (7, base), (8, tough), (10, tough)] {
+                    match move_block(kind, move_id, asc, version) {
+                        Ok(got) if got == want => {}
+                        Ok(got) => fails.push(format!(
+                            "{kind:?} {move_id} A{asc} {version:?}: block {got} != {want}"
+                        )),
+                        Err(e) => fails.push(e),
+                    }
+                }
+            }
+        }
+        assert!(
+            fails.is_empty(),
+            "{} wrong:\n{}",
+            fails.len(),
+            fails.join("\n")
+        );
+    }
+
+    /// GH #858 sibling: GremlinMerc's three attacks are ToughEnemies in C#
+    /// (`GremlinMerc.cs:36,40,44`: `GimmeDamage => (ToughEnemies, 8, 7)`,
+    /// `DoubleSmashDamage => (.., 7, 6)`, `HeheDamage => (.., 9, 8)`; same in
+    /// v0.111.0), but sat in the A9 table — wrong at exactly A8.
+    #[test]
+    fn gremlin_merc_attacks_scale_at_a8_858() {
+        use sts2_core::GameVersion;
+        let mut fails = Vec::new();
+        for (move_id, base, tough) in [("GIMME", 7, 8), ("DOUBLE_SMASH", 6, 7), ("HEHE", 8, 9)] {
+            for version in GameVersion::ALL {
+                for (asc, want) in [(0u8, base), (7, base), (8, tough), (9, tough)] {
+                    let ai = crate::monster_dispatch::build_ai_for_version(
+                        MonsterKind::GremlinMerc,
+                        MonsterSpawnArgs::None,
+                        SpawnPosition::default(),
+                        asc,
+                        version,
+                    );
+                    let got = move_attack_damage(&ai, move_id);
+                    if got != Some(want) {
+                        fails.push(format!("{move_id} A{asc} {version:?}: {got:?} != {want}"));
+                    }
+                }
+            }
+        }
+        assert!(fails.is_empty(), "{}", fails.join("\n"));
+    }
+
+    /// How the engine honours one C# `ToughEnemies` member (GH #858 guard).
+    #[derive(Debug)]
+    enum Tough {
+        /// An `AfterAddedToRoom` self-power, read after `spawn_enemy`.
+        SpawnPower(PowerKind),
+        /// A move's block — see [`move_block`].
+        Block(&'static str),
+        /// A move's attack damage.
+        Damage(&'static str),
+        /// Block + HP a move's effect_fn gives its owner (read inline).
+        Effect(&'static str),
+        /// `MinInitialHp` through another member
+        /// (`TestSubject.MinInitialHp => FirstFormHp`).
+        MinHp,
+        /// ToughEgg's hatchling HP band ends.
+        HatchlingMin,
+        HatchlingMax,
+        /// TestSubject's HP after its `n`-th Adaptable revive
+        /// (`Revive(SecondFormHp)` / `Revive(ThirdFormHp)`).
+        ReviveHp(u8),
+    }
+
+    /// Every non-HP C# `GetValueIfAscension(AscensionLevel.ToughEnemies, …)`
+    /// member of a ported monster, `(class, member, base, tough, uses)` — one
+    /// counterpart per C# use site (a member read twice needs both reads
+    /// honoured: `CurlBlock` is the spawn CurlUp AND CURL_AND_GROW's block).
+    /// `MinInitialHp` / `MaxInitialHp` are checked straight off
+    /// `min_initial_hp_for` / `max_initial_hp_for` instead.
+    const TOUGH_ENEMIES_MEMBERS: &[(&str, &str, i32, i32, &[Tough])] = &[
+        (
+            "FrogKnight",
+            "PlatingAmount",
+            15,
+            19,
+            &[Tough::SpawnPower(PowerKind::Plating)],
+        ),
+        (
+            "GremlinMerc",
+            "GimmeDamage",
+            7,
+            8,
+            &[Tough::Damage("GIMME")],
+        ),
+        (
+            "GremlinMerc",
+            "DoubleSmashDamage",
+            6,
+            7,
+            &[Tough::Damage("DOUBLE_SMASH")],
+        ),
+        ("GremlinMerc", "HeheDamage", 8, 9, &[Tough::Damage("HEHE")]),
+        (
+            "InfestedPrism",
+            "PulsateBlock",
+            20,
+            22,
+            &[Tough::Block("PULSATE")],
+        ),
+        (
+            "LagavulinMatriarch",
+            "Slash2Block",
+            12,
+            14,
+            &[Tough::Block("SLASH2")],
+        ),
+        (
+            "LouseProgenitor",
+            "CurlBlock",
+            14,
+            18,
+            &[
+                Tough::SpawnPower(PowerKind::CurlUp),
+                Tough::Block("CURL_AND_GROW_MOVE"),
+            ],
+        ),
+        (
+            "MagiKnight",
+            "PowerShieldBlock",
+            5,
+            9,
+            &[Tough::Block("FIRST_POWER_SHIELD"), Tough::Block("PREP")],
+        ),
+        ("Nibbit", "SliceBlock", 5, 6, &[Tough::Effect("SLICE")]),
+        (
+            "PhantasmalGardener",
+            "SkittishAmount",
+            6,
+            7,
+            &[Tough::SpawnPower(PowerKind::Skittish)],
+        ),
+        (
+            "Seapunk",
+            "BubbleBlock",
+            7,
+            8,
+            &[Tough::Block("BUBBLE_BURP")],
+        ),
+        // `SewerClam.cs:32` is a local inside `AfterAddedToRoom`.
+        (
+            "SewerClam",
+            "valueIfAscension",
+            8,
+            9,
+            &[Tough::SpawnPower(PowerKind::Plating)],
+        ),
+        (
+            "SlumberingBeetle",
+            "PlatingAmount",
+            15,
+            18,
+            &[Tough::SpawnPower(PowerKind::Plating)],
+        ),
+        (
+            "TerrorEel",
+            "ShriekAmount",
+            70,
+            75,
+            &[Tough::SpawnPower(PowerKind::Shriek)],
+        ),
+        ("TestSubject", "FirstFormHp", 100, 111, &[Tough::MinHp]),
+        (
+            "TestSubject",
+            "SecondFormHp",
+            200,
+            212,
+            &[Tough::ReviveHp(1)],
+        ),
+        (
+            "TestSubject",
+            "ThirdFormHp",
+            300,
+            313,
+            &[Tough::ReviveHp(2)],
+        ),
+        ("ToughEgg", "HatchlingMinHp", 19, 20, &[Tough::HatchlingMin]),
+        ("ToughEgg", "HatchlingMaxHp", 22, 23, &[Tough::HatchlingMax]),
+        (
+            "Tunneler",
+            "BlockGain",
+            32,
+            37,
+            &[Tough::Block("BURROW_MOVE")],
+        ),
+        (
+            "Vantom",
+            "SlipperyAmt",
+            8,
+            9,
+            &[Tough::SpawnPower(PowerKind::Slippery)],
+        ),
+        (
+            "WaterfallGiant",
+            "SiphonHeal",
+            10,
+            15,
+            &[Tough::Effect("SIPHON")],
+        ),
+    ];
+
+    /// The hatchling HP band ToughEgg's HATCH_MOVE rolls at `asc` on
+    /// `version`, as C#'s `(HatchlingMinHp, HatchlingMaxHp)`: v0.107.1 rolls
+    /// `NextInt(min, max)` (max-exclusive, `ToughEgg.cs:172`), v0.111.0
+    /// `NextInt(min, max + 1)`.
+    fn hatchling_band(asc: u8, version: sts2_core::GameVersion) -> (i32, i32) {
+        let ai = crate::monster_dispatch::build_ai_for_version(
+            MonsterKind::ToughEgg,
+            MonsterSpawnArgs::None,
+            SpawnPosition::default(),
+            asc,
+            version,
+        );
+        let Some(MonsterState::Move(hatch)) = ai.states.get("HATCH_MOVE") else {
+            panic!("ToughEgg has no HATCH_MOVE");
+        };
+        let hatch = hatch.effect;
+        let rolls: Vec<i32> = (0..400)
+            .map(|seed| {
+                let mut state = sts2_core::CombatState {
+                    ascension: asc,
+                    game_version: version,
+                    run_rng: sts2_core::run_rng_set::RunRngSet::new(seed),
+                    ..sts2_core::CombatState::default()
+                };
+                let egg = state.spawn_enemy(MonsterKind::ToughEgg);
+                hatch(&mut state, egg);
+                state
+                    .creatures
+                    .iter()
+                    .find(|c| c.id == egg.0)
+                    .unwrap()
+                    .max_hp
+            })
+            .collect();
+        let lo = *rolls.iter().min().unwrap();
+        let hi = *rolls.iter().max().unwrap();
+        let exclusive = version < sts2_core::GameVersion::V0_111_0;
+        (lo, if exclusive { hi + 1 } else { hi })
+    }
+
+    /// What the engine yields for one counterpart at `asc` on `version`.
+    fn tough_observed(
+        kind: MonsterKind,
+        use_: &Tough,
+        asc: u8,
+        version: sts2_core::GameVersion,
+    ) -> Result<i32, String> {
+        Ok(match use_ {
+            Tough::SpawnPower(p) => spawned_power(kind, asc, version, *p),
+            Tough::Block(m) => move_block(kind, m, asc, version)?,
+            Tough::Damage(m) => {
+                let ai = crate::monster_dispatch::build_ai_for_version(
+                    kind,
+                    MonsterSpawnArgs::None,
+                    SpawnPosition::default(),
+                    asc,
+                    version,
+                );
+                move_attack_damage(&ai, m).ok_or_else(|| format!("{kind:?} {m}: no attack"))?
+            }
+            Tough::Effect(m) => effect_gain(kind, m, asc, version)
+                .ok_or_else(|| format!("{kind:?} {m}: no such move"))?,
+            Tough::MinHp => kind.min_initial_hp_for(asc, version),
+            Tough::HatchlingMin => hatchling_band(asc, version).0,
+            Tough::HatchlingMax => hatchling_band(asc, version).1,
+            Tough::ReviveHp(n) => {
+                let mut state = sts2_core::CombatState {
+                    ascension: asc,
+                    game_version: version,
+                    ..sts2_core::CombatState::default()
+                };
+                let uid = state.spawn_enemy(kind);
+                for _ in 0..*n {
+                    if let Some(c) = state.creatures.iter_mut().find(|c| c.id == uid.0) {
+                        c.current_hp = 0;
+                    }
+                    crate::monsters::act3_glory::adaptable_after_death(&mut state, uid);
+                }
+                let c = state.creatures.iter().find(|c| c.id == uid.0).unwrap();
+                if c.current_hp != c.max_hp {
+                    return Err(format!(
+                        "{kind:?} revive {n}: hp {}/{}",
+                        c.current_hp, c.max_hp
+                    ));
+                }
+                c.max_hp
+            }
+        })
+    }
+
+    /// GH #858 completeness guard for `AscensionLevel.ToughEnemies` (A8),
+    /// the sibling of the DeadlyEnemies table guard above.
+    ///
+    /// Scans every ported monster's decomp, both builds, for
+    /// `GetValueIfAscension(AscensionLevel.ToughEnemies, tough, base)` with
+    /// `tough != base`:
+    /// - `MinInitialHp` / `MaxInitialHp` must equal `min_initial_hp_for` /
+    ///   `max_initial_hp_for` at A7 (base) and A8 (tough);
+    /// - every other member must have a [`TOUGH_ENEMIES_MEMBERS`] row with the
+    ///   same values and ONE counterpart per C# use site, and each counterpart
+    ///   must yield `base` at A7 and `tough` at A8 and A10 — checked through
+    ///   the real spawn / AI-build / effect paths, never against a table.
+    ///
+    /// Positive control: the scan must find at least the 149 HP and 22 other
+    /// members it finds today on each build, and every table row must be
+    /// found. Skips (with a note) when the decomp is not checked out.
+    #[test]
+    fn tough_enemies_members_all_have_an_engine_counterpart_858() {
+        use sts2_core::GameVersion;
+
+        for version in GameVersion::ALL {
+            let Some(dir) = decomp_monsters_dir(version) else {
+                eprintln!("skipping: decomp for {version:?} not present");
+                return;
+            };
+            let mut hp_members = 0usize;
+            let mut other_members = 0usize;
+            let mut seen_rows = vec![false; TOUGH_ENEMIES_MEMBERS.len()];
+            let mut fails = Vec::new();
+            for (kind, src) in ported_monster_sources(&dir) {
+                let class = kind.python_name();
+                let mut enclosing = String::new();
+                for line in src.lines() {
+                    // The member a lowercase local belongs to is the last
+                    // declared property / method name.
+                    let trimmed = line.trim_start();
+                    if trimmed.starts_with("public ") || trimmed.starts_with("private ") {
+                        if let Some(name) = trimmed
+                            .split('(')
+                            .next()
+                            .and_then(|h| h.split(" =>").next())
+                            .and_then(|h| h.split_whitespace().last())
+                        {
+                            enclosing = name.to_string();
+                        }
+                    }
+                    let Some(("ToughEnemies", tough, base)) = ascension_pair(line) else {
+                        continue;
+                    };
+                    if tough == base {
+                        continue;
+                    }
+                    let head = line
+                        .split("AscensionHelper.")
+                        .next()
+                        .unwrap_or("")
+                        .trim_end()
+                        .trim_end_matches(['=', '>', ' ']);
+                    let member = head
+                        .rsplit(|c: char| !c.is_alphanumeric() && c != '_')
+                        .next()
+                        .unwrap_or("");
+                    if member == "MinInitialHp" || member == "MaxInitialHp" {
+                        hp_members += 1;
+                        for (asc, want) in [(7u8, base), (8, tough), (10, tough)] {
+                            let got = if member == "MinInitialHp" {
+                                kind.min_initial_hp_for(asc, version)
+                            } else {
+                                kind.max_initial_hp_for(asc, version)
+                            };
+                            if got != want {
+                                fails.push(format!(
+                                    "{class}.{member} A{asc} {version:?}: engine {got} != C# {want}"
+                                ));
+                            }
+                        }
+                        continue;
+                    }
+                    other_members += 1;
+                    let Some(row) = TOUGH_ENEMIES_MEMBERS
+                        .iter()
+                        .position(|r| r.0 == class && r.1 == member)
+                    else {
+                        fails.push(format!(
+                            "{class}.{member} (ToughEnemies {tough}/{base}, in `{enclosing}`) \
+                             has no TOUGH_ENEMIES_MEMBERS row — is it modelled?"
+                        ));
+                        continue;
+                    };
+                    seen_rows[row] = true;
+                    let (_, _, row_base, row_tough, uses) = TOUGH_ENEMIES_MEMBERS[row];
+                    if (row_base, row_tough) != (base, tough) {
+                        fails.push(format!(
+                            "{class}.{member}: row says {row_base}/{row_tough}, C# {base}/{tough}"
+                        ));
+                    }
+                    // Every read of the member, minus its declaration and the
+                    // intent constructors (a telegraph, not an application).
+                    let reads = src
+                        .lines()
+                        .filter(|l| {
+                            !l.contains("GetValueIfAscension") && !l.contains("new MoveState(")
+                        })
+                        .filter(|l| {
+                            l.split(|c: char| !c.is_alphanumeric() && c != '_')
+                                .any(|w| w == member)
+                        })
+                        .count();
+                    if reads != uses.len() {
+                        fails.push(format!(
+                            "{class}.{member}: C# reads it {reads}x, the row lists {} use(s)",
+                            uses.len()
+                        ));
+                    }
+                    for use_ in uses {
+                        for (asc, want) in [(7u8, base), (8, tough), (10, tough)] {
+                            match tough_observed(kind, use_, asc, version) {
+                                Ok(got) if got == want => {}
+                                Ok(got) => fails.push(format!(
+                                    "{class}.{member} {use_:?} A{asc} {version:?}: engine {got} != C# {want}"
+                                )),
+                                Err(e) => fails.push(e),
+                            }
+                        }
+                    }
+                }
+            }
+            for (row, seen) in TOUGH_ENEMIES_MEMBERS.iter().zip(&seen_rows) {
+                if !seen {
+                    fails.push(format!(
+                        "{}.{}: row not found in the {version:?} decomp",
+                        row.0, row.1
+                    ));
+                }
+            }
+            assert!(
+                hp_members >= 149 && other_members >= 22,
+                "{version:?}: scan found only {hp_members} HP / {other_members} other \
+                 ToughEnemies members — is the parse broken?"
+            );
+            assert!(
+                fails.is_empty(),
+                "{version:?}: {} ToughEnemies member(s) not honoured:\n{}",
+                fails.len(),
+                fails.join("\n")
+            );
+        }
+    }
+
     /// Properties whose A9 value is honoured somewhere other than the four
     /// tables, listed so the completeness guard below stays exhaustive
     /// instead of silently ignoring a lane. `(class, property, where)`.
@@ -1071,8 +2011,9 @@ mod tests {
         (
             "Axebot",
             "BootUpStrGain",
-            "axebot_boot_up_effect reads it directly; the amount is multiplied \
-             by (2 - StockAmount), which the flat buff-case harness cannot express",
+            "axebot_boot_up_strength reads it directly; the amount is multiplied \
+             by (2 - StockAmount), which the flat buff-case harness cannot express, \
+             so axebot_stock_after_death re-telegraphs BOOT_UP once the stock is set",
         ),
         (
             "CorpseSlug",
@@ -1122,12 +2063,13 @@ mod tests {
     #[test]
     fn ascension_attack_table_covers_every_scaling_decomp_property() {
         use std::collections::BTreeMap;
-        use std::path::PathBuf;
 
-        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../sts2-wiki/decompiled/v0.107.1/MegaCrit.Sts2.Core.Models.Monsters");
+        let Some(dir) = decomp_monsters_dir(sts2_core::GameVersion::V0_107_1) else {
+            eprintln!("skipping: v0.107.1 decomp dir not present");
+            return;
+        };
         let Ok(entries) = std::fs::read_dir(&dir) else {
-            eprintln!("skipping: decomp dir not present at {}", dir.display());
+            eprintln!("skipping: decomp dir not readable at {}", dir.display());
             return;
         };
 
@@ -1372,6 +2314,58 @@ mod tests {
                         "{kind:?} {move_id} {power:?} A{asc}: applied {got} != {expected}"
                     ));
                 }
+                // The row also drives the telegraph (GH #893).
+                for version in sts2_core::GameVersion::ALL {
+                    let built = crate::monster_dispatch::build_ai_for_version(
+                        kind,
+                        MonsterSpawnArgs::None,
+                        SpawnPosition::default(),
+                        asc,
+                        version,
+                    );
+                    let shown = move_intent_where(
+                        &built,
+                        move_id,
+                        |i| matches!(i, Intent::Buff { kind: p, .. } if *p == power),
+                    );
+                    if !matches!(shown, Some((_, Intent::Buff { amount, .. })) if amount == expected)
+                    {
+                        fails.push(format!(
+                            "{kind:?} {move_id} {power:?} A{asc} {version:?}: telegraph \
+                             {shown:?} != {expected}"
+                        ));
+                    }
+                }
+            }
+        }
+        // v0.111.0-only rows: telegraph and grant on that build, and the
+        // v0.107.1 build keeps its own (unscaled) value.
+        for &(kind, move_id, power, base, deadly) in V0111_BUFF_VALUES {
+            for (asc, expected) in [(0u8, base), (9u8, deadly)] {
+                assert_eq!(
+                    scaled_buff(
+                        asc,
+                        sts2_core::GameVersion::V0_111_0,
+                        kind,
+                        move_id,
+                        power,
+                        -1
+                    ),
+                    expected,
+                    "{kind:?} {move_id} A{asc}"
+                );
+                assert_eq!(
+                    scaled_buff(
+                        asc,
+                        sts2_core::GameVersion::V0_107_1,
+                        kind,
+                        move_id,
+                        power,
+                        -1
+                    ),
+                    -1,
+                    "{kind:?} {move_id} A{asc} must not scale on v0.107.1"
+                );
             }
         }
         assert!(

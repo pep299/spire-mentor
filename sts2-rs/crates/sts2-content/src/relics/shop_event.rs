@@ -1548,10 +1548,8 @@ fn listener_jewelry_box(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::JewelryBox) {
         return EffectResult::NotImplemented;
     }
-    let mut card = sts2_core::cards::Card::pod_defaults();
-    card.card_id = sts2_core::cards::CardId::Apotheosis;
-    card.upgraded = false;
-    rs.master_deck.push(card);
+    // `CardPileCmd.Add(CreateCard<Apotheosis>, Deck)` (`JewelryBox.cs:21-22`).
+    push_deck_card(rs, sts2_core::cards::CardId::Apotheosis);
     EffectResult::Resolved
 }
 
@@ -1565,10 +1563,8 @@ fn listener_tanxs_whistle(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::TanxsWhistle) {
         return EffectResult::NotImplemented;
     }
-    let mut card = sts2_core::cards::Card::pod_defaults();
-    card.card_id = sts2_core::cards::CardId::Whistle;
-    card.upgraded = false;
-    rs.master_deck.push(card);
+    // `CardPileCmd.Add(CreateCard<Whistle>, Deck)` (`TanxsWhistle.cs:19-20`).
+    push_deck_card(rs, sts2_core::cards::CardId::Whistle);
     EffectResult::Resolved
 }
 
@@ -2689,24 +2685,20 @@ fn listener_small_capsule(rs: &mut RunState) -> EffectResult {
 /// `shop_event.py::CallingBell.after_obtained`: `owner.offer_relic_rewards(
 /// 3, rarities=(COMMON, UNCOMMON, RARE))`). The RelicId acts as the
 /// sentinel placeholder; umbrella sts2-rs-01o resolves rarity tiers
-/// at flush time. The CurseOfTheBell card-add clause runs under v0.111.0
-/// only; the v0.107.1 arm still defers it (bit-identical). Bead
-/// `sts2-rs-u4wv`.
+/// at flush time. The CurseOfTheBell card-add clause runs in both builds
+/// (GH #806). Bead `sts2-rs-u4wv`.
 fn listener_calling_bell(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::CallingBell) {
         return EffectResult::NotImplemented;
     }
-    // v0.111.0: the curse goes into the deck before the relics are offered
+    // The curse goes into the deck before the relics are offered
     // (`CardPileCmd.AddCurseToDeck<CurseOfTheBell>`, decomp
-    // `Models.Relics/CallingBell.cs:29`). v0.107.1 has the same line; its arm
-    // keeps the old (curse-less) behaviour so that build stays bit-identical.
-    if rs.game_version >= sts2_core::GameVersion::V0_111_0 {
-        if let Some(curse) = crate::cards::spec_index::card_pod_from_id(
-            sts2_core::cards::CardId::CurseOfTheBell,
-            false,
-        ) {
-            rs.add_card_to_deck_with_hooks(curse, sts2_core::relic_effects::AddSource::RelicGain);
-        }
+    // `Models.Relics/CallingBell.cs:29`, identical in v0.107.1 and v0.111.0,
+    // so both builds: GH #806).
+    if let Some(curse) =
+        crate::cards::spec_index::card_pod_from_id(sts2_core::cards::CardId::CurseOfTheBell, false)
+    {
+        rs.add_card_to_deck_with_hooks(curse, sts2_core::relic_effects::AddSource::RelicGain);
     }
     // Python pin: `offer_relic_rewards(3, rarities=(COMMON, UNCOMMON, RARE))`.
     rs.offer_random_relic_rewards(
@@ -2971,7 +2963,7 @@ fn push_deck_card(rs: &mut RunState, card_id: sts2_core::cards::CardId) {
         card.base_block = spec.base_block;
         card.target_type = spec.target_type;
     }
-    rs.master_deck.push(card);
+    rs.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::RelicGain);
 }
 
 /// Enchant up to `max_count` eligible cards in `rs.master_deck` with
@@ -3654,7 +3646,7 @@ fn listener_arcane_scroll(rs: &mut RunState) -> EffectResult {
             c.card_id = card_id;
             c
         });
-    rs.master_deck.push(card);
+    rs.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::RelicGain);
     EffectResult::Resolved
 }
 
@@ -3972,21 +3964,17 @@ fn listener_dusty_tome(rs: &mut RunState) -> EffectResult {
         };
         id
     };
-    if rs.game_version >= sts2_core::GameVersion::V0_111_0 {
-        // v0.111.0: `CreateCard` + `Upgrade`, then `CardPileCmd.Add(card,
-        // PileType.Deck)` (decomp `Models.Relics/DustyTome.cs:58-63`), whose
-        // `AfterCardChangedPiles` pays LuckyFysh and friends. v0.107.1 has the
-        // same code; its arm keeps the bare push so that build stays
-        // bit-identical (tracked for #806).
-        if let Some(card) = crate::cards::v0111::card_pod_for(card_id, true, rs.game_version) {
-            rs.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::RelicGain);
-            return EffectResult::Resolved;
-        }
-    }
-    let mut card = sts2_core::Card::pod_defaults();
-    card.card_id = card_id;
-    card.upgraded = true;
-    rs.master_deck.push(card);
+    // `CreateCard` + `Upgrade`, then `CardPileCmd.Add(card, PileType.Deck)`
+    // (decomp `Models.Relics/DustyTome.cs:58-63`, both builds), whose
+    // `AfterCardChangedPiles` pays LuckyFysh and friends (GH #806).
+    let card =
+        crate::cards::v0111::card_pod_for(card_id, true, rs.game_version).unwrap_or_else(|| {
+            let mut c = sts2_core::Card::pod_defaults();
+            c.card_id = card_id;
+            c.upgraded = true;
+            c
+        });
+    rs.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::RelicGain);
     EffectResult::Resolved
 }
 
@@ -4014,39 +4002,34 @@ fn add_random_generatable_curses(rs: &mut RunState, count: usize) {
         let idx = rs.rng.niche.next_int_exclusive(0, len) as usize;
         let card_id = available.remove(idx);
         if let Some(card) = crate::cards::spec_index::card_pod_from_id(card_id, false) {
-            rs.master_deck.push(card);
+            rs.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::RelicGain);
         }
     }
 }
 
-/// `SereTalon::after_obtained` — add 2 random Curse cards to the deck
-/// (Python `shop_event.py::SereTalon` at line 2544: "Add 2 random
-/// curses and 3 Wish cards"). The 3 Wish cards leg is deferred —
-/// Wish is a special card not yet ported. Bead `sts2-rs-70anj.3.15`.
+/// `SereTalon::after_obtained`. v0.111.0 loses 9 Max HP, then adds the 3
+/// Wishes (decomp SereTalon.cs:31-43). v0.107.1 adds 2 curses, then the 3
+/// Wishes (v0.107.1 `SereTalon.cs:32-55`):
+///
+/// [decompiled C# omitted — see the cited path]
+///
+/// Every card is a separate hooked deck add. The v0.107.1 arm used to draw
+/// 2 curses off `Rewards` from every curse spec and skip the Wishes (GH #806).
 fn listener_sere_talon(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::SereTalon) {
         return EffectResult::NotImplemented;
     }
     if rs.game_version >= sts2_core::GameVersion::V0_111_0 {
-        // v0.111.0: SereTalon took DistinguishedCape's downside: lose 9 Max
-        // HP, then add the 3 Wishes (decomp SereTalon.cs:31-43).
         rs.lose_max_hp(SERE_TALON_HP_LOSS_V0111);
-        for _ in 0..SERE_TALON_WISHES {
-            if let Some(card) =
-                crate::cards::spec_index::card_pod_from_id(sts2_core::cards::CardId::Wish, false)
-            {
-                rs.master_deck.push(card);
-            }
-        }
-        return EffectResult::Resolved;
+    } else {
+        add_random_generatable_curses(rs, SERE_TALON_CURSES);
     }
-    for _ in 0..SERE_TALON_CURSES {
-        let Some(card_id) = crate::cards::spec_index::random_curse_card(rs) else {
-            return EffectResult::NotImplemented;
-        };
-        let mut card = sts2_core::Card::pod_defaults();
-        card.card_id = card_id;
-        rs.master_deck.push(card);
+    for _ in 0..SERE_TALON_WISHES {
+        if let Some(card) =
+            crate::cards::spec_index::card_pod_from_id(sts2_core::cards::CardId::Wish, false)
+        {
+            rs.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::RelicGain);
+        }
     }
     EffectResult::Resolved
 }
@@ -4769,33 +4752,10 @@ fn listener_pandoras_box(rs: &mut RunState) -> EffectResult {
     if indices.is_empty() {
         return EffectResult::Resolved;
     }
-    if rs.game_version >= sts2_core::GameVersion::V0_111_0 {
-        return pandoras_box_transform_v0111(rs, &indices);
-    }
-    let mut replacements: Vec<sts2_core::Card> = Vec::with_capacity(indices.len());
-    for _ in 0..indices.len() {
-        let Some(new_id) = crate::cards::spec_index::random_card_from_rarity(
-            rs,
-            Some(character_id),
-            crate::cards::CardRarity::Common,
-        ) else {
-            return EffectResult::NotImplemented;
-        };
-        // Spec-populated POD, not a blank `pod_defaults()` carrying only
-        // `card_id`: the master-deck POD is the combat card's source, so a
-        // stat-less transform replacement plays for zero damage / block
-        // (GH#31, same defect fixed for LeafyPoultice). Transform
-        // replacements are never upgraded.
-        let Some(card) = crate::cards::spec_index::card_pod_from_id(new_id, false) else {
-            return EffectResult::NotImplemented;
-        };
-        replacements.push(card);
-    }
-    let _ = rs.transform_specific_cards(&indices, replacements);
-    EffectResult::Resolved
+    pandoras_box_transform(rs, &indices)
 }
 
-/// v0.111.0 PandorasBox: each basic Strike / Defend becomes a random card of
+/// PandorasBox: each basic Strike / Defend becomes a random card of
 /// its own pool, rolled off the shared `Niche` stream in deck order:
 ///
 /// [decompiled C# omitted — see the cited path]
@@ -4804,10 +4764,10 @@ fn listener_pandoras_box(rs: &mut RunState) -> EffectResult {
 /// the transformations once, in order, `CardCmd.cs:377`). The pool is the
 /// default transform pool (Common/Uncommon/Rare, not MultiplayerOnly, not the
 /// original, `CardFactory.cs:171-213`), the one NewLeaf already rolls through
-/// [`crate::cards::spec_index::roll_transform_replacement_basic_niche`]. v0.107.1
-/// has the same code, but its arm keeps the old Common-only sampler so that
-/// build stays bit-identical (tracked for #806).
-fn pandoras_box_transform_v0111(rs: &mut RunState, indices: &[usize]) -> EffectResult {
+/// [`crate::cards::spec_index::roll_transform_replacement_basic_niche`].
+/// Identical in v0.107.1 and v0.111.0, so both builds roll it; the old
+/// Python-pin Common-only `rewards` sampler is gone (GH #806).
+fn pandoras_box_transform(rs: &mut RunState, indices: &[usize]) -> EffectResult {
     let character_id = rs.character_id;
     let mut replacements: Vec<sts2_core::Card> = Vec::with_capacity(indices.len());
     for &i in indices {
@@ -4934,9 +4894,9 @@ fn listener_silver_crucible_modify_card_reward_options_late(
     if !rs.owns_active_relic(RelicId::SilverCrucible) {
         return EffectResult::NotImplemented;
     }
-    // v0.111.0: only a slate with `IsCardReward` (decomp
-    // `Models.Relics/SilverCrucible.cs:104`); the flag is only ever set by
-    // a v0.111.0 caller, see `RunState::offer_card_slate`.
+    // Only a slate with `IsCardReward` (decomp
+    // `Models.Relics/SilverCrucible.cs:104`, both builds); see
+    // `RunState::offer_card_slate`.
     if rs.card_slate_not_card_reward {
         return EffectResult::NotImplemented;
     }
@@ -7542,6 +7502,7 @@ mod tests {
     #[test]
     fn listener_calling_bell_pushes_three_relic_reward_sentinels_on_obtain() {
         use sts2_core::runstate::RunState;
+        crate::cards::dispatch::ensure_installed();
         crate::relics::dispatch::ensure_installed();
         let mut rs = RunState::new();
         // Post-#69: gate on `last_obtained_relic`, roll real (C/U/R) ids
@@ -7554,35 +7515,35 @@ mod tests {
         rs.last_obtained_relic = Some(RelicId::CallingBell);
         let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
         assert_eq!(rs.relic_rewards.len(), before_len + CALLING_BELL_RELICS);
-        assert!(
-            !rs.master_deck
-                .iter()
-                .any(|c| c.card_id == sts2_core::cards::CardId::CurseOfTheBell),
-            "v0.107.1 arm adds no curse"
-        );
     }
 
-    /// v0.111.0 `CallingBell.AfterObtained` (`CallingBell.cs:29`): one
-    /// CurseOfTheBell goes into the deck, then the three relics are offered.
+    /// `CallingBell.AfterObtained` (`CallingBell.cs:29`, same in both builds):
+    /// one CurseOfTheBell goes into the deck, then the three relics are
+    /// offered (GH #806).
     #[test]
-    fn listener_calling_bell_adds_curse_of_the_bell_v0111() {
+    fn listener_calling_bell_adds_curse_of_the_bell_both_versions() {
         use sts2_core::runstate::RunState;
         crate::cards::dispatch::ensure_installed();
         crate::relics::dispatch::ensure_installed();
-        let mut rs = RunState::new();
-        rs.game_version = sts2_core::GameVersion::V0_111_0;
-        let (by_rarity, fallback, boss) = crate::run_callbacks::default_relic_grab_bag();
-        rs.populate_relic_grab_bag_by_rarity(by_rarity, fallback, boss);
-        let deck_before = rs.master_deck.len();
-        rs.relics.push(RelicId::CallingBell);
-        rs.last_obtained_relic = Some(RelicId::CallingBell);
-        let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
-        assert_eq!(rs.relic_rewards.len(), CALLING_BELL_RELICS);
-        assert_eq!(rs.master_deck.len(), deck_before + 1);
-        assert_eq!(
-            rs.master_deck.last().map(|c| c.card_id),
-            Some(sts2_core::cards::CardId::CurseOfTheBell)
-        );
+        for version in [
+            sts2_core::GameVersion::V0_107_1,
+            sts2_core::GameVersion::V0_111_0,
+        ] {
+            let mut rs = RunState::new();
+            rs.game_version = version;
+            let (by_rarity, fallback, boss) = crate::run_callbacks::default_relic_grab_bag();
+            rs.populate_relic_grab_bag_by_rarity(by_rarity, fallback, boss);
+            let deck_before = rs.master_deck.len();
+            rs.relics.push(RelicId::CallingBell);
+            rs.last_obtained_relic = Some(RelicId::CallingBell);
+            let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
+            assert_eq!(rs.relic_rewards.len(), CALLING_BELL_RELICS);
+            assert_eq!(rs.master_deck.len(), deck_before + 1, "{version:?}");
+            assert_eq!(
+                rs.master_deck.last().map(|c| c.card_id),
+                Some(sts2_core::cards::CardId::CurseOfTheBell)
+            );
+        }
     }
 
     /// Bead `sts2-rs-u4wv`: CallingBell listener is noop without ownership.
@@ -11571,15 +11532,15 @@ mod tests {
         assert!(added.upgraded, "DustyTome must add an upgraded card");
     }
 
-    /// v0.111.0 `DustyTome.AfterObtained` (`DustyTome.cs:58-63`) adds the card
-    /// through `CardPileCmd.Add`, so LuckyFysh's `AfterCardChangedPiles` pays
-    /// 15 gold; the v0.107.1 arm's bare push does not.
+    /// `DustyTome.AfterObtained` (`DustyTome.cs:58-63`, both builds) adds the
+    /// card through `CardPileCmd.Add`, so LuckyFysh's `AfterCardChangedPiles`
+    /// pays 15 gold (GH #806: the v0.107.1 arm used to push bare).
     #[test]
-    fn listener_dusty_tome_pays_lucky_fysh_v0111() {
+    fn listener_dusty_tome_pays_lucky_fysh_both_builds() {
         crate::cards::dispatch::ensure_installed();
         crate::relics::dispatch::ensure_installed();
         for (version, gain) in [
-            (sts2_core::GameVersion::V0_107_1, 0),
+            (sts2_core::GameVersion::V0_107_1, 15),
             (sts2_core::GameVersion::V0_111_0, 15),
         ] {
             let mut rs = RunState::new();
@@ -11594,15 +11555,24 @@ mod tests {
         }
     }
 
+    /// v0.107.1 SereTalon: 2 distinct generatable curses off `Niche`, then 3
+    /// Wishes (v0.107.1 `SereTalon.cs:32-55`).
     #[test]
     fn listener_sere_talon_adds_two_curse_cards_to_deck() {
+        use sts2_core::cards::CardId;
         crate::relics::dispatch::ensure_installed();
         let mut rs = RunState::new();
         rs.relics.push(RelicId::SereTalon);
         let before_len = rs.master_deck.len();
         rs.last_obtained_relic = Some(RelicId::SereTalon);
         let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
-        assert_eq!(rs.master_deck.len(), before_len + 2);
+        let added = &rs.master_deck[before_len..];
+        assert_eq!(added.len(), 5);
+        assert!(added[..2]
+            .iter()
+            .all(|c| crate::relics::neow_relics::NEOWS_BONES_CURSE_POOL.contains(&c.card_id)));
+        assert_ne!(added[0].card_id, added[1].card_id);
+        assert!(added[2..].iter().all(|c| c.card_id == CardId::Wish));
     }
 
     /// v0.111.0: SereTalon loses 9 Max HP and adds 3 Wishes, no curses
@@ -12277,7 +12247,11 @@ mod tests {
         assert_eq!(s.player.hand.len(), hand_before + 1);
         let added_uid = *s.player.hand.last().expect("card was added");
         assert!(
-            sts2_core::card_by_uid(&s.cards, added_uid).unwrap().keyword_override.unwrap().contains(sts2_core::cards::KeywordOverride::RETAIN),
+            sts2_core::card_by_uid(&s.cards, added_uid)
+                .unwrap()
+                .keyword_override
+                .unwrap()
+                .contains(sts2_core::cards::KeywordOverride::RETAIN),
             "added card must carry the persistent Retain keyword",
         );
     }
@@ -12582,46 +12556,51 @@ mod tests {
         );
     }
 
-    /// v0.111.0 `PandorasBox.AfterObtained` (`PandorasBox.cs:22`): one
-    /// default-transform roll per basic, in deck order, off the `Niche`
-    /// stream (not the Common-only `rewards` sampler).
+    /// `PandorasBox.AfterObtained` (`PandorasBox.cs:22`, same in both builds):
+    /// one default-transform roll per basic, in deck order, off the `Niche`
+    /// stream (not the old Common-only `rewards` sampler; GH #806).
     #[test]
-    fn listener_pandoras_box_rolls_niche_transform_pool_v0111() {
+    fn listener_pandoras_box_rolls_niche_transform_pool_both_versions() {
         use sts2_core::cards::CardId as InnerCardId;
         use sts2_core::potions::CharacterId;
         use sts2_core::run_effects::dispatch_after_obtained;
         use sts2_core::runstate::RunState;
         crate::relics::dispatch::ensure_installed();
+        for version in [
+            sts2_core::GameVersion::V0_107_1,
+            sts2_core::GameVersion::V0_111_0,
+        ] {
+            let mut rs = RunState::new();
+            rs.game_version = version;
+            rs.character_id = CharacterId::Ironclad;
+            rs.relics.push(RelicId::PandorasBox);
+            let deck_len = pandoras_box_seed_ironclad_deck(&mut rs);
 
-        let mut rs = RunState::new();
-        rs.game_version = sts2_core::GameVersion::V0_111_0;
-        rs.character_id = CharacterId::Ironclad;
-        rs.relics.push(RelicId::PandorasBox);
-        let deck_len = pandoras_box_seed_ironclad_deck(&mut rs);
+            // Expected: the same rolls NewLeaf makes, one per basic in deck order.
+            let mut expect_rs = rs.clone();
+            let originals: Vec<InnerCardId> =
+                rs.master_deck[..9].iter().map(|c| c.card_id).collect();
+            let expected: Vec<InnerCardId> = originals
+                .iter()
+                .map(|&o| {
+                    crate::cards::spec_index::roll_transform_replacement_basic_niche(
+                        &mut expect_rs,
+                        CharacterId::Ironclad,
+                        o,
+                    )
+                    .expect("non-empty pool")
+                })
+                .collect();
 
-        // Expected: the same rolls NewLeaf makes, one per basic in deck order.
-        let mut expect_rs = rs.clone();
-        let originals: Vec<InnerCardId> = rs.master_deck[..9].iter().map(|c| c.card_id).collect();
-        let expected: Vec<InnerCardId> = originals
-            .iter()
-            .map(|&o| {
-                crate::cards::spec_index::roll_transform_replacement_basic_niche(
-                    &mut expect_rs,
-                    CharacterId::Ironclad,
-                    o,
-                )
-                .expect("non-empty pool")
-            })
-            .collect();
+            rs.last_obtained_relic = Some(RelicId::PandorasBox);
+            let _ = dispatch_after_obtained(&mut rs);
 
-        rs.last_obtained_relic = Some(RelicId::PandorasBox);
-        let _ = dispatch_after_obtained(&mut rs);
-
-        assert_eq!(rs.master_deck.len(), deck_len);
-        assert_eq!(rs.master_deck[0].card_id, InnerCardId::Anger);
-        let got: Vec<InnerCardId> = rs.master_deck[1..].iter().map(|c| c.card_id).collect();
-        assert_eq!(got, expected);
-        assert_eq!(rs.rng.niche.counter(), expect_rs.rng.niche.counter());
+            assert_eq!(rs.master_deck.len(), deck_len);
+            assert_eq!(rs.master_deck[0].card_id, InnerCardId::Anger);
+            let got: Vec<InnerCardId> = rs.master_deck[1..].iter().map(|c| c.card_id).collect();
+            assert_eq!(got, expected, "{version:?}");
+            assert_eq!(rs.rng.niche.counter(), expect_rs.rng.niche.counter());
+        }
     }
 
     /// No-op when PandorasBox is not in `rs.relics`.

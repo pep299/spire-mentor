@@ -30,7 +30,7 @@ def test_log_mcts_writes_typed_record(tmp_path):
         }
     )
     lg.close()
-    with open(lg.path) as f:
+    with open(lg.path, encoding="utf-8") as f:
         lines = [json.loads(l) for l in f if l.strip()]
     mcts = [e for e in lines if e["type"] == "mcts"]
     assert len(mcts) == 1
@@ -49,7 +49,7 @@ def test_log_meta_extra_writes_provenance(tmp_path):
         }
     )
     lg.close()
-    with open(lg.path) as f:
+    with open(lg.path, encoding="utf-8") as f:
         lines = [json.loads(l) for l in f if l.strip()]
     metas = [e for e in lines if e["type"] == "meta"]
     # head (constructor) + the provenance record
@@ -64,7 +64,7 @@ def test_log_summary_writes_summary_meta(tmp_path):
         {"final_won": True, "final_turn": 6, "final_player_hp": 41, "final_player_max_hp": 70}
     )
     lg.close()
-    with open(lg.path) as f:
+    with open(lg.path, encoding="utf-8") as f:
         lines = [json.loads(l) for l in f if l.strip()]
     summary = next(e["data"] for e in lines if e["type"] == "meta" and e["data"].get("summary"))
     assert summary["final_won"] is True

@@ -4,7 +4,7 @@ import { defineConfig, devices } from "@playwright/test";
 // A host that ships its own Chromium (the remote dev containers put one at
 // /opt/pw-browsers/chromium, or PLAYWRIGHT_CHROMIUM_PATH names one) may not
 // have the revision this Playwright version pins; use it when present.
-const chromiumPath = [process.env.PLAYWRIGHT_CHROMIUM_PATH, "/opt/pw-browsers/chromium"].find(
+export const chromiumPath = [process.env.PLAYWRIGHT_CHROMIUM_PATH, "/opt/pw-browsers/chromium"].find(
   (p): p is string => !!p && existsSync(p),
 );
 

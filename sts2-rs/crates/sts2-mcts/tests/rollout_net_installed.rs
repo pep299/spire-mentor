@@ -5,9 +5,9 @@
 
 mod common;
 
-use common::{build_vertical_slice_hp, heuristic_mirror_net};
+use common::build_vertical_slice_hp;
 use sts2_core::legal_actions;
-use sts2_mcts::rollout_net::set_global_net;
+use sts2_mcts::rollout_net::{heuristic_mirror_net, set_global_net};
 use sts2_mcts::{Mcts, MctsConfig, RolloutPolicyKind};
 
 #[test]

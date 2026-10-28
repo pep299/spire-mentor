@@ -23,24 +23,24 @@
      "best_col": 3,
      "columns": [
       {
-       "baseline_score": 0.039,
+       "baseline_score": 0.0771,
        "can_skip_elite": false,
        "col": 2,
        "is_pick": false,
        "max_elites": 1,
        "min_elites": 1,
        "n_paths": 1,
-       "score": 0.039
+       "score": 0.0771
       },
       {
-       "baseline_score": 0.7141,
+       "baseline_score": 0.7522,
        "can_skip_elite": false,
        "col": 3,
        "is_pick": true,
        "max_elites": 2,
        "min_elites": 1,
        "n_paths": 22,
-       "score": 0.7141
+       "score": 0.7522
       }
      ],
      "diverged": false,

@@ -36,7 +36,7 @@ def load_xy(path: str, limit: int = 0) -> tuple[np.ndarray, np.ndarray, np.ndarr
     ys: list[float] = []
     floors: list[int] = []
     n_runs = 0
-    with open(path) as fh:
+    with open(path, encoding="utf-8") as fh:
         for line in fh:
             row = json.loads(line)
             decisions = row.get("decisions") or []

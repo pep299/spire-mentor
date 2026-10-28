@@ -94,6 +94,7 @@ def score(state: dict[str, Any], config: dict[str, Any] | None = None) -> dict[s
                 "low_confidence": bool(getattr(tag, "low_confidence", False)),
                 "target_index": getattr(tag, "target_index", None),
                 "mean_final_hp": _opt_float(getattr(tag, "mean_final_hp", None)),
+                "hp_sd": _opt_float(getattr(tag, "hp_sd", None)),
                 "hp_n": int(getattr(tag, "hp_n", 0) or 0),
             }
         )
@@ -148,6 +149,7 @@ def rows_from_mcts(result: dict[str, Any], state: dict[str, Any]) -> list[dict[s
                 "losses": int(entry.get("losses", 0)),
                 "ties": int(entry.get("ties", 0)),
                 "mean_final_hp": _opt_float(entry.get("mean_final_hp")),
+                "hp_sd": _opt_float(entry.get("hp_sd")),
                 "hp_n": int(entry.get("hp_n", 0) or 0),
             }
         )

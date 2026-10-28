@@ -6,7 +6,7 @@ import { describe, it, expect } from "vitest";
 // `ParticleEmitterProcess` — it's an independently hand-written interface
 // covering the fields the integrator actually consumes (plus a few
 // explicitly-skipped rendering-only ones: alpha/color curves,
-// particleFlagAlignY/RotateY). `particle_scene.py`'s `ProcessSpec` dataclass
+// particleFlagRotateY, and particleFlagAlignY, which the renderer reads).`particle_scene.py`'s `ProcessSpec` dataclass
 // today declares no field for orbit/directional velocity, linear/radial/
 // tangent accel, initial angle/angular velocity, a velocity-limit curve, or
 // collision — Task 4's "every dataclass field reaches the manifest" guard
@@ -158,6 +158,9 @@ const IMPLEMENTED_OR_INTENTIONALLY_SKIPPED = new Set([
   // side effect at all.
   "alphaCurve",
   "colorRamp",
+  // Implemented, but by the RENDERER (`particleDrawAngle`, GH #689): the
+  // integrator tracks `Particle.heading` for every particle, so the flag
+  // itself gates no physics and never needs to reach the spec.
   "particleFlagAlignY",
   "particleFlagRotateY",
 ]);

@@ -13,6 +13,7 @@
   {
    "action": "Ultimate Strike",
    "hp_n": 12,
+   "hp_sd": 0.0,
    "is_best": true,
    "losses": 12,
    "low_confidence": false,
@@ -29,6 +30,7 @@
   {
    "action": "True Grit",
    "hp_n": 12,
+   "hp_sd": 0.0,
    "is_best": false,
    "losses": 12,
    "low_confidence": false,
@@ -45,6 +47,7 @@
   {
    "action": "Defend",
    "hp_n": 12,
+   "hp_sd": 0.0,
    "is_best": false,
    "losses": 12,
    "low_confidence": false,
@@ -61,6 +64,7 @@
   {
    "action": "end turn",
    "hp_n": 12,
+   "hp_sd": 0.0,
    "is_best": false,
    "losses": 12,
    "low_confidence": false,

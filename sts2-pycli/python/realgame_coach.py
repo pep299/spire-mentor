@@ -16,14 +16,9 @@ trust. A turn is graded when it ends, from its actions:
 
     graded = per-action DecisionRegret, after top-up
     if any action verdict == "uncertain" or ungraded -> turn ungraded, silent
-    count only actions with severity >= TURN_ACTION_FLOOR (= 1.0)  # drops sub-point jitter
-    turn_hp   = sum(hp_drop or 0)           over counted actions
-    turn_pts  = sum(drop_pct)               over counted actions
-    severity  = max(turn_pts, turn_hp)
-    verdict   = "best" if no counted action else
-                "tie" if severity < TIE_PTS else
-                "blunder" if severity >= DEFAULT_BLUNDER_DROP_PCT else "slip"
-    win_before / win_after = best / played win_prob at the turn's first graded decision
+    otherwise regret_review.grade_turn: count only actions with
+    severity >= TURN_ACTION_FLOOR, severity = max(summed points, summed HP),
+    verdict best | tie | slip | blunder (the browser workbench uses its twin)
 
 Silence beats a wrong number: a turn with any action that stays uncertain, or
 that cannot be graded, emits nothing to the mod (the log records it as
@@ -54,14 +49,14 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from choice_grade import grade_choice
+from enemy_labels import enemy_label, enemy_labels
 from workbench.reasoning import rows_from_mcts
 from workbench.regret_review import (
-    DEFAULT_BLUNDER_DROP_PCT,
     PLAYED_MIN_VISITS,
-    TIE_PTS,
     DecisionRegret,
     action_stable_key,
     assess_decision,
+    grade_turn,
 )
 
 logger = logging.getLogger(__name__)
@@ -69,10 +64,6 @@ logger = logging.getLogger(__name__)
 #: How many advice requests the cache remembers. A combat turn is a handful of
 #: requests and the grader only ever looks back one turn, so this is generous.
 ADVICE_CACHE_SIZE = 64
-#: Per-action severity (win-chance points or HP) below which an action does not
-#: count toward its turn's grade: summing sub-point jitter over five plays
-#: would otherwise invent a slip out of noise.
-TURN_ACTION_FLOOR = 1.0
 #: Forced-root sims for a played-move top-up (same floor the browser coach uses).
 TOP_UP_SIMS = max(PLAYED_MIN_VISITS * 4, 400)
 #: Budget of each step of the background AI-line search.
@@ -104,6 +95,9 @@ LABEL_KINDS = {
 
 _END_TURN = -1
 _POTION_BASE = -100
+#: Powers whose removal is an enemy waking up (C# ``AsleepPower`` /
+#: ``SlumberPower``: unblocked damage strips both and ends the free turns).
+_SLEEP_POWERS = frozenset({"ASLEEP", "SLUMBER"})
 #: Why a turn the fight ended (no end-turn report) was dropped.
 _COMBAT_ENDED_MID_TURN = "combat ended mid-turn"
 #: The ``capabilities.coach`` level a mod needs before a record kind is sent
@@ -238,6 +232,8 @@ def apply_top_up(rows: list[dict[str, Any]], native: dict[str, Any], fresh: dict
         row[k] = int(fresh.get(k, 0) or 0)
     hp = fresh.get("mean_final_hp")
     row["mean_final_hp"] = float(hp) if hp is not None else None
+    sd = fresh.get("hp_sd")
+    row["hp_sd"] = float(sd) if sd is not None else None
     row["is_best"] = False
 
 
@@ -315,14 +311,18 @@ def turn_context(msg: dict[str, Any] | None) -> dict[str, Any] | None:
         for c in msg.get("hand") or []
         if isinstance(c, dict)
     ]
+    roster = [e for e in msg.get("enemies") or [] if isinstance(e, dict)]
     enemies = [
         {
-            "name": str(e.get("name") or e.get("id") or "?"),
+            # Numbered by ``enemy_labels`` over the wire list, as the option
+            # labels are (a dead entry takes no number), so "Two-Tailed Rat #2
+            # intends" names the rat "Strike → … #2" hits.
+            "name": label,
             "hp": _int_or_none(e.get("hp")),
             "intent": intent_text(e.get("intents")),
         }
-        for e in msg.get("enemies") or []
-        if isinstance(e, dict) and e.get("is_alive", True)
+        for e, label in zip(roster, enemy_labels(roster), strict=True)
+        if e.get("is_alive", True)
     ]
     return {
         "hand": hand,
@@ -333,6 +333,69 @@ def turn_context(msg: dict[str, Any] | None) -> dict[str, Any] | None:
         "block": _int_or_none(player.get("block")),
         "enemies": enemies,
     }
+
+
+def _asleep(enemy: dict[str, Any]) -> bool:
+    return any(
+        isinstance(p, dict) and p.get("name") in _SLEEP_POWERS for p in enemy.get("powers") or []
+    )
+
+
+def board_events(start: dict[str, Any], end: dict[str, Any]) -> list[tuple[str, int]]:
+    """What a line visibly did to the enemies between two engine boards.
+
+    ``start`` / ``end`` are ``sts2_rs.state_to_dict`` boards of one turn's
+    first position and of the position its line ended the turn from.
+    Returns ``("wakes", i)`` / ``("kills", i)`` per encounter slot ``i`` (the
+    slot the mod's ``enemies`` list and a ``target_index`` share), or a lone
+    ``("wins", -1)`` when the line won the fight -- its kills say nothing more.
+    """
+    if end.get("phase") == "Victory":
+        return [("wins", -1)]
+    after = {e.get("uid"): e for e in end.get("encounter") or [] if isinstance(e, dict)}
+    out: list[tuple[str, int]] = []
+    for i, e in enumerate(start.get("encounter") or []):
+        if not isinstance(e, dict) or e.get("is_dead"):
+            continue
+        f = after.get(e.get("uid"))
+        if f is None:
+            continue
+        if f.get("is_dead"):
+            out.append(("kills", i))
+        elif _asleep(e) and not _asleep(f):
+            out.append(("wakes", i))
+    return out
+
+
+def why_text(
+    you: list[tuple[str, int]],
+    ai: list[tuple[str, int]],
+    names: list[str],
+    turn: Any,
+) -> str | None:
+    """The recap's reason line: what one line did on the board that the other
+    did not, e.g. ``"Your line wakes Lagavulin Matriarch on turn 1"`` (GH #888).
+
+    A worse line can look like the AI's plus a free card; without the reason
+    a correct call reads as noise. ``None`` when both lines did the same.
+    """
+
+    def phrase(event: tuple[str, int]) -> str:
+        kind, i = event
+        if kind == "wins":
+            return "wins the fight"
+        name = names[i] if 0 <= i < len(names) else f"enemy {i + 1}"
+        return f"{kind} {name}"
+
+    parts = []
+    for subject, mine, theirs in (("your line", you, ai), ("the AI's line", ai, you)):
+        only = [phrase(e) for e in mine if e not in theirs]
+        if only:
+            parts.append(f"{subject} {' and '.join(only)}")
+    if not parts:
+        return None
+    text = "; ".join(parts) + (f" on turn {turn}" if turn is not None else "")
+    return text[0].upper() + text[1:]
 
 
 def _player_hp(msg: dict[str, Any]) -> int | None:
@@ -530,6 +593,8 @@ class CoachEngine:
             draw_widening_c=c.resolved_draw_widening_c(),
             endturn_widening_c=c.endturn_widening_c,
             endturn_widening_alpha=c.endturn_widening_alpha,
+            win_hp_carry=c.win_hp_carry,
+            win_potion_carry=c.win_potion_carry,
         )
 
     def _recommend(self, cs: Any, cfg: Any, sims: int, threads: int) -> dict[str, Any]:
@@ -548,11 +613,19 @@ class CoachEngine:
             draw_widening_c=c.resolved_draw_widening_c(),
             endturn_widening_c=c.endturn_widening_c,
             endturn_widening_alpha=c.endturn_widening_alpha,
+            win_hp_carry=c.win_hp_carry,
+            win_potion_carry=c.win_potion_carry,
         )
 
     def catch_up(self, cs: Any, cfg: Any, sims: int) -> list[dict[str, Any]]:
         """Search a position the advisor never searched (the player was faster)."""
         return rows_from_mcts(self._recommend(cs, cfg, sims, CATCH_UP_THREADS), {})
+
+    def board(self, cs: Any) -> dict[str, Any] | None:
+        """The engine board of ``cs`` (``None`` without a position)."""
+        import sts2_rs
+
+        return sts2_rs.state_to_dict(cs) if cs is not None else None
 
     def ai_line(
         self,
@@ -561,8 +634,22 @@ class CoachEngine:
         cfg: Any,
         label: Callable[[dict[str, Any], dict[str, Any]], str],
     ) -> list[str]:
+        """The labels of :meth:`ai_turn`."""
+        return self.ai_turn(cs, first, cfg, label)[0]
+
+    def ai_turn(
+        self,
+        cs: Any,
+        first: dict[str, Any] | None,
+        cfg: Any,
+        label: Callable[[dict[str, Any], dict[str, Any]], str],
+    ) -> tuple[list[str], dict[str, Any] | None]:
         """The AI's line for the turn from ``cs``: ``first``, then the best move
         of a short single-tree search, repeated on a clone.
+
+        Also returns the board the line ended the turn from (the position its
+        end turn was played in, or the won / lost board), for
+        :func:`board_events`; ``None`` when the line stopped short of that.
 
         Stops after end turn, when combat ends, or after a move that put a new
         card into the hand -- past a draw the line would name cards the search
@@ -573,6 +660,7 @@ class CoachEngine:
 
         state = cs.clone()
         out: list[str] = []
+        end: dict[str, Any] | None = None
         for step in range(AI_LINE_MAX_STEPS):
             if step == 0 and first is not None:
                 action = first
@@ -588,15 +676,19 @@ class CoachEngine:
                 c.get("stable_idx") for c in (before.get("deck") or {}).get("hand") or []
             }
             outcome = state.apply_step(action)
-            if action.get("action") == "end_turn" or outcome in ("combat_won", "combat_lost"):
+            if action.get("action") == "end_turn":
+                end = before
                 break
             after = sts2_rs.state_to_dict(state)
+            if outcome in ("combat_won", "combat_lost"):
+                end = after
+                break
             if any(
                 c.get("stable_idx") not in hand_before
                 for c in (after.get("deck") or {}).get("hand") or []
             ):
                 break
-        return out
+        return out, end
 
 
 class InlineExecutor:
@@ -715,6 +807,9 @@ class _Turn:
     done: bool = False
     deadline: float | None = None
     ai: list[str] | None = None
+    #: What the player's line did on the board that the AI's did not (or the
+    #: reverse), e.g. "Your line wakes Lagavulin Matriarch on turn 1".
+    why: str | None = None
     ai_pending: bool = False
     fight: _Fight | None = None
     #: The first combat advice of the turn's round, when there was one.
@@ -1215,19 +1310,11 @@ class CoachGrader:
         if any(a.regret is not None and a.regret.verdict == "uncertain" for a in turn.acts):
             self._drop(turn, "a move stayed uncertain after top-up")
             return []
-        graded = [a.regret for a in turn.acts if a.regret is not None]
-        counted = [d for d in graded if d.severity >= TURN_ACTION_FLOOR]
-        turn_hp = sum(d.hp_drop or 0.0 for d in counted)
-        turn_pts = float(sum(d.drop_pct for d in counted))
-        severity = max(turn_pts, turn_hp)
-        if not counted:
-            verdict = "best"
-        elif severity < TIE_PTS:
-            verdict = "tie"
-        elif severity >= DEFAULT_BLUNDER_DROP_PCT:
-            verdict = "blunder"
-        else:
-            verdict = "slip"
+        grade = grade_turn([a.regret for a in turn.acts if not a.forced])
+        if grade is None:
+            self._drop(turn, "a move could not be graded")
+            return []
+        verdict = grade.verdict
         if verdict in ("slip", "blunder") and turn.ai is None:
             if not turn.ai_pending:
                 turn.ai_pending = True
@@ -1235,18 +1322,17 @@ class CoachGrader:
             # With an inline executor the line is already built: fall through.
             if turn.ai is None or turn.done:
                 return []
-        first = graded[0] if graded else None
-        hp_known = any(d.hp_drop is not None for d in counted)
         record = self._turn_head(turn) | {
             "verdict": verdict,
             "you": [a.label for a in turn.acts],
             "ai": list(turn.ai or []),
-            "hp_drop": round(turn_hp, 2) if hp_known else None,
-            "win_before": round(first.best_win_prob, 4) if first else None,
-            "win_after": round(first.played_win_prob, 4) if first else None,
+            "why": turn.why,
+            "hp_drop": grade.hp_drop,
+            "win_before": grade.win_before,
+            "win_after": grade.win_after,
             "peeked": any(a.peeked for a in turn.acts),
             "ungraded_actions": turn.ungraded_actions,
-            "severity": round(severity, 2),
+            "severity": grade.severity,
             "context": turn_context(
                 turn.start_msg
                 or (self._round_start.get(turn.turn) if turn.fight is self._fight else None)
@@ -1264,17 +1350,42 @@ class CoachGrader:
         """The AI's line from the turn's first position (executor)."""
         first = turn.acts[0] if turn.acts else None
         line: list[str] = []
+        why: str | None = None
         if first is not None and first.position is not None and first.rows:
             best = next((r for r in first.rows if r.get("is_best")), None)
             native = native_from_row(best) if best is not None else None
-            line = self.engine.ai_line(first.position, native, first.cfg, self._label_engine)
+            line, ai_end = self.engine.ai_turn(
+                first.position, native, first.cfg, self._label_engine
+            )
+            why = self._why(turn, ai_end)
         if not line and first is not None and first.rows:
             best = next((r for r in first.rows if r.get("is_best")), None)
             if best is not None:
                 line = [str(best.get("action") or "?")]
         with self._lock:
             turn.ai = line
+            turn.why = why
             turn.ai_pending = False
+
+    def _why(self, turn: _Turn, ai_end: dict[str, Any] | None) -> str | None:
+        """The reason line of ``turn`` from the AI line's end board (executor).
+
+        The player's side is the real board their end turn was played from;
+        ``None`` when either end is unknown.
+        """
+        last = turn.acts[-1]
+        if ai_end is None or last.native is None or last.native.get("action") != "end_turn":
+            return None
+        start = self.engine.board(turn.acts[0].position)
+        you_end = self.engine.board(last.position)
+        if start is None or you_end is None:
+            return None
+        roster = [e for e in (turn.start_msg or {}).get("enemies") or [] if isinstance(e, dict)]
+        names = enemy_labels(roster)
+        enc = start.get("encounter") or []
+        if len(names) != len(enc):
+            names = [str(e.get("kind") or "?").replace("_", " ").title() for e in enc]
+        return why_text(board_events(start, you_end), board_events(start, ai_end), names, turn.turn)
 
     def _target_suffix(self, target: Any) -> str:
         """`` (Cultist)`` when the fight has more than one enemy, else ``""``.
@@ -1283,9 +1394,8 @@ class CoachGrader:
         arrows, so an arrow before the target read as a second move.
         """
         enemies = self._last_combat_msg.get("enemies") or []
-        if len(enemies) > 1 and isinstance(target, int) and 0 <= target < len(enemies):
-            return f" ({enemies[target].get('name') or f'enemy {target}'})"
-        return ""
+        label = enemy_label(enemies, target) if len(enemies) > 1 else None
+        return f" ({label})" if label is not None else ""
 
     def _label_human(self, msg: dict[str, Any]) -> str:
         """Name one combat ``human_action`` the way the AI line names moves.

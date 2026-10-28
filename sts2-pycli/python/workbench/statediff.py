@@ -12,6 +12,8 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
+from enemy_labels import enemy_labels
+
 _MINUS = "−"  # real minus glyph, for aligned signs
 _DEAD = "☠ defeated"
 
@@ -32,11 +34,34 @@ def _player_hp_block(prev: dict[str, Any], nxt: dict[str, Any], out: list[str]) 
         out.append(f"You Block {b0}→{b1}")
 
 
+def _enemy_name_at(
+    enemies: list[dict[str, Any]], labels: list[str], pos: int, fallback: str
+) -> str:
+    """The display name of ``enemies[pos]``: its board label, else ``fallback``.
+
+    ``labels`` is ``enemy_labels(enemies)``, computed once per state by the
+    caller rather than once per enemy.
+
+    The label is the name plus ``" #k"`` when several enemies in ``enemies``
+    share it (:func:`enemy_labels.enemy_labels`). A diff spans two states, so
+    each enemy is labelled from ONE of them: an enemy present before the action
+    by its label in the BEFORE state (the board the player acted on — a kill
+    still names the rat that was hit, though the after-board's numbers close
+    up), a newly spawned one by its label in the AFTER state (the only board
+    it is on). Rust twin: ``statediff.rs::enemy_name_at``.
+    """
+    if "name" not in enemies[pos]:
+        return fallback
+    return labels[pos]
+
+
 def _enemy_lines(prev: dict[str, Any], nxt: dict[str, Any], out: list[str]) -> None:
     nxt_by_idx = {e.get("index"): e for e in (nxt.get("enemies") or [])}
-    for e0 in prev.get("enemies") or []:
+    prev_es = prev.get("enemies") or []
+    prev_labels = enemy_labels(prev_es)
+    for pos, e0 in enumerate(prev_es):
         idx = e0.get("index")
-        name = e0.get("name", f"enemy {idx}")
+        name = _enemy_name_at(prev_es, prev_labels, pos, f"enemy {idx}")
         h0 = e0.get("hp", 0)
         e1 = nxt_by_idx.get(idx)
         if e1 is None:
@@ -81,20 +106,26 @@ def _diff_powers(
 
 def _power_lines(prev: dict[str, Any], nxt: dict[str, Any], out: list[str]) -> None:
     _diff_powers("You", prev.get("player_powers"), nxt.get("player_powers"), out)
-    prev_es = {e.get("index"): e for e in (prev.get("enemies") or [])}
+    prev_list = prev.get("enemies") or []
+    prev_es = {e.get("index"): (pos, e) for pos, e in enumerate(prev_list)}
+    prev_labels = enemy_labels(prev_list)
     for e1 in nxt.get("enemies") or []:
-        e0 = prev_es.get(e1.get("index"))
-        if e0 is None:
+        hit = prev_es.get(e1.get("index"))
+        if hit is None:
             continue
-        name = e1.get("name", f"enemy {e1.get('index')}")
+        pos, e0 = hit
+        # Labelled from the BEFORE state, like the HP lines (``_enemy_name_at``).
+        name = _enemy_name_at(prev_list, prev_labels, pos, f"enemy {e0.get('index')}")
         _diff_powers(name, e0.get("powers"), e1.get("powers"), out)
 
 
 def _spawn_lines(prev: dict[str, Any], nxt: dict[str, Any], out: list[str]) -> None:
     prev_idx = {e.get("index") for e in (prev.get("enemies") or [])}
-    for e in nxt.get("enemies") or []:
+    nxt_es = nxt.get("enemies") or []
+    nxt_labels = enemy_labels(nxt_es)
+    for pos, e in enumerate(nxt_es):
         if e.get("index") not in prev_idx:
-            out.append(f"Spawned: {e.get('name', 'enemy')}")
+            out.append(f"Spawned: {_enemy_name_at(nxt_es, nxt_labels, pos, 'enemy')}")
 
 
 def _resource_lines(prev: dict[str, Any], nxt: dict[str, Any], out: list[str]) -> None:

@@ -38,7 +38,7 @@ def latest_manifest() -> str:
 
 
 def divergent_positions(manifest: str) -> list[int]:
-    subj = json.load(open(manifest))["subjects"]
+    subj = json.load(open(manifest, encoding="utf-8"))["subjects"]
     pos = []
     for k, v in subj.items():
         if v.get("verdict") != "clean" and k.startswith("seed:"):

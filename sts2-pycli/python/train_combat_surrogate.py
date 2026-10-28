@@ -50,7 +50,7 @@ from sklearn.metrics import (
 
 
 def load(labels_path: Path, schema_path: Path):
-    schema = json.loads(schema_path.read_text())
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
     n_cards = schema["n_cards"]
     n_relics = schema["n_relics"]
     n_enc = len(schema["encounters"])
@@ -60,7 +60,9 @@ def load(labels_path: Path, schema_path: Path):
     relic_base = 2 * n_cards
     scalar_base = 2 * n_cards + n_relics
 
-    rows = [json.loads(l) for l in labels_path.read_text().splitlines() if l.strip()]
+    rows = [
+        json.loads(l) for l in labels_path.read_text(encoding="utf-8").splitlines() if l.strip()
+    ]
     n = len(rows)
     X = np.zeros((n, width), dtype=np.float32)
     y_win = np.zeros(n, dtype=np.float64)

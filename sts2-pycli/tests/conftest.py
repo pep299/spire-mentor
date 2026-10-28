@@ -89,6 +89,14 @@ _REQUIREMENTS: dict[str, tuple[Path, str]] = {
     ),
     "dockerfile": (_MONO / "Dockerfile", "private deploy artifact"),
     "wrangler": (_PYCLI / "web" / "wrangler.toml", "private deploy artifact"),
+    "combat_bench": (
+        _PYCLI / "data" / "combat_bench" / "ironclad_dev_v1.jsonl",
+        "private: built from the scraped human-run corpus (D6)",
+    ),
+    "rollout_recipe": (
+        _MONO / "logs" / "2026-10-18-rollout-net-recipe" / "boss800.jsonl",
+        "private run logs (logs/ is not exported)",
+    ),
 }
 
 # Node-id prefix (relative to tests/) -> requirement. A bare module prefix
@@ -135,6 +143,27 @@ _NEEDS: dict[str, str] = {
     "test_deployed_image_has_lazy_import_deps.py": "dockerfile",
     "workbench/test_dockerfile_ships_ppo_onnx.py": "dockerfile",
     "test_bug_reports_cli.py": "wrangler",
+    # --- the frozen combat-bench fight sets (human-corpus-derived, not exported)
+    "turnplan/test_binding.py::test_labels_on_first_decision_of_a_dev_fight": "combat_bench",
+    "turnplan/test_binding.py::test_labels_do_not_perturb_the_agents_play": "combat_bench",
+    "turnplan/test_label.py::test_excluded_keys_never_labelled": "combat_bench",
+    "turnplan/test_label.py::test_one_label_per_turn_start": "combat_bench",
+    "turnplan/test_label.py::test_hallway_p_zero_labels_no_hallway_turn": "combat_bench",
+    "turnplan/test_label.py::test_resume_skips_done_cells": "combat_bench",
+    "turnplan/test_label.py::test_resume_refuses_a_changed_config": "combat_bench",
+    "turnplan/test_label.py::test_a_cell_killed_mid_run_is_replayed_and_read_once": "combat_bench",
+    "turnplan/test_label.py::test_a_cell_over_the_timeout_is_booked_as_watchdog": "combat_bench",
+    "turnplan/test_pro.py::test_pro_set_is_the_frozen_bench_file": "combat_bench",
+    "turnplan/test_pro.py::test_turn_plan_labels_locates_each_enumerated_plan_unpriced": "combat_bench",
+    "turnplan/test_pro.py::test_turn_plan_labels_reports_an_unplayable_turn": "combat_bench",
+    "turnplan/test_pro.py::test_leak_guard_panels_are_dev_devpool_holdout_and_pro": "combat_bench",
+    "turnplan/test_root_filter.py::test_a_cell_without_the_knob_has_no_root_filter_field": "combat_bench",
+    "turnplan/test_root_filter.py::test_a_cell_with_the_knob_reports_a_filtered_root": "combat_bench",
+    # --- the rollout-net recipe's boss800 holdout list (private logs/)
+    "test_combat_ctx.py::test_jobs_hold_out_every_holdout_run": "rollout_recipe",
+    "test_elite_gap_tools.py::test_takeover_forces_a_human_line_exactly": "combat_bench",
+    "test_elite_gap_tools.py::test_takeover_records_both_first_turns_with_rollouts": "combat_bench",
+    "test_leaf_correction.py::test_play_and_label_rebuilds_the_final_value": "combat_bench",
 }
 
 

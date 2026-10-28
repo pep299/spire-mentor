@@ -114,6 +114,7 @@ export default function DecimillipedeGroup({ segments, pxPerScene = 1, locString
               c={s.c}
               isEnemy
               dataIndex={s.dataIndex}
+              label={s.label}
               noSprite={{ w: overlayW, h: spacerH }}
               hotkey={s.hotkey}
               onClick={s.onClick}

@@ -36,7 +36,7 @@ def main() -> int:
     exdir = sys.argv[1].rstrip("/") + "/"
     seed = int(sys.argv[2])
     enc = sys.argv[3] if len(sys.argv) > 3 else None
-    ex = json.load(open(exdir + "examples.json"))
+    ex = json.load(open(exdir + "examples.json", encoding="utf-8"))
     items = ex if isinstance(ex, list) else list(ex.values())
     cands = [
         e

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Compile-only build of SpireMentor against ONE game build's sts2.dll, on a box
-# without the game installed (Linux dev box, the port gates).
+# without the game installed (Linux dev box, the port gates). The DLL must then
+# bind against EVERY game build present: one DLL ships for all of them.
 #
 # Usage: build_mod.sh <game-version> [--wire]
 #   <game-version>  v0.107.1 | v0.111.0 -- which sts2.dll to compile against
@@ -87,7 +88,7 @@ fi
 
 echo "build_mod.sh: compiling SpireMentor against $VER ($(realpath "$DATA/sts2.dll"))"
 "$DOTNET" build "$MOD/SpireMentor.csproj" -c Release -nologo -v q \
-  -p:GameVersion="$VER" \
+\
   -p:Sts2DataDir="$STAGE" \
   -p:BaseLibDir="$BASELIB" \
   -p:SpireMentorSkipDeploy=true \
@@ -101,24 +102,17 @@ echo "build_mod.sh: $(grep -E ": warning " "$BUILD/mod.build.log" | sort -u | wc
 echo "build_mod.sh: OK $BUILD/mod/SpireMentor.dll"
 
 # Binary binding: every sts2 type/method/field the DLL references must resolve
-# by name AND signature in this build's sts2.dll (a source compile does not
-# prove that for members reached through `var`, defaults or overloads). Then,
-# for information only, the same check against every OTHER game build present
-# -- it is expected to fail, and its list is why the mod ships per-version
-# DLLs (SpireMentor.csproj `GameVersion`).
-RC="$HERE/.build/refcheck"
-"$DOTNET" build "$HERE/RefCheck/RefCheck.csproj" -c Release -nologo -v q \
-  -p:BaseIntermediateOutputPath="$HERE/.build/refcheck-obj/" \
-  -p:MSBuildProjectExtensionsPath="$HERE/.build/refcheck-obj/" \
-  -o "$RC" >"$HERE/.build/refcheck.build.log" 2>&1 \
-  || { cat "$HERE/.build/refcheck.build.log" >&2; die "RefCheck build failed"; }
-"$DOTNET" "$RC/RefCheck.dll" "$BUILD/mod/SpireMentor.dll" "$DATA/sts2.dll" \
-  || die "SpireMentor built for $VER does not bind against its own sts2.dll"
+# by name AND signature in every game build's sts2.dll present, not just the one
+# compiled against (a source compile does not prove that for members reached
+# through `var`, defaults or overloads). A member whose signature differs
+# between builds goes through SimGameApi.cs instead.
+# Per game version, so run_all.sh can build the versions in parallel.
+RC="$BUILD/refcheck"
+"$DOTNET" build "$HERE/RefCheck/RefCheck.csproj" -c Release -nologo -v q   -p:BaseIntermediateOutputPath="$BUILD/refcheck-obj/"   -p:MSBuildProjectExtensionsPath="$BUILD/refcheck-obj/"   -o "$RC" >"$BUILD/refcheck.build.log" 2>&1   || { cat "$BUILD/refcheck.build.log" >&2; die "RefCheck build failed"; }
 for other in "$STS2_BINARIES"/v*/data_sts2_windows_x86_64/sts2.dll; do
-  [[ -f "$other" && "$(realpath "$other")" != "$(realpath "$DATA/sts2.dll")" ]] || continue
+  [[ -f "$other" ]] || continue
   over="$(basename "$(dirname "$(dirname "$other")")")"
-  n="$("$DOTNET" "$RC/RefCheck.dll" "$BUILD/mod/SpireMentor.dll" "$other" | grep -c "UNRESOLVED" || true)"
-  echo "build_mod.sh: (info) the $VER build has $n unresolved reference(s) against $over"
+  "$DOTNET" "$RC/RefCheck.dll" "$BUILD/mod/SpireMentor.dll" "$other"     || die "SpireMentor compiled against $VER does not bind against $over"
 done
 
 if [[ "$WIRE" -eq 1 ]]; then

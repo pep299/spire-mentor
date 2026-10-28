@@ -86,17 +86,16 @@ falling back to `C:/Program Files (x86)/Steam/steamapps/common/Slay the Spire 2`
 dotnet build -p:STS2_GAME_DIR="D:/SteamLibrary/steamapps/common/Slay the Spire 2"
 ```
 
-**One DLL per game build (GH #800).** The mod compiles for either the stable
-build (v0.107.1) or the beta (v0.111.0), but a DLL only runs on the build it was
-compiled for: several game members it calls changed signature between the two
+**One DLL for every game build (GH #800).** The same DLL runs on the stable
+build (v0.107.1) and the beta (v0.111.0), whichever one it was compiled
+against. A few game members it calls changed signature between the two
 (`RunRngSet.Seed` uint → ulong, `Rng.Counter` removed,
-`CardSelectCmd.UseSelector` gained a parameter), which compiles from source
-either way and then throws `MissingMethodException` at runtime on the other
-build. The csproj's `GameVersion` property picks the build — by default the one
-the install's `release_info.json` names, else v0.107.1 — and v0.111.0 defines
-`GAME_V0111` for the few `#if`-guarded differences. Override it with
-`dotnet build -p:GameVersion=v0.111.0`. At startup the mod logs the running
-build next to the one it was built for, and warns on a mismatch. Every
+`CardSelectCmd.UseSelector` gained a parameter); a direct call would compile
+either way and then throw `MissingMethodException` on the other build, so
+those go through `SimGameApi.cs`, which looks them up at runtime.
+`tests/compile/build_mod.sh` fails if the DLL does not bind against every
+build in `sts2_binaries/`. At startup the mod logs the running build and warns
+on one outside the supported list. Every
 outbound message carries the running build as `game_version`
 (`PROTOCOL.md` section 1); the advisor builds its engine for it and refuses a
 build it does not support.
@@ -154,7 +153,8 @@ settings. Fields (authoritative docs: `SimConfig.cs`):
 |---|---|---|
 | `port` | `9002` | TCP listen port (loopback only) |
 | `auto_start` | `false` | Launch Autopilot at boot (the unattended sweep lane). `false` = Off, or Advisor if the "Turn the coach on when the game starts" setting is ticked (default; Windows only) |
-| `advisor_autoplay` | `false` | Testing: once a run is live, switch to Advisor mode and toggle AI autoplay (the F8+F7 path) unattended |
+| `advisor_autoplay` | `false` | Testing: once a run is live, switch to Advisor mode and toggle AI autoplay (the F8+F7 path) unattended. Forces `pause_on` empty |
+| `pause_on` | `"unsupported"` | Where F7 stops and hands the decision back (F7 resumes). `unsupported` = decisions the AI has no real policy for (the advisor's `hand_back`, the crystal sphere); add event ids / `advice_for` values to always play those yourself, e.g. `"unsupported, Neow"`; `""` = never pause. A JSON array works too |
 | `character` / `ascension` / `seed` | `"Ironclad"` / `0` / `null` | Run setup for Autopilot; `seed: null` = fresh random seed |
 | `num_runs` | `1` | Runs to play in sequence before going idle |
 | `resume_run` | `false` | Click Continue instead of starting a new run (recover a run after a game crash) |

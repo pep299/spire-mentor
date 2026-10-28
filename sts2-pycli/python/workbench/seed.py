@@ -145,3 +145,18 @@ def run_seed_hash(seed: str, game_version: str = "v0.107.1") -> int:
     if game_version == "v0.111.0" and seed.startswith("old"):
         return deterministic_hash_code_old(seed[3:]) & _M32
     return seed_hash(seed, game_version)
+
+
+# The largest integer a browser's ``JSON.parse`` holds exactly (2^53 - 1).
+_JSON_SAFE_MAX = (1 << 53) - 1
+
+
+def json_exact_seed(seed: int) -> int | str:
+    """A run seed as the browser can read it back exactly (GH #878).
+
+    v0.111.0 run seeds are ``ulong``s, and ``JSON.parse`` rounds any number
+    past 2^53. Those go out as a decimal string; every smaller seed (all of
+    v0.107.1's ``uint``s) stays a number, so its bytes don't change. Matches
+    ``seed_json`` in ``sts2-workbench/src/game.rs``.
+    """
+    return seed if 0 <= seed <= _JSON_SAFE_MAX else str(seed)

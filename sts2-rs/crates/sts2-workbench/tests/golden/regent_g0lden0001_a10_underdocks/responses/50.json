@@ -1516,8 +1516,8 @@
    "combat_log": [],
    "decision": "combat_play",
    "details": [
-    "Spawned: Corpse Slug",
-    "Spawned: Corpse Slug"
+    "Spawned: Corpse Slug #1",
+    "Spawned: Corpse Slug #2"
    ],
    "error": false,
    "floor": 4,
@@ -1603,15 +1603,15 @@
    "decision": "combat_play",
    "details": [
     "Play Falling Star",
-    "Corpse Slug HP 27→19 (−8)",
-    "Corpse Slug +1 Weak",
-    "Corpse Slug +1 Vulnerable"
+    "Corpse Slug #1 HP 27→19 (−8)",
+    "Corpse Slug #1 +1 Weak",
+    "Corpse Slug #1 +1 Vulnerable"
    ],
    "error": false,
    "floor": 4,
    "id": 35,
    "idx": 35,
-   "label": "Play Falling Star → Corpse Slug",
+   "label": "Play Falling Star → Corpse Slug #1",
    "parent_id": 34,
    "turn": 1,
    "value": null
@@ -1733,14 +1733,14 @@
    "decision": "combat_play",
    "details": [
     "Play Ultimate Strike",
-    "Corpse Slug HP 19→0  ☠ defeated",
-    "Corpse Slug +5 Strength"
+    "Corpse Slug #1 HP 19→0  ☠ defeated",
+    "Corpse Slug #2 +5 Strength"
    ],
    "error": false,
    "floor": 4,
    "id": 37,
    "idx": 37,
-   "label": "Play Ultimate Strike → Corpse Slug",
+   "label": "Play Ultimate Strike → Corpse Slug #1",
    "parent_id": 36,
    "turn": 1,
    "value": null

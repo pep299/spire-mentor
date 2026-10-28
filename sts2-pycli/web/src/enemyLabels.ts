@@ -10,20 +10,29 @@ import type { Enemy } from "./api";
  * the enemies sharing it — "Louse #2" — rather than by the slot index, which
  * is the thing that was unreadable in the first place.
  *
+ * The grouping name is the enemy's `name`, else its `id`, else "enemy <i>"
+ * (its list position) — the same rule as `python/enemy_labels.py` and the
+ * Rust `sts2-workbench` `enemy_labels.rs`. The view lists live enemies only,
+ * so every entry is counted.
+ *
  * Falls back to "enemy N" when the caller has no enemy list, e.g. a search
  * tree opened from a step recorded without one.
  */
-export function enemyLabeller(enemies: Enemy[] | undefined): (index: number) => string {
+export function enemyLabeller(
+  enemies: (Pick<Enemy, "index" | "name"> & { id?: string | null })[] | undefined,
+): (index: number) => string {
   const byIndex = new Map<number, string>();
   if (enemies && enemies.length > 0) {
+    const names = enemies.map((e, i) => e.name || e.id || `enemy ${i}`);
     const total = new Map<string, number>();
-    for (const e of enemies) total.set(e.name, (total.get(e.name) ?? 0) + 1);
+    for (const n of names) total.set(n, (total.get(n) ?? 0) + 1);
     const seen = new Map<string, number>();
-    for (const e of enemies) {
-      const nth = (seen.get(e.name) ?? 0) + 1;
-      seen.set(e.name, nth);
-      byIndex.set(e.index, (total.get(e.name) ?? 0) > 1 ? `${e.name} #${nth}` : e.name);
-    }
+    enemies.forEach((e, i) => {
+      const name = names[i];
+      const nth = (seen.get(name) ?? 0) + 1;
+      seen.set(name, nth);
+      byIndex.set(e.index, (total.get(name) ?? 0) > 1 ? `${name} #${nth}` : name);
+    });
   }
   return (index: number) => byIndex.get(index) ?? `enemy ${index}`;
 }

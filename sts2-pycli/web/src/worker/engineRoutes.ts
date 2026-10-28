@@ -139,6 +139,7 @@ const WASM_ROUTES = new Set([
   "POST /api/live/choice-ranker",
   "POST /api/live/auto-action",
   "POST /api/live/last-move-regret",
+  "POST /api/live/last-turn-grade",
   "POST /api/live/last-choice-grade",
   "POST /api/live/regret-review",
   "POST /api/live/card-advisor",
@@ -158,6 +159,7 @@ const WASM_ROUTES = new Set([
   // The replay viewer + deck analysis (M4).
   "GET /api/timeline",
   "GET /api/map",
+  "GET /api/coach",
   "GET /api/deck/trend",
   "POST /api/deck/reward-preview",
   "GET /api/live/deck-analysis",

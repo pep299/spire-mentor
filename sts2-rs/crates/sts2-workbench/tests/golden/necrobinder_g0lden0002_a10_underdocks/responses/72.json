@@ -65,7 +65,7 @@
    "parent": null,
    "proven_loss": false,
    "proven_win": true,
-   "q": 0.506,
+   "q": 0.5063,
    "summary": {
     "enemies": [
      {
@@ -82,7 +82,7 @@
    },
    "target_index": null,
    "ties": 0,
-   "value_sum": 24.2867,
+   "value_sum": 24.3045,
    "visits": 48,
    "wins": 37
   },
@@ -275,7 +275,7 @@
    "parent": 0,
    "proven_loss": false,
    "proven_win": true,
-   "q": 0.4575,
+   "q": 0.459,
    "summary": {
     "enemies": [
      {
@@ -292,7 +292,7 @@
    },
    "target_index": 0,
    "ties": 0,
-   "value_sum": 5.4904,
+   "value_sum": 5.5083,
    "visits": 12,
    "wins": 9
   },

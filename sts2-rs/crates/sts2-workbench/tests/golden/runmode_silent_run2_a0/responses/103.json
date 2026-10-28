@@ -9,14 +9,14 @@
    "progress": {
     "act": 1,
     "floor": 5,
-    "hp": 61,
+    "hp": 66,
     "max_hp": 70
    },
    "run_mode": true,
    "saved_at": "2026-01-01T00:00:00Z",
    "schema_version": 1,
    "seed": "2",
-   "step_count": 68
+   "step_count": 71
   }
  ]
 }

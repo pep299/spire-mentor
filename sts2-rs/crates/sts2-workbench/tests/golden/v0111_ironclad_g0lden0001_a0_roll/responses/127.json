@@ -9,7 +9,7 @@
   "act_name": "Overgrowth",
   "bg_col": 0,
   "bg_row": 1,
-  "bg_seed": 11180935036767329045,
+  "bg_seed": "11180935036767329045",
   "floor": 1,
   "step_no": 0,
   "turn": 1
@@ -24,7 +24,7 @@
   "ascension": 0,
   "bg_col": 0,
   "bg_row": 1,
-  "bg_seed": 11180935036767329045,
+  "bg_seed": "11180935036767329045",
   "decision": "combat_play",
   "discard_pile": [],
   "discard_pile_count": 0,

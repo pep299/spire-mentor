@@ -11,6 +11,8 @@ import json
 from pathlib import Path
 from typing import Any, TypedDict
 
+from workbench.seed import json_exact_seed
+
 
 class Step(TypedDict):
     idx: int
@@ -96,12 +98,72 @@ def _graft_path_plan(state: dict[str, Any], advice: Any) -> None:
     }
 
 
+class _CoachCollector:
+    """The live coach's records in a run log (``type: "coach"`` lines,
+    ``realgame_coach``). Twin of ``CoachCollector`` in ``runlog.rs``.
+
+    Records attach to the step their ``log_idx`` names, never to the preceding
+    ``state`` line: a turn's grade lands after later states, the autopsy after
+    the terminal one. A ``withdraw {ids}`` drops those ids wherever it sits; an
+    id emitted again after it comes back.
+    """
+
+    def __init__(self) -> None:
+        # id -> record in file order; a re-emitted id keeps its slot.
+        self.records: dict[str, dict[str, Any]] = {}
+        self.autopsy: dict[str, Any] | None = None
+        self._anon = 0
+
+    def push(self, data: dict[str, Any]) -> None:
+        kind = data.get("kind")
+        if kind == "withdraw":
+            ids = {i for i in data.get("ids") or [] if isinstance(i, str)}
+            for i in ids:
+                self.records.pop(i, None)
+            if self.autopsy is not None and self.autopsy.get("id") in ids:
+                self.autopsy = None
+        elif kind == "autopsy":
+            self.autopsy = data
+        elif kind in ("turn", "choice", "recap"):
+            rid = data.get("id")
+            if not isinstance(rid, str):
+                self._anon += 1
+                rid = f"anon:{self._anon}"
+            self.records[rid] = data
+
+    def to_dict(self) -> dict[str, Any]:
+        """``{records, by_step, autopsy}``: ``by_step`` maps a step index to the
+        ids of the graded records on it (an ``ungraded`` turn is listed, not
+        stepped)."""
+        by_step: dict[int, list[str]] = {}
+        for rid, r in self.records.items():
+            idx = r.get("log_idx")
+            if r.get("verdict") == "ungraded" or not isinstance(idx, int) or idx < 0:
+                continue
+            by_step.setdefault(idx, []).append(rid)
+        return {
+            "records": list(self.records.values()),
+            "by_step": {str(k): v for k, v in sorted(by_step.items())},
+            "autopsy": self.autopsy,
+        }
+
+
 class TimelineStore:
     """Ordered, seekable collection of :class:`Step`."""
 
-    def __init__(self, steps: list[Step], head: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        steps: list[Step],
+        head: dict[str, Any] | None = None,
+        coach: dict[str, Any] | None = None,
+    ) -> None:
         self._steps = steps
         self._head = head or {}
+        self._coach = coach or _CoachCollector().to_dict()
+
+    def coach(self) -> dict[str, Any]:
+        """The run log's live-coach records: ``{records, by_step, autopsy}``."""
+        return self._coach
 
     def __len__(self) -> int:
         return len(self._steps)
@@ -234,6 +296,7 @@ class TimelineStore:
         mcts_by_state: dict[int, dict[str, Any]] = {}
         wpa_by_state: dict[int, dict[str, Any]] = {}
         clog_by_state: dict[int, list[dict[str, Any]]] = {}
+        coach = _CoachCollector()
         head: dict[str, Any] = {}
         # errors="replace": a single mojibake byte (e.g. a cp1252-encoded
         # middle dot from a pre-2026-08-21 live-advisor log) must not make a
@@ -263,6 +326,8 @@ class TimelineStore:
                 # to the preceding state: the decision the action answered.
                 if states:
                     clog_by_state[len(states) - 1] = entry.get("data") or []
+            elif entry.get("type") == "coach":
+                coach.push(entry.get("data") or {})
             elif entry.get("type") == "meta":
                 data = entry.get("data") or {}
                 # The head meta (not the trailing summary) carries fixture_path /
@@ -321,6 +386,9 @@ class TimelineStore:
             # it, and re-deriving would quietly regrade the agent's own numbers.
             scores = [
                 {
+                    # The HP-aware grade needs these; only the live writers
+                    # record them (#850).
+                    **{k: r[k] for k in ("mean_final_hp", "hp_sd", "hp_n") if k in r},
                     "stable_idx": r.get("stable_idx"),
                     "action": r.get("action") or r.get("action_label"),
                     "target_index": r.get("target_index"),
@@ -358,11 +426,11 @@ class TimelineStore:
                         "act_name": act_name,
                         # Absent together: the room falls back to its stable
                         # per-floor hash unless it has all three.
-                        "bg_seed": run_seed,
+                        "bg_seed": None if run_seed is None else json_exact_seed(run_seed),
                         "bg_row": node.get("row") if node else None,
                         "bg_col": node.get("col") if node else None,
                         "advice": _compact_advice(advice),
                     },
                 )
             )
-        return cls(steps, head=head)
+        return cls(steps, head=head, coach=coach.to_dict())

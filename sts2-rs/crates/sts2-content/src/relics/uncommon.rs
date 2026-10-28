@@ -130,7 +130,8 @@ pub fn install_pool() {
     // PenNib.cs: BeforeCardPlayed increments modulo ten and marks that
     // card source; an awaited selection must keep the mark until its tail.
     sts2_core::relic_effects::register_before_card_played(
-        RelicId::PenNib, listener_pen_nib_before_card_played,
+        RelicId::PenNib,
+        listener_pen_nib_before_card_played,
     );
     register_modify_damage_multiplicative(
         RelicId::PenNib,
@@ -1072,19 +1073,36 @@ fn listener_pen_nib_modify_damage(state: &CombatState, ctx: &hooks::DamageCtx) -
         Some(marked) => source == marked,
         None => !state.player.play.contains(&source) && relic.counter == PEN_NIB_THRESHOLD - 1,
     };
-    if active { DamageMul::new(2, 1) } else { DamageMul::ONE }
+    if active {
+        DamageMul::new(2, 1)
+    } else {
+        DamageMul::ONE
+    }
 }
 
-fn listener_pen_nib_before_card_played(state: &mut CombatState, ctx: &CardEventCtx) -> EffectResult {
-    let Some(uid) = ctx.card_uid else { return EffectResult::NotImplemented; };
-    if !sts2_core::card_by_uid(&state.cards, uid).is_some_and(|c| c.card_type == sts2_core::cards::CardType::Attack) {
+fn listener_pen_nib_before_card_played(
+    state: &mut CombatState,
+    ctx: &CardEventCtx,
+) -> EffectResult {
+    let Some(uid) = ctx.card_uid else {
+        return EffectResult::NotImplemented;
+    };
+    if !sts2_core::card_by_uid(&state.cards, uid)
+        .is_some_and(|c| c.card_type == sts2_core::cards::CardType::Attack)
+    {
         return EffectResult::NotImplemented;
     }
-    let Some(relic) = state.relics.iter_mut().find(|r| !r.is_melted && r.kind == RelicKind::PenNib) else {
+    let Some(relic) = state
+        .relics
+        .iter_mut()
+        .find(|r| !r.is_melted && r.kind == RelicKind::PenNib)
+    else {
         return EffectResult::NotImplemented;
     };
     relic.counter = (relic.counter.rem_euclid(PEN_NIB_THRESHOLD) + 1) % PEN_NIB_THRESHOLD;
-    if relic.counter == 0 { state.combat_log.pen_nib_attack_to_double = Some(uid); }
+    if relic.counter == 0 {
+        state.combat_log.pen_nib_attack_to_double = Some(uid);
+    }
     EffectResult::Resolved
 }
 

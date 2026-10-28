@@ -132,8 +132,9 @@ test("no server: start, play a few decisions, reload, seek, save and load", asyn
 
 test("advisors run in the worker: hint chips, play best, the EV stream", async ({ page }) => {
   await startRun(page, "E2E2");
-  // Static capabilities now advertise the advisors: the hints switch is offered.
-  await expect(page.getByRole("button", { name: /hints/ })).toBeVisible();
+  // Static capabilities now advertise the advisors: the advice-style switch is
+  // offered, in Coach style by default.
+  await expect(page.locator(".wb-chips").getByRole("button", { name: "🎓 coach" })).toBeVisible();
   // The streaming route, end to end through the worker: NDJSON frames in
   // order, terminal `result`, at a budget that finishes in a moment.
   const frames = await page.evaluate(async () => {
@@ -172,9 +173,9 @@ test("run mode in the worker: the PPO panel at Neow, play to end, autobattle", a
   await expect(page.getByRole("button", { name: /play to end \(F\)/ }).first()).toBeVisible();
   await expect(page.getByRole("button", { name: /autobattle/ })).toBeVisible();
   // The worker fetched /ppo/<champion>.onnx before the start and the engine
-  // scored Neow with it: with hints on, the PPO panel shows V(s) and one
+  // scored Neow with it: in Hints style, the PPO panel shows V(s) and one
   // starred option (the net's pick), not the "no PPO net" line.
-  await page.getByRole("button", { name: /hints/ }).click();
+  await page.locator(".wb-chips").getByRole("button", { name: "🎓 coach" }).click();
   await expect(page.getByText(/^V\(s\) = -?\d+\.\d{3}$/)).toBeVisible({ timeout: 120_000 });
   await expect(page.getByText(/PPO net unavailable/)).toHaveCount(0);
   // F plays the run with the native agent (combat MCTS + the PPO brain):
@@ -230,4 +231,27 @@ test("the replay viewer in the worker: end run → review the recorded log → p
   await expect.poll(() => historyRows(page).count(), { timeout: 120_000 }).toBeGreaterThan(0);
   await expect(await menuItem(page, "Run", "End run")).toBeVisible();
   await closeMenu(page);
+});
+
+test("Coach style (the default): nothing unprompted, P peeks, End turn grades the turn", async ({ page }) => {
+  await startRun(page, "E2E2");
+  await reachFirstCombat(page);
+  // Coach: no win-% badges on the hand until something asks for them.
+  await expect(page.locator(".gs-badge.gs-win")).toHaveCount(0);
+  // P reveals the AI's next action, one line, and still no scores.
+  await page.keyboard.press("p");
+  const peek = page.getByTestId("peek-banner");
+  await expect(peek).toContainText("AI's next action:", { timeout: 60_000 });
+  await expect(page.locator(".gs-badge.gs-win")).toHaveCount(0);
+  // No grade before the turn ends: combat is graded per turn, never per card.
+  await expect(page.getByTestId("turn-chip")).toHaveCount(0);
+  // End turn with the hand untouched: the turn is graded (a chip, unless the
+  // grade is a toss-up or silent). The verdict itself is pinned in Rust
+  // (last_turn_grade_wasted_turn_is_costly); here the page must take it
+  // without crashing, and the peek is gone with the turn.
+  const rows = await historyRows(page).count();
+  await page.keyboard.press("e");
+  await expect.poll(() => historyRows(page).count(), { timeout: 60_000 }).toBeGreaterThan(rows);
+  await expect(peek).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /play best \(G\)/ })).toBeVisible({ timeout: 60_000 });
 });

@@ -9,6 +9,7 @@ import {
   gameVersionLabel,
   payloadGameVersion,
   runLogGameVersion,
+  versionedPublicPath,
 } from "../gameVersion";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -139,5 +140,15 @@ describe("bug report engine_build", () => {
       { api: replayApi({ floor: 3 }, `${JSON.stringify({ type: "meta", data: {} })}\n`), ...identity },
     );
     expect(plain.meta.engine_build).toBe("v0.107.1");
+  });
+});
+
+describe("versionedPublicPath (GH #877)", () => {
+  it("keeps the default build's table where it always was", () => {
+    expect(versionedPublicPath("sfx_map.json", null)).toBe("/sfx_map.json");
+    expect(versionedPublicPath("sfx_map.json", DEFAULT_GAME_VERSION)).toBe("/sfx_map.json");
+  });
+  it("puts another build's under its version dir", () => {
+    expect(versionedPublicPath("card_text.json", "v0.111.0")).toBe("/v0.111.0/card_text.json");
   });
 });

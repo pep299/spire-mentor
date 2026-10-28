@@ -1,3 +1,4 @@
+import { gameVersionBody } from "../gameVersion";
 import { useMemo, type ReactNode } from "react";
 import Menu, { type MenuItemSpec } from "./Menu";
 import CommandPalette, { type PaletteEntry } from "./CommandPalette";
@@ -8,7 +9,7 @@ import type { Command } from "./commands";
  * asks — "what am I looking at", "what is the AI doing for me", "what can I
  * do to this run" — instead of one row of every button.
  *
- *   [Live | Replay | MCTS]  [💡 hints] [⚔️ autobattle] [📉 coach]  …context…  [Run ▾] [Analyze ▾] [Tools ▾]  act · floor  ▤
+ *   [Live | Replay | MCTS]  [🎓 coach | 💡 hints] [⚔️ autobattle]  …context…  [Run ▾] [Analyze ▾] [Tools ▾]  act · floor  ▤
  *
  *  - The VIEW switch and the three PERSISTENT AI CHIPS are always on the
  *    bar: their state matters at a glance, and there are at most four.
@@ -39,7 +40,8 @@ export interface TopBarProps {
   commands: Command[];
 
   /** `undefined` ⇒ not offered in this mode / build. */
-  chips: { hints?: Chip; autobattle?: Chip; coach?: Chip };
+  /** `hints` is the advice-style switch: on = Hints, off = Coach. */
+  chips: { hints?: Chip; autobattle?: Chip };
 
   /** Replay's context controls; only rendered in replay mode. */
   replay?: {
@@ -57,6 +59,9 @@ export interface TopBarProps {
 
   tools: {
     simlabLink: boolean;
+    /** The shown run's game build (GH #877): the synergy catalog opens with
+     *  that build's card text. Absent / the default = the default build. */
+    gameVersion?: string | null;
     debug: { on: boolean; toggle: () => void };
     onHelp: () => void;
     /** Browser build only: the "Live game…" connection dialog (GH #709). */
@@ -93,6 +98,13 @@ export function runMenuItems(cmds: Command[]): (MenuItemSpec | null)[] {
   return danger.length ? [...safe, null, ...danger] : safe;
 }
 
+/** The synergy catalog's URL for game build `v` (`?game_version=` only for a
+ *  non-default build, read by `catalog/main.ts`). */
+function catalogHref(v: string | null | undefined): string {
+  const q = gameVersionBody(v).game_version;
+  return q ? `/catalog.html?game_version=${encodeURIComponent(q)}` : "/catalog.html";
+}
+
 export default function TopBar(p: TopBarProps) {
   const runItems = useMemo(() => runMenuItems(p.commands), [p.commands]);
   const analyzeItems = useMemo(
@@ -106,7 +118,7 @@ export default function TopBar(p: TopBarProps) {
       ? [{ id: "simlab", label: "🧪 SimLab ↗", href: "/simlab.html",
           title: "SimLab — batch combat statistics (opens in a new tab so your run isn't disturbed)" }]
       : []),
-    { id: "synergies", label: "⚡ Synergies ↗", href: "/catalog.html",
+    { id: "synergies", label: "⚡ Synergies ↗", href: catalogHref(p.tools.gameVersion),
       title: "Card Synergy Catalog — pair synergies per character (opens in a new tab so your run isn't disturbed)" },
     ...(p.tools.onBridge
       ? [{ id: "bridge", onSelect: p.tools.onBridge,
@@ -136,9 +148,8 @@ export default function TopBar(p: TopBarProps) {
     }
     out.push({ id: "view-mcts", group: "View", label: "📊 MCTS Runs", disabledReason: p.mode === "mcts" ? "already here" : undefined, run: () => p.setMode("mcts") });
     for (const [id, chip, label] of [
-      ["hints", p.chips.hints, "💡 hints"],
+      ["hints", p.chips.hints, "💡 hints style (off = 🎓 coach)"],
       ["autobattle", p.chips.autobattle, "⚔️ autobattle"],
-      ["coach", p.chips.coach, "📉 coach"],
     ] as const) {
       if (chip) out.push({ id, group: "AI", label, title: chip.title, checked: chip.on, run: chip.toggle });
     }
@@ -148,12 +159,12 @@ export default function TopBar(p: TopBarProps) {
         disabledReason: c.busy ? "in progress" : c.disabledReason, run: c.run });
     }
     if (p.tools.simlabLink) out.push({ id: "simlab", group: "Tools", label: "🧪 SimLab ↗", run: () => window.open("/simlab.html", "_blank", "noopener") });
-    out.push({ id: "synergies", group: "Tools", label: "⚡ Synergies ↗", run: () => window.open("/catalog.html", "_blank", "noopener") });
+    out.push({ id: "synergies", group: "Tools", label: "⚡ Synergies ↗", run: () => window.open(catalogHref(p.tools.gameVersion), "_blank", "noopener") });
     out.push({ id: "debug", group: "Tools", label: "🐞 debug log", checked: p.tools.debug.on, run: p.tools.debug.toggle });
     out.push({ id: "help", group: "Tools", label: "keyboard shortcuts", shortcut: "?", run: p.tools.onHelp });
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [p.mode, p.showViewToggle, p.replayCount, p.chips.hints, p.chips.autobattle, p.chips.coach, p.commands, p.tools.simlabLink, p.tools.debug.on]);
+  }, [p.mode, p.showViewToggle, p.replayCount, p.chips.hints, p.chips.autobattle, p.commands, p.tools.simlabLink, p.tools.debug.on, p.tools.gameVersion]);
 
   const chip = (id: string, c: Chip | undefined, off: string, on: string) => c && (
     <button key={id} onClick={c.toggle} aria-pressed={c.on} title={c.title}
@@ -181,11 +192,10 @@ export default function TopBar(p: TopBarProps) {
         </span>
 
         {/* Persistent AI switches */}
-        {(p.chips.hints || p.chips.autobattle || p.chips.coach) && (
+        {(p.chips.hints || p.chips.autobattle) && (
           <span className="wb-chips">
-            {chip("hints", p.chips.hints, "💡 hints", "💡 hints ✓")}
+            {chip("hints", p.chips.hints, "🎓 coach", "💡 hints")}
             {chip("autobattle", p.chips.autobattle, "⚔️ autobattle", "⚔️ autobattle ✓")}
-            {chip("coach", p.chips.coach, "📉 coach", "📉 coach ✓")}
           </span>
         )}
 

@@ -1,10 +1,10 @@
 {
  "details": [
   "You HP 1→0 (−1)",
-  "Wriggler HP 20→0  ☠ defeated",
-  "Wriggler HP 18→0  ☠ defeated",
-  "Wriggler HP 19→0  ☠ defeated",
-  "Wriggler HP 21→0  ☠ defeated"
+  "Wriggler #1 HP 20→0  ☠ defeated",
+  "Wriggler #2 HP 18→0  ☠ defeated",
+  "Wriggler #3 HP 19→0  ☠ defeated",
+  "Wriggler #4 HP 21→0  ☠ defeated"
  ],
  "error": null,
  "label": "End turn",

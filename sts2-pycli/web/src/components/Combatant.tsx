@@ -27,6 +27,19 @@ interface PlayerLike {
   stolen_cards?: Enemy["stolen_cards"];
 }
 
+/** What a nameplate shows for `name` with board label `label`: the bare name
+ *  — debug size suffixes ("Twig Slime (M)") stay OFF the scene — plus the
+ *  label's duplicate number (" #2"), so the scene tells same-named enemies
+ *  apart. `full` (the whole label, size tag included) is the tooltip and the
+ *  accessible name whenever the visible text dropped or added anything. */
+export function nameplateText(name: string, label?: string): { text: string; full?: string } {
+  const full = label ?? name;
+  const dup = label && label !== name && label.startsWith(name) ? label.slice(name.length) : "";
+  const m = /\s*\((?:XS|S|M|L|XL|B)\)\s*$/.exec(name);
+  const text = (m ? name.slice(0, m.index) : name) + dup;
+  return { text, full: text !== full ? full : undefined };
+}
+
 /** The game's OWN intent art (images/intent_atlas/), for the kinds the server
  *  sends no `intent_image` for. r4 drew these as text glyphs, which is how the
  *  second slime ended up wearing a bare white diamond (❖, the StatusCard
@@ -214,8 +227,13 @@ export function dyingChromeFadeSeconds(
   return dissolve?.effect.dissolveSeconds ?? deathAnimSeconds ?? DEFAULT_DYING_FADE_SECONDS;
 }
 
-export default function Combatant({ c, isEnemy, dataIndex, onClick, onHoverChange, hotkey, anchor, animation, actionAnim, actionAnimCandidates, actionNonce, holdLast, dying, dissolve, deathAnimSeconds, effects, noSprite, maxBodyH, pxPerScene = 1, orbs, orbSlots, locStrings }: {
+export default function Combatant({ c, isEnemy, dataIndex, onClick, onHoverChange, hotkey, anchor, animation, actionAnim, actionAnimCandidates, actionNonce, holdLast, dying, dissolve, deathAnimSeconds, effects, noSprite, maxBodyH, pxPerScene = 1, orbs, orbSlots, locStrings, label }: {
   c: PlayerLike; isEnemy: boolean; dataIndex?: number; onClick?: () => void;
+  /** The enemy's board label (`enemyLabeller`): `c.name`, plus `" #k"` when
+   *  several live enemies share the name. The nameplate shows the number so
+   *  three Two-Tailed Rats say WHICH one; absent = the plain name (the
+   *  player, a dying corpse no longer in the live list). */
+  label?: string;
   // Hover enter (true) / leave (false) — drives the live damage preview on the
   // pending attack card while the player chooses a target.
   onHoverChange?: (hovering: boolean) => void;
@@ -696,11 +714,10 @@ export default function Combatant({ c, isEnemy, dataIndex, onClick, onHoverChang
           bare name; the full name (with the tag) lives on the tooltip and
           the accessible label so nothing is lost. */}
       {(() => {
-        const m = /\s*\((?:XS|S|M|L|XL|B)\)\s*$/.exec(c.name);
-        const displayName = m ? c.name.slice(0, m.index) : c.name;
+        const { text, full } = nameplateText(c.name, label);
         return (
-          <div className="gs-nameplate" title={m ? c.name : undefined}
-            aria-label={m ? c.name : undefined}>{displayName}</div>
+          <div className="gs-nameplate" title={full}
+            aria-label={full}>{text}</div>
         );
       })()}
       {c.powers && c.powers.length > 0 && (

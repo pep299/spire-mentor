@@ -135,7 +135,7 @@ def main() -> None:
     runs = load_corpus(args.corpus)
     rep = anatomy(runs)
     if args.json:
-        with open(args.json, "w") as f:
+        with open(args.json, "w", encoding="utf-8") as f:
             json.dump(rep, f, indent=1)
     print(f"runs={rep['n_runs']} losses={rep['n_losses']} wr={rep['win_rate']}")
     print(f"deaths by act: {rep['deaths_by_act']}")

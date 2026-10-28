@@ -12,24 +12,9 @@
  "scores": [
   {
    "action": "Cinder",
-   "hp_n": 6,
-   "is_best": true,
-   "losses": 0,
-   "low_confidence": false,
-   "mean_final_hp": 30.6667,
-   "q": 1.1093,
-   "q_saturated": false,
-   "stable_idx": 2,
-   "target_index": 2,
-   "ties": 0,
-   "visits": 6,
-   "win_prob": 1.0,
-   "wins": 6
-  },
-  {
-   "action": "Cinder",
    "hp_n": 7,
-   "is_best": false,
+   "hp_sd": 6.6486,
+   "is_best": true,
    "losses": 0,
    "low_confidence": false,
    "mean_final_hp": 30.2857,
@@ -43,8 +28,26 @@
    "wins": 7
   },
   {
+   "action": "Cinder",
+   "hp_n": 6,
+   "hp_sd": 5.2175,
+   "is_best": false,
+   "losses": 0,
+   "low_confidence": false,
+   "mean_final_hp": 30.6667,
+   "q": 1.1093,
+   "q_saturated": false,
+   "stable_idx": 2,
+   "target_index": 2,
+   "ties": 0,
+   "visits": 6,
+   "win_prob": 1.0,
+   "wins": 6
+  },
+  {
    "action": "Molten Fist",
    "hp_n": 6,
+   "hp_sd": 7.0809,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
@@ -61,6 +64,7 @@
   {
    "action": "Strike",
    "hp_n": 7,
+   "hp_sd": 5.7036,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
@@ -77,6 +81,7 @@
   {
    "action": "Molten Fist",
    "hp_n": 6,
+   "hp_sd": 5.099,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
@@ -93,6 +98,7 @@
   {
    "action": "Defend",
    "hp_n": 6,
+   "hp_sd": 7.8049,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
@@ -109,6 +115,7 @@
   {
    "action": "Strike",
    "hp_n": 6,
+   "hp_sd": 7.2896,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
@@ -125,6 +132,7 @@
   {
    "action": "end turn",
    "hp_n": 4,
+   "hp_sd": 8.2272,
    "is_best": false,
    "losses": 1,
    "low_confidence": false,

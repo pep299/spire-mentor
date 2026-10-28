@@ -241,7 +241,7 @@ def main() -> int:
     x, y, names = design(rows)
     coefs = fit_logistic(x, y)
     table = build_table(rows, coefs, names)
-    Path(args.out).write_text(json.dumps(table, indent=1) + "\n")
+    Path(args.out).write_text(json.dumps(table, indent=1) + "\n", encoding="utf-8")
     print(json.dumps(table["diagnostics"], indent=1))
     print(f"default_oc={table['default_oc']} -> wrote {args.out}")
     return 0

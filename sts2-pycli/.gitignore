@@ -90,3 +90,10 @@ data/runs/
 # (python/ppo/wheel_guard.py), created next to wherever it saves: with the
 # default --save-path that is sts2-pycli/ itself, and data/ppo/ is tracked.
 sts2_rs-pin/
+# Turn-plan G0 label shards and scorer weights (GH #830): ~100 MB, reproducible
+# from docs/experiments/2026-10-22-turnplan-g0.md; the small report files live there.
+experiments/turnplan-g0/
+# Turn-plan pro-replay feasibility shards (docs/experiments/2026-10-22-turnplan-pro-feasibility.md).
+experiments/turnplan-pro/
+# GH #830 elite-gap diagnosis runs (docs/experiments/2026-10-23-830-elite-gap.md).
+experiments/elite-gap/

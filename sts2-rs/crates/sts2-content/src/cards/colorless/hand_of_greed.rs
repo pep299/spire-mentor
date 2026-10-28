@@ -30,12 +30,11 @@ pub(crate) fn play_hand_of_greed(
 ) -> EffectResult {
     let t = target.expect("HandOfGreed: Enemy-targeted");
     let should_trigger_fatal = sts2_core::card_effects::should_owner_death_trigger_fatal(state, t);
-    let _ = deal_damage_player_to_enemy_full(state, t, current_damage(state));
-    let killed = state
-        .creatures
-        .iter()
-        .find(|c| c.id == t.0)
-        .is_some_and(|c| c.current_hp <= 0);
+    // C# `HandOfGreed.cs:58` reads `DamageResult.WasTargetKilled` (THIS hit
+    // took a living target to 0, `Creature.cs:447`), so a target revived inside
+    // the hit (the pressurized Waterfall Giant) still counts as killed.
+    let killed =
+        deal_damage_player_to_enemy_full(state, t, current_damage(state)).was_target_killed;
     if should_trigger_fatal && killed {
         // C# HandOfGreed.cs OnUpgrade bumps the Gold var 20->25. Bead `sts2-rs-v2mbn`.
         let gold = if current_upgraded(state) {

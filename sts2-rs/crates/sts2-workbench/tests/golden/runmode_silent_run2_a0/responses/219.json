@@ -1,0 +1,187 @@
+{
+ "available": true,
+ "caveats": [
+  "The outlook score is the AI's shaped-return estimate of the run — a relative signal, not a win percentage.",
+  "A swing mixes your choice with the luck revealed after it (what the shop stocked, what the reward offered, how the fight rolled) — use “verify” to check whether the choice itself mattered.",
+  "Judgments are relative to the AI's own play style; a line that is weak for the AI may still be fine for a human plan."
+ ],
+ "points": [
+  {
+   "act": 1,
+   "decision": "event_choice",
+   "delta_prev": 0.0,
+   "floor": 0,
+   "idx": 0,
+   "node_id": null,
+   "taken_label": "Choose: Booming Conch",
+   "value": 0.9873
+  },
+  {
+   "act": 1,
+   "decision": "map_select",
+   "delta_prev": -0.0028,
+   "floor": 0,
+   "idx": 1,
+   "node_id": null,
+   "taken_label": "Map → (2,1)",
+   "value": 0.9844
+  },
+  {
+   "act": 1,
+   "decision": "card_reward",
+   "delta_prev": -0.0394,
+   "floor": 1,
+   "idx": 32,
+   "node_id": null,
+   "taken_label": "Take Snakebite",
+   "value": 0.9451
+  },
+  {
+   "act": 1,
+   "decision": "shop",
+   "delta_prev": 0.0026,
+   "floor": 2,
+   "idx": 34,
+   "node_id": null,
+   "taken_label": "Buy Finisher",
+   "value": 0.9477
+  },
+  {
+   "act": 1,
+   "decision": "event_choice",
+   "delta_prev": -0.0427,
+   "floor": 3,
+   "idx": 37,
+   "node_id": null,
+   "taken_label": "Choose: Consume",
+   "value": 0.905
+  },
+  {
+   "act": 1,
+   "decision": "card_select",
+   "delta_prev": 0.0005,
+   "floor": 3,
+   "idx": 38,
+   "node_id": null,
+   "taken_label": "Upgrade Strike",
+   "value": 0.9055
+  },
+  {
+   "act": 1,
+   "decision": "card_reward",
+   "delta_prev": -0.1077,
+   "floor": 4,
+   "idx": 62,
+   "node_id": null,
+   "taken_label": "Take Reflex",
+   "value": 0.7978
+  },
+  {
+   "act": 1,
+   "decision": "map_select",
+   "delta_prev": -0.0477,
+   "floor": 4,
+   "idx": 63,
+   "node_id": null,
+   "taken_label": "Map → (2,5)",
+   "value": 0.7501
+  },
+  {
+   "act": 1,
+   "decision": "card_reward",
+   "delta_prev": -0.062,
+   "floor": 5,
+   "idx": 88,
+   "node_id": null,
+   "taken_label": "Take Poisoned Stab",
+   "value": 0.6881
+  },
+  {
+   "act": 1,
+   "decision": "rest_site",
+   "delta_prev": 0.0042,
+   "floor": 6,
+   "idx": 90,
+   "node_id": null,
+   "taken_label": "Choose: Smith",
+   "value": 0.6923
+  },
+  {
+   "act": 1,
+   "decision": "card_select",
+   "delta_prev": 0.0518,
+   "floor": 6,
+   "idx": 91,
+   "node_id": null,
+   "taken_label": "Upgrade Strike",
+   "value": 0.7441
+  },
+  {
+   "act": 1,
+   "decision": "card_reward",
+   "delta_prev": -0.1544,
+   "floor": 7,
+   "idx": 122,
+   "node_id": null,
+   "taken_label": "Take Piercing Wail",
+   "value": 0.5897
+  },
+  {
+   "act": 1,
+   "decision": "event_choice",
+   "delta_prev": -0.0448,
+   "floor": 8,
+   "idx": 124,
+   "node_id": null,
+   "taken_label": "Choose: Eat the Egg",
+   "value": 0.5449
+  }
+ ],
+ "summary": {
+  "biggest_drop": -0.1544,
+  "biggest_gain": 0.0518,
+  "final_value": 0.5449,
+  "first_value": 0.9873,
+  "n_points": 13,
+  "n_turning_points": 3,
+  "won": false
+ },
+ "turning_points": [
+  {
+   "act": 1,
+   "decision": "card_select",
+   "floor": 6,
+   "idx": 91,
+   "message": "floor 6 (card_select): after “Upgrade Strike” your outlook dropped -0.154 (0.744 → 0.590) (spans the fight that followed)",
+   "node_id": null,
+   "swing": -0.1544,
+   "taken_label": "Upgrade Strike",
+   "value_after": 0.5897,
+   "value_before": 0.7441
+  },
+  {
+   "act": 1,
+   "decision": "card_select",
+   "floor": 3,
+   "idx": 38,
+   "message": "floor 3 (card_select): after “Upgrade Strike” your outlook dropped -0.108 (0.906 → 0.798) (spans the fight that followed)",
+   "node_id": null,
+   "swing": -0.1077,
+   "taken_label": "Upgrade Strike",
+   "value_after": 0.7978,
+   "value_before": 0.9055
+  },
+  {
+   "act": 1,
+   "decision": "map_select",
+   "floor": 4,
+   "idx": 63,
+   "message": "floor 4 (map_select): after “Map → (2,5)” your outlook dropped -0.062 (0.750 → 0.688) (spans the fight that followed)",
+   "node_id": null,
+   "swing": -0.062,
+   "taken_label": "Map → (2,5)",
+   "value_after": 0.6881,
+   "value_before": 0.7501
+  }
+ ]
+}

@@ -1,0 +1,858 @@
+{
+ "debug": {
+  "action": "Play Strike+ → Bygone Effigy",
+  "combat_search": {
+   "actions": [
+    {
+     "action": {
+      "action": "play",
+      "card_index": 1,
+      "target_index": 0
+     },
+     "bucket": "likely-win",
+     "hp_n": 10,
+     "hp_sd": 4.128,
+     "is_best": true,
+     "losses": 0,
+     "low_confidence": false,
+     "mean_final_hp": 9.4,
+     "p_loss": 0.0,
+     "p_tie": 0.0,
+     "p_win": 1.0,
+     "q": 1.0333,
+     "q_saturated": false,
+     "ties": 0,
+     "value": 1.0,
+     "value_sum": 10.3331,
+     "visits": 10,
+     "wins": 10
+    },
+    {
+     "action": {
+      "action": "end_turn"
+     },
+     "bucket": "even",
+     "hp_n": 2,
+     "hp_sd": 2.5,
+     "is_best": false,
+     "losses": 1,
+     "low_confidence": false,
+     "mean_final_hp": 2.5,
+     "p_loss": 0.5,
+     "p_tie": 0.0,
+     "p_win": 0.5,
+     "q": -0.0841,
+     "q_saturated": false,
+     "ties": 0,
+     "value": 0.0,
+     "value_sum": -0.1682,
+     "visits": 2,
+     "wins": 1
+    }
+   ],
+   "recommended": {
+    "action": "play",
+    "card_index": 1,
+    "target_index": 0
+   }
+  },
+  "is_combat": true,
+  "phase": "combat",
+  "result": "Advanced",
+  "summary": "combat MCTS → Play Strike+ → Bygone Effigy"
+ },
+ "done": false,
+ "error": null,
+ "over": false,
+ "search": {
+  "action": "Play Strike+ → Bygone Effigy",
+  "enemies": [
+   {
+    "block": 0,
+    "hp": 71,
+    "index": 0,
+    "intents": [
+     {
+      "base_damage": 13,
+      "damage": 23,
+      "modifiers": [
+       {
+        "add": 10,
+        "kind": "power",
+        "name": "STRENGTH",
+        "side": "enemy"
+       }
+      ],
+      "type": "Attack"
+     }
+    ],
+    "kind": "BygoneEffigy",
+    "max_hp": 127,
+    "move_state": "SLASHES",
+    "name": "Bygone Effigy",
+    "powers": [
+     {
+      "amount": 1,
+      "display_amount": 20,
+      "id": "SLOW",
+      "name": "Slow"
+     },
+     {
+      "amount": 7,
+      "display_amount": 7,
+      "id": "POISON",
+      "name": "Poison"
+     },
+     {
+      "amount": 10,
+      "display_amount": 10,
+      "id": "STRENGTH",
+      "name": "Strength"
+     }
+    ],
+    "uid": 2
+   }
+  ],
+  "scores": [
+   {
+    "action": "Strike",
+    "hp_n": 10,
+    "hp_sd": 4.128,
+    "is_best": true,
+    "losses": 0,
+    "low_confidence": false,
+    "mean_final_hp": 9.4,
+    "q": 1.0333,
+    "q_saturated": false,
+    "stable_idx": 1,
+    "target_index": 0,
+    "ties": 0,
+    "visits": 10,
+    "win_prob": 1.0,
+    "wins": 10
+   },
+   {
+    "action": "end turn",
+    "hp_n": 2,
+    "hp_sd": 2.5,
+    "is_best": false,
+    "losses": 1,
+    "low_confidence": false,
+    "mean_final_hp": 2.5,
+    "q": -0.0841,
+    "q_saturated": false,
+    "stable_idx": -1,
+    "target_index": null,
+    "ties": 0,
+    "visits": 2,
+    "win_prob": 0.5,
+    "wins": 1
+   }
+  ]
+ },
+ "step": {
+  "action_label": "",
+  "assets_base": "https://assets.test",
+  "chosen_action": null,
+  "decision": "combat_play",
+  "idx": 0,
+  "meta": {
+   "act": 1,
+   "act_name": "Overgrowth",
+   "bg_col": 0,
+   "bg_row": 7,
+   "bg_seed": 2,
+   "floor": 7,
+   "step_no": 0,
+   "turn": 4
+  },
+  "pv": null,
+  "scores": [],
+  "source": "live",
+  "state": {
+   "act": 1,
+   "act1": "overgrowth",
+   "act_name": "Overgrowth",
+   "ascension": 0,
+   "bg_col": 0,
+   "bg_row": 7,
+   "bg_seed": 2,
+   "decision": "combat_play",
+   "discard_pile": [
+    {
+     "base_cost": 3,
+     "can_play": false,
+     "color": "green",
+     "cost": 3,
+     "description": "Sly.\nDraw 2 cards.",
+     "description_rich": "[gold]Sly[/gold].\nDraw 2 cards.",
+     "id": "REFLEX",
+     "image": "https://assets.test/card_atlas/silent/reflex.png",
+     "index": -1,
+     "name": "Reflex",
+     "rarity": "Uncommon",
+     "stats": {},
+     "target_type": "None",
+     "type": "Skill",
+     "upgraded": false
+    },
+    {
+     "base_cost": 0,
+     "can_play": false,
+     "color": "green",
+     "cost": 0,
+     "description": "Deal 3 damage.\nApply 1 Weak.",
+     "description_rich": "Deal 3 damage.\nApply 1 [gold]Weak[/gold].",
+     "id": "NEUTRALIZE",
+     "image": "https://assets.test/card_atlas/silent/neutralize.png",
+     "index": -1,
+     "name": "Neutralize",
+     "rarity": "Basic",
+     "stats": {
+      "damage": 3
+     },
+     "target_type": "None",
+     "type": "Attack",
+     "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "green",
+     "cost": 1,
+     "description": "Deal 6 damage.",
+     "description_rich": "Deal 6 damage.",
+     "id": "STRIKE_SILENT",
+     "image": "https://assets.test/card_atlas/silent/strike_silent.png",
+     "index": -1,
+     "name": "Strike",
+     "rarity": "Basic",
+     "stats": {
+      "damage": 6
+     },
+     "target_type": "None",
+     "type": "Attack",
+     "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "green",
+     "cost": 1,
+     "description": "Deal 9 damage.",
+     "description_rich": "Deal 9 damage.",
+     "id": "STRIKE_SILENT",
+     "image": "https://assets.test/card_atlas/silent/strike_silent.png",
+     "index": -1,
+     "name": "Strike",
+     "rarity": "Basic",
+     "stats": {
+      "damage": 9
+     },
+     "target_type": "None",
+     "type": "Attack",
+     "upgraded": true
+    },
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "green",
+     "cost": 1,
+     "description": "Deal 6 damage.\nApply 3 Poison.",
+     "description_rich": "Deal 6 damage.\nApply 3 [gold]Poison[/gold].",
+     "id": "POISONED_STAB",
+     "image": "https://assets.test/card_atlas/silent/poisoned_stab.png",
+     "index": -1,
+     "name": "Poisoned Stab",
+     "rarity": "Common",
+     "stats": {
+      "damage": 6
+     },
+     "target_type": "None",
+     "type": "Attack",
+     "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "green",
+     "cost": 1,
+     "description": "Gain 5 Block.",
+     "description_rich": "Gain 5 [gold]Block[/gold].",
+     "id": "DEFEND_SILENT",
+     "image": "https://assets.test/card_atlas/silent/defend_silent.png",
+     "index": -1,
+     "name": "Defend",
+     "rarity": "Basic",
+     "stats": {
+      "block": 5
+     },
+     "target_type": "None",
+     "type": "Skill",
+     "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "calculated_value": 1,
+     "can_play": false,
+     "color": "green",
+     "cost": 1,
+     "description": "Deal 6 damage for each Attack already played this turn.\n(Hits 1 time)",
+     "description_rich": "Deal 6 damage for each Attack already played this turn.\n(Hits 1 time)",
+     "id": "FINISHER",
+     "image": "https://assets.test/card_atlas/silent/finisher.png",
+     "index": -1,
+     "name": "Finisher",
+     "rarity": "Uncommon",
+     "stats": {
+      "damage": 6
+     },
+     "target_type": "None",
+     "type": "Attack",
+     "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "green",
+     "cost": 1,
+     "description": "Gain 5 Block.",
+     "description_rich": "Gain 5 [gold]Block[/gold].",
+     "id": "DEFEND_SILENT",
+     "image": "https://assets.test/card_atlas/silent/defend_silent.png",
+     "index": -1,
+     "name": "Defend",
+     "rarity": "Basic",
+     "stats": {
+      "block": 5
+     },
+     "target_type": "None",
+     "type": "Skill",
+     "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "green",
+     "cost": 1,
+     "description": "Gain 5 Block.",
+     "description_rich": "Gain 5 [gold]Block[/gold].",
+     "id": "DEFEND_SILENT",
+     "image": "https://assets.test/card_atlas/silent/defend_silent.png",
+     "index": -1,
+     "name": "Defend",
+     "rarity": "Basic",
+     "stats": {
+      "block": 5
+     },
+     "target_type": "None",
+     "type": "Skill",
+     "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "green",
+     "cost": 1,
+     "description": "Gain 8 Block.\nDiscard 1 card.",
+     "description_rich": "Gain 8 [gold]Block[/gold].\nDiscard 1 card.",
+     "id": "SURVIVOR",
+     "image": "https://assets.test/card_atlas/silent/survivor.png",
+     "index": -1,
+     "name": "Survivor",
+     "rarity": "Basic",
+     "stats": {
+      "block": 8
+     },
+     "target_type": "None",
+     "type": "Skill",
+     "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "green",
+     "cost": 1,
+     "description": "Deal 9 damage.",
+     "description_rich": "Deal 9 damage.",
+     "id": "STRIKE_SILENT",
+     "image": "https://assets.test/card_atlas/silent/strike_silent.png",
+     "index": -1,
+     "name": "Strike",
+     "rarity": "Basic",
+     "stats": {
+      "damage": 9
+     },
+     "target_type": "None",
+     "type": "Attack",
+     "upgraded": true
+    }
+   ],
+   "discard_pile_count": 11,
+   "draw_pile": [
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "green",
+     "cost": 1,
+     "description": "Gain 5 Block.",
+     "description_rich": "Gain 5 [gold]Block[/gold].",
+     "id": "DEFEND_SILENT",
+     "image": "https://assets.test/card_atlas/silent/defend_silent.png",
+     "index": -1,
+     "name": "Defend",
+     "rarity": "Basic",
+     "stats": {
+      "block": 5
+     },
+     "target_type": "None",
+     "type": "Skill",
+     "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "green",
+     "cost": 1,
+     "description": "Gain 5 Block.",
+     "description_rich": "Gain 5 [gold]Block[/gold].",
+     "id": "DEFEND_SILENT",
+     "image": "https://assets.test/card_atlas/silent/defend_silent.png",
+     "index": -1,
+     "name": "Defend",
+     "rarity": "Basic",
+     "stats": {
+      "block": 5
+     },
+     "target_type": "None",
+     "type": "Skill",
+     "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "green",
+     "cost": 1,
+     "description": "Deal 6 damage.",
+     "description_rich": "Deal 6 damage.",
+     "id": "STRIKE_SILENT",
+     "image": "https://assets.test/card_atlas/silent/strike_silent.png",
+     "index": -1,
+     "name": "Strike",
+     "rarity": "Basic",
+     "stats": {
+      "damage": 6
+     },
+     "target_type": "None",
+     "type": "Attack",
+     "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "green",
+     "cost": 1,
+     "description": "Deal 6 damage.",
+     "description_rich": "Deal 6 damage.",
+     "id": "STRIKE_SILENT",
+     "image": "https://assets.test/card_atlas/silent/strike_silent.png",
+     "index": -1,
+     "name": "Strike",
+     "rarity": "Basic",
+     "stats": {
+      "damage": 6
+     },
+     "target_type": "None",
+     "type": "Attack",
+     "upgraded": false
+    }
+   ],
+   "draw_pile_count": 4,
+   "enemies": [
+    {
+     "block": 0,
+     "hp": 61,
+     "image": "https://assets.test/monsters/bygone_effigy.png",
+     "index": 0,
+     "intents": [
+      {
+       "base_damage": 13,
+       "damage": 23,
+       "intent_image": "https://assets.test/intent_atlas/attack/intent_attack_4.png",
+       "modifiers": [
+        {
+         "add": 10,
+         "image": "https://assets.test/power_atlas/strength_power.png",
+         "kind": "power",
+         "name": "STRENGTH",
+         "side": "enemy",
+         "title": "Strength"
+        }
+       ],
+       "type": "Attack"
+      }
+     ],
+     "kind": "BygoneEffigy",
+     "max_hp": 127,
+     "move_state": "SLASHES",
+     "name": "Bygone Effigy",
+     "powers": [
+      {
+       "amount": 1,
+       "display_amount": 30,
+       "id": "SLOW",
+       "image": "https://assets.test/power_atlas/slow_power.png",
+       "image_big": "https://assets.test/power_big/slow_power.png",
+       "name": "Slow"
+      },
+      {
+       "amount": 7,
+       "display_amount": 7,
+       "id": "POISON",
+       "image": "https://assets.test/power_atlas/poison_power.png",
+       "image_big": "https://assets.test/power_big/poison_power.png",
+       "name": "Poison"
+      },
+      {
+       "amount": 10,
+       "display_amount": 10,
+       "id": "STRENGTH",
+       "image": "https://assets.test/power_atlas/strength_power.png",
+       "image_big": "https://assets.test/power_big/strength_power.png",
+       "name": "Strength"
+      }
+     ],
+     "rig": "https://assets.test/monster_rigs/bygone_effigy/bygone_effigy",
+     "rig_bounds_h": 600.0,
+     "rig_bounds_w": 360.0,
+     "rig_scale": 0.32,
+     "uid": 2
+    }
+   ],
+   "energy": 0,
+   "energy_image": "https://assets.test/sprite_fonts/silent_energy_icon.png",
+   "exhaust_pile": [],
+   "exhaust_pile_count": 0,
+   "floor": 7,
+   "hand": [
+    {
+     "base_cost": 2,
+     "can_play": false,
+     "color": "green",
+     "cost": 2,
+     "description": "Retain.\nApply 7 Poison.",
+     "description_rich": "[gold]Retain[/gold].\nApply 7 [gold]Poison[/gold].",
+     "id": "SNAKEBITE",
+     "image": "https://assets.test/card_atlas/silent/snakebite.png",
+     "index": 0,
+     "name": "Snakebite",
+     "rarity": "Common",
+     "stats": {},
+     "target_type": "None",
+     "type": "Skill",
+     "unplayable_reason": "cost",
+     "upgraded": false
+    }
+   ],
+   "max_energy": 3,
+   "mcts": {
+    "actions": [
+     {
+      "action": {
+       "action": "play",
+       "card_index": 1,
+       "target_index": 0
+      },
+      "bucket": "likely-win",
+      "hp_n": 10,
+      "hp_sd": 4.128,
+      "is_best": true,
+      "losses": 0,
+      "low_confidence": false,
+      "mean_final_hp": 9.4,
+      "p_loss": 0.0,
+      "p_tie": 0.0,
+      "p_win": 1.0,
+      "q": 1.0333,
+      "q_saturated": false,
+      "ties": 0,
+      "value": 1.0,
+      "value_sum": 10.3331,
+      "visits": 10,
+      "wins": 10
+     },
+     {
+      "action": {
+       "action": "end_turn"
+      },
+      "bucket": "even",
+      "hp_n": 2,
+      "hp_sd": 2.5,
+      "is_best": false,
+      "losses": 1,
+      "low_confidence": false,
+      "mean_final_hp": 2.5,
+      "p_loss": 0.5,
+      "p_tie": 0.0,
+      "p_win": 0.5,
+      "q": -0.0841,
+      "q_saturated": false,
+      "ties": 0,
+      "value": 0.0,
+      "value_sum": -0.1682,
+      "visits": 2,
+      "wins": 1
+     }
+    ],
+    "recommended": {
+     "action": "play",
+     "card_index": 1,
+     "target_index": 0
+    }
+   },
+   "options": [],
+   "player": {
+    "block": 13,
+    "deck": [
+     {
+      "color": "green",
+      "cost": 1,
+      "description": "Deal 9 damage.",
+      "description_rich": "Deal 9 damage.",
+      "id": "STRIKE_SILENT",
+      "image": "https://assets.test/card_atlas/silent/strike_silent.png",
+      "index": 0,
+      "name": "Strike",
+      "rarity": "Basic",
+      "type": "Attack",
+      "upgraded": true
+     },
+     {
+      "color": "green",
+      "cost": 1,
+      "description": "Deal 9 damage.",
+      "description_rich": "Deal 9 damage.",
+      "id": "STRIKE_SILENT",
+      "image": "https://assets.test/card_atlas/silent/strike_silent.png",
+      "index": 1,
+      "name": "Strike",
+      "rarity": "Basic",
+      "type": "Attack",
+      "upgraded": true
+     },
+     {
+      "color": "green",
+      "cost": 1,
+      "description": "Deal 6 damage.",
+      "description_rich": "Deal 6 damage.",
+      "id": "STRIKE_SILENT",
+      "image": "https://assets.test/card_atlas/silent/strike_silent.png",
+      "index": 2,
+      "name": "Strike",
+      "rarity": "Basic",
+      "type": "Attack",
+      "upgraded": false
+     },
+     {
+      "color": "green",
+      "cost": 1,
+      "description": "Deal 6 damage.",
+      "description_rich": "Deal 6 damage.",
+      "id": "STRIKE_SILENT",
+      "image": "https://assets.test/card_atlas/silent/strike_silent.png",
+      "index": 3,
+      "name": "Strike",
+      "rarity": "Basic",
+      "type": "Attack",
+      "upgraded": false
+     },
+     {
+      "color": "green",
+      "cost": 1,
+      "description": "Deal 6 damage.",
+      "description_rich": "Deal 6 damage.",
+      "id": "STRIKE_SILENT",
+      "image": "https://assets.test/card_atlas/silent/strike_silent.png",
+      "index": 4,
+      "name": "Strike",
+      "rarity": "Basic",
+      "type": "Attack",
+      "upgraded": false
+     },
+     {
+      "color": "green",
+      "cost": 1,
+      "description": "Gain 5 Block.",
+      "description_rich": "Gain 5 Block.",
+      "id": "DEFEND_SILENT",
+      "image": "https://assets.test/card_atlas/silent/defend_silent.png",
+      "index": 5,
+      "name": "Defend",
+      "rarity": "Basic",
+      "type": "Skill",
+      "upgraded": false
+     },
+     {
+      "color": "green",
+      "cost": 1,
+      "description": "Gain 5 Block.",
+      "description_rich": "Gain 5 Block.",
+      "id": "DEFEND_SILENT",
+      "image": "https://assets.test/card_atlas/silent/defend_silent.png",
+      "index": 6,
+      "name": "Defend",
+      "rarity": "Basic",
+      "type": "Skill",
+      "upgraded": false
+     },
+     {
+      "color": "green",
+      "cost": 1,
+      "description": "Gain 5 Block.",
+      "description_rich": "Gain 5 Block.",
+      "id": "DEFEND_SILENT",
+      "image": "https://assets.test/card_atlas/silent/defend_silent.png",
+      "index": 7,
+      "name": "Defend",
+      "rarity": "Basic",
+      "type": "Skill",
+      "upgraded": false
+     },
+     {
+      "color": "green",
+      "cost": 1,
+      "description": "Gain 5 Block.",
+      "description_rich": "Gain 5 Block.",
+      "id": "DEFEND_SILENT",
+      "image": "https://assets.test/card_atlas/silent/defend_silent.png",
+      "index": 8,
+      "name": "Defend",
+      "rarity": "Basic",
+      "type": "Skill",
+      "upgraded": false
+     },
+     {
+      "color": "green",
+      "cost": 1,
+      "description": "Gain 5 Block.",
+      "description_rich": "Gain 5 Block.",
+      "id": "DEFEND_SILENT",
+      "image": "https://assets.test/card_atlas/silent/defend_silent.png",
+      "index": 9,
+      "name": "Defend",
+      "rarity": "Basic",
+      "type": "Skill",
+      "upgraded": false
+     },
+     {
+      "color": "green",
+      "cost": 0,
+      "description": "Deal 3 damage.\nApply 1 Weak.",
+      "description_rich": "Deal 3 damage.\nApply 1 Weak.",
+      "id": "NEUTRALIZE",
+      "image": "https://assets.test/card_atlas/silent/neutralize.png",
+      "index": 10,
+      "name": "Neutralize",
+      "rarity": "Basic",
+      "type": "Attack",
+      "upgraded": false
+     },
+     {
+      "color": "green",
+      "cost": 1,
+      "description": "Gain 8 Block.\nDiscard 1 card.",
+      "description_rich": "Gain 8 Block.\nDiscard 1 card.",
+      "id": "SURVIVOR",
+      "image": "https://assets.test/card_atlas/silent/survivor.png",
+      "index": 11,
+      "name": "Survivor",
+      "rarity": "Basic",
+      "type": "Skill",
+      "upgraded": false
+     },
+     {
+      "color": "green",
+      "cost": 2,
+      "description": "Retain.\nApply 7 Poison.",
+      "description_rich": "[gold]Retain[/gold].\nApply 7 Poison.",
+      "id": "SNAKEBITE",
+      "image": "https://assets.test/card_atlas/silent/snakebite.png",
+      "index": 12,
+      "name": "Snakebite",
+      "rarity": "Common",
+      "type": "Skill",
+      "upgraded": false
+     },
+     {
+      "color": "green",
+      "cost": 1,
+      "description": "Deal 6 damage for each Attack already played this turn.",
+      "description_rich": "Deal 6 damage for each Attack already played this turn.",
+      "id": "FINISHER",
+      "image": "https://assets.test/card_atlas/silent/finisher.png",
+      "index": 13,
+      "name": "Finisher",
+      "rarity": "Uncommon",
+      "type": "Attack",
+      "upgraded": false
+     },
+     {
+      "color": "green",
+      "cost": 3,
+      "description": "Sly.\nDraw 2 cards.",
+      "description_rich": "[gold]Sly[/gold].\nDraw 2 cards.",
+      "id": "REFLEX",
+      "image": "https://assets.test/card_atlas/silent/reflex.png",
+      "index": 14,
+      "name": "Reflex",
+      "rarity": "Uncommon",
+      "type": "Skill",
+      "upgraded": false
+     },
+     {
+      "color": "green",
+      "cost": 1,
+      "description": "Deal 6 damage.\nApply 3 Poison.",
+      "description_rich": "Deal 6 damage.\nApply 3 Poison.",
+      "id": "POISONED_STAB",
+      "image": "https://assets.test/card_atlas/silent/poisoned_stab.png",
+      "index": 15,
+      "name": "Poisoned Stab",
+      "rarity": "Common",
+      "type": "Attack",
+      "upgraded": false
+     }
+    ],
+    "gold": 67,
+    "hp": 45,
+    "image": "https://assets.test/character_sprites/silent.png",
+    "max_hp": 70,
+    "name": "Silent",
+    "potion_slots": 3,
+    "potions": [],
+    "relics": [
+     {
+      "description": "At the start of each combat, draw 2 additional cards.",
+      "id": "RING_OF_THE_SNAKE",
+      "image": "https://assets.test/relic_atlas/ring_of_the_snake.png",
+      "name": "Ring of the Snake"
+     },
+     {
+      "description": "At the start of Elite combats, draw 2 additional cards and gain 1 Energy.",
+      "id": "BOOMING_CONCH",
+      "image": "https://assets.test/relic_atlas/booming_conch.png",
+      "name": "Booming Conch"
+     }
+    ],
+    "rig": "https://assets.test/character_rigs/silent/silent",
+    "rig_bounds_h": 244.0,
+    "rig_bounds_w": 244.0,
+    "rig_scale": 0.29
+   },
+   "player_powers": [],
+   "round": 4
+  }
+ },
+ "steps": 8,
+ "victory": false
+}

@@ -1,0 +1,84 @@
+{
+ "config": {
+  "c_puct": 2.5,
+  "depth": 200,
+  "draw_widening_c": 2.0,
+  "hidden_info": "beliefdraw",
+  "seed": 1,
+  "sims": 48,
+  "threads": 1
+ },
+ "pv": null,
+ "scores": [
+  {
+   "action": "NEUTRALIZE.title",
+   "hp_n": 0,
+   "hp_sd": null,
+   "is_best": true,
+   "low_confidence": false,
+   "mean_final_hp": null,
+   "q": 1.2403,
+   "q_saturated": false,
+   "stable_idx": 2,
+   "target_index": null,
+   "visits": 6,
+   "win_prob": 1.0
+  },
+  {
+   "action": "STRIKE_SILENT.title",
+   "hp_n": 0,
+   "hp_sd": null,
+   "is_best": false,
+   "low_confidence": false,
+   "mean_final_hp": null,
+   "q": 1.2403,
+   "q_saturated": false,
+   "stable_idx": 0,
+   "target_index": null,
+   "visits": 6,
+   "win_prob": 1.0
+  },
+  {
+   "action": "DEFEND_SILENT.title",
+   "hp_n": 0,
+   "hp_sd": null,
+   "is_best": false,
+   "low_confidence": false,
+   "mean_final_hp": null,
+   "q": 1.2377,
+   "q_saturated": false,
+   "stable_idx": 1,
+   "target_index": null,
+   "visits": 5,
+   "win_prob": 1.0
+  },
+  {
+   "action": "SURVIVOR.title",
+   "hp_n": 0,
+   "hp_sd": null,
+   "is_best": false,
+   "low_confidence": false,
+   "mean_final_hp": null,
+   "q": 1.2355,
+   "q_saturated": false,
+   "stable_idx": 4,
+   "target_index": null,
+   "visits": 5,
+   "win_prob": 1.0
+  },
+  {
+   "action": "end turn",
+   "hp_n": 0,
+   "hp_sd": null,
+   "is_best": false,
+   "low_confidence": false,
+   "mean_final_hp": null,
+   "q": 1.2019,
+   "q_saturated": false,
+   "stable_idx": -1,
+   "target_index": null,
+   "visits": 5,
+   "win_prob": 1.0
+  }
+ ]
+}

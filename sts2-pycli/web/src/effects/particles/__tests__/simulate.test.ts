@@ -625,6 +625,68 @@ describe("simulate / stepN", () => {
   });
 });
 
+describe("heading (particle_flag_align_y)", () => {
+  it("follows the direction of travel", () => {
+    const p = stepN({ ...BARE, direction: [0.6, -0.8, 0], initialVelocityMin: 100, initialVelocityMax: 100 }, 5);
+    expect(p.heading[0]).toBeCloseTo(0.6, 9);
+    expect(p.heading[1]).toBeCloseTo(-0.8, 9);
+  });
+
+  it("turns with gravity rather than keeping the launch direction", () => {
+    const p = stepN(
+      { ...BARE, gravity: [0, 400, 0], initialVelocityMin: 100, initialVelocityMax: 100 },
+      30,
+    );
+    // vx stays 100, vy has grown to ~200 — the heading is the CURRENT velocity.
+    expect(p.heading[1] / p.heading[0]).toBeCloseTo(p.vy / p.vx, 6);
+    expect(p.heading[1]).toBeGreaterThan(0.8);
+  });
+
+  it("holds the last direction once damping has stopped the particle", () => {
+    // Linear damping clamps the speed to exactly zero (`v < 0` -> 0); Godot's
+    // zero-velocity branch re-normalizes the previous TRANSFORM[1] rather than
+    // snapping back to identity, so a speck that skids to a halt stays
+    // pointing the way it was going.
+    const p = stepN(
+      {
+        ...BARE,
+        direction: [1, 0, 0],
+        initialVelocityMin: 50,
+        initialVelocityMax: 50,
+        dampingMin: 1000,
+        dampingMax: 1000,
+        particleFlagDampingAsFriction: false,
+      },
+      30,
+    );
+    expect(p.vx).toBe(0);
+    expect(p.heading).toEqual([1, 0]);
+  });
+
+  it("is the spawn identity for a particle that never moved", () => {
+    const p = stepN(BARE, 5);
+    expect(p.heading).toEqual([0, 1]);
+  });
+
+  it("counts radial displacement, which lives in final_velocity, not VELOCITY", () => {
+    // A point-emitted particle offset from the pivot with no initial velocity moves
+    // ONLY by radial displacement; a heading taken from `vx/vy` would stay at
+    // identity while the particle visibly flies outward.
+    const p = stepN(
+      {
+        ...BARE,
+        emissionShapeOffset: [10, 0, 0],
+        radialVelocityMin: 100,
+        radialVelocityMax: 100,
+      },
+      5,
+    );
+    expect(p.vx).toBe(0);
+    expect(p.heading[0]).toBeCloseTo(1, 6);
+    expect(p.heading[1]).toBeCloseTo(0, 6);
+  });
+});
+
 describe("createSimState / advanceTo / readout", () => {
   // THE property this refactor rests on. `simulate()` used to be re-run from
   // t=0 on every display frame; now one `SimState` per emitter is advanced

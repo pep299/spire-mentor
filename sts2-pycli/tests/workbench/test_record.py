@@ -58,7 +58,7 @@ kind = "VANTOM"
 
 
 def _assert_log_shape(log_path: str) -> None:
-    with open(log_path) as f:
+    with open(log_path, encoding="utf-8") as f:
         lines = [json.loads(l) for l in f if l.strip()]
     types = [e["type"] for e in lines]
     assert types[0] == "meta"
@@ -108,7 +108,7 @@ def test_record_fixture_tiny_inrepo(tmp_path):
 def test_record_fixture_emits_mcts_records(tmp_path):
     fx = _VANTOM_FIXTURES[0]
     log_path = record_fixture(str(fx), out_dir=str(tmp_path), sims=20, seed=1, max_steps=200)
-    with open(log_path) as f:
+    with open(log_path, encoding="utf-8") as f:
         lines = [json.loads(l) for l in f if l.strip()]
     types = [e["type"] for e in lines]
     assert types[0] == "meta"
@@ -430,7 +430,7 @@ def stub_recorder(monkeypatch):
 
 
 def _read_log(path):
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]
 
 

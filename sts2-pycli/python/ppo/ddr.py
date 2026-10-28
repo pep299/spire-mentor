@@ -100,7 +100,7 @@ class Iter:
 
 def load(path: Path) -> list[Iter]:
     rows: list[Iter] = []
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         try:
@@ -447,7 +447,8 @@ def write_html(camps: list[Campaign], out: Path, body: str) -> None:
         '<p class="legend">Diagnostic from arXiv:2603.06009, reconstructed from '
         "<code>stats.jsonl</code>. Trend only: the logged KL is a per-minibatch mean of the k1 "
         "estimator, so the absolute scale is not the paper's.</p>\n"
-        f"{md_to_html(body)}\n<h2>Per-campaign traces</h2>\n{charts}\n"
+        f"{md_to_html(body)}\n<h2>Per-campaign traces</h2>\n{charts}\n",
+        encoding="utf-8",
     )
 
 

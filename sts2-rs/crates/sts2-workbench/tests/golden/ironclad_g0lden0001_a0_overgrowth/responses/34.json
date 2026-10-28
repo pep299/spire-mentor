@@ -13,6 +13,7 @@
   {
    "action": "Ultimate Strike",
    "hp_n": 10,
+   "hp_sd": 5.8275,
    "is_best": true,
    "losses": 0,
    "low_confidence": false,
@@ -29,6 +30,7 @@
   {
    "action": "Strike",
    "hp_n": 10,
+   "hp_sd": 5.6789,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
@@ -45,6 +47,7 @@
   {
    "action": "Defend",
    "hp_n": 10,
+   "hp_sd": 4.9,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
@@ -61,6 +64,7 @@
   {
    "action": "Bloodletting",
    "hp_n": 9,
+   "hp_sd": 7.9737,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
@@ -77,6 +81,7 @@
   {
    "action": "end turn",
    "hp_n": 9,
+   "hp_sd": 2.357,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,

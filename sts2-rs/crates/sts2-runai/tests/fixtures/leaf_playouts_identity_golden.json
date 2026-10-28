@@ -1,0 +1,969 @@
+{
+  "policy_fight": {
+    "actions": [
+      "PlayCard { hand_idx: 2, target: Some(0) }",
+      "PlayCard { hand_idx: 0, target: None }",
+      "EndTurn",
+      "PlayCard { hand_idx: 0, target: None }",
+      "PlayCard { hand_idx: 0, target: Some(0) }",
+      "PlayCard { hand_idx: 0, target: Some(0) }",
+      "EndTurn",
+      "PlayCard { hand_idx: 0, target: Some(0) }",
+      "PlayCard { hand_idx: 0, target: Some(0) }",
+      "EndTurn",
+      "PlayCard { hand_idx: 2, target: Some(0) }"
+    ],
+    "budget_spent": [
+      0,
+      0,
+      0,
+      8000
+    ],
+    "player_hp": 78
+  },
+  "policy_fight_ironclad_default": {
+    "fight": {
+      "actions": [
+        "PlayCard { hand_idx: 1, target: None }",
+        "PlayCard { hand_idx: 0, target: Some(2) }",
+        "PlayCard { hand_idx: 0, target: Some(2) }",
+        "EndTurn",
+        "PlayCard { hand_idx: 2, target: None }",
+        "PlayCard { hand_idx: 2, target: None }",
+        "PlayCard { hand_idx: 0, target: Some(0) }",
+        "EndTurn",
+        "PlayCard { hand_idx: 0, target: None }",
+        "PlayCard { hand_idx: 0, target: None }",
+        "PlayCard { hand_idx: 0, target: None }",
+        "EndTurn",
+        "PlayCard { hand_idx: 1, target: None }",
+        "PlayCard { hand_idx: 4, target: Some(0) }",
+        "EndTurn",
+        "PlayCard { hand_idx: 1, target: None }",
+        "PlayCard { hand_idx: 3, target: None }",
+        "PlayCard { hand_idx: 0, target: None }",
+        "EndTurn",
+        "PlayCard { hand_idx: 0, target: None }",
+        "PlayCard { hand_idx: 0, target: None }",
+        "PlayCard { hand_idx: 2, target: Some(1) }",
+        "EndTurn",
+        "PlayCard { hand_idx: 0, target: Some(1) }",
+        "PlayCard { hand_idx: 1, target: Some(1) }",
+        "PlayCard { hand_idx: 2, target: Some(1) }",
+        "EndTurn",
+        "PlayCard { hand_idx: 1, target: Some(1) }"
+      ],
+      "budget_spent": [
+        0,
+        0,
+        0,
+        21000
+      ],
+      "player_hp": 80
+    },
+    "searches": [
+      [
+        200,
+        201,
+        209,
+        213,
+        177
+      ],
+      [
+        192,
+        206,
+        211,
+        203,
+        188
+      ],
+      [
+        196,
+        199,
+        211,
+        200,
+        194
+      ],
+      [
+        0
+      ],
+      [
+        170,
+        167,
+        167,
+        168,
+        173,
+        155
+      ],
+      [
+        168,
+        165,
+        167,
+        167,
+        173,
+        160
+      ],
+      [
+        338,
+        336,
+        326
+      ],
+      [
+        0
+      ],
+      [
+        258,
+        252,
+        263,
+        227
+      ],
+      [
+        255,
+        251,
+        261,
+        233
+      ],
+      [
+        248,
+        250,
+        260,
+        242
+      ],
+      [
+        0
+      ],
+      [
+        203,
+        203,
+        201,
+        204,
+        189
+      ],
+      [
+        170,
+        166,
+        170,
+        169,
+        164,
+        161
+      ],
+      [
+        0
+      ],
+      [
+        249,
+        267,
+        250,
+        234
+      ],
+      [
+        249,
+        259,
+        250,
+        242
+      ],
+      [
+        333,
+        335,
+        332
+      ],
+      [
+        0
+      ],
+      [
+        200,
+        199,
+        213,
+        198,
+        190
+      ],
+      [
+        199,
+        201,
+        206,
+        200,
+        194
+      ],
+      [
+        338,
+        329,
+        333
+      ],
+      [
+        0
+      ],
+      [
+        257,
+        249,
+        250,
+        244
+      ],
+      [
+        256,
+        248,
+        249,
+        247
+      ],
+      [
+        255,
+        249,
+        249,
+        247
+      ],
+      [
+        0
+      ],
+      [
+        260,
+        260,
+        256,
+        224
+      ]
+    ]
+  },
+  "policy_fight_seed6_pre_layer": {
+    "fight": {
+      "actions": [
+        "PlayCard { hand_idx: 1, target: None }",
+        "PlayCard { hand_idx: 0, target: Some(2) }",
+        "PlayCard { hand_idx: 0, target: Some(2) }",
+        "EndTurn",
+        "PlayCard { hand_idx: 2, target: None }",
+        "PlayCard { hand_idx: 2, target: None }",
+        "PlayCard { hand_idx: 0, target: Some(0) }",
+        "EndTurn",
+        "PlayCard { hand_idx: 0, target: None }",
+        "PlayCard { hand_idx: 0, target: None }",
+        "PlayCard { hand_idx: 0, target: None }",
+        "EndTurn",
+        "PlayCard { hand_idx: 1, target: None }",
+        "PlayCard { hand_idx: 4, target: Some(0) }",
+        "EndTurn",
+        "PlayCard { hand_idx: 1, target: None }",
+        "PlayCard { hand_idx: 3, target: None }",
+        "PlayCard { hand_idx: 0, target: None }",
+        "EndTurn",
+        "PlayCard { hand_idx: 0, target: None }",
+        "PlayCard { hand_idx: 0, target: None }",
+        "PlayCard { hand_idx: 2, target: Some(1) }",
+        "EndTurn",
+        "PlayCard { hand_idx: 0, target: Some(1) }",
+        "PlayCard { hand_idx: 1, target: Some(1) }",
+        "PlayCard { hand_idx: 2, target: Some(1) }",
+        "EndTurn",
+        "PlayCard { hand_idx: 1, target: Some(1) }"
+      ],
+      "budget_spent": [
+        0,
+        0,
+        0,
+        21000
+      ],
+      "player_hp": 80
+    },
+    "searches": [
+      [
+        200,
+        201,
+        209,
+        213,
+        177
+      ],
+      [
+        192,
+        206,
+        211,
+        203,
+        188
+      ],
+      [
+        196,
+        199,
+        211,
+        200,
+        194
+      ],
+      [
+        0
+      ],
+      [
+        170,
+        167,
+        169,
+        167,
+        173,
+        154
+      ],
+      [
+        167,
+        166,
+        168,
+        168,
+        173,
+        158
+      ],
+      [
+        336,
+        335,
+        329
+      ],
+      [
+        0
+      ],
+      [
+        258,
+        252,
+        263,
+        227
+      ],
+      [
+        255,
+        251,
+        261,
+        233
+      ],
+      [
+        248,
+        250,
+        260,
+        242
+      ],
+      [
+        0
+      ],
+      [
+        203,
+        203,
+        201,
+        204,
+        189
+      ],
+      [
+        170,
+        166,
+        170,
+        169,
+        164,
+        161
+      ],
+      [
+        0
+      ],
+      [
+        249,
+        267,
+        250,
+        234
+      ],
+      [
+        249,
+        259,
+        250,
+        242
+      ],
+      [
+        333,
+        335,
+        332
+      ],
+      [
+        0
+      ],
+      [
+        200,
+        199,
+        213,
+        198,
+        190
+      ],
+      [
+        199,
+        201,
+        206,
+        200,
+        194
+      ],
+      [
+        338,
+        329,
+        333
+      ],
+      [
+        0
+      ],
+      [
+        257,
+        249,
+        250,
+        244
+      ],
+      [
+        256,
+        248,
+        249,
+        247
+      ],
+      [
+        255,
+        249,
+        249,
+        247
+      ],
+      [
+        0
+      ],
+      [
+        260,
+        260,
+        256,
+        224
+      ]
+    ]
+  },
+  "searches": [
+    {
+      "chosen": "PlayCard { hand_index: 0, target: Some(0) }",
+      "depth_cap_hits": 0,
+      "rollouts_skipped": 0,
+      "rollouts_total": 300,
+      "root": [
+        [
+          "PlayCard { hand_index: 0, target: Some(0) }",
+          80,
+          80,
+          0,
+          0,
+          1120527311,
+          1123994784,
+          1169645568,
+          80
+        ],
+        [
+          "PlayCard { hand_index: 2, target: Some(0) }",
+          77,
+          77,
+          0,
+          0,
+          1119978715,
+          1123237039,
+          1168965632,
+          77
+        ],
+        [
+          "PlayCard { hand_index: 1, target: None }",
+          78,
+          78,
+          0,
+          0,
+          1120164856,
+          1123496339,
+          1169207296,
+          78
+        ],
+        [
+          "EndTurn",
+          65,
+          65,
+          0,
+          0,
+          1117843596,
+          1120354878,
+          1166505984,
+          65
+        ]
+      ]
+    },
+    {
+      "chosen": "PlayCard { hand_index: 0, target: Some(0) }",
+      "depth_cap_hits": 0,
+      "rollouts_skipped": 140,
+      "rollouts_total": 160,
+      "root": [
+        [
+          "PlayCard { hand_index: 0, target: Some(0) }",
+          82,
+          82,
+          0,
+          0,
+          1118488177,
+          1118951035,
+          1148026880,
+          82
+        ],
+        [
+          "PlayCard { hand_index: 2, target: Some(0) }",
+          81,
+          81,
+          0,
+          0,
+          1118351054,
+          1118807579,
+          1147813888,
+          81
+        ],
+        [
+          "PlayCard { hand_index: 1, target: None }",
+          85,
+          85,
+          0,
+          0,
+          1118953281,
+          1119493096,
+          1149894656,
+          85
+        ],
+        [
+          "EndTurn",
+          52,
+          51,
+          1,
+          0,
+          1112381541,
+          1113543821,
+          1139081216,
+          52
+        ]
+      ]
+    },
+    {
+      "chosen": "PlayCard { hand_index: 0, target: Some(0) }",
+      "depth_cap_hits": 0,
+      "rollouts_skipped": 0,
+      "rollouts_total": 300,
+      "root": [
+        [
+          "PlayCard { hand_index: 3, target: Some(0) }",
+          103,
+          103,
+          0,
+          0,
+          1124075634,
+          1126118600,
+          1171994624,
+          103
+        ],
+        [
+          "PlayCard { hand_index: 0, target: Some(0) }",
+          106,
+          106,
+          0,
+          0,
+          1124335882,
+          1126461350,
+          1172551680,
+          106
+        ],
+        [
+          "EndTurn",
+          91,
+          91,
+          0,
+          0,
+          1121969922,
+          1124718744,
+          1169653760,
+          91
+        ]
+      ]
+    },
+    {
+      "chosen": "PlayCard { hand_index: 3, target: Some(0) }",
+      "depth_cap_hits": 0,
+      "rollouts_skipped": 0,
+      "rollouts_total": 300,
+      "root": [
+        [
+          "PlayCard { hand_index: 3, target: Some(0) }",
+          81,
+          81,
+          0,
+          0,
+          1120627626,
+          1124040459,
+          1169512448,
+          81
+        ],
+        [
+          "PlayCard { hand_index: 0, target: Some(0) }",
+          81,
+          81,
+          0,
+          0,
+          1120617696,
+          1124017139,
+          1169469440,
+          81
+        ],
+        [
+          "PlayCard { hand_index: 4, target: None }",
+          75,
+          75,
+          0,
+          0,
+          1119553173,
+          1122585415,
+          1168252928,
+          75
+        ],
+        [
+          "EndTurn",
+          63,
+          63,
+          0,
+          0,
+          1117425631,
+          1119726179,
+          1165635584,
+          63
+        ]
+      ]
+    },
+    {
+      "chosen": "PlayCard { hand_index: 3, target: Some(0) }",
+      "depth_cap_hits": 0,
+      "rollouts_skipped": 248,
+      "rollouts_total": 52,
+      "root": [
+        [
+          "PlayCard { hand_index: 3, target: Some(0) }",
+          139,
+          138,
+          1,
+          0,
+          1125064612,
+          1125672262,
+          1155383296,
+          139
+        ],
+        [
+          "PlayCard { hand_index: 0, target: Some(0) }",
+          100,
+          98,
+          2,
+          0,
+          1120416505,
+          1121744321,
+          1151254528,
+          100
+        ],
+        [
+          "PlayCard { hand_index: 4, target: None }",
+          51,
+          48,
+          3,
+          0,
+          1111090516,
+          1113833767,
+          1142374400,
+          51
+        ],
+        [
+          "EndTurn",
+          10,
+          8,
+          2,
+          0,
+          1086020352,
+          1094460967,
+          1119617024,
+          10
+        ]
+      ]
+    },
+    {
+      "chosen": "PlayCard { hand_index: 0, target: Some(0) }",
+      "depth_cap_hits": 0,
+      "rollouts_skipped": 0,
+      "rollouts_total": 300,
+      "root": [
+        [
+          "PlayCard { hand_index: 0, target: Some(0) }",
+          108,
+          108,
+          0,
+          0,
+          1124492083,
+          1126647218,
+          1172772864,
+          108
+        ],
+        [
+          "PlayCard { hand_index: 2, target: None }",
+          95,
+          95,
+          0,
+          0,
+          1122634388,
+          1125133686,
+          1170268160,
+          95
+        ],
+        [
+          "EndTurn",
+          97,
+          97,
+          0,
+          0,
+          1122986871,
+          1125368858,
+          1170663424,
+          97
+        ]
+      ]
+    },
+    {
+      "chosen": "PlayCard { hand_index: 1, target: Some(0) }",
+      "depth_cap_hits": 0,
+      "rollouts_skipped": 0,
+      "rollouts_total": 300,
+      "root": [
+        [
+          "PlayCard { hand_index: 1, target: Some(0) }",
+          40,
+          40,
+          0,
+          0,
+          1112266600,
+          1115806523,
+          1161818112,
+          40
+        ],
+        [
+          "PlayCard { hand_index: 1, target: Some(1) }",
+          37,
+          37,
+          0,
+          0,
+          1111137575,
+          1114330432,
+          1160318976,
+          37
+        ],
+        [
+          "PlayCard { hand_index: 1, target: Some(2) }",
+          37,
+          37,
+          0,
+          0,
+          1111142273,
+          1114342511,
+          1160339456,
+          37
+        ],
+        [
+          "PlayCard { hand_index: 4, target: Some(0) }",
+          38,
+          38,
+          0,
+          0,
+          1111485674,
+          1114791425,
+          1160695808,
+          38
+        ],
+        [
+          "PlayCard { hand_index: 4, target: Some(1) }",
+          37,
+          37,
+          0,
+          0,
+          1111137369,
+          1114330795,
+          1160318976,
+          37
+        ],
+        [
+          "PlayCard { hand_index: 4, target: Some(2) }",
+          38,
+          38,
+          0,
+          0,
+          1111511849,
+          1114857596,
+          1160810496,
+          38
+        ],
+        [
+          "PlayCard { hand_index: 0, target: None }",
+          40,
+          40,
+          0,
+          0,
+          1112246491,
+          1115781411,
+          1161732096,
+          40
+        ],
+        [
+          "EndTurn",
+          33,
+          33,
+          0,
+          0,
+          1109636378,
+          1112215239,
+          1158340608,
+          33
+        ]
+      ]
+    },
+    {
+      "chosen": "PlayCard { hand_index: 1, target: Some(0) }",
+      "depth_cap_hits": 0,
+      "rollouts_skipped": 20,
+      "rollouts_total": 280,
+      "root": [
+        [
+          "PlayCard { hand_index: 1, target: Some(0) }",
+          157,
+          136,
+          21,
+          0,
+          1122349865,
+          1127359637,
+          1152040960,
+          157
+        ],
+        [
+          "PlayCard { hand_index: 1, target: Some(1) }",
+          3,
+          1,
+          2,
+          0,
+          3216945503,
+          1082713062,
+          1093664768,
+          3
+        ],
+        [
+          "PlayCard { hand_index: 1, target: Some(2) }",
+          3,
+          1,
+          2,
+          0,
+          3216815490,
+          1082561956,
+          1091567616,
+          3
+        ],
+        [
+          "PlayCard { hand_index: 4, target: Some(0) }",
+          4,
+          2,
+          2,
+          0,
+          3201913816,
+          1084873066,
+          1102577664,
+          4
+        ],
+        [
+          "PlayCard { hand_index: 4, target: Some(1) }",
+          4,
+          2,
+          2,
+          0,
+          3202669948,
+          1084993614,
+          1102577664,
+          4
+        ],
+        [
+          "PlayCard { hand_index: 4, target: Some(2) }",
+          8,
+          5,
+          3,
+          0,
+          1068788105,
+          1092651315,
+          1110966272,
+          8
+        ],
+        [
+          "PlayCard { hand_index: 0, target: None }",
+          120,
+          103,
+          17,
+          0,
+          1118521998,
+          1124698525,
+          1149837312,
+          120
+        ],
+        [
+          "EndTurn",
+          1,
+          0,
+          1,
+          0,
+          3215492201,
+          1071504413,
+          0,
+          1
+        ]
+      ]
+    },
+    {
+      "chosen": "PlayCard { hand_index: 1, target: None }",
+      "depth_cap_hits": 0,
+      "rollouts_skipped": 0,
+      "rollouts_total": 300,
+      "root": [
+        [
+          "PlayCard { hand_index: 0, target: Some(0) }",
+          63,
+          63,
+          0,
+          0,
+          1117712741,
+          1120439221,
+          1167081472,
+          63
+        ],
+        [
+          "PlayCard { hand_index: 0, target: Some(1) }",
+          60,
+          60,
+          0,
+          0,
+          1117160406,
+          1119670347,
+          1166385152,
+          60
+        ],
+        [
+          "PlayCard { hand_index: 0, target: Some(2) }",
+          61,
+          61,
+          0,
+          0,
+          1117346647,
+          1119931979,
+          1166626816,
+          61
+        ],
+        [
+          "PlayCard { hand_index: 1, target: None }",
+          65,
+          65,
+          0,
+          0,
+          1118077615,
+          1120942133,
+          1167532032,
+          65
+        ],
+        [
+          "EndTurn",
+          51,
+          51,
+          0,
+          0,
+          1115413398,
+          1117487010,
+          1162977280,
+          51
+        ]
+      ]
+    }
+  ]
+}

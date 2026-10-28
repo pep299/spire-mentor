@@ -162,7 +162,7 @@ def _arena_rows(act1: str) -> dict:
     import fcntl
 
     cache = _arena_cache_path(act1)
-    with open(f"{cache}.lock", "w") as lock:
+    with open(f"{cache}.lock", "w", encoding="utf-8") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if not os.path.exists(cache):
             tmp = f"{cache}.{os.getpid()}"
@@ -204,7 +204,7 @@ def _arena_rows(act1: str) -> dict:
                     f"stdout:\n{proc.stdout.strip()}"
                 )
             pathlib.Path(tmp).replace(cache)
-    with open(cache) as fh:
+    with open(cache, encoding="utf-8") as fh:
         return {r["seed"]: r for r in (json.loads(line) for line in fh)}
 
 

@@ -118,6 +118,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -770,7 +771,14 @@ class Recorder:
         if self.work is None:
             return obj
         if isinstance(obj, str):
-            return obj.replace(self.work, WORK_PLACEHOLDER)
+            # The path after the scratch dir is written with ``/`` whatever
+            # the host: a Windows dump otherwise records ``<work>\logs\...``
+            # and every fixture that carries a log path churns.
+            return re.sub(
+                re.escape(self.work) + r"([^\s\"']*)",
+                lambda m: WORK_PLACEHOLDER + m.group(1).replace("\\", "/"),
+                obj,
+            )
         if isinstance(obj, dict):
             return {k: self._redact(v) for k, v in obj.items()}
         if isinstance(obj, list):

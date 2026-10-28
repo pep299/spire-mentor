@@ -465,7 +465,7 @@ def _parse_report_wins(report_path: Path, seeds: list[int]) -> list[bool]:
     stay aligned.
     """
     won_by_seed: dict[int, bool] = {}
-    for line in report_path.read_text().splitlines():
+    for line in report_path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
             continue

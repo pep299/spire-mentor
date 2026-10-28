@@ -163,10 +163,12 @@ pub fn step(store: &ReplayStore, idx: i64, ctx: &EnrichCtx<'_>) -> Result<Value,
     Ok(enrich(step_at(store, idx)?.to_value(), ctx))
 }
 
-/// `GET /api/step/{idx}/deck-analysis`.
+/// `GET /api/step/{idx}/deck-analysis`, graded with the recording's own
+/// build's tables (GH #877).
 pub fn step_deck_analysis(store: &ReplayStore, idx: i64) -> Result<Value, ApiError> {
     let s = step_at(store, idx)?;
-    Ok(deck::analyze_deck(
+    Ok(deck::analyze_deck_for(
+        store.game_version(),
         &deck_of(&s.state),
         deck::DEFAULT_ENERGY,
         deck::DEFAULT_HAND,
@@ -178,6 +180,7 @@ pub fn step_deck_analysis(store: &ReplayStore, idx: i64) -> Result<Value, ApiErr
 /// `GET /api/deck/trend`: one point per deck change along the run.
 #[must_use]
 pub fn deck_trend(store: &ReplayStore) -> Value {
+    let version = store.game_version();
     let mut points = Vec::new();
     let mut last_sig: Option<Vec<(String, bool)>> = None;
     for s in store.all() {
@@ -190,7 +193,14 @@ pub fn deck_trend(store: &ReplayStore) -> Value {
             continue;
         }
         last_sig = Some(sig);
-        let report = deck::analyze_deck(&deck, deck::DEFAULT_ENERGY, deck::DEFAULT_HAND, 60, 0);
+        let report = deck::analyze_deck_for(
+            version,
+            &deck,
+            deck::DEFAULT_ENERGY,
+            deck::DEFAULT_HAND,
+            60,
+            0,
+        );
         points.push(json!({
             "idx": s.idx,
             "floor": s.meta["floor"],
@@ -202,22 +212,32 @@ pub fn deck_trend(store: &ReplayStore) -> Value {
     json!({"points": points})
 }
 
-/// `POST /api/deck/reward-preview {deck, candidates}` (stateless).
-#[must_use]
-pub fn reward_preview(body: &Value) -> Value {
+/// `POST /api/deck/reward-preview {deck, candidates, game_version?}`
+/// (stateless). `game_version` names the build whose tables grade the
+/// cards (absent = the default build, GH #877); an unsupported one is the
+/// caller's 400.
+pub fn reward_preview(body: &Value) -> Result<Value, String> {
+    let version = crate::session::parse_game_version(body.get("game_version"))?;
     let list = |k: &str| -> Vec<Value> {
         body.get(k)
             .and_then(Value::as_array)
             .map(|a| a.iter().filter(|v| v.is_object()).cloned().collect())
             .unwrap_or_default()
     };
-    deck::reward_preview(&list("deck"), &list("candidates"), deck::DEFAULT_SAMPLES, 0)
+    Ok(deck::reward_preview_for(
+        version,
+        &list("deck"),
+        &list("candidates"),
+        deck::DEFAULT_SAMPLES,
+        0,
+    ))
 }
 
-/// `GET /api/live/deck-analysis` over a live state.
+/// `GET /api/live/deck-analysis` over a live state of build `version`.
 #[must_use]
-pub fn live_deck_analysis(state: &Value) -> Value {
-    deck::analyze_deck(
+pub fn live_deck_analysis(state: &Value, version: sts2_core::GameVersion) -> Value {
+    deck::analyze_deck_for(
+        version,
         &deck_of(state),
         deck::DEFAULT_ENERGY,
         deck::DEFAULT_HAND,

@@ -92,3 +92,14 @@ def test_seed_hash_matches_the_csharp_oracle(ver, restore_version) -> None:
             assert draws["up_front"] == r["up_front"], (ver, s)
     finally:
         g.close()
+
+
+def test_json_exact_seed_strings_only_past_2_53():
+    """GH #878: the browser rounds a JSON number past 2^53; a v0.111.0 ``ulong``
+    run seed goes out as a decimal string, every smaller one stays a number."""
+    from workbench.seed import json_exact_seed
+
+    assert json_exact_seed(44815703) == 44815703
+    assert json_exact_seed((1 << 53) - 1) == (1 << 53) - 1
+    assert json_exact_seed(1 << 53) == "9007199254740992"
+    assert json_exact_seed((1 << 64) - 1) == "18446744073709551615"

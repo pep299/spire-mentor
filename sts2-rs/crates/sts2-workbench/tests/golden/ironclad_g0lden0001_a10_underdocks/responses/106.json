@@ -13,6 +13,7 @@
   {
    "action": "True Grit",
    "hp_n": 32,
+   "hp_sd": 4.7364,
    "is_best": true,
    "losses": 20,
    "low_confidence": false,
@@ -29,6 +30,7 @@
   {
    "action": "Strike",
    "hp_n": 8,
+   "hp_sd": 0.0,
    "is_best": false,
    "losses": 8,
    "low_confidence": false,
@@ -45,6 +47,7 @@
   {
    "action": "end turn",
    "hp_n": 8,
+   "hp_sd": 0.0,
    "is_best": false,
    "losses": 8,
    "low_confidence": false,

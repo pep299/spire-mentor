@@ -19,11 +19,13 @@ export default function DecisionScreen({
   onChoose,
   onNewRun,
   onReviewReplay,
+  onCoachReview,
 }: {
   step: Step;
   onChoose?: ChooseHandler;
   onNewRun?: () => void;
   onReviewReplay?: () => void;
+  onCoachReview?: () => void;
 }) {
   switch (step.decision) {
     case "card_reward":
@@ -39,7 +41,7 @@ export default function DecisionScreen({
     case "bundle_select":
       return <BundleSelect step={step} onChoose={onChoose} />;
     case "game_over":
-      return <GameOver step={step} onNewRun={onNewRun} onReviewReplay={onReviewReplay} />;
+      return <GameOver step={step} onNewRun={onNewRun} onReviewReplay={onReviewReplay} onCoachReview={onCoachReview} />;
     default:
       // Unknown decision: the generic action list keeps the run unstuck (Play),
       // or a muted note (Replay, where there are no actions to take).

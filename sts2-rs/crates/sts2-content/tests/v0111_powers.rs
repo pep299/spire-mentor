@@ -631,6 +631,44 @@ fn ambergris_extra_turn_is_turn_two_for_bag_of_preparation_v0111() {
     );
 }
 
+/// PaelsEye's extra turn (no card played this turn) skips the enemy side and
+/// is the player's turn 2 while the round stays 1: C# `SwitchSides` keeps
+/// `CurrentSide` on the player and runs `IncrementTurnNumber()` without
+/// `RoundNumber++` (v0.111.0 CombatManager.cs:1866-1888, v0.107.1
+/// :1390-1424, same body). GH #806: v0.107.1 used to run the enemy turn
+/// anyway and keep the turn number equal to the round.
+#[test]
+fn paels_eye_extra_turn_skips_the_enemy_side_both_versions() {
+    for version in [GameVersion::V0_107_1, GameVersion::V0_111_0] {
+        let (mut state, _) = fresh(version);
+        state.round = 1;
+        state.relics.push(sts2_core::Relic {
+            id: std::num::NonZeroU32::new(1).expect("nz"),
+            kind: sts2_core::RelicKind::PaelsEye,
+            counter: 0,
+            is_wax: false,
+            is_melted: false,
+        });
+        let hp_before = state.player.current_hp;
+        let _ = sts2_core::apply(&mut state, Action::EndTurn);
+        assert_eq!(state.phase, CombatPhase::PlayerPlayPhase, "{version:?}");
+        assert_eq!(
+            state.round, 1,
+            "the extra turn keeps the round ({version:?})"
+        );
+        assert_eq!(state.turn_number(), 2, "but is turn 2 ({version:?})");
+        assert_eq!(
+            state.player.current_hp, hp_before,
+            "no enemy turn ran ({version:?})"
+        );
+        let _ = sts2_core::apply(&mut state, Action::EndTurn);
+        assert!(
+            state.round > 1,
+            "the next end turn runs the enemy ({version:?})"
+        );
+    }
+}
+
 /// The extra-turn predicate ignores AmbergrisPower under v0.107.1 (it cannot
 /// exist there; the gate is belt-and-braces).
 #[test]

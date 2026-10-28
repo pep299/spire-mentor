@@ -108,3 +108,106 @@ def test_load_jsonl_attaches_persisted_mcts_scores():
     assert step["pv"] == ["End turn"]
     best = next(s for s in step["scores"] if s.get("is_best"))
     assert best["losses"] == 690
+
+
+# ── live-coach records (twin of the runlog.rs coach tests) ──────────────────
+def _coach_store(tmp_path, records):
+    head = {"step": 0, "type": "meta", "data": {"character": "Ironclad", "live": True}}
+    log = tmp_path / "live.jsonl"
+    log.write_text("\n".join(json.dumps(r) for r in [head, *records]))
+    return TimelineStore.load_jsonl(str(log))
+
+
+def _state(step, decision="combat_play", **extra):
+    return {"step": step, "type": "state", "data": {"decision": decision, **extra}}
+
+
+def _coach(step, **data):
+    return {"step": step, "type": "coach", "data": data}
+
+
+def test_coach_records_keyed_by_log_idx(tmp_path):
+    store = _coach_store(
+        tmp_path,
+        [
+            _state(1, round=1),
+            _state(2, round=2),
+            _coach(2, kind="turn", id="turn:7", verdict="slip", log_idx=0),
+        ],
+    )
+    coach = store.coach()
+    assert coach["by_step"] == {"0": ["turn:7"]}
+    assert coach["records"][0]["verdict"] == "slip"
+    assert coach["autopsy"] is None
+
+
+def test_coach_withdraw_removes_record_everywhere(tmp_path):
+    store = _coach_store(
+        tmp_path,
+        [
+            _state(1),
+            _coach(1, kind="turn", id="turn:1", verdict="slip", log_idx=0),
+            _coach(1, kind="choice", id="choice:2", verdict="agree", log_idx=0),
+            _coach(1, kind="withdraw", ids=["turn:1"]),
+        ],
+    )
+    assert len(store.coach()["records"]) == 1
+    assert store.coach()["by_step"] == {"0": ["choice:2"]}
+    store = _coach_store(
+        tmp_path,
+        [
+            _state(1),
+            _coach(1, kind="withdraw", ids=["turn:1"]),
+            _coach(1, kind="turn", id="turn:1", verdict="best", log_idx=0),
+        ],
+    )
+    assert store.coach()["by_step"] == {"0": ["turn:1"]}
+
+
+def test_coach_ungraded_turn_listed_not_stepped(tmp_path):
+    store = _coach_store(
+        tmp_path,
+        [
+            _state(1),
+            _coach(1, kind="turn", id="turn:1", verdict="ungraded", log_idx=0),
+            _coach(1, kind="turn", id="turn:x1", verdict="best"),
+        ],
+    )
+    assert len(store.coach()["records"]) == 2
+    assert store.coach()["by_step"] == {}
+
+
+def test_coach_autopsy_after_terminal_state(tmp_path):
+    store = _coach_store(
+        tmp_path,
+        [
+            _state(1),
+            _state(2, decision="game_over"),
+            {"step": 2, "type": "meta", "data": {"summary": True, "final_won": False}},
+            _coach(2, kind="autopsy", id="autopsy", items=[{"id": "turn:1", "log_idx": 0}]),
+        ],
+    )
+    assert store.coach()["autopsy"]["items"][0]["id"] == "turn:1"
+    assert store.coach()["records"] == []
+    assert TimelineStore([]).coach() == {"records": [], "by_step": {}, "autopsy": None}
+
+
+def test_root_outcomes_scores_keep_hp_stats(tmp_path):
+    rows = [
+        {
+            "stable_idx": 0,
+            "action": "Strike",
+            "win_prob": 0.6,
+            "visits": 40,
+            "mean_final_hp": 31.5,
+            "hp_n": 38,
+        },
+        {"stable_idx": -1, "action": "end turn", "win_prob": 0.4, "visits": 10},
+    ]
+    store = _coach_store(
+        tmp_path, [_state(1), {"step": 1, "type": "mcts", "data": {"root_outcomes": rows}}]
+    )
+    scores = store.get(0)["scores"]
+    assert scores[0]["mean_final_hp"] == pytest.approx(31.5)
+    assert scores[0]["hp_n"] == 38
+    assert "mean_final_hp" not in scores[1]

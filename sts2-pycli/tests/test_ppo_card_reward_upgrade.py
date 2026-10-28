@@ -40,7 +40,10 @@ def _syspath(monkeypatch):
     monkeypatch.syspath_prepend(PY)
 
 
-def test_the_training_obs_ships_flags_aligned_with_the_ids() -> None:
+# One test per seed so xdist runs the walks in parallel; each seed reaches
+# card picks on its own (seed 1000: 18, seed 1001: 9).
+@pytest.mark.parametrize("seed", SEEDS, ids=lambda s: f"seed{s}")
+def test_the_training_obs_ships_flags_aligned_with_the_ids(seed: int) -> None:
     """`ppo.env.observe` must ship one flag per offered card. A short list
     would silently read as "not upgraded" for the tail options rather than
     fail, so alignment is the thing to pin."""
@@ -49,20 +52,19 @@ def test_the_training_obs_ships_flags_aligned_with_the_ids() -> None:
     from ppo.env import Decision, PpoRunEnv
 
     seen = 0
-    for seed in SEEDS:
-        env = PpoRunEnv(seed=seed, ascension=0, character="Ironclad")
-        rng = random.Random(seed)
-        out = env.reset()
-        while isinstance(out, Decision):
-            if out.surface == "card-pick" and out.obs.get("card_reward_option_ids"):
-                ids = out.obs["card_reward_option_ids"]
-                flags = out.obs["card_reward_option_upgraded"]
-                # Bundle offerings carry no upgrade state at all, so an EMPTY
-                # list is legal; a partial one is not.
-                assert flags == [] or len(flags) == len(ids), (seed, ids, flags)
-                assert all(isinstance(f, bool) for f in flags)
-                seen += 1
-            out = env.step(rng.randrange(len(out.actions)))
+    env = PpoRunEnv(seed=seed, ascension=0, character="Ironclad")
+    rng = random.Random(seed)
+    out = env.reset()
+    while isinstance(out, Decision):
+        if out.surface == "card-pick" and out.obs.get("card_reward_option_ids"):
+            ids = out.obs["card_reward_option_ids"]
+            flags = out.obs["card_reward_option_upgraded"]
+            # Bundle offerings carry no upgrade state at all, so an EMPTY
+            # list is legal; a partial one is not.
+            assert flags == [] or len(flags) == len(ids), (seed, ids, flags)
+            assert all(isinstance(f, bool) for f in flags)
+            seen += 1
+        out = env.step(rng.randrange(len(out.actions)))
     assert seen, "no card-pick decision reached — the walk pinned nothing"
 
 

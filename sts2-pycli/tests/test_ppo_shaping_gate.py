@@ -247,7 +247,7 @@ def test_phi_helper_agrees_with_rewards_module():
 
 def _write_corpus(path, n_runs: int = 30, seed: int = 0) -> None:
     rng = random.Random(seed)
-    with open(path, "w") as fh:
+    with open(path, "w", encoding="utf-8") as fh:
         for _ in range(n_runs):
             run = _run(rng)
             fh.write(
@@ -271,7 +271,7 @@ def test_load_runs_skips_failed_and_empty_rows(tmp_path):
         "final": {"total_floor": 3},
         "decisions": [{"metrics": {"total_floor": 1}}],
     }
-    with open(p, "w") as fh:
+    with open(p, "w", encoding="utf-8") as fh:
         fh.write(json.dumps(good) + "\n")
         fh.write(json.dumps({**good, "outcome": "error"}) + "\n")
         fh.write(json.dumps({**good, "outcome": "timeout"}) + "\n")

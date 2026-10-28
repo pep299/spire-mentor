@@ -516,6 +516,18 @@ pub fn event_option_count_callback(state: &RunState) -> usize {
     present(state).map_or(0, |opts| opts.len())
 }
 
+/// `event_option_enabled` callback for [`sts2_core::run_manager::ContentCallbacks`].
+///
+/// Whether the active event's presented option `idx` is enabled. An
+/// out-of-range `idx` or no active event reads as enabled, so the engine's
+/// placeholder action survives (GH #885).
+#[must_use]
+pub fn event_option_enabled_callback(state: &RunState, idx: usize) -> bool {
+    present(state)
+        .and_then(|opts| opts.get(idx).map(|o| o.enabled))
+        .unwrap_or(true)
+}
+
 /// `bind_pending_event` callback for [`sts2_core::run_manager::ContentCallbacks`].
 ///
 /// Rolls the pending room's event and enters it, as `PpoRunEnv`'s

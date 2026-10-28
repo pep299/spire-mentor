@@ -7,8 +7,10 @@ searches the grader asked for.
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -21,6 +23,7 @@ class _Pos:
     hand: list[tuple[str, bool]] = field(default_factory=list)
     potions: list[str | None] = field(default_factory=list)
     round: int = 3
+    board: dict[str, Any] | None = None
 
 
 class _Engine:
@@ -32,6 +35,8 @@ class _Engine:
         self.catch_up_calls: list[Any] = []
         self.top_up_calls: list[tuple[Any, dict[str, Any]]] = []
         self.line = ["Bash", "Defend", "end turn"]
+        #: The board the AI line ends its turn from (``None``: stopped short).
+        self.ai_end: dict[str, Any] | None = None
 
     def position_info(self, cs: Any, msg: dict[str, Any] | None = None) -> dict[str, Any]:
         return {"hand": cs.hand, "potions": cs.potions, "round": cs.round}
@@ -46,6 +51,12 @@ class _Engine:
 
     def ai_line(self, cs: Any, first: Any, cfg: Any, label: Any) -> list[str]:
         return list(self.line)
+
+    def ai_turn(self, cs: Any, first: Any, cfg: Any, label: Any) -> tuple[list[str], Any]:
+        return list(self.line), self.ai_end
+
+    def board(self, cs: Any) -> dict[str, Any] | None:
+        return cs.board if cs is not None else None
 
 
 def _row(
@@ -133,6 +144,45 @@ def _on_line_turn(g: rc.CoachGrader, *, end_rows: list[dict] | None = None, **en
     g.on_human_action(_end("a3", 3, **end_kw), node_id=12)
 
 
+def _lagavulin(*, asleep: bool, dead: bool = False, uid: int = 7) -> dict[str, Any]:
+    powers = [{"name": "ASLEEP", "amount": 3}] if asleep else []
+    return {"kind": "LAGAVULIN_MATRIARCH", "uid": uid, "is_dead": dead, "powers": powers}
+
+
+def _board(*enemies: dict[str, Any], phase: str = "PlayerPhase") -> dict[str, Any]:
+    return {"phase": phase, "encounter": list(enemies)}
+
+
+class TestWhy:
+    """``board_events`` / ``why_text``: the recap's reason line (GH #888)."""
+
+    def test_wake_kill_and_win_events(self) -> None:
+        start = _board(_lagavulin(asleep=True), _lagavulin(asleep=False, uid=8))
+        end = _board(_lagavulin(asleep=False), _lagavulin(asleep=False, dead=True, uid=8))
+        assert rc.board_events(start, end) == [("wakes", 0), ("kills", 1)]
+        assert rc.board_events(start, _board(phase="Victory")) == [("wins", -1)]
+        assert rc.board_events(start, start) == []
+
+    def test_slumber_counts_as_sleep(self) -> None:
+        sleeping = {**_lagavulin(asleep=False), "powers": [{"name": "SLUMBER"}]}
+        assert rc.board_events(_board(sleeping), _board(_lagavulin(asleep=False))) == [("wakes", 0)]
+
+    def test_why_names_each_sides_extra_events(self) -> None:
+        names = ["Lagavulin Matriarch", "Cultist"]
+        assert (
+            rc.why_text([("wakes", 0)], [], names, 1)
+            == "Your line wakes Lagavulin Matriarch on turn 1"
+        )
+        assert (
+            rc.why_text([("wakes", 0)], [("wakes", 0), ("kills", 1)], names, 2)
+            == "The AI's line kills Cultist on turn 2"
+        )
+        assert rc.why_text([("wakes", 0)], [("wins", -1)], names, 4) == (
+            "Your line wakes Lagavulin Matriarch; the AI's line wins the fight on turn 4"
+        )
+        assert rc.why_text([("kills", 1)], [("kills", 1)], names, 1) is None
+
+
 class TestCombatTurns:
     def test_wasted_turn_emits_blunder_turn_record(self) -> None:
         g, sent, logged, _ = _grader()
@@ -153,6 +203,32 @@ class TestCombatTurns:
         assert turn["win_after"] == pytest.approx(0.95)
         assert turn["peeked"] is False
         assert _turns(logged) == [turn]
+
+    def test_turn_record_says_why_the_line_is_worse(self) -> None:
+        """GH #888: the player's line wakes Lagavulin, the AI's does not --
+        the record says so, or a correct call reads as noise."""
+        g, sent, _logged, engine = _grader()
+        start = _board(_lagavulin(asleep=True))
+        engine.ai_end = _board(_lagavulin(asleep=True))
+        pos = _Pos(hand=list(HAND), board=start)
+        _combat_entry(g, "a1", 1, [_row(0, 0.95, 50, best=True), _row(1, 0.94, 45)], pos)
+        g.on_human_action(_play("BASH", "a1", 1), node_id=10)
+        end_pos = _Pos(hand=HAND[1:], board=_board(_lagavulin(asleep=False)))
+        end_rows = [_row(0, 0.95, 50, best=True), _row(-1, 0.94, 38, visits=200)]
+        _combat_entry(g, "a3", 3, end_rows, end_pos)
+        g.on_human_action(_end("a3", 3), node_id=12)
+        (turn,) = _turns(sent)
+        assert turn["verdict"] == "blunder"
+        assert turn["why"] == "Your line wakes Lagavulin Matriarch on turn 3"
+
+    def test_no_why_when_the_ai_line_stops_short(self) -> None:
+        g, sent, _logged, _engine = _grader()  # ai_end stays None
+        _on_line_turn(
+            g,
+            end_rows=[_row(0, 0.95, 50, best=True), _row(-1, 0.94, 38, visits=200)],
+        )
+        (turn,) = _turns(sent)
+        assert turn["why"] is None
 
     def test_on_line_turn_is_silent_by_default(self) -> None:
         g, sent, _logged, _ = _grader()
@@ -544,6 +620,15 @@ class TestHelpers:
         }
         assert rc.turn_context(None) is None
 
+    def test_turn_context_numbers_same_named_enemies(self) -> None:
+        msg = _fight_msg(2)
+        rat = {"name": "Two-Tailed Rat", "hp": 20, "is_alive": True, "intents": []}
+        msg["enemies"] = [rat, {**rat, "is_alive": False}, rat]
+        names = [e["name"] for e in rc.turn_context(msg)["enemies"]]
+        # The dying rat takes no number (as in the option labels and the
+        # HUD tags), so the live rats are #1 and #2, as on the workbench.
+        assert names == ["Two-Tailed Rat #1", "Two-Tailed Rat #2"]
+
 
 class TestRecap:
     def test_clean_fight_recap_has_no_costliest(self) -> None:
@@ -912,6 +997,10 @@ class TestRealEngine:
         line = engine.ai_line(cs, None, cfg, g._label_engine)
         assert 1 <= len(line) <= rc.AI_LINE_MAX_STEPS
         assert all(isinstance(s, str) and s for s in line)
+        line2, end = engine.ai_turn(cs, None, cfg, g._label_engine)
+        if line2[-1] == "end turn":
+            assert end is not None and end.get("encounter"), end
+            assert rc.board_events(engine.board(cs), end) is not None
 
 
 def test_human_label_uses_card_names_not_raw_detail() -> None:
@@ -940,3 +1029,54 @@ def test_human_label_uses_card_names_not_raw_detail() -> None:
     up["card"]["upgraded"] = True
     assert g._label_human(up) == "Strike+ (Toadpole)"
     assert g._label_human({"potion": {"id": "FIRE_POTION"}}) == "drink Fire Potion"
+
+
+def test_label_human_numbers_same_named_targets() -> None:
+    g, _sent, _logged, _engine = _grader()
+    g.on_advice(
+        g.cache.put(
+            "a0",
+            1,
+            kind="combat",
+            rows=[],
+            cs=None,
+            msg={
+                "round": 1,
+                "hand": [{"id": "STRIKE_IRONCLAD", "name": "Strike"}],
+                "enemies": [{"name": "Louse"}, {"name": "Cultist"}, {"name": "Louse"}],
+            },
+        )
+    )
+    assert g._label_human(_play("STRIKE_IRONCLAD", None, 1, target_index=2)) == "Strike (Louse #2)"
+    assert g._label_human(_play("STRIKE_IRONCLAD", None, 1, target_index=1)) == "Strike (Cultist)"
+
+
+_INTENT_CASES = Path(__file__).resolve().parent / "fixtures" / "coach" / "intent_text_cases.json"
+
+
+@pytest.mark.parametrize(
+    "case",
+    json.loads(_INTENT_CASES.read_text(encoding="utf-8"))["cases"],
+    ids=lambda c: c["name"],
+)
+def test_intent_text_shared_cases(case: dict[str, Any]) -> None:
+    """Twin of advisors::intent_text (the browser workbench's turn context)."""
+    intents = [
+        {**{k: v for k, v in i.items() if k != "kind"}, "intent_type": i["kind"]}
+        for i in case["intents"]
+    ]
+    assert rc.intent_text(intents) == case["expect"]
+
+
+_RANK_CASES = Path(__file__).resolve().parent / "fixtures" / "coach" / "rank_autopsy_cases.json"
+
+
+@pytest.mark.parametrize(
+    "case",
+    json.loads(_RANK_CASES.read_text(encoding="utf-8"))["cases"],
+    ids=lambda c: c["name"],
+)
+def test_rank_autopsy_shared_cases(case: dict[str, Any]) -> None:
+    """Twin of web/src/coach/coachRank.ts (the browser's live-play autopsy)."""
+    items = rc.rank_autopsy(case["turns"], case["choices"], case["k"])
+    assert [[i["kind"], i["record"]["id"]] for i in items] == case["expect"]

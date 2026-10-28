@@ -65,12 +65,11 @@ use crate::monsters::act2_hive::{
 };
 use crate::monsters::act3_glory::{
     create_aeonglass_ai, create_axebot_ai, create_devoted_sculptor_ai, create_fabricator_ai,
-    create_flail_knight_ai, create_frog_knight_ai, create_globe_head_ai, create_guardbot_ai,
-    create_living_shield_ai, create_magi_knight_ai, create_mecha_knight_ai,
-    create_mysterious_knight_ai, create_noisebot_ai, create_osty_ai, create_owl_magistrate_ai,
-    create_queen_ai, create_scroll_of_biting_ai, create_slimed_berserker_ai, create_soul_nexus_ai,
-    create_spectral_knight_ai, create_stabbot_ai, create_test_subject_ai, create_the_forgotten_ai,
-    create_the_lost_ai, create_turret_operator_ai, create_zapbot_ai,
+    create_flail_knight_ai, create_frog_knight_ai, create_globe_head_ai, create_living_shield_ai,
+    create_magi_knight_ai, create_mecha_knight_ai, create_mysterious_knight_ai, create_osty_ai,
+    create_owl_magistrate_ai, create_queen_ai, create_scroll_of_biting_ai,
+    create_slimed_berserker_ai, create_soul_nexus_ai, create_spectral_knight_ai,
+    create_test_subject_ai, create_the_forgotten_ai, create_the_lost_ai, create_turret_operator_ai,
 };
 use crate::monsters::shared::{
     create_architect_ai, create_battle_friend_v1_ai, create_battle_friend_v2_ai,
@@ -291,9 +290,9 @@ pub fn build_ai_for_version(
         // (slots 2/4 to WRIGGLE, 1/3 to NASTY_BITE — `Wriggler.cs`), so a
         // slot-blind rebuild sends every wriggler to NASTY_BITE and the
         // telegraph is wrong for half the roster from the first turn they act.
-        // The live spawn path (`act1_overgrowth`'s InfestedPower) builds
-        // `create_infested_wriggler_ai` directly; this arm is what a
-        // RECONSTRUCTION goes through, which is why it needs the payload.
+        // Both the live InfestedPower spawn (`act1_overgrowth`, through
+        // `build_spawned_ai`, GH #847) and a RECONSTRUCTION go through this
+        // arm, which is why it needs the payload.
         MonsterKind::Wriggler => match args {
             MonsterSpawnArgs::DenseVegetationWriggler { slot } => {
                 crate::monsters::shared::create_infested_wriggler_ai(slot)
@@ -427,10 +426,13 @@ pub fn build_ai_for_version(
             };
             create_axebot_ai(start_with_boot_up)
         }
-        MonsterKind::Zapbot => create_zapbot_ai(),
-        MonsterKind::Stabbot => create_stabbot_ai(),
-        MonsterKind::Guardbot => create_guardbot_ai(),
-        MonsterKind::Noisebot => create_noisebot_ai(),
+        // The Fabricator summons its bots inside the search; the per-thread
+        // prototype clone keeps that a refcount bump (perf J10). Same value
+        // as a fresh `create_*bot_ai()` (debug-asserted by `proto_ai`).
+        MonsterKind::Zapbot
+        | MonsterKind::Stabbot
+        | MonsterKind::Guardbot
+        | MonsterKind::Noisebot => crate::monsters::act3_glory::create_bot_ai(kind),
         MonsterKind::Fabricator => create_fabricator_ai(),
         MonsterKind::FrogKnight => create_frog_knight_ai(),
         MonsterKind::GlobeHead => create_globe_head_ai(),
@@ -560,6 +562,66 @@ pub fn build_ai_for_version(
     crate::ascension_scaling::apply_ascension_attack_scaling(&mut ai, kind, ascension);
     // v0.111.0 re-valued moves (no-op for v0.107.1), GH #796.
     crate::ascension_scaling::apply_v0111_attack_values(&mut ai, kind, ascension, version);
+    ai
+}
+
+/// The AI of a creature added MID-COMBAT (C# `CreatureCmd.Add`: a summon, a
+/// respawn, an on-death spawn) — exactly what [`build_ai_for_version`] builds
+/// for an encounter member, at the combat's own ascension and game build.
+///
+/// C# resolves every `GetValueIfAscension(DeadlyEnemies, …)` on the added
+/// model the same way it does for the roster (`AscensionHelper.cs:22`, a
+/// run-global `RunManager.Instance.HasAscension` read), so a summon is never
+/// softer than its summoner. Building a summon with a bare `create_*_ai()`
+/// skipped [`crate::ascension_scaling`] and kept the A0 moves at A9+ (GH
+/// #847); every mid-combat spawn site goes through here instead, which the
+/// `mid_combat_spawns_build_ai_through_the_dispatcher_847` source scan
+/// enforces.
+///
+/// `args` must carry any spawn payload the kind needs (Wriggler slot,
+/// TwoTailedRat `Other`, Axebot boot-up): a summon has no encounter position,
+/// so the positional fallbacks in [`build_ai_for_version`] never apply.
+///
+/// Summons happen inside the search, so each result is a clone of a
+/// per-thread memo keyed by every input — the `proto_ai` (perf J10) rule,
+/// extended to the scaled table: a clone shares the scaled table's `Arc`
+/// instead of copying it on every A9+ spawn. The build is pure in its inputs
+/// (no RNG, no combat state), so the memo cannot change a value; debug
+/// builds compare every clone with a fresh build.
+#[must_use]
+pub fn build_spawned_ai(
+    state: &sts2_core::CombatState,
+    kind: MonsterKind,
+    args: MonsterSpawnArgs,
+) -> MonsterAi {
+    type Key = (MonsterKind, MonsterSpawnArgs, u8, sts2_core::GameVersion);
+    thread_local! {
+        static MEMO: std::cell::RefCell<Vec<(Key, MonsterAi)>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+    let build = || {
+        build_ai_for_version(
+            kind,
+            args,
+            SpawnPosition::default(),
+            state.ascension,
+            state.game_version,
+        )
+    };
+    let key: Key = (kind, args, state.ascension, state.game_version);
+    let ai = MEMO.with(|memo| {
+        if let Some((_, ai)) = memo.borrow().iter().find(|(k, _)| *k == key) {
+            return ai.clone();
+        }
+        let ai = build();
+        memo.borrow_mut().push((key, ai.clone()));
+        ai
+    });
+    debug_assert_eq!(
+        format!("{ai:?}"),
+        format!("{:?}", build()),
+        "memoised spawn AI for {kind:?} is not what the dispatcher builds"
+    );
     ai
 }
 
@@ -1143,6 +1205,240 @@ mod tests {
         assert_eq!(
             move_from_index(MonsterKind::PhantasmalGardener, 3),
             "ENLARGE"
+        );
+    }
+
+    /// GH #847: `build_spawned_ai` is the dispatcher build at the combat's
+    /// ascension and game build, for every kind a C# `CreatureCmd.Add`
+    /// summons, and its per-thread memo hands out independent copies — a
+    /// caller rewriting its AI (WaterfallGiant-style `Arc::make_mut`, a
+    /// counter) never reaches the next summon.
+    #[test]
+    fn build_spawned_ai_is_the_dispatcher_build_847() {
+        use crate::monsters::act1_underdocks::TwoTailedRatSlot;
+        use crate::monsters::shared::DenseVegetationWrigglerSlot;
+        use crate::monsters::test_util::SPAWN_ASC_MATRIX;
+        use sts2_core::monster_ai::MonsterState;
+
+        let spawned = [
+            (MonsterKind::EyeWithTeeth, MonsterSpawnArgs::None),
+            (
+                MonsterKind::Wriggler,
+                MonsterSpawnArgs::DenseVegetationWriggler {
+                    slot: DenseVegetationWrigglerSlot::Second,
+                },
+            ),
+            (MonsterKind::SneakyGremlin, MonsterSpawnArgs::None),
+            (MonsterKind::FatGremlin, MonsterSpawnArgs::None),
+            (MonsterKind::GasBomb, MonsterSpawnArgs::None),
+            (
+                MonsterKind::TwoTailedRat,
+                MonsterSpawnArgs::TwoTailedRat {
+                    slot: TwoTailedRatSlot::Other,
+                },
+            ),
+            (MonsterKind::Parafright, MonsterSpawnArgs::None),
+            (MonsterKind::ToughEgg, MonsterSpawnArgs::None),
+            (
+                MonsterKind::Axebot,
+                MonsterSpawnArgs::Axebot {
+                    start_with_boot_up: true,
+                },
+            ),
+            (MonsterKind::Zapbot, MonsterSpawnArgs::None),
+            (MonsterKind::Stabbot, MonsterSpawnArgs::None),
+            (MonsterKind::Guardbot, MonsterSpawnArgs::None),
+            (MonsterKind::Noisebot, MonsterSpawnArgs::None),
+        ];
+        for (version, asc) in SPAWN_ASC_MATRIX {
+            let state = sts2_core::CombatState {
+                ascension: asc,
+                game_version: version,
+                ..sts2_core::CombatState::default()
+            };
+            for (kind, args) in spawned {
+                let fresh = format!(
+                    "{:?}",
+                    build_ai_for_version(kind, args, SpawnPosition::default(), asc, version)
+                );
+                let mut first = build_spawned_ai(&state, kind, args);
+                assert_eq!(format!("{first:?}"), fresh, "{kind:?} A{asc} {version:?}");
+                for st in std::sync::Arc::make_mut(&mut first.states).values_mut() {
+                    if let MonsterState::Move(m) = st {
+                        m.intents.clear();
+                    }
+                }
+                first.set_counter(99);
+                let second = build_spawned_ai(&state, kind, args);
+                assert_eq!(
+                    format!("{second:?}"),
+                    fresh,
+                    "{kind:?} A{asc} {version:?}: a caller's edit leaked into the memo"
+                );
+            }
+        }
+    }
+
+    /// GH #847 structural guard: every creature added MID-COMBAT gets its AI
+    /// from the dispatcher (`build_spawned_ai`), never from a bare
+    /// `create_*_ai()` factory, so a summon is scaled exactly like an
+    /// encounter member at A9+ and on v0.111.0.
+    ///
+    /// Source scan of this crate's non-test code: a `create_<x>_ai(` call is
+    /// allowed only inside a `create_*` / `build_*` factory (the per-thread
+    /// prototype wrappers, the Decimillipede segment wrappers, the v0.111.0
+    /// MechaKnight machine); `build_ai(` / `build_ai_with_ascension(` (the A0
+    /// and v0.107.1-pinned conveniences) are not allowed at all outside this
+    /// file. Each file is cut at its first column-0 `#[cfg(test)]` that opens
+    /// an inline `mod`, `//` lines are skipped, and the enclosing fn is the
+    /// last `fn NAME` seen. Residual holes: a summon that calls
+    /// `build_ai_for_version(.., 0, ..)` or builds inline with
+    /// `MonsterAi::new` is not caught by name.
+    #[test]
+    fn mid_combat_spawns_build_ai_through_the_dispatcher_847() {
+        use std::path::{Path, PathBuf};
+
+        fn is_ident(c: char) -> bool {
+            c.is_ascii_alphanumeric() || c == '_'
+        }
+
+        /// The `fn NAME` this line declares, if any (`fn(` types are not
+        /// declarations).
+        fn declared_fn(line: &str) -> Option<&str> {
+            let mut rest = line;
+            while let Some(i) = rest.find("fn ") {
+                let before = rest[..i].chars().next_back();
+                let after = &rest[i + 3..];
+                if before.is_none_or(|c| !is_ident(c)) {
+                    let name: &str = after.split(|c: char| !is_ident(c)).next().unwrap_or("");
+                    if !name.is_empty() {
+                        return Some(name);
+                    }
+                }
+                rest = after;
+            }
+            None
+        }
+
+        /// Every `create_<x>_ai(` / `build_ai(` / `build_ai_with_ascension(`
+        /// call on `line` that is not part of a longer identifier.
+        fn ai_builder_calls(line: &str) -> Vec<&str> {
+            let mut out = Vec::new();
+            let mut prev_ident = false;
+            for (i, c) in line.char_indices() {
+                if is_ident(c) && !prev_ident {
+                    let rest = &line[i..];
+                    let len = rest.find(|c: char| !is_ident(c)).unwrap_or(rest.len());
+                    let name = &rest[..len];
+                    let factory = name.starts_with("create_") && name.ends_with("_ai");
+                    if rest[len..].starts_with('(')
+                        && (factory || name == "build_ai" || name == "build_ai_with_ascension")
+                    {
+                        out.push(name);
+                    }
+                }
+                prev_ident = is_ident(c);
+            }
+            out
+        }
+
+        fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("src dir readable").flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        walk(&root, &mut files);
+        files.sort();
+
+        let mut scanned = 0usize;
+        let mut violations = Vec::new();
+        // (enclosing fn, called factory) for every allowed nested call.
+        let mut allowed: Vec<(String, String)> = Vec::new();
+        for path in &files {
+            let rel = path
+                .strip_prefix(&root)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            // This file IS the dispatcher; `tests.rs` files are test modules.
+            if rel == "monster_dispatch.rs" || rel.ends_with("tests.rs") {
+                continue;
+            }
+            scanned += 1;
+            let src = std::fs::read_to_string(path).expect("source readable");
+            let lines: Vec<&str> = src.lines().collect();
+            let mut current_fn = String::new();
+            for (n, line) in lines.iter().enumerate() {
+                if line.starts_with("#[cfg(test)]") {
+                    let next = lines[n + 1..]
+                        .iter()
+                        .find(|l| !l.trim().is_empty())
+                        .copied()
+                        .unwrap_or("");
+                    if next.starts_with("mod ") && !next.trim_end().ends_with(';') {
+                        break;
+                    }
+                }
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                let declares = declared_fn(line);
+                if let Some(name) = declares {
+                    current_fn = name.to_string();
+                }
+                for call in ai_builder_calls(line) {
+                    if declares == Some(call) {
+                        continue; // the factory's own signature
+                    }
+                    let in_factory =
+                        current_fn.starts_with("create_") || current_fn.starts_with("build_");
+                    if call.starts_with("create_") && in_factory {
+                        allowed.push((current_fn.clone(), call.to_string()));
+                    } else {
+                        violations.push(format!("{rel}:{}: `{call}(` in `fn {current_fn}`", n + 1));
+                    }
+                }
+            }
+        }
+
+        // Positive control: the scan reached the monster sources and saw
+        // the factory-internal calls it must allow.
+        assert!(scanned > 100, "scanned only {scanned} source files");
+        for (factory, inner) in [
+            (
+                "create_decimillipede_segment_front_ai",
+                "create_decimillipede_segment_ai",
+            ),
+            (
+                "create_decimillipede_segment_middle_ai",
+                "create_decimillipede_segment_ai",
+            ),
+            (
+                "create_decimillipede_segment_back_ai",
+                "create_decimillipede_segment_ai",
+            ),
+            ("create_mecha_knight_v0111_ai", "create_mecha_knight_ai"),
+        ] {
+            assert!(
+                allowed.iter().any(|(f, c)| f == factory && c == inner),
+                "the scan never saw `{inner}(` inside `fn {factory}` — is it cutting \
+                 or skipping too much? allowed: {allowed:?}"
+            );
+        }
+        assert!(
+            violations.is_empty(),
+            "{} mid-combat AI build(s) bypass `build_spawned_ai` — a summon built \
+             from a bare factory keeps its A0 moves at A9+ (GH #847):\n{}",
+            violations.len(),
+            violations.join("\n")
         );
     }
 }

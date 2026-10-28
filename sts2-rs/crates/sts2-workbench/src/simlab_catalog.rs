@@ -18,6 +18,7 @@ use crate::simlab::{camel_to_upper_snake, title_case, ORB_BASE};
 use serde_json::{json, Map, Value};
 use sts2_content::monster_dispatch::{build_ai_with_ascension, MonsterSpawnArgs, SpawnPosition};
 use sts2_core::monster_ai::MonsterState;
+use sts2_core::GameVersion;
 use sts2_wire::emit::combat::bare_intent_to_value;
 use sts2_wire::state_dict::{monster_kind_from_python_name, registry_names_for};
 
@@ -197,22 +198,21 @@ pub fn list_encounters() -> Value {
 // Display names (embedded localization → title-case fallback)
 // ---------------------------------------------------------------------------
 
-fn loc() -> &'static Loc {
-    Loc::embedded()
+/// The display loc of game build `version` (GH #877: a v0.111.0 sandbox
+/// names its cards with v0.111.0 text).
+fn loc(version: GameVersion) -> &'static Loc {
+    Loc::embedded_for(version)
 }
 
-fn loc_or_title(key: &str, ident: &str) -> String {
-    loc()
-        .get(key)
-        .map_or_else(|| title_case(ident), str::to_string)
+fn loc_or_title(l: &Loc, key: &str, ident: &str) -> String {
+    l.get(key).map_or_else(|| title_case(ident), str::to_string)
 }
 
 /// A card's display name: `{id}.title` from localization, else the same key
 /// minus a `_CARD` suffix (`DEMON_FORM_CARD` → `DEMON_FORM`), else title-case —
 /// the join rules from `catalog.py::_card_rows`. `CardSpec::name` is the UPPER
 /// registry id, not a word, so it is not used here.
-fn card_display_name(id: &str) -> String {
-    let l = loc();
+fn card_display_name(l: &Loc, id: &str) -> String {
     if let Some(n) = l.get(&format!("{id}.title")) {
         return n.to_string();
     }
@@ -221,7 +221,7 @@ fn card_display_name(id: &str) -> String {
         .map_or_else(|| title_case(base), str::to_string)
 }
 
-fn card_rows() -> Vec<Value> {
+fn card_rows(l: &Loc) -> Vec<Value> {
     let mut ids = registry_names_for("card").unwrap_or_default();
     ids.sort();
     ids.into_iter()
@@ -234,30 +234,30 @@ fn card_rows() -> Vec<Value> {
                 ),
                 Err(_) => (String::new(), String::new(), Value::Null),
             };
-            let name = card_display_name(&id);
+            let name = card_display_name(l, &id);
             json!({"id": id, "name": name, "type": ty, "rarity": rarity, "cost": cost, "character": ""})
         })
         .collect()
 }
 
-fn named_rows(kind: &str, suffix: &str) -> Vec<Value> {
+fn named_rows(l: &Loc, kind: &str, suffix: &str) -> Vec<Value> {
     let mut ids = registry_names_for(kind).unwrap_or_default();
     ids.sort();
     ids.into_iter()
         .map(|id| {
             let key = format!("{id}{suffix}.title");
-            json!({"id": id, "name": loc_or_title(&key, &id)})
+            json!({"id": id, "name": loc_or_title(l, &key, &id)})
         })
         .collect()
 }
 
-fn monster_rows() -> Vec<Value> {
+fn monster_rows(l: &Loc) -> Vec<Value> {
     let mut ids = registry_names_for("monster").unwrap_or_default();
     ids.sort();
     ids.into_iter()
         .map(|kind| {
             let snake = camel_to_upper_snake(&kind);
-            let name = loc_or_title(&format!("{snake}.name"), &kind);
+            let name = loc_or_title(l, &format!("{snake}.name"), &kind);
             let moves = monster_moves(&kind, 0).unwrap_or(Value::Array(Vec::new()));
             let move_rows: Vec<Value> = moves
                 .as_array()
@@ -266,9 +266,9 @@ fn monster_rows() -> Vec<Value> {
                         .map(|mv| {
                             let mid = mv.get("id").and_then(Value::as_str).unwrap_or("");
                             let bare = mid.strip_suffix("_MOVE").unwrap_or(mid);
-                            let title = loc()
+                            let title = l
                                 .get(&format!("{snake}.moves.{mid}.title"))
-                                .or_else(|| loc().get(&format!("{snake}.moves.{bare}.title"))).map_or_else(|| title_case(bare), str::to_string);
+                                .or_else(|| l.get(&format!("{snake}.moves.{bare}.title"))).map_or_else(|| title_case(bare), str::to_string);
                             json!({
                                 "id": mid,
                                 "title": title,
@@ -309,34 +309,51 @@ fn orb_rows() -> Vec<Value> {
         .collect()
 }
 
-/// The full sandbox catalog. Sweep-only fields (`strategies`) are present but
-/// empty in the browser build, where the distribution sweeps are desktop-only.
+/// The full sandbox catalog (default build's names). Sweep-only fields
+/// (`strategies`) are present but empty in the browser build, where the
+/// distribution sweeps are desktop-only.
 #[must_use]
 pub fn catalog() -> Value {
+    catalog_for(GameVersion::default())
+}
+
+/// [`catalog`] named with game build `version`'s loc
+/// (`GET /api/simlab/catalog?game_version=…`, GH #877).
+#[must_use]
+pub fn catalog_for(version: GameVersion) -> Value {
+    let l = loc(version);
     json!({
         "characters": character_rows(),
-        "cards": card_rows(),
-        "relics": named_rows("relic", ""),
-        "potions": named_rows("potion", ""),
-        "powers": named_rows("power", "_POWER"),
+        "cards": card_rows(l),
+        "relics": named_rows(l, "relic", ""),
+        "potions": named_rows(l, "potion", ""),
+        "powers": named_rows(l, "power", "_POWER"),
         "orbs": orb_rows(),
-        "monsters": monster_rows(),
+        "monsters": monster_rows(l),
         "encounters": list_encounters(),
         "strategies": Value::Array(Vec::new()),
     })
 }
 
-/// Display name for one id — the catalog-backed `name_of` the labelers use.
+/// Display name for one id — the catalog-backed `name_of` the labelers use
+/// (default build's names).
 #[must_use]
 pub fn name_of(kind: &str, ident: &str) -> String {
+    name_of_for(GameVersion::default(), kind, ident)
+}
+
+/// [`name_of`] in game build `version`'s loc.
+#[must_use]
+pub fn name_of_for(version: GameVersion, kind: &str, ident: &str) -> String {
+    let l = loc(version);
     let key = match kind {
-        "card" => return card_display_name(ident),
+        "card" => return card_display_name(l, ident),
         "relic" | "potion" => format!("{ident}.title"),
         "power" => format!("{ident}_POWER.title"),
         "monster" => format!("{}.name", camel_to_upper_snake(ident)),
         _ => return title_case(ident),
     };
-    loc_or_title(&key, ident)
+    loc_or_title(l, &key, ident)
 }
 
 /// The SimLab `/api/meta` payload. In the browser the sweep engine is

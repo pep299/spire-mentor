@@ -58,6 +58,7 @@ _CKPT_SKIP_REASON = (
 )
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "realgame_adapter"
+SNAPSHOT_DIR = Path(__file__).resolve().parent / "fixtures" / "sts2_realgame"
 
 
 def _load_combat_fixture(name: str) -> dict[str, Any]:
@@ -1466,6 +1467,86 @@ class TestEventPayloadReachesTheEncoder:
         emitted = decision.obs["event_options"][0]
         assert "gold_delta" not in emitted
         assert "max_hp_delta" not in emitted
+
+
+def _fake_merchant_state() -> dict[str, Any]:
+    path = SNAPSHOT_DIR / "event_fake_merchant.json"
+    with path.open(encoding="utf-8") as fh:
+        return json.load(fh)["state"]
+
+
+class TestFakeMerchant:
+    """GH #873: the live Fake Merchant arrives as the engine's three-option
+    event (buy, throw_foul, leave) -- the shape the run policy trained on.
+    The net reads an event option by position, so an option that is not
+    available keeps its slot instead of letting leave slide onto the throw's.
+    """
+
+    def test_a_disabled_throw_keeps_its_slot(self) -> None:
+        decision = rp._build_event(_fake_merchant_state())
+        assert decision is not None
+        assert decision.obs["event_name"] == "FAKE_MERCHANT"
+        assert [o["enabled"] for o in decision.obs["event_options"]] == [True, False, True]
+        assert decision.actions == [
+            {"action": "event_choice", "idx": 0},
+            {"action": "event_choice", "idx": 2},
+        ]
+        assert decision.responses == [
+            {"action": "choose", "index": 0},
+            {"action": "choose", "index": 2},
+        ]
+        assert decision.labels == ["Buy a Relic (50g)", "Leave"]
+
+    def test_a_held_foul_potion_offers_the_throw(self) -> None:
+        state = _fake_merchant_state()
+        state["options"][1]["enabled"] = True
+        decision = rp._build_event(state)
+        assert decision is not None
+        assert [a["idx"] for a in decision.actions] == [0, 1, 2]
+        assert [r["index"] for r in decision.responses] == [0, 1, 2]
+
+    def test_every_structured_delta_reaches_the_obs(self) -> None:
+        """The relic a purchase brings and the potion a throw costs are what
+        tell buy, throw and leave apart; gold alone does not."""
+        opts = rp._build_event(_fake_merchant_state()).obs["event_options"]
+        assert (opts[0]["gold_delta"], opts[0]["relics_gained"]) == (-50, 1)
+        assert opts[1]["potions_lost"] == 1
+        assert opts[2]["relics_gained"] == 0
+
+    @pytest.mark.skipif(_RS_SKIP_REASON is not None, reason=_RS_SKIP_REASON or "no sts2_rs")
+    def test_matches_the_engines_option_model(self) -> None:
+        """Position for position, each option the live message offers
+        featurizes like the engine's own option at that position."""
+        rm = sts2_rs.RunManager(
+            string_seed="FAKEMERCH", character="Ironclad", ascension_level=0, neow_start=True
+        )
+        assert rm.force_event("FakeMerchant") is not None
+        native = rm.event_option_infos()
+        assert [o["option_id"] for o in native] == ["buy", "throw_foul", "leave"]
+
+        decision = rp._build_event(_fake_merchant_state())
+        wire = decision.obs["event_options"]
+        assert len(wire) == len(native)
+        keys = rp._STRUCTURED_DELTA_KEYS
+        for action in decision.actions:
+            idx = action["idx"]
+            assert {k: wire[idx].get(k, 0) for k in keys} == {
+                k: native[idx].get(k, 0) for k in keys
+            }, f"option {idx} ({native[idx]['option_id']})"
+
+    @pytest.mark.skipif(
+        _TORCH_SKIP_REASON is not None, reason=_TORCH_SKIP_REASON or "torch unavailable"
+    )
+    @pytest.mark.skipif(_CKPT_SKIP_REASON is not None, reason=_CKPT_SKIP_REASON or "no checkpoint")
+    def test_the_champion_answers_with_an_offered_option(self) -> None:
+        state = _fake_merchant_state()
+        action, extra = rp.pick_noncombat_action_ppo(
+            state, random.Random(0), rp.PpoPolicyCache(None)
+        )
+        assert extra is None
+        assert action["action"] == "choose"
+        assert action["index"] in (0, 2), "never the disabled throw"
+        assert action["annotations"]["note"]
 
 
 class TestEventWorldLethalityFlag:

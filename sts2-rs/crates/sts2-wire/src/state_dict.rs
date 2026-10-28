@@ -41,7 +41,7 @@ use std::num::NonZeroU32;
 use smallvec::SmallVec;
 
 use sts2_content::monster_dispatch::{
-    build_ai, build_ai_for_version, MonsterSpawnArgs, SpawnPosition,
+    build_ai_for_version, build_ai_with_ascension, MonsterSpawnArgs, SpawnPosition,
 };
 use sts2_content::names::resolve_card_name;
 use sts2_core::cards::{Card, CardId, EnchantmentId, VarKey};
@@ -287,6 +287,45 @@ pub struct ParsedState {
     /// output and saw a 12-damage Strength-buffed telegraph come back
     /// as 10.
     pub intent_amounts: IntentAmounts,
+    /// Co-op teammates (`$.allies`, optional; absent or empty in a solo
+    /// fight). HP and block always; with `hand` the teammate is a whole seat
+    /// whose remaining plays the engine simulates (`sts2_core::coop`).
+    pub allies: Vec<ParsedAlly>,
+    /// `$.coop_full`: a whole co-op fight (`sts2_core::coop::CoopState::full`),
+    /// every seat playing its own turns, rather than the advisor's board.
+    pub coop_full: bool,
+    /// `$.coop_seat_index`: our place in the run's player order
+    /// (`sts2_core::coop::CoopState::seat_index`); 0 when absent.
+    pub coop_seat_index: u8,
+}
+
+/// One co-op teammate on the wire (`$.allies[i]`).
+#[derive(Debug, Clone)]
+pub struct ParsedAlly {
+    pub hp: i32,
+    pub max_hp: i32,
+    pub block: i32,
+    /// `class` (e.g. `"Silent"`), optional.
+    pub class: Option<String>,
+    pub energy: i32,
+    pub max_energy: i32,
+    pub powers: Vec<ParsedPower>,
+    /// The teammate's hand, in the player hand's card shape. `None` when the
+    /// producer sent only HP and block: such a teammate is not simulated.
+    pub hand: Option<Vec<ParsedCard>>,
+    /// A whole seat's other piles, in the player's pile order, and their
+    /// relics and stars: what a full co-op fight (`$.coop_full`) needs to
+    /// play their turns on. Empty when the producer sent only the hand.
+    pub draw_pile: Vec<ParsedCard>,
+    pub discard_pile: Vec<ParsedCard>,
+    pub exhaust_pile: Vec<ParsedCard>,
+    pub play_pile: Vec<ParsedCard>,
+    pub relics: Vec<ParsedRelic>,
+    pub stars: i32,
+    /// Their potion belt, as `$.player.potions`: null for an empty slot.
+    pub potions: Vec<Option<PotionKind>>,
+    /// They pressed end turn already: nothing of theirs is left to simulate.
+    pub ended_turn: bool,
 }
 
 /// See [`ParsedState::intent_amounts`].
@@ -311,6 +350,12 @@ pub struct ParsedPlayer {
     pub relics: Vec<ParsedRelic>,
     pub powers: Vec<ParsedPower>,
     pub potions: Vec<Option<PotionKind>>,
+    /// Potion-belt capacity (C# `Player.MaxPotionCount`; 2 under A4 Tight
+    /// Belt). Optional: `potions` is not the slot count on every producer
+    /// (the Rust emitter lists filled slots only), so the capacity rides in
+    /// its own key. Absent → the engine's unset sentinel, as before the key
+    /// existed.
+    pub potion_slots: Option<u8>,
     pub orbs: Option<Vec<ParsedOrb>>,
     pub orb_slots: Option<u32>,
     pub stars: Option<i32>,
@@ -826,6 +871,17 @@ pub fn parse_state_dict<V: WireValue>(d: &V) -> WireResult<ParsedState> {
     let deck_dict = as_dict(&deck_val, "$.deck")?;
     let deck = parse_deck(&deck_dict)?;
 
+    let allies = parse_allies(d)?;
+    let coop_full = match extract_optional(d, "coop_full") {
+        Some(_) => extract_bool(d, "$", "coop_full")?,
+        None => false,
+    };
+    let coop_seat_index = match extract_optional(d, "coop_seat_index") {
+        Some(_) => u8::try_from(extract_i64(d, "$", "coop_seat_index")?)
+            .map_err(|_| schema_err("$", "`coop_seat_index` must fit in u8"))?,
+        None => 0,
+    };
+
     let enc_val = get_item(d, "$", "encounter")?;
     let enc_list = as_list(&enc_val, "$.encounter")?;
     let mut encounter = Vec::with_capacity(enc_list.len());
@@ -863,7 +919,149 @@ pub fn parse_state_dict<V: WireValue>(d: &V) -> WireResult<ParsedState> {
         game_version,
         intent_damage_known,
         intent_amounts,
+        allies,
+        coop_full,
+        coop_seat_index,
     })
+}
+
+/// A relic list (`$.player.relics`, `$.allies[i].relics`).
+/// A potion belt (`$.player.potions`, `$.allies[i].potions`): string ids, null
+/// for an empty slot.
+fn parse_potion_list<V: WireValue>(value: &V, path: &str) -> WireResult<Vec<Option<PotionKind>>> {
+    let list = as_list(value, path)?;
+    let mut potions = Vec::with_capacity(list.len());
+    for (i, p) in list.iter().enumerate() {
+        let pp = format!("{path}[{i}]");
+        if p.is_null() {
+            potions.push(None);
+            continue;
+        }
+        let id = p
+            .as_str()
+            .ok_or_else(|| schema_err(&pp, "expected null or string id"))?;
+        let kind = potion_kind_from_python_name(&id).ok_or_else(|| unsupported(pp.clone(), &id))?;
+        potions.push(Some(kind));
+    }
+    Ok(potions)
+}
+
+fn parse_relic_list<V: WireValue>(value: &V, path: &str) -> WireResult<Vec<ParsedRelic>> {
+    let relics_list = as_list(value, path)?;
+    let mut relics = Vec::with_capacity(relics_list.len());
+    for (i, r) in relics_list.iter().enumerate() {
+        let rp = format!("{path}[{i}]");
+        let rd = as_dict(r, &rp)?;
+        let id = extract_str(&rd, &rp, "id")?;
+        let kind = relic_kind_from_python_name(&id).ok_or_else(|| unsupported(rp.clone(), &id))?;
+        let counter = match extract_optional(&rd, "counter") {
+            Some(v) => Some(
+                v.as_i64()
+                    .and_then(|n| i32::try_from(n).ok())
+                    .ok_or_else(|| schema_err(&rp, "`counter` must be an integer or null"))?,
+            ),
+            None => None,
+        };
+        // ToyBox wax/melt state. Optional so older producers (and every
+        // wire written before RunSimulator.cs started emitting them) parse
+        // unchanged; absent means "not wax, not melted".
+        let flag = |key: &str| -> WireResult<bool> {
+            match extract_optional(&rd, key) {
+                Some(v) => v
+                    .as_bool()
+                    .ok_or_else(|| schema_err(&rp, &format!("`{key}` must be a bool or null"))),
+                None => Ok(false),
+            }
+        };
+        let is_wax = flag("is_wax")?;
+        let is_melted = flag("is_melted")?;
+        relics.push(ParsedRelic {
+            kind,
+            counter,
+            is_wax,
+            is_melted,
+        });
+    }
+    Ok(relics)
+}
+
+fn parse_allies<V: WireValue>(d: &V) -> WireResult<Vec<ParsedAlly>> {
+    let Some(v) = extract_optional(d, "allies") else {
+        return Ok(Vec::new());
+    };
+    let list = as_list(&v, "$.allies")?;
+    // `CreatureRef::Ally` indexes with a u8; co-op caps at 4 players.
+    if list.len() > 3 {
+        return Err(schema_err("$.allies", "at most 3 teammates"));
+    }
+    let mut allies = Vec::with_capacity(list.len());
+    for (i, item) in list.iter().enumerate() {
+        let path = format!("$.allies[{i}]");
+        let a = as_dict(item, &path)?;
+        let opt_i32 = |key: &str| -> WireResult<i32> {
+            if extract_optional(&a, key).is_some() {
+                extract_i32(&a, &path, key)
+            } else {
+                Ok(0)
+            }
+        };
+        let class = match extract_optional(&a, "class") {
+            Some(_) => Some(extract_str(&a, &path, "class")?),
+            None => None,
+        };
+        let powers = match extract_optional(&a, "powers") {
+            Some(v) => parse_powers(&v, &format!("{path}.powers"))?,
+            None => Vec::new(),
+        };
+        let hand = match extract_optional(&a, "hand") {
+            Some(v) => Some(parse_pile(&v, &format!("{path}.hand"))?),
+            None => None,
+        };
+        let ended_turn = match extract_optional(&a, "ended_turn") {
+            Some(_) => extract_bool(&a, &path, "ended_turn")?,
+            None => false,
+        };
+        let pile = |key: &str| -> WireResult<Vec<ParsedCard>> {
+            match extract_optional(&a, key) {
+                Some(v) => parse_pile(&v, &format!("{path}.{key}")),
+                None => Ok(Vec::new()),
+            }
+        };
+        let relics = match extract_optional(&a, "relics") {
+            Some(v) => parse_relic_list(&v, &format!("{path}.relics"))?,
+            None => Vec::new(),
+        };
+        let potions = match extract_optional(&a, "potions") {
+            Some(v) => parse_potion_list(&v, &format!("{path}.potions"))?,
+            None => Vec::new(),
+        };
+        let ally = ParsedAlly {
+            hp: extract_i32(&a, &path, "hp")?,
+            max_hp: extract_i32(&a, &path, "max_hp")?,
+            block: extract_i32(&a, &path, "block")?,
+            class,
+            energy: opt_i32("energy")?,
+            max_energy: opt_i32("max_energy")?,
+            powers,
+            hand,
+            draw_pile: pile("draw_pile")?,
+            discard_pile: pile("discard_pile")?,
+            exhaust_pile: pile("exhaust_pile")?,
+            play_pile: pile("play_pile")?,
+            relics,
+            stars: opt_i32("stars")?,
+            potions,
+            ended_turn,
+        };
+        if ally.energy < 0 || ally.max_energy < 0 {
+            return Err(schema_err(&path, "energy must be >= 0"));
+        }
+        if ally.hp < 0 || ally.block < 0 || ally.hp > ally.max_hp {
+            return Err(schema_err(&path, &format!("bad hp/block {ally:?}")));
+        }
+        allies.push(ally);
+    }
+    Ok(allies)
 }
 
 fn parse_player<V: WireValue>(d: &V) -> WireResult<ParsedPlayer> {
@@ -908,62 +1106,22 @@ fn parse_player<V: WireValue>(d: &V) -> WireResult<ParsedPlayer> {
     }
 
     // Relics
-    let relics_val = get_item(d, path, "relics")?;
-    let relics_list = as_list(&relics_val, "$.player.relics")?;
-    let mut relics = Vec::with_capacity(relics_list.len());
-    for (i, r) in relics_list.iter().enumerate() {
-        let rp = format!("$.player.relics[{i}]");
-        let rd = as_dict(r, &rp)?;
-        let id = extract_str(&rd, &rp, "id")?;
-        let kind = relic_kind_from_python_name(&id).ok_or_else(|| unsupported(rp.clone(), &id))?;
-        let counter = match extract_optional(&rd, "counter") {
-            Some(v) => Some(
-                v.as_i64()
-                    .and_then(|n| i32::try_from(n).ok())
-                    .ok_or_else(|| schema_err(&rp, "`counter` must be an integer or null"))?,
-            ),
-            None => None,
-        };
-        // ToyBox wax/melt state. Optional so older producers (and every
-        // wire written before RunSimulator.cs started emitting them) parse
-        // unchanged; absent means "not wax, not melted".
-        let flag = |key: &str| -> WireResult<bool> {
-            match extract_optional(&rd, key) {
-                Some(v) => v
-                    .as_bool()
-                    .ok_or_else(|| schema_err(&rp, &format!("`{key}` must be a bool or null"))),
-                None => Ok(false),
-            }
-        };
-        let is_wax = flag("is_wax")?;
-        let is_melted = flag("is_melted")?;
-        relics.push(ParsedRelic {
-            kind,
-            counter,
-            is_wax,
-            is_melted,
-        });
-    }
+    let relics = parse_relic_list(&get_item(d, path, "relics")?, "$.player.relics")?;
 
     // Powers
     let powers = parse_powers(&get_item(d, path, "powers")?, "$.player.powers")?;
 
     // Potions
-    let potions_val = get_item(d, path, "potions")?;
-    let potions_list = as_list(&potions_val, "$.player.potions")?;
-    let mut potions: Vec<Option<PotionKind>> = Vec::with_capacity(potions_list.len());
-    for (i, p) in potions_list.iter().enumerate() {
-        let pp = format!("$.player.potions[{i}]");
-        if p.is_null() {
-            potions.push(None);
-            continue;
-        }
-        let id = p
-            .as_str()
-            .ok_or_else(|| schema_err(&pp, "expected null or string id"))?;
-        let kind = potion_kind_from_python_name(&id).ok_or_else(|| unsupported(pp.clone(), &id))?;
-        potions.push(Some(kind));
-    }
+    let potions = parse_potion_list(&get_item(d, path, "potions")?, "$.player.potions")?;
+
+    let potion_slots = match extract_optional(d, "potion_slots") {
+        Some(v) => Some(
+            v.as_i64()
+                .and_then(|n| u8::try_from(n).ok())
+                .ok_or_else(|| schema_err("$.player.potion_slots", "must be a u8"))?,
+        ),
+        None => None,
+    };
 
     // Optional: orbs / orb_slots / stars / osty
     let (orbs, orb_slots) = match extract_optional(d, "orbs") {
@@ -1056,11 +1214,17 @@ fn parse_player<V: WireValue>(d: &V) -> WireResult<ParsedPlayer> {
     };
 
     let cards_started_this_turn = optional_u32_list(d, "cards_started_this_turn")?
-        .map(|v| <[u32; 5]>::try_from(v).map_err(|_| {
-            schema_err("$.player.cards_started_this_turn", "must be a list of 5 counters")
-        }))
+        .map(|v| {
+            <[u32; 5]>::try_from(v).map_err(|_| {
+                schema_err(
+                    "$.player.cards_started_this_turn",
+                    "must be a list of 5 counters",
+                )
+            })
+        })
         .transpose()?;
-    let block_gained_card_plays_this_turn = optional_u32_list(d, "block_gained_card_plays_this_turn")?;
+    let block_gained_card_plays_this_turn =
+        optional_u32_list(d, "block_gained_card_plays_this_turn")?;
     let current_card_play = optional_u32(d, "current_card_play")?;
     let next_card_play = optional_u32(d, "next_card_play")?;
     let pen_nib_attack_to_double = optional_card_location(d, "pen_nib_attack_to_double")?;
@@ -1099,6 +1263,7 @@ fn parse_player<V: WireValue>(d: &V) -> WireResult<ParsedPlayer> {
         relics,
         powers,
         potions,
+        potion_slots,
         orbs,
         orb_slots,
         stars,
@@ -1116,35 +1281,53 @@ fn parse_player<V: WireValue>(d: &V) -> WireResult<ParsedPlayer> {
 }
 
 fn optional_u32<V: WireValue>(d: &V, key: &str) -> WireResult<Option<u32>> {
-    extract_optional(d, key).map(|v| {
-        v.as_i64().and_then(|n| u32::try_from(n).ok())
-            .ok_or_else(|| schema_err(format!("$.player.{key}"), "must be a u32"))
-    }).transpose()
+    extract_optional(d, key)
+        .map(|v| {
+            v.as_i64()
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or_else(|| schema_err(format!("$.player.{key}"), "must be a u32"))
+        })
+        .transpose()
 }
 
 fn optional_u32_list<V: WireValue>(d: &V, key: &str) -> WireResult<Option<Vec<u32>>> {
     let path = format!("$.player.{key}");
-    extract_optional(d, key).map(|v| {
-        as_list(&v, &path)?.iter().enumerate().map(|(i, item)| {
-            item.as_i64().and_then(|n| u32::try_from(n).ok())
-                .ok_or_else(|| schema_err(format!("{path}[{i}]"), "must be a u32"))
-        }).collect()
-    }).transpose()
+    extract_optional(d, key)
+        .map(|v| {
+            as_list(&v, &path)?
+                .iter()
+                .enumerate()
+                .map(|(i, item)| {
+                    item.as_i64()
+                        .and_then(|n| u32::try_from(n).ok())
+                        .ok_or_else(|| schema_err(format!("{path}[{i}]"), "must be a u32"))
+                })
+                .collect()
+        })
+        .transpose()
 }
 
 fn optional_card_location<V: WireValue>(d: &V, key: &str) -> WireResult<Option<(String, usize)>> {
     let path = format!("$.player.{key}");
-    extract_optional(d, key).map(|v| {
-        let loc = as_dict(&v, &path)?;
-        let pile = extract_str(&loc, &path, "pile")?;
-        if !matches!(pile.as_str(), "hand" | "draw" | "discard" | "exhaust" | "play") {
-            return Err(schema_err(format!("{path}.pile"), "unknown card pile"));
-        }
-        let index = get_item(&loc, &path, "index")?.as_i64()
-            .and_then(|n| usize::try_from(n).ok())
-            .ok_or_else(|| schema_err(format!("{path}.index"), "must be a nonnegative index"))?;
-        Ok((pile, index))
-    }).transpose()
+    extract_optional(d, key)
+        .map(|v| {
+            let loc = as_dict(&v, &path)?;
+            let pile = extract_str(&loc, &path, "pile")?;
+            if !matches!(
+                pile.as_str(),
+                "hand" | "draw" | "discard" | "exhaust" | "play"
+            ) {
+                return Err(schema_err(format!("{path}.pile"), "unknown card pile"));
+            }
+            let index = get_item(&loc, &path, "index")?
+                .as_i64()
+                .and_then(|n| usize::try_from(n).ok())
+                .ok_or_else(|| {
+                    schema_err(format!("{path}.index"), "must be a nonnegative index")
+                })?;
+            Ok((pile, index))
+        })
+        .transpose()
 }
 
 fn parse_powers<V: WireValue>(value: &V, path: &str) -> WireResult<Vec<ParsedPower>> {
@@ -1161,18 +1344,20 @@ fn parse_powers<V: WireValue>(value: &V, path: &str) -> WireResult<Vec<ParsedPow
             .ok_or_else(|| unsupported(format!("{pp}.name"), &name))?;
         let amount = extract_i32(&pd, &pp, "amount")?;
         let has_extra = extract_optional(&pd, "extra").is_some();
-        let display_field = |key| -> WireResult<Option<i32>> { match extract_optional(&pd, key) {
-            Some(v) => Ok(Some(
-                v.as_i64()
-                    .and_then(|n| i32::try_from(n).ok())
-                    .ok_or_else(|| schema_err(&pp, &format!("`{key}` must fit in i32")))?,
-            )),
-            None => Ok(None),
-        }};
+        let display_field = |key| -> WireResult<Option<i32>> {
+            match extract_optional(&pd, key) {
+                Some(v) => Ok(Some(
+                    v.as_i64()
+                        .and_then(|n| i32::try_from(n).ok())
+                        .ok_or_else(|| schema_err(&pp, &format!("`{key}` must fit in i32")))?,
+                )),
+                None => Ok(None),
+            }
+        };
         let display = display_field("display")?;
         let display_amount = display_field("display_amount")?;
         if display.is_some() && display_amount.is_some() && display != display_amount {
-            return Err(schema_err(&pp,"`display` and `display_amount` disagree"));
+            return Err(schema_err(&pp, "`display` and `display_amount` disagree"));
         }
         let display = display.or(display_amount);
         let counter = match extract_optional(&pd, "counter") {
@@ -1194,19 +1379,30 @@ fn parse_powers<V: WireValue>(value: &V, path: &str) -> WireResult<Vec<ParsedPow
     Ok(out)
 }
 
-fn parse_local_energy_cost<V: WireValue>(value: &V, path: &str) -> WireResult<sts2_core::cards::LocalEnergyCost> {
-    use sts2_core::cards::{LocalCostFunction, LocalCostModifier, LocalCostModifierKind, LocalEnergyCost};
+fn parse_local_energy_cost<V: WireValue>(
+    value: &V,
+    path: &str,
+) -> WireResult<sts2_core::cards::LocalEnergyCost> {
+    use sts2_core::cards::{
+        LocalCostFunction, LocalCostModifier, LocalCostModifierKind, LocalEnergyCost,
+    };
     let d = as_dict(value, path)?;
     let base = extract_i32(&d, path, "base")?;
     let costs_x = extract_bool(&d, path, "costs_x")?;
     let modifiers = extract_optional(&d, "modifiers");
     let functions = extract_optional(&d, "functions");
     if modifiers.is_some() == functions.is_some() {
-        return Err(schema_err(path, "provide exactly one of modifiers or functions"));
+        return Err(schema_err(
+            path,
+            "provide exactly one of modifiers or functions",
+        ));
     }
     let mut model = LocalEnergyCost::new(base, costs_x);
     if let Some(values) = modifiers {
-        for (i, value) in as_list(&values, &format!("{path}.modifiers"))?.iter().enumerate() {
+        for (i, value) in as_list(&values, &format!("{path}.modifiers"))?
+            .iter()
+            .enumerate()
+        {
             let p = format!("{path}.modifiers[{i}]");
             let d = as_dict(value, &p)?;
             let raw_kind = extract_str(&d, &p, "kind")?;
@@ -1219,15 +1415,26 @@ fn parse_local_energy_cost<V: WireValue>(value: &V, path: &str) -> WireResult<st
             let reduce_only = extract_bool(&d, &p, "reduce_only")?;
             let expiration = extract_i32(&d, &p, "expiration")?;
             if !matches!(expiration, 0 | 2 | 4 | 6) {
-                return Err(schema_err(format!("{p}.expiration"), "must be 0, 2, 4 or 6"));
+                return Err(schema_err(
+                    format!("{p}.expiration"),
+                    "must be 0, 2, 4 or 6",
+                ));
             }
-            model.append(LocalCostModifier { kind, amount, reduce_only, expiration: expiration as u8 });
+            model.append(LocalCostModifier {
+                kind,
+                amount,
+                reduce_only,
+                expiration: expiration as u8,
+            });
         }
     }
     if let Some(values) = functions {
         let values = as_list(&values, &format!("{path}.functions"))?;
         if values.len() != 4 {
-            return Err(schema_err(format!("{path}.functions"), "must contain 4 expiry functions"));
+            return Err(schema_err(
+                format!("{path}.functions"),
+                "must contain 4 expiry functions",
+            ));
         }
         for (i, value) in values.iter().enumerate() {
             let p = format!("{path}.functions[{i}]");
@@ -1239,13 +1446,23 @@ fn parse_local_energy_cost<V: WireValue>(value: &V, path: &str) -> WireResult<st
                 uses_base: extract_bool(&d, &p, "uses_base")?,
             };
             if !function.uses_base && function.ceiling == i32::MAX {
-                return Err(schema_err(&p, "a constant cost function requires a ceiling"));
+                return Err(schema_err(
+                    &p,
+                    "a constant cost function requires a ceiling",
+                ));
             }
             model.functions[i] = function;
         }
     }
-    if model.costs().iter().any(|&cost| i8::try_from(cost).is_err()) {
-        return Err(schema_err(path, "local cost exceeds the engine's i8 cost range"));
+    if model
+        .costs()
+        .iter()
+        .any(|&cost| i8::try_from(cost).is_err())
+    {
+        return Err(schema_err(
+            path,
+            "local cost exceeds the engine's i8 cost range",
+        ));
     }
     Ok(model)
 }
@@ -2016,15 +2233,21 @@ pub fn card_id_from_python_name(s: &str) -> Option<CardId> {
     // (e.g. `RUPTURE`, `VICIOUS`) resolve against the canonical
     // `RUPTURE_CARD` / `VICIOUS_CARD` ids. Mirrors the same fallback
     // wired into `names::card_id_from_str` via `sts2-rs-u5zc`.
-    if let Some(c) = CardId::all()
-        .iter()
-        .chain(CardId::V0111_ONLY.iter())
-        .copied()
-        .find(|k| k.to_python_name() == s)
-    {
+    //
+    // GH #929: the v0.111.0-only ids sit outside `CardId::all()` (the
+    // v0.107.1 universe), so they are chained on last, as the powers and
+    // potions are. Such a name can only come from a v0.111.0 state; every
+    // v0.107.1 parse is unchanged.
+    let ids = || {
+        CardId::all()
+            .iter()
+            .chain(CardId::V0111_ONLY.iter())
+            .copied()
+    };
+    if let Some(c) = ids().find(|k| k.to_python_name() == s) {
         return Some(c);
     }
-    CardId::all().iter().chain(CardId::V0111_ONLY.iter()).copied().find(|k| {
+    ids().find(|k| {
         let canonical = k.to_python_name();
         canonical.strip_suffix("_CARD") == Some(s)
     })
@@ -2420,7 +2643,10 @@ fn build_card(parsed: &ParsedCard, uid: CardUid, path: &str) -> WireResult<Card>
     // exclusive by construction (only the C# dialects send `persistent_cost`,
     // only `state_to_dict` sends the banks), so disagreement is a schema
     // error rather than something to reconcile.
-    if let Some(persistent) = parsed.persistent_cost.filter(|_| parsed.local_cost.is_none()) {
+    if let Some(persistent) = parsed
+        .persistent_cost
+        .filter(|_| parsed.local_cost.is_none())
+    {
         const ENGINE_OWNED: [VarKey; 4] = [
             VarKey::StompCostReductionThisTurn,
             VarKey::PinpointCostReductionThisTurn,
@@ -2893,12 +3119,21 @@ fn ingest_intent(
 /// a fresh AI drops the spawn payload and every mid-fight counter the
 /// reconstruction went to the trouble of recovering, which is what
 /// [`reconstructed_base_damage`] exists to read instead.
-fn wire_base_intent(m: &ParsedEnemy) -> Option<Intent> {
+///
+/// `ascension` is the wire's `$.rng.ascension`. The base is compared against
+/// the wire telegraph, and C# telegraphs the ascension-scaled number: the
+/// attack properties are `GetValueIfAscension(DeadlyEnemies, …)` (e.g.
+/// `Crusher.cs:81` THRASH 14/12, `Rocket.cs:61` TARGETING_RETICLE 4/3), read
+/// by `AttackIntent.GetSingleDamage` at telegraph time. An A0 table at A9+
+/// matched neither the plain nor the boosted candidate, so the facing silently
+/// fell back to the spawn default (GH #840).
+fn wire_base_intent(m: &ParsedEnemy, ascension: u8) -> Option<Intent> {
     let ms = m.move_state.as_deref()?;
-    let mut ai = build_ai(
+    let mut ai = build_ai_with_ascension(
         m.kind,
         MonsterSpawnArgs::default(),
         SpawnPosition::default(),
+        ascension,
     );
     let resolved = wire_move_state_alias(m.kind, ms)
         .is_some_and(|alias| ai.force_current_state_by_name(alias))
@@ -2958,7 +3193,7 @@ fn infer_surrounded_facing(parsed: &ParsedState) -> Option<i32> {
         if m.is_dead || m.hp <= 0 {
             continue;
         }
-        let Some(base_intent) = wire_base_intent(m) else {
+        let Some(base_intent) = wire_base_intent(m, parsed.ascension) else {
             continue;
         };
         let (Intent::Attack { damage: base } | Intent::MultiAttack { damage: base, .. }) =
@@ -3115,6 +3350,21 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
         ascension: parsed.ascension,
         game_version: parsed.game_version,
         is_elite: parsed.is_elite,
+        allies: parsed
+            .allies
+            .iter()
+            .map(|a| sts2_core::PlayerCombatState {
+                current_hp: a.hp,
+                max_hp: a.max_hp,
+                block: a.block,
+                ..sts2_core::PlayerCombatState::default()
+            })
+            .collect(),
+        coop: sts2_core::coop::CoopState {
+            threat_round: (!parsed.allies.is_empty())
+                .then(|| u16::try_from(parsed.round).unwrap_or(0)),
+            ..sts2_core::coop::CoopState::default()
+        },
         ..CoreCombatState::default()
     };
 
@@ -3277,16 +3527,29 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
     state.player.stars = i8::try_from(parsed.player.stars.unwrap_or(0)).unwrap_or(0);
     if let Some(buckets) = parsed.player.cards_played_this_turn {
         state.player.cards_played_this_turn = buckets;
-        state.combat_log.card_plays_finished_this_turn = buckets.iter().copied().fold(0u32, u32::saturating_add);
+        state.combat_log.card_plays_finished_this_turn =
+            buckets.iter().copied().fold(0u32, u32::saturating_add);
         state.combat_log.public_finished_history = true;
     }
     if let Some(buckets) = parsed.player.cards_started_this_turn {
         state.combat_log.cards_started_this_turn = buckets;
-        state.player.card_plays_started_this_turn = buckets.iter().copied().fold(0u32, u32::saturating_add);
+        state.player.card_plays_started_this_turn =
+            buckets.iter().copied().fold(0u32, u32::saturating_add);
         state.combat_log.public_started_history = true;
-        for power in state.powers.iter_mut().filter(|p| p.kind == PowerKind::Juggling) {
-            if parsed.player.powers.iter().find(|p| p.kind == PowerKind::Juggling).is_some_and(|p| p.counter.is_none()) {
-                power.counter = i32::try_from(buckets[sts2_core::cards::CardType::Attack.index()]).unwrap_or(i32::MAX);
+        for power in state
+            .powers
+            .iter_mut()
+            .filter(|p| p.kind == PowerKind::Juggling)
+        {
+            if parsed
+                .player
+                .powers
+                .iter()
+                .find(|p| p.kind == PowerKind::Juggling)
+                .is_some_and(|p| p.counter.is_none())
+            {
+                power.counter = i32::try_from(buckets[sts2_core::cards::CardType::Attack.index()])
+                    .unwrap_or(i32::MAX);
             }
         }
     }
@@ -3295,11 +3558,25 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
         state.combat_log.public_block_history = true;
     }
     state.combat_log.current_card_play = parsed.player.current_card_play;
-    let largest_tag = parsed.player.block_gained_card_plays_this_turn.as_ref()
-        .into_iter().flatten().copied().chain(parsed.player.current_card_play).max();
+    let largest_tag = parsed
+        .player
+        .block_gained_card_plays_this_turn
+        .as_ref()
+        .into_iter()
+        .flatten()
+        .copied()
+        .chain(parsed.player.current_card_play)
+        .max();
     let minimum_next = largest_tag.map_or(0, |n| n.saturating_add(1));
-    if parsed.player.next_card_play.is_some_and(|n| n < minimum_next) {
-        return Err(schema_err("$.player.next_card_play", "must exceed every current or historical play tag"));
+    if parsed
+        .player
+        .next_card_play
+        .is_some_and(|n| n < minimum_next)
+    {
+        return Err(schema_err(
+            "$.player.next_card_play",
+            "must exceed every current or historical play tag",
+        ));
     }
     state.combat_log.next_card_play = parsed.player.next_card_play.unwrap_or(minimum_next);
     state.combat_log.chains_bound_card_played_this_turn = parsed.player.bound_card_played_this_turn;
@@ -3408,6 +3685,10 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
     // EMPTY, so the Osty would take id 1 — the id the player row is about to
     // be pushed with.
 
+    // Belt capacity first, so it is in place before anything reads it.
+    if let Some(slots) = parsed.player.potion_slots {
+        state.player.potion_slots = slots;
+    }
     // Potions (None → skip slot; Some(kind) → push).
     for k in parsed.player.potions.iter().flatten() {
         if state.player.potions.len() < state.player.potions.capacity() {
@@ -3492,16 +3773,23 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
             "play" => &play_uids,
             _ => unreachable!("validated pile"),
         };
-        pile.get(location.1).copied().ok_or_else(|| schema_err(format!("$.player.{key}.index"), "card index outside pile"))
+        pile.get(location.1)
+            .copied()
+            .ok_or_else(|| schema_err(format!("$.player.{key}.index"), "card index outside pile"))
     };
     if let Some(location) = &parsed.player.pen_nib_attack_to_double {
-        state.combat_log.pen_nib_attack_to_double = Some(locate(location, "pen_nib_attack_to_double")?);
+        state.combat_log.pen_nib_attack_to_double =
+            Some(locate(location, "pen_nib_attack_to_double")?);
     }
     if let Some(location) = &parsed.player.vambrace_triggering_card {
         let uid = locate(location, "vambrace_triggering_card")?;
-        let relic = state.relics.iter_mut().find(|r| r.kind == RelicKind::Vambrace)
+        let relic = state
+            .relics
+            .iter_mut()
+            .find(|r| r.kind == RelicKind::Vambrace)
             .ok_or_else(|| schema_err("$.player.vambrace_triggering_card", "requires VAMBRACE"))?;
-        relic.counter = -i32::try_from(uid.0.get()).map_err(|_| schema_err("$.player.vambrace_triggering_card", "card uid exceeds i32"))?;
+        relic.counter = -i32::try_from(uid.0.get())
+            .map_err(|_| schema_err("$.player.vambrace_triggering_card", "card uid exceeds i32"))?;
     }
     // Draw-pile knowledge. `parse_deck` already range-checked every
     // index against `draw_pile.len()`, and `draw_uids` was built from
@@ -3523,7 +3811,9 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
     // These flags belong to the card instance. A card may leave the hand
     // and return in the same turn, so reconstruction must preserve them in
     // every combat pile, including a suspended play.
-    for (&uid, pc) in hand_uids.iter().zip(&parsed.deck.hand)
+    for (&uid, pc) in hand_uids
+        .iter()
+        .zip(&parsed.deck.hand)
         .chain(draw_uids.iter().zip(&parsed.deck.draw_pile))
         .chain(discard_uids.iter().zip(&parsed.deck.discard_pile))
         .chain(exhaust_uids.iter().zip(&parsed.deck.exhaust_pile))
@@ -3541,10 +3831,9 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
                 // from `AddKeyword` — MasterPlanner, which lasts the whole
                 // combat and belongs in the combat-scoped list.
                 "sly" => {
-                    let intrinsic = state
-                        .cards
-                        .get(uid.0.get() as usize - 1)
-                        .is_some_and(|c| sts2_core::card_effects::card_sly_in(c.card_id, state.game_version));
+                    let intrinsic = state.cards.get(uid.0.get() as usize - 1).is_some_and(|c| {
+                        sts2_core::card_effects::card_sly_in(c.card_id, state.game_version)
+                    });
                     if !intrinsic {
                         state.player.sly_this_combat.push(uid);
                     }
@@ -3781,11 +4070,20 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
         // read a base magnitude off it.
         let mut ai_at_wire_move = false;
         let ai: Option<MonsterAi> = m.move_state.as_deref().and_then(|ms| {
+            // At the wire's ascension (GH #840) and game build (GH #787). C#
+            // resolves every attack magnitude through
+            // `GetValueIfAscension(DeadlyEnemies, …)` (e.g.
+            // `SkulkingColony.cs:41-45`, `Entomancer.cs:27`, `Vantom.cs:68-72`)
+            // for the whole fight, and the engine bakes those values into the
+            // move table once, at build (`ascension_scaling`). Built at A0, the
+            // reconstruction kept the current telegraph (it rides the wire)
+            // but hit for the A0 number on every LATER move — at A10, 375 of
+            // 463 lockstep probes diverged at the next telegraph.
             let mut ai = build_ai_for_version(
                 m.kind,
                 spawn_args,
                 SpawnPosition::default(),
-                0,
+                parsed.ascension,
                 parsed.game_version,
             );
             // Alias table FIRST: entries are per-monster verified mappings,
@@ -4159,6 +4457,104 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
         state.restore_osty(osty.hp, osty.max_hp, osty.block);
     }
 
+    // Co-op seats. A teammate that came with a hand is a whole player whose
+    // remaining plays the engine simulates (`sts2_core::coop`): their powers
+    // and hand join the arenas AFTER everything else, so every solo uid is
+    // unchanged, and their relics (not on the wire) start empty.
+    if parsed.allies.iter().any(|a| a.hand.is_some()) {
+        sts2_core::coop::open_seats(&mut state);
+    }
+    for (i, a) in parsed.allies.iter().enumerate() {
+        let Some(hand) = a.hand.as_ref() else {
+            continue;
+        };
+        let seat = &mut state.allies[i];
+        seat.energy = i8::try_from(a.energy).unwrap_or(i8::MAX);
+        seat.max_energy = i8::try_from(a.max_energy).unwrap_or(i8::MAX);
+        seat.character = a.class.as_deref().and_then(character_id_from_class);
+        for pp in &a.powers {
+            let raw = state.powers.iter().map(|p| p.id.get()).max().unwrap_or(0) + 1;
+            let id = NonZeroU32::new(raw).expect("non-zero power id");
+            state.powers.push(Power {
+                id,
+                kind: pp.kind,
+                amount: pp.amount,
+                counter: pp.counter.unwrap_or(0),
+                applier: None,
+                skip_next_tick: false,
+            });
+            state.coop.stash[i].powers.push(PowerUid(id));
+        }
+        for (j, pc) in hand.iter().enumerate() {
+            let path = format!("$.allies[{i}].hand[{j}]");
+            let uid = u32::try_from(state.cards.len() + 1)
+                .ok()
+                .and_then(CardUid::new)
+                .ok_or_else(|| schema_err(&path, "uid overflow"))?;
+            let card = build_card(pc, uid, &path)?;
+            state.cards.push(card);
+            state.allies[i].hand.push(uid);
+        }
+        // The rest of a whole seat, for a full co-op fight: their piles in
+        // the order the player's load, their stars and their relics.
+        for (key, pile) in [
+            ("draw_pile", &a.draw_pile),
+            ("discard_pile", &a.discard_pile),
+            ("exhaust_pile", &a.exhaust_pile),
+            ("play_pile", &a.play_pile),
+        ] {
+            for (j, pc) in pile.iter().enumerate() {
+                let path = format!("$.allies[{i}].{key}[{j}]");
+                let uid = u32::try_from(state.cards.len() + 1)
+                    .ok()
+                    .and_then(CardUid::new)
+                    .ok_or_else(|| schema_err(&path, "uid overflow"))?;
+                state.cards.push(build_card(pc, uid, &path)?);
+                let seat = &mut state.allies[i];
+                match key {
+                    "draw_pile" => seat.draw.push(uid),
+                    "discard_pile" => seat.discard.push(uid),
+                    "exhaust_pile" => seat.exhaust.push(uid),
+                    _ => seat.play.push(uid),
+                }
+            }
+        }
+        state.allies[i].stars = i8::try_from(a.stars).unwrap_or(i8::MAX);
+        if !a.potions.is_empty() {
+            state.allies[i].potion_slots = u8::try_from(a.potions.len()).unwrap_or(u8::MAX);
+        }
+        for k in a.potions.iter().flatten() {
+            if state.allies[i].potions.len() < state.allies[i].potions.capacity() {
+                state.allies[i].potions.push(*k);
+            }
+        }
+        let mut relics = Vec::with_capacity(a.relics.len());
+        for r in &a.relics {
+            let raw = state
+                .relics
+                .iter()
+                .chain(state.coop.stash.iter().flat_map(|s| s.relics.iter()))
+                .chain(relics.iter())
+                .map(|r: &Relic| r.id.get())
+                .max()
+                .unwrap_or(0)
+                + 1;
+            relics.push(Relic {
+                id: NonZeroU32::new(raw).expect("non-zero relic id"),
+                kind: r.kind,
+                counter: r.counter.unwrap_or(0),
+                is_wax: r.is_wax,
+                is_melted: r.is_melted,
+            });
+        }
+        state.coop.stash[i].relics.extend(relics);
+        if !a.ended_turn && a.hp > 0 {
+            state.coop.to_play |= 1 << i;
+        }
+    }
+    state.coop.full = parsed.coop_full && !state.coop.stash.is_empty();
+    state.coop.seat_index = parsed.coop_seat_index;
+
     Ok(state)
 }
 
@@ -4255,6 +4651,7 @@ pub fn var_key_from_wire(name: &str) -> Option<VarKey> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sts2_content::monster_dispatch::build_ai;
     /// Every [`WIRE_MOVE_STATE_ALIASES`] target must exist as a move
     /// state on the freshly-built AI of its monster — a content-side
     /// state rename would otherwise silently revive the inert-enemy

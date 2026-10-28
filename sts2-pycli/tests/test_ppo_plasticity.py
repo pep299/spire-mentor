@@ -240,7 +240,7 @@ def test_a_real_iteration_writes_the_diagnostic_to_stats_jsonl(tmp_path):
             save_path=str(save),
         )
     )
-    with open(f"{save}.stats.jsonl") as fh:
+    with open(f"{save}.stats.jsonl", encoding="utf-8") as fh:
         rows = [json.loads(line) for line in fh]
     assert rows, "no stats were written"
     assert "dormant_frac" in rows[0]

@@ -82,7 +82,7 @@ def load(labels_paths: list[Path], schema_path: Path) -> dict[str, Any]:
     score/fit on real self-play states rather than the synthetic/extra
     rows.
     """
-    schema = json.loads(schema_path.read_text())
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
     n_cards = schema["n_cards"]
     n_relics = schema["n_relics"]
     ctx_dim = schema["context_dim"]
@@ -582,7 +582,7 @@ def emit_parity_fixture(
     ]
     fixture = {"net": net, "cases": cases}
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(fixture))
+    path.write_text(json.dumps(fixture), encoding="utf-8")
     print(f"wrote parity fixture ({n} cases) -> {path}")
 
 

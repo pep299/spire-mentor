@@ -30,8 +30,9 @@ import argparse
 import sys
 from typing import Any
 
+import sts2_client
 import sts2_rs
-from sts2_client import Game
+from sts2_client import Game, add_game_version_arg, apply_game_version_arg
 
 #: C# PointType.ToString() (PascalCase) ⇄ Rust point_type (snake_case).
 _TYPE_CANON = {
@@ -124,6 +125,21 @@ def _seed_for(i: int) -> str:
     return f"PAR{out}"
 
 
+def _rust_act1_map(
+    character: str, seed: str, ascension: int, game_version: str | None = None
+) -> list[dict] | None:
+    """The Rust Act-1 map for ``seed``, built for ``game_version`` (default:
+    the build the C# oracle runs, ``STS2_GAME_VERSION`` / ``--game-version``)
+    so both sides compare the same game (GH #893)."""
+    rm = sts2_rs.RunManager(
+        string_seed=seed,
+        character=character,
+        ascension_level=ascension,
+        game_version=game_version or sts2_client.GAME_VERSION,
+    )
+    return rm.act_map()
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--character", default="Ironclad")
@@ -131,7 +147,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("-n", "--num", type=int, default=100, help="seeds to sweep")
     p.add_argument("--start", type=int, default=0, help="first sweep index")
     p.add_argument("--show-mismatches", type=int, default=10)
+    add_game_version_arg(p)
     args = p.parse_args(argv)
+    apply_game_version_arg(args)
 
     clean = 0
     mismatches: list[tuple[str, int, int]] = []
@@ -155,10 +173,7 @@ def main(argv: list[str] | None = None) -> int:
             continue
         finally:
             g.close()
-        rm = sts2_rs.RunManager(
-            string_seed=seed, character=args.character, ascension_level=args.ascension
-        )
-        am = rm.act_map()
+        am = _rust_act1_map(args.character, seed, args.ascension)
         if am is None:
             mismatches.append((seed, len(cs), -1))
             continue

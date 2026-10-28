@@ -235,7 +235,10 @@ pub struct Data {
     /// loc-key (`workbench/deck_analysis.py`).
     pub deck_card_db: BTreeMap<String, serde_json::Value>,
     /// `card_tags.json` — the deck analyzer's curated role / velocity tags
-    /// (its `_meta` entry dropped, as the Python loader does).
+    /// (its `_meta` entry dropped, as the Python loader does). A non-default
+    /// build's is the curated table with that build's overlay
+    /// (`data/game/<ver>/card_tags.json`, GH #877) merged over it — the
+    /// twin of `deck_analysis.card_tags_for`.
     pub deck_card_tags: BTreeMap<String, serde_json::Value>,
 }
 
@@ -355,6 +358,24 @@ impl Data {
                 let mut tags: BTreeMap<String, serde_json::Value> =
                     parse("card_tags.json", curated!("card_tags.json"));
                 tags.remove("_meta");
+                let overlay: &'static str = match version {
+                    GameVersion::V0_107_1 => "{}",
+                    GameVersion::V0_111_0 => {
+                        include_str!(concat!(env!("OUT_DIR"), "/game/v0.111.0/card_tags.json"))
+                    }
+                };
+                let overlay: BTreeMap<String, serde_json::Value> =
+                    parse("game/<ver>/card_tags.json", overlay);
+                for (cid, entry) in overlay {
+                    if cid == "_meta" {
+                        continue;
+                    }
+                    if entry.is_null() {
+                        tags.remove(&cid);
+                    } else {
+                        tags.insert(cid, entry);
+                    }
+                }
                 tags
             },
         }
@@ -494,8 +515,14 @@ mod tests {
             .iter()
             .any(|r| r == "v0.111.0/card_atlas/silent/blade_symphony.png"));
         assert!(!base.asset_manifest.iter().any(|r| r.starts_with("v0.")));
-        // Shared tables (deduped at build time) still read in full.
-        assert_eq!(d.deck_card_db, base.deck_card_db);
+        // The deck analyzer's tables are the build's own (GH #877): the new
+        // cards are known and tagged, the removed one is gone.
+        assert!(d.deck_card_db.contains_key("CACOPHONY"));
+        assert!(!base.deck_card_db.contains_key("CACOPHONY"));
+        assert!(!d.deck_card_db.contains_key("SCARE"));
+        let db_keys: Vec<&String> = d.deck_card_db.keys().collect();
+        let tag_keys: Vec<&String> = d.deck_card_tags.keys().collect();
+        assert_eq!(db_keys, tag_keys);
         assert!(!d.creature_scales.is_empty());
         assert!(!d.loc_afflictions.is_empty());
     }

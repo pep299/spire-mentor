@@ -72,7 +72,11 @@ fn two_select_batch(parent: CardId, inner: Option<CardId>) {
     let mut state = CombatState::default();
     state.player.current_hp = 50;
     state.player.max_hp = 50;
-    state.player.energy = if inner == Some(CardId::Catastrophe) { 1 } else { 2 };
+    state.player.energy = if inner == Some(CardId::Catastrophe) {
+        1
+    } else {
+        2
+    };
     state.player.max_energy = 99;
     let _ = state.init_player_creature();
     state.phase = CombatPhase::PlayerPlayPhase;
@@ -92,7 +96,11 @@ fn two_select_batch(parent: CardId, inner: Option<CardId>) {
     }
     // Draw pile: exactly the two cards CATASTROPHE will auto-play. Identical
     // ids, so the `StableShuffle` pick order cannot change what the test sees.
-    let arm_a = push_card(&mut state, inner.unwrap_or(CardId::Armaments), CardType::Skill);
+    let arm_a = push_card(
+        &mut state,
+        inner.unwrap_or(CardId::Armaments),
+        CardType::Skill,
+    );
     let arm_b = push_card(&mut state, CardId::Armaments, CardType::Skill);
     state.player.draw.push(arm_a);
     state.player.draw.push(arm_b);
@@ -152,9 +160,18 @@ fn two_select_batch(parent: CardId, inner: Option<CardId>) {
     assert_eq!(
         discard_ids,
         if inner == Some(CardId::Catastrophe) {
-            vec![CardId::Armaments, CardId::Armaments, CardId::Catastrophe, parent]
+            vec![
+                CardId::Armaments,
+                CardId::Armaments,
+                CardId::Catastrophe,
+                parent,
+            ]
         } else {
-            vec![inner.unwrap_or(CardId::Armaments), CardId::Armaments, parent]
+            vec![
+                inner.unwrap_or(CardId::Armaments),
+                CardId::Armaments,
+                parent,
+            ]
         },
         "C# awaits both auto-plays inside Catastrophe's OnPlay, so Catastrophe \
          is the LAST of the three to reach the discard pile"

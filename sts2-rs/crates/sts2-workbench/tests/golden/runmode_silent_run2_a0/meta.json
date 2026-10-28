@@ -15,6 +15,7 @@
   "decision:shop",
   "potion_used",
   "ppo_net",
+  "room_reveal",
   "route:/api/deck/reward-preview",
   "route:/api/deck/trend",
   "route:/api/live/action",
@@ -30,6 +31,7 @@
   "route:/api/live/map",
   "route:/api/live/ppo-policy",
   "route:/api/live/quit",
+  "route:/api/live/regret-review",
   "route:/api/live/run-mode",
   "route:/api/live/run-mode-step",
   "route:/api/live/save",
@@ -58,12 +60,12 @@
   "status:409"
  ],
  "engine": {
-  "src_hash": "3be65de0edbe7a0b",
+  "src_hash": "13941df1bbea7678",
   "version": "0.0.1"
  },
  "final_act": 1,
- "final_floor": 7,
- "full_responses": 81,
+ "final_floor": 10,
+ "full_responses": 99,
  "full_steps": 0,
  "patches": {
   "assets_base_url": "https://assets.test",
@@ -72,7 +74,7 @@
  },
  "python": "3.13",
  "reached_game_over": true,
- "requests": 174,
+ "requests": 229,
  "scenario": {
   "act1": "overgrowth",
   "ascension": 0,
@@ -444,5 +446,5 @@
   "seed": "run_2",
   "start": "faithful"
  },
- "steps_played": 89
+ "steps_played": 126
 }

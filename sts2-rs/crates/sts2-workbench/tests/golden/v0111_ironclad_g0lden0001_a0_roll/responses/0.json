@@ -9,7 +9,7 @@
   "act_name": "Overgrowth",
   "bg_col": null,
   "bg_row": null,
-  "bg_seed": 11180935036767329045,
+  "bg_seed": "11180935036767329045",
   "floor": 0,
   "step_no": 0,
   "turn": null
@@ -25,7 +25,7 @@
    "illustration": null
   },
   "ascension": 0,
-  "bg_seed": 11180935036767329045,
+  "bg_seed": "11180935036767329045",
   "decision": "event_choice",
   "description": "",
   "event_name": "Neow",

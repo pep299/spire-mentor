@@ -48,12 +48,12 @@
   "status:409"
  ],
  "engine": {
-  "src_hash": "3be65de0edbe7a0b",
+  "src_hash": "13941df1bbea7678",
   "version": "0.0.1"
  },
  "final_act": 1,
  "final_floor": 5,
- "full_responses": 73,
+ "full_responses": 70,
  "full_steps": 0,
  "patches": {
   "assets_base_url": "https://assets.test",
@@ -62,7 +62,7 @@
  },
  "python": "3.13",
  "reached_game_over": true,
- "requests": 161,
+ "requests": 155,
  "scenario": {
   "act1": "overgrowth",
   "ascension": 10,
@@ -420,5 +420,5 @@
   "seed": "run_3",
   "start": "faithful"
  },
- "steps_played": 80
+ "steps_played": 77
 }

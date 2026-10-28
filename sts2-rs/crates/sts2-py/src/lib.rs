@@ -323,12 +323,14 @@ fn build_encounter_state(
         pending_end_turn_resume: None,
         pending_autoplay_resume: None,
         autoplay_inline_resolve: false,
+        vakuu_selector: false,
         pending_curse_choice: None,
         pending_potion_hook_resume: None,
         pending_enemy_exec_resume: None,
         combat_log: TurnEvents::default(),
         swipe_stolen: Vec::new(),
         escaped_creatures: 0,
+        coop: sts2_core::coop::CoopState::default(),
         heist_recovered_gold: 0,
         event_combat_timed_out: false,
         gold: 0,
@@ -367,9 +369,11 @@ fn build_encounter_state(
 ///
 /// The construction now lives in [`sts2_wire::scenario::build_scenario_state`]
 /// so the browser SimLab sandbox rebuilds byte-identical boards; this is the
-/// thin default-build delegate the unit tests below use. The PyO3 entry point
-/// calls [`sts2_wire::scenario::build_scenario_state_for_version`] directly so
-/// it can honour `game_version=` (GH #787).
+/// thin default-build, default-belt delegate the unit tests below use. The PyO3
+/// entry point calls
+/// [`sts2_wire::scenario::build_scenario_state_for_version_with_slots`]
+/// directly so it can honour `game_version=` (GH #787) and the belt size
+/// `potion_slots=` (GH #830).
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn build_scenario_state_impl(
@@ -499,7 +503,7 @@ fn heuristic_play_to_terminal(
 /// `"action"` value raises `ValueError` rather than silently ending the
 /// turn — masking that bug previously produced false-positive `STATE_DRIFT`
 /// in the parity-fuzz harness.
-fn parse_bridge_action(dict: &Bound<'_, PyDict>) -> PyResult<Action> {
+pub(crate) fn parse_bridge_action(dict: &Bound<'_, PyDict>) -> PyResult<Action> {
     let action_kind: String = dict
         .get_item("action")?
         .ok_or_else(|| {
@@ -804,29 +808,77 @@ impl PyCombatState {
     /// false-positive `STATE_DRIFT` in the parity-fuzz harness. The
     /// underlying `sts2_core::apply` returns a `StepResult` that is
     /// dropped because this binding doesn't surface it yet.
-    #[pyo3(signature = (action))]
-    fn apply(&mut self, action: &Bound<'_, PyAny>) -> PyResult<()> {
+    ///
+    /// `teammate_chooser(ally, choice, actions)` answers the co-op
+    /// teammates' choices the action leads to (a whole co-op fight runs their
+    /// turn starts inside ours): `choice` as `pending_choice()` shows it,
+    /// `actions` the legal `choose` dicts; it returns an index into
+    /// `actions`, a `choose` dict with any selection the choice allows, or
+    /// `None` for the engine's own pick. For replaying recorded co-op fights.
+    #[pyo3(signature = (action, teammate_chooser = None))]
+    fn apply(
+        &mut self,
+        action: &Bound<'_, PyAny>,
+        teammate_chooser: Option<Py<PyAny>>,
+    ) -> PyResult<()> {
         let dict = action.downcast::<PyDict>().map_err(|_| {
             pyo3::exceptions::PyValueError::new_err("apply: expected a dict in bridge action shape")
         })?;
         let mapped = parse_bridge_action(dict)?;
-        let _ = core_apply(&mut self.inner, mapped);
-        Ok(())
+        let inner = &mut self.inner;
+        with_py_seat_chooser(teammate_chooser, || {
+            let _ = core_apply(inner, mapped);
+        })
+    }
+
+    /// Apply an action as co-op teammate `ally` (`$.allies[ally]`): the same
+    /// dict shape as [`Self::apply`], with `card_index` into THEIR hand. A
+    /// choice the action opens is answered on the spot, as in their own
+    /// turn (`sts2_core::coop::apply_as`), by `teammate_chooser` as in
+    /// [`Self::apply`] when given. For replaying recorded co-op fights.
+    #[pyo3(signature = (ally, action, teammate_chooser = None))]
+    fn apply_as_ally(
+        &mut self,
+        ally: usize,
+        action: &Bound<'_, PyAny>,
+        teammate_chooser: Option<Py<PyAny>>,
+    ) -> PyResult<()> {
+        if ally >= self.inner.allies.len() {
+            return Err(pyo3::exceptions::PyIndexError::new_err(format!(
+                "apply_as_ally: no teammate {ally} (there are {})",
+                self.inner.allies.len()
+            )));
+        }
+        let dict = action.downcast::<PyDict>().map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err(
+                "apply_as_ally: expected a dict in bridge action shape",
+            )
+        })?;
+        let mapped = parse_bridge_action(dict)?;
+        let inner = &mut self.inner;
+        with_py_seat_chooser(teammate_chooser, || {
+            let _ = sts2_core::coop::apply_as(inner, ally, mapped);
+        })
     }
 
     /// Resolve a complete public selection without MCTS's incremental-pick protocol.
     fn resolve_public_choice(&mut self, selection: Vec<u8>) -> PyResult<()> {
-        let pending = self.inner.pending_choice.as_ref().ok_or_else(|| {
-            pyo3::exceptions::PyValueError::new_err("no public choice is open")
-        })?;
+        let pending =
+            self.inner.pending_choice.as_ref().ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err("no public choice is open")
+            })?;
         let distinct: std::collections::HashSet<_> = selection.iter().copied().collect();
         if !pending.picked.is_empty()
             || selection.len() < usize::from(pending.min_select)
             || selection.len() > usize::from(pending.max_select)
-            || selection.iter().any(|&i| usize::from(i) >= pending.options.len())
+            || selection
+                .iter()
+                .any(|&i| usize::from(i) >= pending.options.len())
             || distinct.len() != selection.len()
         {
-            return Err(pyo3::exceptions::PyValueError::new_err("invalid complete public selection"));
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "invalid complete public selection",
+            ));
         }
         sts2_core::resolve_choice_atomic_apply(&mut self.inner, &selection);
         Ok(())
@@ -873,6 +925,96 @@ impl PyCombatState {
     /// changes or new hashed fields may shift the value).
     fn state_hash(&self) -> u64 {
         core_state_hash(&self.inner)
+    }
+
+    /// [`Self::state_hash`] plus the ORDER of every card pile (hand, draw,
+    /// discard, exhaust, play, the allies' too). `state_hash` folds each
+    /// pile with an order-free sum, which is right for a transposition key
+    /// and wrong for "is this the same position": two states that differ
+    /// only in draw order collide. A replay check (`ppo.rollout_starts`)
+    /// compares this one. Same stability caveat as `state_hash`.
+    fn ordered_hash(&self) -> u64 {
+        ordered_state_hash(&self.inner)
+    }
+
+    /// The honest search's view of this position (GH #830): a clone after
+    /// [`sts2_core::blindfold::belief_root`]`(seed)`, the conversion the
+    /// deployed `BeliefDraw` search applies to its root. The unknown middle
+    /// of the draw pile is sorted into a canonical order and drawn at random
+    /// at draw time from then on; every combat RNG stream and the legacy RNG
+    /// are reseeded from `seed` alone. Pinned draw-pile cards and every
+    /// face-up pile are kept. So the result depends on the position's
+    /// observable part and `seed` only, never on the hidden draw order or
+    /// RNG cursors, and applying it again with any seed and then `seed`
+    /// returns the same state.
+    fn belief_view(&self, seed: u64) -> Self {
+        let mut out = self.clone();
+        sts2_core::blindfold::belief_root(&mut out.inner, seed);
+        out
+    }
+
+    /// A different possible world consistent with what the player sees
+    /// (GH #830, for honesty tests): a clone after
+    /// [`sts2_core::blindfold::blindfold_root`]`(seed)`, which re-deals the
+    /// unknown middle of the draw pile in a seeded order and reseeds every
+    /// RNG stream. `belief_view` of any `sample_world` is the same state.
+    fn sample_world(&self, seed: u64) -> Self {
+        let mut out = self.clone();
+        sts2_core::blindfold::blindfold_root(&mut out.inner, seed);
+        out
+    }
+
+    /// The hash the search's transposition table keys on
+    /// ([`sts2_core::search_hash`]): every game-observable field, with
+    /// order-free card piles and NO RNG cursors. Two states that differ
+    /// only in hidden draw order or RNG consumption share it; use
+    /// `ordered_hash` / `state_hash` / `rng_fingerprint` to tell those apart.
+    ///
+    /// The piles are keyed by card **uid**, not content: playing one of two
+    /// identical Strikes gives a different hash from playing the other.
+    /// To merge positions the player cannot tell apart (deduplicating turn
+    /// plans), use `observation_hash`.
+    fn search_hash(&self) -> u64 {
+        sts2_core::search_hash(&self.inner)
+    }
+
+    /// What the player can observe of this position, as a hash (GH #830):
+    /// [`sts2_core::chance_outcome_hash`], the key the deployed search
+    /// dedups chance outcomes on. Like `search_hash` (no RNG cursors,
+    /// order-free piles) except that the hand, discard, exhaust and play
+    /// piles and the unknown middle of the draw pile are folded by card
+    /// **content**, not uid: playing either of two identical Strikes gives
+    /// the same hash, and so does any order of the hidden draw pile. Cards
+    /// the player knows by position (pinned draw-pile cards) and the
+    /// allies' piles stay uid-keyed. Deduplicate turn plans and
+    /// afterstates on this one.
+    fn observation_hash(&self) -> u64 {
+        sts2_core::chance_outcome_hash(&self.inner)
+    }
+
+    /// The search's chance detector (GH #830,
+    /// [`sts2_mcts::values::rng_fingerprint`]): the counter of every combat
+    /// RNG stream, then the legacy RNG's, as a tuple. The search makes a
+    /// chance node exactly for a transition that changes it (in every mode
+    /// but `DrawChance`), so comparing it across an action tells a
+    /// stochastic action from a deterministic one.
+    ///
+    /// Only on a belief view (`belief_view`, or a state reached from one):
+    /// the deployed search draws from the hidden pile at random there,
+    /// which consumes RNG. On a raw state the draw pile has a materialized
+    /// order, a draw reads the true next card without touching any RNG,
+    /// and the fingerprint would miss a chance edge the search makes, so
+    /// this raises `ValueError` on a raw state whose hidden draw pile holds
+    /// two or more cards ([`sts2_mcts::values::fingerprint_sees_draws`]).
+    fn rng_fingerprint<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        if !sts2_mcts::values::fingerprint_sees_draws(&self.inner) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "rng_fingerprint: this state has a hidden draw order (not a belief view), so a \
+                 draw consumes no RNG and the fingerprint cannot see it; call it on \
+                 state.belief_view(seed) or a state reached from one",
+            ));
+        }
+        PyTuple::new(py, sts2_mcts::values::rng_fingerprint(&self.inner))
     }
 
     /// Return the open pending-choice description, or `None` when no
@@ -1207,7 +1349,8 @@ impl PyCombatState {
         if !sloth_disclosed_the_count && !self.inner.combat_log.public_started_history {
             self.inner.player.card_plays_started_this_turn =
                 carried.inner.player.card_plays_started_this_turn;
-            self.inner.combat_log.cards_started_this_turn = carried.inner.combat_log.cards_started_this_turn;
+            self.inner.combat_log.cards_started_this_turn =
+                carried.inner.combat_log.cards_started_this_turn;
         }
         // The rest of the GH #370 accumulator class. Each is a plain per-turn
         // or per-combat tally that content reads as a gate and no producer
@@ -1346,6 +1489,17 @@ impl PyCombatState {
             dst.card_plays_finished_last_player_turn = src.card_plays_finished_last_player_turn;
             dst.cards_discarded_this_turn = src.cards_discarded_this_turn;
             dst.lightning_orbs_channeled_this_combat = src.lightning_orbs_channeled_this_combat;
+            // ChainsOfBinding's per-turn Bound budget. C#
+            // `ChainsOfBindingPower.AfterCardDrawn` (`ChainsOfBindingPower.cs:36-45`)
+            // Binds a drawn card only while fewer than `Amount` `CardAfflictedEntry`
+            // Bound entries happened this turn; the engine keeps that count here,
+            // no producer emits it, and the rebuild read 0, so the mirror Bound
+            // the next `Amount` draws of a turn that had already spent its budget
+            // (the PIMC agent had to fall back on every such decision, GH #830).
+            // Its sibling `chains_bound_card_played_this_turn` is NOT carried —
+            // it rides the wire (`bound_card_played_this_turn`).
+            dst.bound_cards_afflicted_by_chains_this_turn =
+                src.bound_cards_afflicted_by_chains_this_turn;
             dst.player_card_plays_this_combat = src.player_card_plays_this_combat;
             dst.ethereal_cards_played_this_combat = src.ethereal_cards_played_this_combat;
             dst.exhaust_sweep_ethereal = src.exhaust_sweep_ethereal;
@@ -1353,7 +1507,8 @@ impl PyCombatState {
             dst.block_zero_at_turn_end = src.block_zero_at_turn_end;
             dst.block_before_late_turn_end = src.block_before_late_turn_end;
             if !dst.public_block_history {
-                dst.unmovable_card_block_plays.clone_from(&src.unmovable_card_block_plays);
+                dst.unmovable_card_block_plays
+                    .clone_from(&src.unmovable_card_block_plays);
                 dst.next_card_play = src.next_card_play;
             }
             // The HistoryCourse slots, with the uid component dropped — the
@@ -1717,8 +1872,11 @@ impl PyCombatState {
         let mut observed = smallvec::SmallVec::new();
         for (index, item) in cards.iter().enumerate() {
             let option = self.parse_injected_option(item.downcast::<PyDict>()?, index)?;
-            let uid = option.card_uid.ok_or_else(|| pyo3::exceptions::PyValueError::new_err(
-                "observed draw requires an existing card locator"))?;
+            let uid = option.card_uid.ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err(
+                    "observed draw requires an existing card locator",
+                )
+            })?;
             observed.push(uid);
         }
         self.inner.player.observed_draws = observed;
@@ -1731,22 +1889,37 @@ impl PyCombatState {
     }
 
     /// 公開候補をカード単位で正規化し、手札・山札・継続状態は変更しない。
-    fn normalize_public_cards<'py>(&self, cards: &Bound<'py, PyList>) -> PyResult<Bound<'py, PyAny>> {
+    fn normalize_public_cards<'py>(
+        &self,
+        cards: &Bound<'py, PyList>,
+    ) -> PyResult<Bound<'py, PyAny>> {
         let mut result = Vec::with_capacity(cards.len());
         for (index, item) in cards.iter().enumerate() {
             let data = item.downcast::<PyDict>()?;
             let raw = u32::try_from(self.inner.cards.len() + index + 1)
                 .map_err(|_| pyo3::exceptions::PyValueError::new_err("too many card templates"))?;
-            let uid = CardUid::new(raw).ok_or_else(|| pyo3::exceptions::PyValueError::new_err("invalid card uid"))?;
+            let uid = CardUid::new(raw)
+                .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("invalid card uid"))?;
             let card = state_dict::card_from_dict(data, uid, "public_candidate")?;
-            let cost = data.get_item("cost_override")?.filter(|value| !value.is_none())
-                .map(|value| value.extract::<i32>()).transpose()?.unwrap_or(i32::from(card.cost));
-            let mut value = sts2_wire::emit::combat::card_to_value_with_cost(&self.inner, &card, cost);
-            let mut flags = value.get("flags").and_then(serde_json::Value::as_array).cloned().unwrap_or_default();
+            let cost = data
+                .get_item("cost_override")?
+                .filter(|value| !value.is_none())
+                .map(|value| value.extract::<i32>())
+                .transpose()?
+                .unwrap_or(i32::from(card.cost));
+            let mut value =
+                sts2_wire::emit::combat::card_to_value_with_cost(&self.inner, &card, cost);
+            let mut flags = value
+                .get("flags")
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+                .unwrap_or_default();
             if let Some(input) = data.get_item("flags")?.filter(|value| !value.is_none()) {
                 for flag in input.extract::<Vec<String>>()? {
                     let flag = serde_json::Value::String(flag);
-                    if !flags.contains(&flag) { flags.push(flag); }
+                    if !flags.contains(&flag) {
+                        flags.push(flag);
+                    }
                 }
             }
             value["flags"] = serde_json::Value::Array(flags);
@@ -1764,7 +1937,9 @@ impl PyCombatState {
         can_skip: bool,
     ) -> PyResult<()> {
         if !choice_kind_is_generative(kind)? {
-            return Err(pyo3::exceptions::PyValueError::new_err("choice is not generative"));
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "choice is not generative",
+            ));
         }
         let mut templates = Vec::with_capacity(cards.len());
         let mut options = Vec::with_capacity(cards.len());
@@ -1772,12 +1947,17 @@ impl PyCombatState {
             let data = item.downcast::<PyDict>()?;
             let raw = u32::try_from(self.inner.cards.len() + index + 1)
                 .map_err(|_| pyo3::exceptions::PyValueError::new_err("too many card templates"))?;
-            let uid = CardUid::new(raw).ok_or_else(|| pyo3::exceptions::PyValueError::new_err("invalid card uid"))?;
+            let uid = CardUid::new(raw)
+                .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("invalid card uid"))?;
             let card = state_dict::card_from_dict(data, uid, "generated_choice")?;
             if let Some(flags) = data.get_item("flags")?.filter(|value| !value.is_none()) {
                 for flag in flags.extract::<Vec<String>>()? {
                     if matches!(flag.as_str(), "retain_turn" | "sly_turn")
-                        || (flag == "sly" && !sts2_core::card_effects::card_sly_in(card.card_id, self.inner.game_version))
+                        || (flag == "sly"
+                            && !sts2_core::card_effects::card_sly_in(
+                                card.card_id,
+                                self.inner.game_version,
+                            ))
                     {
                         return Err(pyo3::exceptions::PyValueError::new_err(format!(
                             "generated choice cannot preserve instance flag `{flag}`"
@@ -1801,48 +1981,66 @@ impl PyCombatState {
     }
 
     /// Re-enter the one relic hook currently waiting for the player's public choice.
-    fn open_relic_start_choice(
-        &mut self,
-        relic: &str,
-    ) -> PyResult<()> {
+    fn open_relic_start_choice(&mut self, relic: &str) -> PyResult<()> {
         use sts2_core::relic_effects as effects;
         use sts2_core::relics::RelicId;
         if self.inner.game_version < sts2_core::GameVersion::V0_111_0 {
-            return Err(pyo3::exceptions::PyValueError::new_err("public start-choice reconstruction requires v0.111.0"));
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "public start-choice reconstruction requires v0.111.0",
+            ));
         }
         let id = match relic {
             "TOOLBOX" => RelicId::Toolbox,
             "TOASTY_MITTENS" => RelicId::ToastyMittens,
             "GAMBLING_CHIP" => RelicId::GamblingChip,
             "CHOICES_PARADOX" => RelicId::ChoicesParadox,
-            _ => return Err(pyo3::exceptions::PyValueError::new_err("unsupported start-choice relic")),
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "unsupported start-choice relic",
+                ))
+            }
         };
-        let index = self.inner.relics.iter().position(|r| Some(r.kind) == id.to_relic_kind() && !r.is_melted)
-            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("start-choice relic is not equipped"))?;
+        let index = self
+            .inner
+            .relics
+            .iter()
+            .position(|r| Some(r.kind) == id.to_relic_kind() && !r.is_melted)
+            .ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err("start-choice relic is not equipped")
+            })?;
         if self.inner.pending_choice.is_some() {
-            return Err(pyo3::exceptions::PyValueError::new_err("start choice is already open"));
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "start choice is already open",
+            ));
         }
         if matches!(id, RelicId::Toolbox | RelicId::ChoicesParadox) {
             self.inner.relics[index].counter = 0;
         }
         if id == RelicId::Toolbox {
-            let listener = effects::lookup_before_hand_draw(id)
-                .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("missing before-draw listener"))?;
+            let listener = effects::lookup_before_hand_draw(id).ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err("missing before-draw listener")
+            })?;
             listener(&mut self.inner);
         } else {
-            let listener = effects::lookup_after_player_turn_start(id)
-                .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("missing turn-start listener"))?;
+            let listener = effects::lookup_after_player_turn_start(id).ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err("missing turn-start listener")
+            })?;
             listener(&mut self.inner);
         }
         if self.inner.pending_choice.is_none() {
-            return Err(pyo3::exceptions::PyValueError::new_err("relic did not request a choice"));
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "relic did not request a choice",
+            ));
         }
         if id == RelicId::Toolbox {
             let count = sts2_core::combat_loop::player_hand_draw_count(&mut self.inner);
-            let next = u8::try_from(index + 1).map_err(|_| pyo3::exceptions::PyValueError::new_err("too many equipped relics"))?;
+            let next = u8::try_from(index + 1)
+                .map_err(|_| pyo3::exceptions::PyValueError::new_err("too many equipped relics"))?;
             self.inner.pending_relic_hand_draw_resume = Some((count, next));
         } else if !self.arm_turn_start_resume(relic)? {
-            return Err(pyo3::exceptions::PyValueError::new_err("turn-start continuation could not be armed"));
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "turn-start continuation could not be armed",
+            ));
         }
         Ok(())
     }
@@ -2322,7 +2520,8 @@ impl PyCombatState {
         let error = |message: String| pyo3::exceptions::PyValueError::new_err(message);
         if self.inner.pending_choice.is_some() && !replace_parked {
             return Err(error(
-                "open_injected_choice: a choice is already open — resolve or drop it first".to_owned(),
+                "open_injected_choice: a choice is already open — resolve or drop it first"
+                    .to_owned(),
             ));
         }
         if min_select > max_select {
@@ -2479,6 +2678,66 @@ impl PyCombatState {
             source_pile: Some(kind),
         })
     }
+}
+
+/// Run `body` with the Python `chooser` (if any) answering the co-op
+/// teammates' choices ([`sts2_core::coop::SeatChooser`]):
+/// `chooser(ally, choice, actions)` sees the open choice as `pending_choice()`
+/// shows it and the legal `choose` actions, and returns an index into them, a
+/// `choose` action dict (any selection the choice allows), or `None` for the
+/// engine's own pick. An exception the chooser raises leaves that pick to the
+/// engine and is re-raised once `body` is done.
+fn with_py_seat_chooser(chooser: Option<Py<PyAny>>, body: impl FnOnce()) -> PyResult<()> {
+    let Some(chooser) = chooser else {
+        body();
+        return Ok(());
+    };
+    let failed: std::rc::Rc<std::cell::RefCell<Option<PyErr>>> = std::rc::Rc::default();
+    let seen = std::rc::Rc::clone(&failed);
+    let ask: sts2_core::coop::SeatChooser = Box::new(move |state, ally, options, actions| {
+        Python::with_gil(|py| {
+            let answer = (|| -> PyResult<Option<Action>> {
+                // A curse pick opens no choice: its options alone.
+                let choice = if let Some(pc) = state.pending_choice.as_ref() {
+                    sts2_wire::emit::combat::pending_choice_to_value(pc, state)
+                } else {
+                    let cards = options
+                        .iter()
+                        .map(|o| sts2_wire::emit::combat::choice_option_to_value(o, state))
+                        .collect::<Vec<_>>();
+                    serde_json::json!({ "cards": cards })
+                };
+                let legal = serde_json::Value::Array(
+                    actions
+                        .iter()
+                        .map(sts2_wire::emit::combat_action_to_value)
+                        .collect(),
+                );
+                let args = (ally, value_to_py(py, &choice)?, value_to_py(py, &legal)?);
+                let answer = chooser.call1(py, args)?;
+                let answer = answer.bind(py);
+                if answer.is_none() {
+                    return Ok(None);
+                }
+                if let Ok(i) = answer.extract::<usize>() {
+                    return Ok(actions.get(i).cloned());
+                }
+                let dict = answer.downcast::<PyDict>().map_err(|_| {
+                    pyo3::exceptions::PyTypeError::new_err(
+                        "teammate_chooser: return an index into actions, a choose action dict or None",
+                    )
+                })?;
+                parse_bridge_action(dict).map(Some)
+            })();
+            answer.unwrap_or_else(|e| {
+                seen.borrow_mut().get_or_insert(e);
+                None
+            })
+        })
+    });
+    sts2_core::coop::with_seat_chooser(ask, body);
+    let failure = failed.borrow_mut().take();
+    failure.map_or(Ok(()), Err)
 }
 
 /// Render an [`Action`] as a bridge-shape Python dict — the shape
@@ -2687,29 +2946,344 @@ fn build_git() -> &'static str {
 pub const SRC_HASH: &str = env!("STS2_PY_SRC_HASH");
 
 /// Playout-net training features at `state`
-/// ([`sts2_mcts::rollout_net::export_features`]): `{"state": [f32],
-/// "actions": [action dict], "keys": [str], "x": [[f32]]}`, one entry per
-/// legal action in `legal_actions` order — the order the playout sees. The
-/// action dicts have the shape search results carry
-/// (`combat_search["actions"][i]["action"]`), so a root's visit counts map
-/// onto them by equality.
+/// ([`sts2_mcts::rollout_net::export_features_spec`]): `{"state": [f32],
+/// "actions": [action dict], "keys": [str], "x": [[f32]], "monsters":
+/// [str | None]}`, one entry per legal action in `legal_actions` order — the
+/// order the playout sees. The action dicts have the shape search results
+/// carry (`combat_search["actions"][i]["action"]`), so a root's visit counts
+/// map onto them by equality.
+///
+/// `version` is the feature version (1 = the deployed net's 32 / 24
+/// features, 2 = 96 / 32, 3 = v1's 32 / 24 with telegraphed attacks at their
+/// displayed number and form-aware "enemy HP removed"). Version 2 reads the
+/// act from `monster_act`
+/// (`{species: act}`) and `encounter_act` (`[[act, [species, ...]], ...]`),
+/// each by default the engine's encounter tables ([`monster_acts`],
+/// [`encounter_acts`]); `monsters` lists the species of the first enemies in
+/// play (the encounter embedding's input; all `None` under v1).
 #[pyfunction]
-fn rollout_features<'py>(py: Python<'py>, state: &PyCombatState) -> PyResult<Bound<'py, PyDict>> {
-    let (s, rows) = sts2_mcts::rollout_net::export_features(state.inner_ref());
+#[pyo3(signature = (state, version = 1, monster_act = None, encounter_act = None))]
+fn rollout_features<'py>(
+    py: Python<'py>,
+    state: &PyCombatState,
+    version: u32,
+    monster_act: Option<std::collections::BTreeMap<String, u8>>,
+    encounter_act: Option<Vec<(u8, Vec<String>)>>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let spec = feature_spec_for(version, monster_act, encounter_act)?;
+    let ex = sts2_mcts::rollout_net::export_features_spec(state.inner_ref(), &spec);
     let d = PyDict::new(py);
-    d.set_item("state", s.to_vec())?;
+    d.set_item("state", ex.state)?;
     let actions = PyList::empty(py);
-    let mut keys = Vec::with_capacity(rows.len());
-    let mut xs = Vec::with_capacity(rows.len());
-    for (a, k, x) in &rows {
-        actions.append(action_to_pydict(py, a)?)?;
+    let mut keys = Vec::with_capacity(ex.actions.len());
+    let mut xs = Vec::with_capacity(ex.actions.len());
+    for (a, k, x) in ex.actions {
+        actions.append(action_to_pydict(py, &a)?)?;
         keys.push(k.name());
-        xs.push(x.to_vec());
+        xs.push(x);
     }
     d.set_item("actions", actions)?;
     d.set_item("keys", keys)?;
     d.set_item("x", xs)?;
+    d.set_item(
+        "monsters",
+        ex.species
+            .iter()
+            .map(|k| k.map(sts2_core::MonsterKind::python_name))
+            .collect::<Vec<_>>(),
+    )?;
     Ok(d)
+}
+
+/// The feature spec of `version`; v2 reads `monster_act` and
+/// `encounter_act`, each by default the engine's encounter tables
+/// ([`default_monster_acts`], [`default_encounter_acts`]).
+fn feature_spec_for(
+    version: u32,
+    monster_act: Option<std::collections::BTreeMap<String, u8>>,
+    encounter_act: Option<Vec<(u8, Vec<String>)>>,
+) -> PyResult<sts2_mcts::rollout_net::FeatureSpec> {
+    use sts2_mcts::rollout_net::{
+        FeatureSpec, FeatureVersion, FEATURES_V1, FEATURES_V3, FEATURES_V4,
+    };
+    match FeatureVersion::from_number(version) {
+        Some(FeatureVersion::V1) => Ok(FEATURES_V1),
+        Some(FeatureVersion::V3) => Ok(FEATURES_V3),
+        Some(FeatureVersion::V4) => Ok(FEATURES_V4),
+        Some(FeatureVersion::V2) => {
+            let by_name: std::collections::HashMap<&str, sts2_core::MonsterKind> =
+                sts2_core::MonsterKind::ALL_KNOWN
+                    .iter()
+                    .map(|k| (k.python_name(), *k))
+                    .collect();
+            let table = monster_act.unwrap_or_else(default_monster_acts);
+            let acts: Vec<_> = table
+                .iter()
+                .filter_map(|(n, a)| by_name.get(n.as_str()).map(|k| (*k, *a)))
+                .collect();
+            let rosters: Vec<(u8, Vec<sts2_core::MonsterKind>)> = encounter_act
+                .unwrap_or_else(default_encounter_acts)
+                .into_iter()
+                .filter_map(|(act, names)| {
+                    let members: Option<Vec<_>> = names
+                        .iter()
+                        .map(|n| by_name.get(n.as_str()).copied())
+                        .collect();
+                    members.map(|m| (act, m))
+                })
+                .collect();
+            Ok(FeatureSpec::v2(&acts, &[]).with_encounters(&rosters))
+        }
+        None => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "unknown feature version {version} (expected 1, 2 or 3)"
+        ))),
+    }
+}
+
+/// `species → act` from the engine's encounter tables: the lowest act any
+/// encounter roster lists the species in. Species that only ever appear as
+/// mid-fight summons are absent (act 0 in the v2 features).
+fn default_monster_acts() -> std::collections::BTreeMap<String, u8> {
+    let mut out = std::collections::BTreeMap::new();
+    for e in list_encounters_impl() {
+        for m in e.monsters {
+            let a = out.entry(m.to_owned()).or_insert(e.act);
+            *a = (*a).min(e.act);
+        }
+    }
+    out
+}
+
+/// `[act, roster]` of every encounter in the engine's tables, the roster as
+/// one `MonsterKind::python_name` per monster.
+fn default_encounter_acts() -> Vec<(u8, Vec<String>)> {
+    list_encounters_impl()
+        .into_iter()
+        .map(|e| (e.act, e.monsters.iter().map(|m| (*m).to_owned()).collect()))
+        .collect()
+}
+
+/// `{species: act}` for the v2 playout features
+/// ([`sts2_mcts::rollout_net`] module docs): the lowest act any encounter
+/// roster lists the species in. `ppo.rollout_learn` writes it into every v2
+/// weights file as `monster_act`.
+#[pyfunction]
+fn monster_acts() -> std::collections::BTreeMap<String, u8> {
+    default_monster_acts()
+}
+
+/// `[[act, [species, ...]], ...]`, one entry per encounter of the engine's
+/// tables (one species name per monster): the v2 features' `encounter_act`,
+/// which lifts a fight to its encounter's act when the species table alone
+/// would place it lower (two act-1 constructs make the act-3 Construct
+/// Menagerie). `ppo.rollout_learn` writes it into every v2 weights file.
+#[pyfunction]
+fn encounter_acts() -> Vec<(u8, Vec<String>)> {
+    default_encounter_acts()
+}
+
+/// Every monster species this build knows, as `MonsterKind::python_name`
+/// (summons included), sorted: the vocabulary of a v2 net's encounter
+/// embedding.
+#[pyfunction]
+fn monster_species() -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = sts2_core::MonsterKind::ALL_KNOWN
+        .iter()
+        .map(|k| k.python_name())
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// `PyCombatState.ordered_hash`: the structural hash plus the order of every
+/// card pile of the player and the allies.
+fn ordered_state_hash(state: &CoreCombatState) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::hash::DefaultHasher::new();
+    core_state_hash(state).hash(&mut h);
+    for p in std::iter::once(&state.player).chain(state.allies.iter()) {
+        for pile in [
+            p.hand.as_slice(),
+            p.draw.as_slice(),
+            p.discard.as_slice(),
+            p.exhaust.as_slice(),
+            p.play.as_slice(),
+        ] {
+            pile.len().hash(&mut h);
+            for uid in pile {
+                uid.get().hash(&mut h);
+            }
+        }
+    }
+    h.finish()
+}
+
+// The search configuration and leaf evaluator the deployed combat pilot
+// (`MctsCombatAgent`, `CombatBudget::eval_cheap`) plays out under in a fight
+// of a given character, env seams included. Lives in sts2-runai so its test
+// can hold it against what `mcts_pick` actually searches with (GH #830).
+use sts2_runai::policy::deployed_value_config;
+
+/// What the deployed search backs up for a playout that ended in `state`
+/// ([`sts2_mcts::playout_return`] under the deployed pilot's config for the
+/// state's character): a won fight in `[1.0, 1.5]` (HP and kept potions
+/// raise it), a lost one in `[-1.45, -1.05)` (graded by enemy HP removed, HP
+/// kept and turns; an Ironclad state counts the forms a multi-form enemy
+/// still has, GH #830), a fight still running gets the depth-cut leaf value.
+#[pyfunction]
+fn search_playout_value(state: &PyCombatState) -> f32 {
+    let s = state.inner_ref();
+    let (cfg, leaf) = deployed_value_config(s.player.character);
+    sts2_mcts::playout_return(s, &cfg, &leaf)
+}
+
+/// Run `run` over `jobs` once per character (`player.character`): each group
+/// under the deployed pilot's playout config for that character
+/// ([`deployed_value_config`]) after `edit`, the results scattered back in
+/// job order. One character (every batch of one run) is one call on the
+/// jobs as given. `run` must return one result per job of its group, each
+/// depending only on its own job (true of `playout_values` and
+/// `playout_trajectories_with`, which seed every job alone), so the split
+/// changes no result.
+fn by_character<T>(
+    jobs: &[(CoreCombatState, u64)],
+    edit: impl Fn(&mut MctsConfig),
+    run: impl Fn(&[(CoreCombatState, u64)], &MctsConfig, &LeafEval) -> Vec<T>,
+) -> Vec<T> {
+    let config = |character| {
+        let (mut cfg, leaf) = deployed_value_config(character);
+        edit(&mut cfg);
+        (cfg, leaf)
+    };
+    let mut groups: Vec<(Option<sts2_core::potions::CharacterId>, Vec<usize>)> = Vec::new();
+    for (i, (s, _)) in jobs.iter().enumerate() {
+        let character = s.player.character;
+        match groups.iter_mut().find(|(c, _)| *c == character) {
+            Some((_, idx)) => idx.push(i),
+            None => groups.push((character, vec![i])),
+        }
+    }
+    if groups.len() <= 1 {
+        let (cfg, leaf) = config(groups.first().and_then(|(c, _)| *c));
+        return run(jobs, &cfg, &leaf);
+    }
+    let mut out: Vec<Option<T>> = std::iter::repeat_with(|| None).take(jobs.len()).collect();
+    for (character, idx) in &groups {
+        let (cfg, leaf) = config(*character);
+        let group: Vec<(CoreCombatState, u64)> = idx.iter().map(|&i| jobs[i].clone()).collect();
+        let results = run(&group, &cfg, &leaf);
+        assert_eq!(results.len(), idx.len(), "one result per job");
+        for (&i, r) in idx.iter().zip(results) {
+            out[i] = Some(r);
+        }
+    }
+    out.into_iter()
+        .map(|r| r.expect("every job is in one group"))
+        .collect()
+}
+
+/// [`values_many`]'s rows: one playout per job under its character's
+/// deployed config ([`by_character`]), `depth` / `rollout_policy` overriding
+/// every group's. An error names the caller's job index.
+fn values_many_rows(
+    jobs: &[(CoreCombatState, u64)],
+    mode: sts2_mcts::values::PlayoutMode,
+    depth: Option<u32>,
+    rollout_policy: Option<sts2_mcts::RolloutPolicyKind>,
+) -> Result<Vec<sts2_mcts::values::PlayoutValue>, String> {
+    let results = by_character(
+        jobs,
+        |cfg| {
+            if let Some(d) = depth {
+                cfg.max_rollout_depth = d;
+            }
+            if let Some(p) = rollout_policy {
+                cfg.rollout_policy = p;
+            }
+        },
+        |group, cfg, leaf| sts2_mcts::values::playout_values(group, mode, cfg, leaf),
+    );
+    results
+        .into_iter()
+        .enumerate()
+        .map(|(i, r)| r.map_err(|e| format!("values_many: job {i}: {e}")))
+        .collect()
+}
+
+/// One playout per `(state, seed)` exactly as the deployed search plays out
+/// a leaf, with nothing recorded (GH #830, deep bets build 1;
+/// [`sts2_mcts::values::playout_value`]). Returns one
+/// `{"search_value", "won", "hp", "terminal"}` per job: `search_value` is
+/// what the search backs up for the playout (`search_playout_value` of its
+/// end state; the key `LearnedPlayout.play_many` uses for it too), `hp`
+/// the player's HP at its end, `terminal` whether it ended the fight
+/// (otherwise it stopped at the depth cap and `search_value` is the depth-cut leaf).
+///
+/// The config is the deployed pilot's for the state's character
+/// ([`deployed_value_config`]: the BeliefDraw dialect with the character's
+/// playout net, the TexelWide leaf, rollout depth 200 raised for enemies that
+/// need a longer horizon, the `STS2_RUNAI_*` env seams, and for an Ironclad
+/// state the run agent's Ironclad knobs, GH #830); a batch mixing characters
+/// scores each job under its own. `depth` and `rollout_policy` override the
+/// playout depth and policy as `mcts_recommend`'s arguments of those names
+/// do. A playout's policy RNG is seeded with its `seed`, the RNG a search
+/// seeded `seed` gives its first simulation.
+///
+/// `mode`:
+/// * `"raw"` — from the state as given (its own draw order and RNG cursors).
+/// * `"belief"` — from `state.belief_view(seed)`: identical to `"raw"` on
+///   that view with the same seed.
+/// * `"belief_endturn"` — from `state.belief_view(seed)` after `EndTurn`: the
+///   value of a turn's afterstate. A seed deals every afterstate the same
+///   randomness. A terminal state is scored as it stands; a live state with
+///   a card choice open raises `ValueError`.
+///
+/// Runs without the GIL, in parallel over the jobs on the rayon pool
+/// (`RAYON_NUM_THREADS` caps it); results do not depend on the thread count.
+#[pyfunction]
+#[pyo3(signature = (states, seeds, mode = "raw", depth = None, rollout_policy = None))]
+fn values_many<'py>(
+    py: Python<'py>,
+    states: Vec<PyRef<'py, PyCombatState>>,
+    seeds: Vec<u64>,
+    mode: &str,
+    depth: Option<u32>,
+    rollout_policy: Option<&str>,
+) -> PyResult<Bound<'py, PyList>> {
+    use sts2_mcts::values::PlayoutMode;
+    if states.len() != seeds.len() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "values_many: states and seeds differ in length",
+        ));
+    }
+    let mode = PlayoutMode::parse(mode).ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "values_many: mode must be 'raw', 'belief' or 'belief_endturn', got {mode:?}"
+        ))
+    })?;
+    let rollout_policy = rollout_policy
+        .map(|p| sts2_wire::emit::mcts::parse_rollout_policy(p, "values_many"))
+        .transpose()
+        .map_err(pyo3::exceptions::PyValueError::new_err)?;
+    let jobs: Vec<(CoreCombatState, u64)> = states
+        .iter()
+        .zip(&seeds)
+        .map(|(s, &seed)| (s.inner_ref().clone(), seed))
+        .collect();
+    let rows = py
+        .allow_threads(|| values_many_rows(&jobs, mode, depth, rollout_policy))
+        .map_err(pyo3::exceptions::PyValueError::new_err)?;
+    let out = PyList::empty(py);
+    for v in rows {
+        let d = PyDict::new(py);
+        d.set_item("search_value", v.value)?;
+        d.set_item("won", v.won)?;
+        d.set_item("hp", v.hp)?;
+        d.set_item("terminal", v.terminal)?;
+        out.append(d)?;
+    }
+    Ok(out)
 }
 
 /// Play `state` to the end of the combat with one playout policy and no
@@ -2762,6 +3336,37 @@ fn playout<'py>(
     Ok(d)
 }
 
+/// `LearnedPlayout.play_many`'s trajectories: every job played out by
+/// `net` ([`sts2_mcts::rollout_net::playout_trajectories_with`]), its
+/// `search_value` scored under the deployed pilot's config for the job's
+/// character ([`by_character`]).
+fn play_many_trajectories(
+    net: &sts2_mcts::rollout_net::RolloutNet,
+    jobs: &[(CoreCombatState, u64)],
+    temperature: f32,
+    no_early_end_turn: bool,
+    max_steps: u32,
+    belief: bool,
+) -> Vec<sts2_mcts::rollout_net::Trajectory> {
+    by_character(
+        jobs,
+        |_| {},
+        |group, cfg, leaf| {
+            sts2_mcts::rollout_net::playout_trajectories_with(
+                net,
+                group,
+                &sts2_mcts::rollout_net::TrajOptions {
+                    temperature,
+                    no_early_end_turn,
+                    max_steps,
+                    belief,
+                    score: Some((cfg, leaf)),
+                },
+            )
+        },
+    )
+}
+
 /// A learned playout policy held by Python, for training it on playout
 /// outcomes (`ppo.rollout_learn rl`). Independent of the search's
 /// process-wide `STS2_ROLLOUT_NET` policy.
@@ -2780,13 +3385,69 @@ impl PyLearnedPlayout {
             .map_err(pyo3::exceptions::PyValueError::new_err)
     }
 
+    /// The weights file's feature version (1, 2 or 3).
+    #[getter]
+    fn feature_version(&self) -> u32 {
+        self.net.feature_spec().version.number()
+    }
+
+    /// Width of the state vector `s`.
+    #[getter]
+    fn state_dim(&self) -> usize {
+        self.net.state_dim()
+    }
+
+    /// Width of the action vector `x(a)`.
+    #[getter]
+    fn action_dim(&self) -> usize {
+        self.net.action_dim()
+    }
+
+    /// The net's logits at `state` and everything they were computed from
+    /// ([`sts2_mcts::rollout_net::RolloutNet::explain`]): `{"state": [f32],
+    /// "monsters": [int], "actions": [action dict], "rows": [int], "x":
+    /// [[f32]], "logits": [f32]}` in `legal_actions` order, at the
+    /// playout's EndTurn priority. `rows` are embedding rows and `monsters`
+    /// encounter-embedding rows (0 = none), so a trainer's model can be
+    /// checked against this one on the same inputs.
+    fn explain<'py>(&self, py: Python<'py>, state: &PyCombatState) -> PyResult<Bound<'py, PyDict>> {
+        let ex = self.net.explain(state.inner_ref());
+        let d = PyDict::new(py);
+        d.set_item("state", ex.state)?;
+        d.set_item("monsters", ex.monsters.to_vec())?;
+        let actions = PyList::empty(py);
+        let (mut rows, mut xs, mut logits) = (Vec::new(), Vec::new(), Vec::new());
+        for (a, row, x, logit) in ex.actions {
+            actions.append(action_to_pydict(py, &a)?)?;
+            rows.push(row);
+            xs.push(x);
+            logits.push(logit);
+        }
+        d.set_item("actions", actions)?;
+        d.set_item("rows", rows)?;
+        d.set_item("x", xs)?;
+        d.set_item("logits", logits)?;
+        Ok(d)
+    }
+
     /// Play every `(state, seed)` out in parallel at `temperature`, recording
-    /// each decision ([`sts2_mcts::rollout_net::playout_trajectories`]).
+    /// each decision ([`sts2_mcts::rollout_net::playout_trajectories_with`]).
     /// Returns little-endian byte buffers: per decision `state`
-    /// (f32 x STATE_DIM), `n_act` (u8), `chosen` (u8); per action `rows` (u32),
-    /// `x` (f32 x ACTION_DIM), `allowed` (u8); per playout `steps` (u32),
-    /// `won` (u8), `hp_frac`, `removed`, `round` (f32).
-    #[pyo3(signature = (states, seeds, temperature = 1.0, no_early_end = false, max_steps = 600))]
+    /// (f32 x `state_dim`), `n_act` (u8), `chosen` (u8), and for a v2 net
+    /// `mon` (u16 x `MONSTER_SLOTS`, encounter-embedding rows); per action
+    /// `rows` (u32), `x` (f32 x `action_dim`), `allowed` (u8); per playout
+    /// `steps` (u32), `won` (u8), `hp_frac`, `removed`, `round` and
+    /// `search_value` (f32). `search_value` is what the deployed search
+    /// backs up for the playout ([`search_playout_value`] of its final state,
+    /// under the deployed pilot's config for the job's character, GH #830).
+    ///
+    /// `belief`: start each playout from its own honest view of the state,
+    /// the one the deployed search sees (`sts2_core::blindfold::belief_root`,
+    /// seeded from the job seed): the unknown draw order is drawn at random at
+    /// draw time and the hidden RNG streams are reseeded. Off (the default),
+    /// a playout draws in the state's true order.
+    #[pyo3(signature = (states, seeds, temperature = 1.0, no_early_end = false, max_steps = 600, belief = false))]
+    #[allow(clippy::too_many_arguments)]
     fn play_many<'py>(
         &self,
         py: Python<'py>,
@@ -2795,7 +3456,9 @@ impl PyLearnedPlayout {
         temperature: f32,
         no_early_end: bool,
         max_steps: u32,
+        belief: bool,
     ) -> PyResult<Bound<'py, PyDict>> {
+        use sts2_mcts::rollout_net::FeatureVersion;
         if states.len() != seeds.len() {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "states and seeds differ in length",
@@ -2807,18 +3470,28 @@ impl PyLearnedPlayout {
             .map(|(s, &seed)| (s.inner_ref().clone(), seed))
             .collect();
         let trajs = py.allow_threads(|| {
-            sts2_mcts::rollout_net::playout_trajectories(
+            play_many_trajectories(
                 &self.net,
                 &jobs,
                 temperature,
                 no_early_end,
                 max_steps,
+                belief,
             )
         });
-        let (mut st, mut n_act, mut chosen) = (Vec::new(), Vec::new(), Vec::new());
+        let (sd, ad) = (self.net.state_dim(), self.net.action_dim());
+        let v2 = self.net.feature_spec().version == FeatureVersion::V2;
+        let (mut st, mut n_act, mut chosen, mut mon) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let (mut rows, mut x, mut allowed) = (Vec::new(), Vec::new(), Vec::new());
-        let (mut steps, mut won, mut hp, mut removed, mut round) =
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut steps, mut won, mut hp, mut removed, mut round, mut value) = (
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
         for t in &trajs {
             steps.extend(
                 u32::try_from(t.steps.len())
@@ -2829,13 +3502,17 @@ impl PyLearnedPlayout {
             hp.extend(t.hp_frac.to_le_bytes());
             removed.extend(t.removed.to_le_bytes());
             round.extend(f32::from(t.round).to_le_bytes());
+            value.extend(t.search_value.to_le_bytes());
             for step in &t.steps {
-                st.extend(step.state.iter().flat_map(|v| v.to_le_bytes()));
+                st.extend(step.state[..sd].iter().flat_map(|v| v.to_le_bytes()));
+                if v2 {
+                    mon.extend(step.monsters.iter().flat_map(|v| v.to_le_bytes()));
+                }
                 n_act.push(u8::try_from(step.rows.len()).unwrap_or(u8::MAX));
                 chosen.push(step.chosen);
                 for ((r, xx), ok) in step.rows.iter().zip(&step.x).zip(&step.allowed) {
                     rows.extend(r.to_le_bytes());
-                    x.extend(xx.iter().flat_map(|v| v.to_le_bytes()));
+                    x.extend(xx[..ad].iter().flat_map(|v| v.to_le_bytes()));
                     allowed.push(u8::from(*ok));
                 }
             }
@@ -2853,8 +3530,12 @@ impl PyLearnedPlayout {
             ("hp_frac", hp),
             ("removed", removed),
             ("round", round),
+            ("search_value", value),
         ] {
             d.set_item(k, pyo3::types::PyBytes::new(py, &v))?;
+        }
+        if v2 {
+            d.set_item("mon", pyo3::types::PyBytes::new(py, &mon))?;
         }
         Ok(d)
     }
@@ -2966,6 +3647,35 @@ fn build_info(py: Python<'_>) -> PyResult<PyObject> {
     d.set_item("src_hash", src_hash())?;
     d.set_item("build_git", build_git())?;
     Ok(d.into())
+}
+
+/// This process's PUCT move-prior counters since it started
+/// (`sts2_mcts::prior_counts`, GH #830): `prior_lookups` (descent reads of
+/// a node's prior, cache hits included), `prior_evals` (playout-net prior
+/// evaluations: the per-node cache's misses) and `prior_uniform_fallbacks`
+/// (evaluations that fell back to uniform). All 0 for a search without a
+/// prior. Each spawned worker counts its own process.
+#[pyfunction]
+fn prior_counts(py: Python<'_>) -> PyResult<PyObject> {
+    let c = sts2_mcts::prior_counts::snapshot();
+    let d = PyDict::new(py);
+    d.set_item("prior_lookups", c.lookups)?;
+    d.set_item("prior_evals", c.evals)?;
+    d.set_item("prior_uniform_fallbacks", c.uniform_fallbacks)?;
+    Ok(d.into())
+}
+
+/// The compiled-in PUCT move-prior net of `character`
+/// (`sts2_mcts::rollout_net::builtin_prior_json`, GH #830) as its JSON text,
+/// or `None` when that character has none (every character but Ironclad).
+/// Harnesses hash it to pin the deployed prior, as the gate pinned the
+/// playout net. Accepts `Ironclad` or `ironclad`; raises `ValueError` on an
+/// unknown name.
+#[pyfunction]
+fn builtin_prior_net_json(character: &str) -> PyResult<Option<String>> {
+    let character = sts2_wire::emit::names::character_from_str(character)
+        .map_err(pyo3::exceptions::PyValueError::new_err)?;
+    Ok(sts2_mcts::rollout_net::builtin_prior_json(character).map(str::to_owned))
 }
 
 /// Port of C# `StringHelper.GetDeterministicHashCode`.
@@ -3349,6 +4059,7 @@ pub(crate) fn action_score_pydict<'py>(
     ties: u32,
     value_sum: f32,
     hp_sum: f32,
+    hp_sq_sum: f32,
     hp_n: u32,
     low_confidence: bool,
     q_saturated: bool,
@@ -3364,6 +4075,7 @@ pub(crate) fn action_score_pydict<'py>(
             ties,
             value_sum,
             hp_sum,
+            hp_sq_sum,
             hp_n,
             low_confidence,
             q_saturated,
@@ -3416,7 +4128,10 @@ pub(crate) fn action_score_pydict<'py>(
     common_random_numbers = false,
     endturn_widening_c = None,
     endturn_widening_alpha = None,
+    leaf_playouts = None,
     dominance_pruning = false,
+    win_hp_carry = None,
+    win_potion_carry = None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn mcts_recommend<'py>(
@@ -3434,7 +4149,10 @@ fn mcts_recommend<'py>(
     common_random_numbers: bool,
     endturn_widening_c: Option<f32>,
     endturn_widening_alpha: Option<f32>,
+    leaf_playouts: Option<u32>,
     dominance_pruning: bool,
+    win_hp_carry: Option<f32>,
+    win_potion_carry: Option<f32>,
 ) -> PyResult<Bound<'py, PyDict>> {
     // The search config, the ranking and the dict shape all live in
     // `sts2_wire::emit::mcts` — the same code the browser workbench runs, so
@@ -3454,7 +4172,15 @@ fn mcts_recommend<'py>(
     // the run agent's PR #467 values under beliefdraw — GH #758).
     // `rollout_policy` likewise: `None` keeps the mode's playout (the playout
     // net under beliefdraw), a named one ("heuristic" / "uniform" / "net")
-    // always runs.
+    // always runs. `leaf_playouts` (GH #830): playouts per search leaf,
+    // `None` = the engine's one. `win_hp_carry` / `win_potion_carry`
+    // (GH #771): the boss win value the run agent sets from
+    // `boss_win_carry`; `None` keeps the default.
+    if leaf_playouts == Some(0) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "mcts_recommend: leaf_playouts must be >= 1",
+        ));
+    }
     let hidden_info = parse_hidden_info(hidden_info, "mcts_recommend")?;
     let (c_puct, draw_widening_c) =
         resolve_search_constants(hidden_info, c_puct, draw_widening_c, sims);
@@ -3474,7 +4200,12 @@ fn mcts_recommend<'py>(
         endturn_widening_c,
         endturn_widening_alpha,
         common_random_numbers,
+        leaf_playouts,
+        net_expand_order: false,
+        fpu_reduction: None,
         dominance_pruning,
+        win_hp_carry,
+        win_potion_carry,
     };
     let root_state = state.inner.clone();
     // Forward the wire-side trust flag so `--mcts-log` consumers can tell
@@ -3487,6 +4218,20 @@ fn mcts_recommend<'py>(
         sts2_wire::emit::mcts::recommend_value(&root_state, &params, intent_damage_known)
     });
     crate::value_to_pydict(py, &out)
+}
+
+/// `(win_hp_carry, win_potion_carry)` for a fight, or `None` for the default
+/// win value — [`sts2_mcts::boss_win_carry`], the rule the run agent applies
+/// under its default `STS2_RUNAI_BOSS_CARRY` (the run's last boss only). The
+/// live advisor reads it here so it values that fight the way the agent does.
+#[pyfunction]
+fn boss_win_carry(
+    is_boss: bool,
+    is_last_act: bool,
+    awaiting_second_boss: bool,
+    ascension: u8,
+) -> Option<(f32, f32)> {
+    sts2_mcts::boss_win_carry(is_boss, is_last_act, awaiting_second_boss, ascension)
 }
 
 /// Price ONE move from the position it is chosen FROM, with every
@@ -3519,6 +4264,8 @@ fn mcts_recommend<'py>(
     endturn_widening_c = None,
     endturn_widening_alpha = None,
     dominance_pruning = false,
+    win_hp_carry = None,
+    win_potion_carry = None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn mcts_score_action_forced<'py>(
@@ -3535,6 +4282,8 @@ fn mcts_score_action_forced<'py>(
     endturn_widening_c: Option<f32>,
     endturn_widening_alpha: Option<f32>,
     dominance_pruning: bool,
+    win_hp_carry: Option<f32>,
+    win_potion_carry: Option<f32>,
 ) -> PyResult<Option<Bound<'py, PyDict>>> {
     let dict = action.downcast::<PyDict>().map_err(|_| {
         pyo3::exceptions::PyValueError::new_err(
@@ -3561,7 +4310,12 @@ fn mcts_score_action_forced<'py>(
         endturn_widening_c,
         endturn_widening_alpha,
         common_random_numbers: false,
+        leaf_playouts: None,
+        net_expand_order: false,
+        fpu_reduction: None,
         dominance_pruning,
+        win_hp_carry,
+        win_potion_carry,
     };
     let root_state = state.inner.clone();
     let out = py.allow_threads(move || {
@@ -3582,7 +4336,11 @@ fn mcts_score_action_forced<'py>(
 /// silently ran the leaky `Clairvoyant` default while the hint panel beside
 /// it ran the deployed honest `beliefdraw` search), and so are the
 /// `endturn_widening_*` ablation knobs. Defaults stay at `mcts_recommend`'s,
-/// which are now the deployed honest ones.
+/// which are now the deployed honest ones. `net_expand_order` /
+/// `fpu_reduction` are the GH #830 rung-4 ablation knobs (default off /
+/// `+inf` FPU); with `net_expand_order=True` the dict also carries
+/// `expand_order` (`considered` / `scored` / `reordered` / `first_changed`
+/// node counts, see `sts2_mcts::ExpandOrderStats`).
 #[pyfunction]
 #[pyo3(signature = (
     state,
@@ -3596,6 +4354,8 @@ fn mcts_score_action_forced<'py>(
     draw_widening_c = None,
     endturn_widening_c = None,
     endturn_widening_alpha = None,
+    net_expand_order = false,
+    fpu_reduction = None,
     dominance_pruning = false,
 ))]
 #[allow(clippy::too_many_arguments)]
@@ -3611,6 +4371,8 @@ fn mcts_search_tree<'py>(
     draw_widening_c: Option<f32>,
     endturn_widening_c: Option<f32>,
     endturn_widening_alpha: Option<f32>,
+    net_expand_order: bool,
+    fpu_reduction: Option<f32>,
     dominance_pruning: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     let hidden_info = parse_hidden_info(hidden_info, "mcts_search_tree")?;
@@ -3629,6 +4391,8 @@ fn mcts_search_tree<'py>(
         draw_widening_c,
         endturn_widening_c,
         endturn_widening_alpha,
+        net_expand_order,
+        fpu_reduction,
         dominance_pruning,
         ..RecommendParams::default()
     };
@@ -3659,6 +4423,9 @@ pub fn sts2_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // (`sts2-cli/src/lib.rs`).
     sts2_content::relics::dispatch::ensure_installed();
     sts2_content::potions::dispatch::ensure_installed();
+    // Co-op teammates play their remaining hand inside `apply(EndTurn)`, also
+    // for a plain `state.apply` (the search registers it on its own).
+    sts2_core::coop::register_teammate_policy(sts2_mcts::expert::teammate_policy);
 
     m.add_function(wrap_pyfunction!(resolve_potion_swap_flag, m)?)?;
     m.add_function(wrap_pyfunction!(potion_swap_is_rule_side, m)?)?;
@@ -3670,10 +4437,17 @@ pub fn sts2_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(src_hash, m)?)?;
     m.add_function(wrap_pyfunction!(rollout_features, m)?)?;
     m.add_function(wrap_pyfunction!(rollout_net_rows, m)?)?;
+    m.add_function(wrap_pyfunction!(monster_acts, m)?)?;
+    m.add_function(wrap_pyfunction!(encounter_acts, m)?)?;
+    m.add_function(wrap_pyfunction!(monster_species, m)?)?;
+    m.add_function(wrap_pyfunction!(search_playout_value, m)?)?;
+    m.add_function(wrap_pyfunction!(values_many, m)?)?;
     m.add_function(wrap_pyfunction!(playout, m)?)?;
     m.add_class::<PyLearnedPlayout>()?;
     m.add_function(wrap_pyfunction!(recompute_src_hash, m)?)?;
     m.add_function(wrap_pyfunction!(build_info, m)?)?;
+    m.add_function(wrap_pyfunction!(prior_counts, m)?)?;
+    m.add_function(wrap_pyfunction!(builtin_prior_net_json, m)?)?;
     m.add_function(wrap_pyfunction!(deterministic_hash_code, m)?)?;
     m.add_function(wrap_pyfunction!(seed_hash, m)?)?;
     m.add_function(wrap_pyfunction!(run_seed_hash, m)?)?;
@@ -3687,6 +4461,7 @@ pub fn sts2_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<crate::run_manager::PyRunManager>()?;
     m.add_class::<crate::heuristic_agent::PyHeuristicRunAgent>()?;
     m.add_class::<crate::mcts_combat_agent::PyMctsCombatAgent>()?;
+    m.add_class::<crate::mcts_combat_agent::PyTurnPlanRootFilter>()?;
     m.add_class::<crate::combat_surrogate::PyCombatSurrogate>()?;
     m.add_class::<crate::ppo_agent::PyPpoRunAgent>()?;
     m.add_function(wrap_pyfunction!(crate::ppo_agent::ppo_observe_json, m)?)?;
@@ -3722,6 +4497,7 @@ pub fn sts2_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Bead sts2-rs-cosb (hint-T4): MCTS recommendation surface +
     // win-probability bucket table.
     m.add_function(wrap_pyfunction!(mcts_recommend, m)?)?;
+    m.add_function(wrap_pyfunction!(boss_win_carry, m)?)?;
     m.add_function(wrap_pyfunction!(mcts_score_action_forced, m)?)?;
     m.add_function(wrap_pyfunction!(mcts_search_tree, m)?)?;
     // Persistent-combat-mirror surface (the rest are `PyCombatState`
@@ -3850,7 +4626,11 @@ fn state_from_dict_py(d: &Bound<'_, PyDict>) -> PyResult<PyCombatState> {
     monsters = None,
     potions = None,
     move_states = None,
+    potion_slots = None,
     game_version = None,
+    run_seed = None,
+    rng_counters = None,
+    encounter_floor = None,
 ))]
 #[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
 fn build_scenario_state_py(
@@ -3865,11 +4645,28 @@ fn build_scenario_state_py(
     monsters: Option<Vec<String>>,
     potions: Option<Vec<String>>,
     move_states: Option<Vec<Option<String>>>,
+    potion_slots: Option<u8>,
     game_version: Option<&str>,
+    run_seed: Option<u64>,
+    rng_counters: Option<Vec<(String, u32)>>,
+    encounter_floor: Option<i64>,
 ) -> PyResult<PyCombatState> {
     let potions = potions.unwrap_or_default();
+    let rng_counters = rng_counters.unwrap_or_default();
     let game_version = parse_game_version(game_version)?;
-    let inner = sts2_wire::scenario::build_scenario_state_for_version(
+    // `potion_slots=None` keeps the harness's default belt (3, or 2 from A4
+    // Tight Belt, GH #893); a fight rebuilt from a human run passes the
+    // human's belt size (GH #830).
+    // `run_seed=` (+ `rng_counters=`) rebuilds a recorded fight on the run's
+    // own RNG streams, e.g. a SpireCodex replay's `combat_start.rng_state`;
+    // `encounter_floor=` (C#'s `TotalFloor`) also rolls the encounter's
+    // roster off its per-encounter RNG (GH #918).
+    let run_rng_init = run_seed.map(|run_seed| sts2_wire::scenario::RunRngInit {
+        run_seed,
+        counters: &rng_counters,
+        encounter_floor,
+    });
+    let inner = sts2_wire::scenario::build_scenario_state_with_run_rng(
         game_version,
         seed,
         character,
@@ -3882,6 +4679,8 @@ fn build_scenario_state_py(
         ascension,
         monsters.as_deref(),
         move_states.as_deref(),
+        potion_slots,
+        run_rng_init,
     )
     .map_err(pyo3::exceptions::PyValueError::new_err)?;
     Ok(PyCombatState {
@@ -4334,6 +5133,82 @@ mod build_info_tests {
         });
     }
 
+    /// `sts2_rs.prior_counts()` reads the engine's prior counters, under the
+    /// key names the identity runner's rows carry (GH #830). A uniform prior
+    /// under PUCT is read (lookups) but is no net, so nothing evaluates.
+    #[test]
+    fn prior_counts_reads_the_engine_counters() {
+        sts2_content::cards::dispatch::ensure_installed();
+        sts2_content::relics::dispatch::ensure_installed();
+        sts2_content::potions::dispatch::ensure_installed();
+        let mut rm = sts2_content::run_callbacks::new_run_manager_for_character_with_ascension(
+            3,
+            sts2_core::CharacterId::Ironclad,
+            0,
+        )
+        .with_neow_start();
+        sts2_content::run_callbacks::initialize_run_setup(&mut rm);
+        for _ in 0..64 {
+            if rm.phase() == sts2_core::run_manager::Phase::Combat {
+                break;
+            }
+            let acts = rm.get_available_actions();
+            let _ = rm.take_action(acts[0]);
+        }
+        let combat = rm.combat.clone().expect("in combat");
+        let mut cfg = sts2_mcts::MctsConfig {
+            max_simulations: 64,
+            ..sts2_mcts::MctsConfig::default()
+        };
+        cfg.use_puct_prior = true;
+        let mut m = sts2_mcts::Mcts::new(combat, cfg);
+        m.try_search_n(64).expect("searchable");
+        let c = sts2_mcts::prior_counts::snapshot();
+        assert!(c.lookups > 0 && c.evals == 0, "{c:?}");
+        Python::with_gil(|py| {
+            let d = prior_counts(py).unwrap();
+            let d = d.downcast_bound::<PyDict>(py).unwrap();
+            let mut keys: Vec<String> = d.keys().iter().map(|k| k.to_string()).collect();
+            keys.sort();
+            assert_eq!(
+                keys,
+                ["prior_evals", "prior_lookups", "prior_uniform_fallbacks"]
+            );
+            let get = |k: &str| d.get_item(k).unwrap().expect(k).extract::<u64>().unwrap();
+            assert_eq!(
+                (
+                    get("prior_lookups"),
+                    get("prior_evals"),
+                    get("prior_uniform_fallbacks")
+                ),
+                (c.lookups, c.evals, c.uniform_fallbacks)
+            );
+        });
+    }
+
+    /// `sts2_rs.builtin_prior_net_json(character)` hands Python the
+    /// compiled-in move-prior text (GH #830), so a harness can hash it: Some
+    /// for Ironclad only, either spelling of the name, and `ValueError` on an
+    /// unknown name.
+    #[test]
+    fn builtin_prior_net_json_is_the_compiled_in_text() {
+        use sts2_core::CharacterId;
+        let ironclad = sts2_mcts::rollout_net::builtin_prior_json(CharacterId::Ironclad)
+            .expect("the Ironclad prior is compiled in");
+        Python::with_gil(|py| {
+            for name in ["Ironclad", "ironclad"] {
+                let got = builtin_prior_net_json(name).unwrap();
+                assert_eq!(got.as_deref(), Some(ironclad), "{name}");
+            }
+            for name in ["Silent", "Defect", "Regent", "Necrobinder"] {
+                assert_eq!(builtin_prior_net_json(name).unwrap(), None, "{name}");
+            }
+            let err = builtin_prior_net_json("Watcher").unwrap_err();
+            assert!(err.is_instance_of::<pyo3::exceptions::PyValueError>(py));
+            assert!(err.to_string().contains("unknown character"), "{err}");
+        });
+    }
+
     #[test]
     fn only_the_profile_use_stamp_claims_pgo() {
         let sha = Some("ab12");
@@ -4513,6 +5388,74 @@ mod tests {
                 fresh.inner.player.stars_gained_this_turn, 3,
                 "Radiate scales off this count"
             );
+        });
+    }
+
+    /// Put `ChainsOfBinding(amount)` on the fixture's player, as a wire that
+    /// lists the power would.
+    fn with_chains_of_binding(s: &mut PyCombatState, amount: i32) {
+        let pid = std::num::NonZeroU32::new(91).unwrap();
+        s.inner.powers.push(sts2_core::Power {
+            id: pid,
+            kind: sts2_core::powers::PowerKind::ChainsOfBinding,
+            amount,
+            counter: 0,
+            applier: None,
+            skip_next_tick: false,
+        });
+        s.inner.player.powers.push(sts2_core::PowerUid(pid));
+    }
+
+    fn is_bound(s: &PyCombatState, uid: CardUid) -> bool {
+        s.inner.cards[uid.0.get() as usize - 1]
+            .affliction
+            .as_ref()
+            .is_some_and(|a| a.kind == sts2_core::card_afflictions::CardAfflictionKind::Bound)
+    }
+
+    /// GH #830 (PIMC fidelity). C# `ChainsOfBindingPower.AfterCardDrawn`
+    /// (`ChainsOfBindingPower.cs:36-45`) Binds a drawn card only while fewer
+    /// than `Amount` Bound `CardAfflictedEntry`s happened this turn. The engine
+    /// keeps that count in `combat_log`, no producer emits it, and a rebuild
+    /// reads 0 — so without the carry the mirror Binds a draw the game leaves
+    /// free once the turn's budget is spent.
+    #[test]
+    fn transplant_hidden_carries_the_chains_of_binding_bound_count() {
+        Python::with_gil(|py| {
+            let mut carried = mirror_fixture(py);
+            with_chains_of_binding(&mut carried, 1);
+            // This turn's budget (1) is already spent.
+            carried
+                .inner
+                .combat_log
+                .bound_cards_afflicted_by_chains_this_turn = 1;
+
+            let mut fresh = mirror_fixture(py);
+            with_chains_of_binding(&mut fresh, 1);
+            fresh
+                .transplant_hidden(&carried, None, true, None, None)
+                .expect("shapes agree");
+            assert_eq!(
+                fresh
+                    .inner
+                    .combat_log
+                    .bound_cards_afflicted_by_chains_this_turn,
+                1
+            );
+            assert_eq!(fresh.inner.draw_into_hand(1), 1);
+            let drawn = *fresh.inner.player.hand.last().unwrap();
+            assert!(
+                !is_bound(&fresh, drawn),
+                "the turn's one Bound is spent; the next draw stays free"
+            );
+
+            // Control: the same rebuild without the carry Binds that draw,
+            // so the assertion above is not vacuous.
+            let mut bare = mirror_fixture(py);
+            with_chains_of_binding(&mut bare, 1);
+            assert_eq!(bare.inner.draw_into_hand(1), 1);
+            let drawn = *bare.inner.player.hand.last().unwrap();
+            assert!(is_bound(&bare, drawn), "a zeroed count re-Binds");
         });
     }
 
@@ -4980,7 +5923,13 @@ mod tests {
         cs.inner.game_version = sts2_core::GameVersion::V0_111_0;
         for kind in [kind, RelicKind::MercuryHourglass, RelicKind::Lantern] {
             let id = std::num::NonZeroU32::new(cs.inner.relics.len() as u32 + 1).unwrap();
-            cs.inner.relics.push(Relic {id,kind,counter:0,is_wax:false,is_melted:false});
+            cs.inner.relics.push(Relic {
+                id,
+                kind,
+                counter: 0,
+                is_wax: false,
+                is_melted: false,
+            });
         }
     }
 
@@ -4992,31 +5941,70 @@ mod tests {
     }
 
     fn assert_start_tail_once(cs: &mut PyCombatState) {
-        assert_eq!(cs.inner.player.energy, 4, "Lantern follows the selected hook exactly once");
-        let enemy = cs.inner.creatures.iter().find(|c| cs.inner.enemy_uids.contains(&sts2_core::CreatureUid(c.id))).unwrap();
-        assert_eq!(enemy.current_hp,37,"Mercury Hourglass follows the selected hook exactly once");
+        assert_eq!(
+            cs.inner.player.energy, 4,
+            "Lantern follows the selected hook exactly once"
+        );
+        let enemy = cs
+            .inner
+            .creatures
+            .iter()
+            .find(|c| cs.inner.enemy_uids.contains(&sts2_core::CreatureUid(c.id)))
+            .unwrap();
+        assert_eq!(
+            enemy.current_hp, 37,
+            "Mercury Hourglass follows the selected hook exactly once"
+        );
         assert!(cs.inner.pending_choice.is_none());
         assert!(cs.inner.pending_cluster_resume.is_none());
-        assert_eq!(cs.inner.phase,sts2_core::CombatPhase::PlayerPlayPhase);
-        let before = (cs.inner.player.energy,enemy.current_hp,cs.inner.player.hand.len());
-        sts2_core::apply(&mut cs.inner, Action::ResolveChoice {selection:smallvec::smallvec![0]});
-        let hp = cs.inner.creatures.iter().find(|c| cs.inner.enemy_uids.contains(&sts2_core::CreatureUid(c.id))).unwrap().current_hp;
-        assert_eq!((cs.inner.player.energy,hp,cs.inner.player.hand.len()),before,"a consumed continuation cannot run again");
+        assert_eq!(cs.inner.phase, sts2_core::CombatPhase::PlayerPlayPhase);
+        let before = (
+            cs.inner.player.energy,
+            enemy.current_hp,
+            cs.inner.player.hand.len(),
+        );
+        sts2_core::apply(
+            &mut cs.inner,
+            Action::ResolveChoice {
+                selection: smallvec::smallvec![0],
+            },
+        );
+        let hp = cs
+            .inner
+            .creatures
+            .iter()
+            .find(|c| cs.inner.enemy_uids.contains(&sts2_core::CreatureUid(c.id)))
+            .unwrap()
+            .current_hp;
+        assert_eq!(
+            (cs.inner.player.energy, hp, cs.inner.player.hand.len()),
+            before,
+            "a consumed continuation cannot run again"
+        );
     }
 
     #[test]
     fn public_start_choice_toasty_exhausts_then_grants_strength_before_remaining_hooks() {
         Python::with_gil(|py| {
             let mut cs = mirror_fixture(py);
-            equip_start_fixture(&mut cs,sts2_core::RelicKind::ToastyMittens);
+            equip_start_fixture(&mut cs, sts2_core::RelicKind::ToastyMittens);
             let selected = cs.inner.player.hand[0];
             cs.open_relic_start_choice("TOASTY_MITTENS").unwrap();
-            assert_eq!(cs.inner.player_power_amount(sts2_core::PowerKind::Strength),0);
-            assert_eq!(cs.inner.player.energy,3);
-            assert_eq!(cs.inner.pending_choice.as_ref().unwrap().post_effect,Some(sts2_core::PostChoiceEffect::GainStrength(1)));
-            resolve_public_choice(&mut cs,py,0);
+            assert_eq!(
+                cs.inner.player_power_amount(sts2_core::PowerKind::Strength),
+                0
+            );
+            assert_eq!(cs.inner.player.energy, 3);
+            assert_eq!(
+                cs.inner.pending_choice.as_ref().unwrap().post_effect,
+                Some(sts2_core::PostChoiceEffect::GainStrength(1))
+            );
+            resolve_public_choice(&mut cs, py, 0);
             assert!(cs.inner.player.exhaust.contains(&selected));
-            assert_eq!(cs.inner.player_power_amount(sts2_core::PowerKind::Strength),1);
+            assert_eq!(
+                cs.inner.player_power_amount(sts2_core::PowerKind::Strength),
+                1
+            );
             assert_start_tail_once(&mut cs);
         });
     }
@@ -5025,19 +6013,22 @@ mod tests {
     fn public_start_choice_gambling_discards_and_draws_before_remaining_hooks() {
         Python::with_gil(|py| {
             let mut cs = mirror_fixture(py);
-            equip_start_fixture(&mut cs,sts2_core::RelicKind::GamblingChip);
+            equip_start_fixture(&mut cs, sts2_core::RelicKind::GamblingChip);
             let selected = cs.inner.player.hand[0];
             let next_draw = cs.inner.player.draw[0];
             cs.open_relic_start_choice("GAMBLING_CHIP").unwrap();
-            resolve_public_choice(&mut cs,py,0);
-            assert!(cs.inner.pending_choice.is_some(), "one pick remains staged until the optional selection is confirmed");
-            let confirm=PyDict::new(py);
-            confirm.set_item("action","choose").unwrap();
-            confirm.set_item("selection",Vec::<u8>::new()).unwrap();
+            resolve_public_choice(&mut cs, py, 0);
+            assert!(
+                cs.inner.pending_choice.is_some(),
+                "one pick remains staged until the optional selection is confirmed"
+            );
+            let confirm = PyDict::new(py);
+            confirm.set_item("action", "choose").unwrap();
+            confirm.set_item("selection", Vec::<u8>::new()).unwrap();
             cs.apply_step(confirm.as_any()).unwrap();
             assert!(cs.inner.player.discard.contains(&selected));
             assert!(cs.inner.player.hand.contains(&next_draw));
-            assert_eq!(cs.inner.player.hand.len(),2);
+            assert_eq!(cs.inner.player.hand.len(), 2);
             assert_start_tail_once(&mut cs);
         });
     }
@@ -5065,12 +6056,15 @@ mod tests {
     fn public_start_choice_choices_paradox_adds_permanent_retain_then_remaining_hooks() {
         Python::with_gil(|py| {
             let mut cs = mirror_fixture(py);
-            equip_start_fixture(&mut cs,sts2_core::RelicKind::ChoicesParadox);
+            equip_start_fixture(&mut cs, sts2_core::RelicKind::ChoicesParadox);
             cs.open_relic_start_choice("CHOICES_PARADOX").unwrap();
-            resolve_public_choice(&mut cs,py,0);
+            resolve_public_choice(&mut cs, py, 0);
             let added = *cs.inner.player.hand.last().unwrap();
             let card = &cs.inner.cards[added.get() as usize - 1];
-            assert!(card.keyword_override.unwrap().contains(sts2_core::cards::KeywordOverride::RETAIN));
+            assert!(card
+                .keyword_override
+                .unwrap()
+                .contains(sts2_core::cards::KeywordOverride::RETAIN));
             assert!(!cs.inner.player.retain_this_turn.contains(&added));
             assert_start_tail_once(&mut cs);
         });
@@ -5079,26 +6073,48 @@ mod tests {
     #[test]
     fn public_start_choice_toolbox_resumes_later_before_draw_hooks_and_one_modified_draw() {
         Python::with_gil(|py| {
-            use sts2_core::{Relic,RelicKind};
+            use sts2_core::{Relic, RelicKind};
             let mut cs = mirror_fixture(py);
-            equip_start_fixture(&mut cs,RelicKind::Toolbox);
+            equip_start_fixture(&mut cs, RelicKind::Toolbox);
             cs.inner.player.draw.extend(cs.inner.player.hand.drain(..));
             let prototype = cs.inner.cards[0];
-            for _ in 0..10 { let _ = cs.inner.add_card_to_draw_pile(prototype); }
-            let power = sts2_core::build_card_for_version(sts2_core::cards::CardId::Inflame,false,cs.inner.game_version).unwrap();
-            let power = cs.inner.add_card_to_draw_pile(power);
-            for kind in [RelicKind::BagOfPreparation,RelicKind::JeweledMask] {
-                let id=std::num::NonZeroU32::new(cs.inner.relics.len() as u32+1).unwrap();
-                cs.inner.relics.push(Relic{id,kind,counter:0,is_wax:false,is_melted:false});
+            for _ in 0..10 {
+                let _ = cs.inner.add_card_to_draw_pile(prototype);
             }
-            let draw_before=cs.inner.player.draw.len();
+            let power = sts2_core::build_card_for_version(
+                sts2_core::cards::CardId::Inflame,
+                false,
+                cs.inner.game_version,
+            )
+            .unwrap();
+            let power = cs.inner.add_card_to_draw_pile(power);
+            for kind in [RelicKind::BagOfPreparation, RelicKind::JeweledMask] {
+                let id = std::num::NonZeroU32::new(cs.inner.relics.len() as u32 + 1).unwrap();
+                cs.inner.relics.push(Relic {
+                    id,
+                    kind,
+                    counter: 0,
+                    is_wax: false,
+                    is_melted: false,
+                });
+            }
+            let draw_before = cs.inner.player.draw.len();
             cs.open_relic_start_choice("TOOLBOX").unwrap();
-            assert_eq!(cs.inner.player.draw.len(),draw_before);
-            resolve_public_choice(&mut cs,py,0);
-            assert_eq!(cs.inner.player.hand.len(),9,"selected + Jeweled Mask + modified draw of seven");
-            assert_eq!(cs.inner.player.draw.len(),draw_before-8);
+            assert_eq!(cs.inner.player.draw.len(), draw_before);
+            resolve_public_choice(&mut cs, py, 0);
+            assert_eq!(
+                cs.inner.player.hand.len(),
+                9,
+                "selected + Jeweled Mask + modified draw of seven"
+            );
+            assert_eq!(cs.inner.player.draw.len(), draw_before - 8);
             assert!(cs.inner.player.hand.contains(&power));
-            assert_eq!(cs.inner.cards[power.get() as usize-1].combat_var(sts2_core::cards::VarKey::FreeThisTurn),1,"the later BeforeHandDraw listener ran after selection");
+            assert_eq!(
+                cs.inner.cards[power.get() as usize - 1]
+                    .combat_var(sts2_core::cards::VarKey::FreeThisTurn),
+                1,
+                "the later BeforeHandDraw listener ran after selection"
+            );
             assert_start_tail_once(&mut cs);
         });
     }
@@ -5106,12 +6122,15 @@ mod tests {
     #[test]
     fn public_start_choice_keeps_the_hooks_required_arity() {
         Python::with_gil(|py| {
-            let mut cs=mirror_fixture(py);
-            equip_start_fixture(&mut cs,sts2_core::RelicKind::ChoicesParadox);
+            let mut cs = mirror_fixture(py);
+            equip_start_fixture(&mut cs, sts2_core::RelicKind::ChoicesParadox);
             cs.open_relic_start_choice("CHOICES_PARADOX").unwrap();
-            let pending=cs.inner.pending_choice.as_ref().unwrap();
-            assert_eq!((pending.min_select,pending.max_select,pending.can_skip),(1,1,false));
-            assert_eq!(pending.options.len(),5);
+            let pending = cs.inner.pending_choice.as_ref().unwrap();
+            assert_eq!(
+                (pending.min_select, pending.max_select, pending.can_skip),
+                (1, 1, false)
+            );
+            assert_eq!(pending.options.len(), 5);
         });
     }
 
@@ -5743,5 +6762,403 @@ kind = "VANTOM"
             .unwrap_err();
             assert!(err.contains("upgrade suffix"), "id {bad:?} got: {err}");
         }
+    }
+}
+
+#[cfg(test)]
+mod playout_value_tests {
+    use super::*;
+    use rand::SeedableRng;
+    use sts2_mcts::rollout_net::{playout, PlayoutPolicy};
+    use sts2_mcts::{LeafEval, TerminalEvalMode};
+
+    /// Terminal states of heuristic playouts of Act-1 fights from a boss
+    /// down to weak hallways, at a spread of starting HP, so both wins and
+    /// losses occur.
+    fn terminals() -> Vec<CoreCombatState> {
+        let deck: Vec<String> = [
+            "STRIKE_IRONCLAD",
+            "STRIKE_IRONCLAD",
+            "STRIKE_IRONCLAD",
+            "STRIKE_IRONCLAD",
+            "STRIKE_IRONCLAD",
+            "DEFEND_IRONCLAD",
+            "DEFEND_IRONCLAD",
+            "DEFEND_IRONCLAD",
+            "DEFEND_IRONCLAD",
+            "BASH",
+            "INFLAME",
+            "SHRUG_IT_OFF",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        let mut out = Vec::new();
+        for (i, (hp, encounter)) in [
+            (8, "VANTOM_BOSS"),
+            (40, "VANTOM_BOSS"),
+            (80, "NIBBITS_WEAK"),
+            (60, "SHRINKER_BEETLE_WEAK"),
+            (12, "SLIMES_WEAK"),
+            (70, "FUZZY_WURM_CRAWLER_WEAK"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let seed = 11 + i as u64;
+            let start = build_scenario_state_impl(
+                seed,
+                "Ironclad",
+                &deck,
+                hp,
+                80,
+                &["BURNING_BLOOD".to_owned()],
+                &["FIRE_POTION".to_owned(), "BLOCK_POTION".to_owned()],
+                encounter,
+                10,
+                None,
+                None,
+            )
+            .expect("scenario builds");
+            let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(seed);
+            let (end, _) = playout(&start, PlayoutPolicy::Heuristic, &mut rng, 2000);
+            assert!(
+                sts2_core::is_terminal(&end),
+                "hp {hp}: playout ended the fight"
+            );
+            out.push(end);
+        }
+        out
+    }
+
+    /// `play_many`'s `search_value` / `search_playout_value` read the
+    /// deployed pilot's config (built through `sts2-runai`); on a finished
+    /// fight that must be exactly the MCTS terminal function under the
+    /// deployed dialect (`RichBoth`, graded losses), not some re-derivation.
+    #[test]
+    fn the_deployed_playout_value_is_the_mcts_terminal_value() {
+        card_dispatch::ensure_installed();
+        sts2_content::relics::dispatch::ensure_installed();
+        sts2_content::potions::dispatch::ensure_installed();
+        let (cfg, leaf) = deployed_value_config(None);
+        assert_eq!(cfg.terminal_eval_mode, TerminalEvalMode::RichBoth);
+        assert!(cfg.loss_gradient);
+        let ends = terminals();
+        let (mut wins, mut losses) = (0, 0);
+        for end in &ends {
+            let got = sts2_mcts::playout_return(end, &cfg, &leaf);
+            let want = sts2_mcts::terminal_state_value(
+                end,
+                TerminalEvalMode::RichBoth,
+                &LeafEval::TexelWide,
+                true,
+            );
+            assert_eq!(got.to_bits(), want.to_bits(), "won={}", end.player_won);
+            if end.player_won {
+                wins += 1;
+                assert!((1.0..=1.5).contains(&got), "{got}");
+                // Kept potions are priced in: drop them and the value falls.
+                let mut bare = end.clone();
+                bare.player.potions.clear();
+                if !end.player.potions.is_empty() {
+                    assert!(sts2_mcts::playout_return(&bare, &cfg, &leaf) < got);
+                }
+            } else {
+                losses += 1;
+                assert!((-1.45..-1.05).contains(&got), "{got}");
+            }
+        }
+        assert!(wins > 0 && losses > 0, "{wins} wins / {losses} losses");
+    }
+
+    // ── per-character scoring (GH #830) ──────────────────────────────────
+
+    /// `encounter` at A10 (Ironclad starter deck, 70 / 80 HP) at its first
+    /// decision.
+    fn scenario(encounter: &str, deck: &[&str], seed: u64) -> CoreCombatState {
+        card_dispatch::ensure_installed();
+        sts2_content::relics::dispatch::ensure_installed();
+        sts2_content::potions::dispatch::ensure_installed();
+        let deck: Vec<String> = deck.iter().map(|&c| c.to_owned()).collect();
+        build_scenario_state_impl(
+            seed,
+            "Ironclad",
+            &deck,
+            70,
+            80,
+            &[],
+            &[],
+            encounter,
+            10,
+            None,
+            None,
+        )
+        .unwrap_or_else(|e| panic!("{encounter}: {e}"))
+    }
+
+    const STARTER: [&str; 10] = [
+        "STRIKE_IRONCLAD",
+        "STRIKE_IRONCLAD",
+        "STRIKE_IRONCLAD",
+        "STRIKE_IRONCLAD",
+        "STRIKE_IRONCLAD",
+        "DEFEND_IRONCLAD",
+        "DEFEND_IRONCLAD",
+        "DEFEND_IRONCLAD",
+        "DEFEND_IRONCLAD",
+        "BASH",
+    ];
+
+    /// A Test Subject fight (as `sts2-wire/tests/eval_levers.rs` builds it)
+    /// the player lost after killing the first of its three forms: the loss
+    /// band, the one place the Ironclad layer's `removed_counts_forms` moves
+    /// a playout's value. With it off, form 1's death reads as all enemy HP
+    /// removed.
+    fn test_subject_lost(seed: u64, hp_left_on_form_1: i32) -> CoreCombatState {
+        use sts2_core::hooks::{CreatureRef, ValueProps};
+        let mut s = scenario("TEST_SUBJECT_BOSS", &STARTER, seed);
+        let ts = s.enemy_uids[0];
+        let _ = sts2_core::damage::apply_damage(
+            &mut s,
+            CreatureRef::Player,
+            ts,
+            111 - hp_left_on_form_1,
+            ValueProps::UNPOWERED,
+            None,
+        );
+        if hp_left_on_form_1 == 0 {
+            assert!(!s.is_over, "Adaptable keeps the fight open");
+        }
+        // The player dies (both HP fields: the mirror creature and the
+        // legacy one the death check reads), and the combat ends.
+        let me = s.player.creature_uid.expect("player creature");
+        for c in &mut s.creatures {
+            if c.id == me.0 {
+                c.current_hp = 0;
+            }
+        }
+        s.player.current_hp = 0;
+        let _ = sts2_core::combat_loop::check_combat_end(&mut s);
+        assert!(
+            sts2_core::is_terminal(&s) && !s.player_won,
+            "the player lost"
+        );
+        s
+    }
+
+    /// `s` as a Silent fight.
+    fn as_silent(s: &CoreCombatState) -> CoreCombatState {
+        let mut s = s.clone();
+        s.player.character = Some(sts2_core::potions::CharacterId::Silent);
+        s
+    }
+
+    fn bits(rows: &[sts2_mcts::values::PlayoutValue]) -> Vec<(u32, bool, i32, bool)> {
+        rows.iter()
+            .map(|v| (v.value.to_bits(), v.won, v.hp, v.terminal))
+            .collect()
+    }
+
+    /// `values_many` of each job alone.
+    fn singles(
+        jobs: &[(CoreCombatState, u64)],
+        depth: Option<u32>,
+    ) -> Vec<sts2_mcts::values::PlayoutValue> {
+        jobs.iter()
+            .map(|job| {
+                values_many_rows(
+                    std::slice::from_ref(job),
+                    sts2_mcts::values::PlayoutMode::Raw,
+                    depth,
+                    None,
+                )
+                .expect("scores")[0]
+            })
+            .collect()
+    }
+
+    /// GH #830: a batch mixing characters scores each job under its own
+    /// character's deployed config, exactly as a call of its own would. The
+    /// jobs are lost Test Subject fights, where the Ironclad config (forms
+    /// on) and any other (forms off) give different values; on an ordinary
+    /// state one config for the whole batch would pass unnoticed.
+    #[test]
+    fn values_many_scores_each_job_under_its_own_characters_config() {
+        use sts2_mcts::values::{playout_values, PlayoutMode};
+        let ic_a = test_subject_lost(7, 0);
+        let ic_b = test_subject_lost(8, 30);
+        let jobs = vec![(ic_a.clone(), 1), (as_silent(&ic_a), 2), (ic_b, 3)];
+        let alone = singles(&jobs, None);
+        // Non-vacuity: the Silent job under the Ironclad config is not its
+        // own value.
+        let (ic_cfg, ic_leaf) =
+            deployed_value_config(Some(sts2_core::potions::CharacterId::Ironclad));
+        let silent_as_ironclad =
+            playout_values(&jobs[1..2], PlayoutMode::Raw, &ic_cfg, &ic_leaf)[0].expect("scores");
+        assert_ne!(
+            silent_as_ironclad.value.to_bits(),
+            alone[1].value.to_bits(),
+            "the Silent job must score differently under the Ironclad config"
+        );
+        assert_eq!(alone[0].value.to_bits(), silent_as_ironclad.value.to_bits());
+        let batch = values_many_rows(&jobs, PlayoutMode::Raw, None, None).expect("scores");
+        assert_eq!(bits(&batch), bits(&alone));
+        // Order is the caller's, whatever order the groups run in.
+        let rev: Vec<_> = jobs.iter().rev().cloned().collect();
+        let mut back = values_many_rows(&rev, PlayoutMode::Raw, None, None).expect("scores");
+        back.reverse();
+        assert_eq!(bits(&back), bits(&alone));
+    }
+
+    /// The `depth` override reaches every character's group.
+    #[test]
+    fn values_many_overrides_reach_every_group() {
+        let ic = scenario("NIBBITS_WEAK", &STARTER, 5);
+        let jobs = vec![(ic.clone(), 11), (as_silent(&ic), 12), (ic, 13)];
+        let shallow = singles(&jobs, Some(1));
+        let deep = singles(&jobs, None);
+        assert_ne!(
+            shallow[1].value.to_bits(),
+            deep[1].value.to_bits(),
+            "depth 1 must move the Silent job's value"
+        );
+        assert!(shallow.iter().all(|v| !v.terminal));
+        let batch = values_many_rows(&jobs, sts2_mcts::values::PlayoutMode::Raw, Some(1), None)
+            .expect("scores");
+        assert_eq!(bits(&batch), bits(&shallow));
+    }
+
+    /// An error names the caller's index of the job, not its index within
+    /// its character's group.
+    #[test]
+    fn values_many_errors_name_the_callers_job_index() {
+        let lost = test_subject_lost(7, 0);
+        let mut open = scenario("NIBBITS_WEAK", &["ARMAMENTS"; 10], 5);
+        let play = core_legal_actions(&open)
+            .into_iter()
+            .find(|a| matches!(a, Action::PlayCard { .. }))
+            .expect("Armaments is playable");
+        let _ = core_apply(&mut open, play);
+        assert!(open.pending_choice.is_some(), "Armaments opened its choice");
+        assert!(!core_legal_actions(&open).contains(&Action::EndTurn));
+        // The open state is the Ironclad group's second job and the batch's
+        // third.
+        let jobs = vec![(as_silent(&lost), 1), (lost, 2), (open, 3)];
+        let err = values_many_rows(
+            &jobs,
+            sts2_mcts::values::PlayoutMode::BeliefEndTurn,
+            None,
+            None,
+        )
+        .expect_err("a choice is open");
+        assert!(err.starts_with("values_many: job 2: "), "{err}");
+    }
+
+    /// `LearnedPlayout.play_many` scores `search_value` the same way: each
+    /// job under its own character's config, as a call of its own would.
+    #[test]
+    fn play_many_scores_each_job_under_its_own_characters_config() {
+        let net = sts2_mcts::rollout_net::builtin_net(sts2_core::potions::CharacterId::Ironclad)
+            .expect("the built-in Ironclad playout net");
+        let ic_a = test_subject_lost(7, 0);
+        let ic_b = test_subject_lost(8, 30);
+        let jobs = vec![(ic_a.clone(), 1), (as_silent(&ic_a), 2), (ic_b, 3)];
+        let key = |t: &sts2_mcts::rollout_net::Trajectory| {
+            (t.search_value.to_bits(), t.won, t.steps.len())
+        };
+        let alone: Vec<_> = jobs
+            .iter()
+            .map(|job| {
+                key(
+                    &play_many_trajectories(net, std::slice::from_ref(job), 1.0, false, 600, false)
+                        [0],
+                )
+            })
+            .collect();
+        let (ic_cfg, ic_leaf) =
+            deployed_value_config(Some(sts2_core::potions::CharacterId::Ironclad));
+        let silent_as_ironclad = sts2_mcts::rollout_net::playout_trajectories_with(
+            net,
+            &jobs[1..2],
+            &sts2_mcts::rollout_net::TrajOptions {
+                temperature: 1.0,
+                no_early_end_turn: false,
+                max_steps: 600,
+                belief: false,
+                score: Some((&ic_cfg, &ic_leaf)),
+            },
+        );
+        assert_ne!(key(&silent_as_ironclad[0]), alone[1], "non-vacuity");
+        let batch: Vec<_> = play_many_trajectories(net, &jobs, 1.0, false, 600, false)
+            .iter()
+            .map(key)
+            .collect();
+        assert_eq!(batch, alone);
+    }
+
+    /// `search_playout_value` reads the state's character too.
+    #[test]
+    fn search_playout_value_reads_the_states_character() {
+        let lost = test_subject_lost(7, 0);
+        let (ic_cfg, ic_leaf) =
+            deployed_value_config(Some(sts2_core::potions::CharacterId::Ironclad));
+        let (none_cfg, none_leaf) = deployed_value_config(None);
+        let py_ic = PyCombatState::from_inner(lost.clone(), 0);
+        let py_silent = PyCombatState::from_inner(as_silent(&lost), 0);
+        assert_eq!(
+            search_playout_value(&py_ic).to_bits(),
+            sts2_mcts::playout_return(&lost, &ic_cfg, &ic_leaf).to_bits()
+        );
+        assert_eq!(
+            search_playout_value(&py_silent).to_bits(),
+            sts2_mcts::playout_return(&lost, &none_cfg, &none_leaf).to_bits()
+        );
+        assert_ne!(
+            search_playout_value(&py_ic).to_bits(),
+            search_playout_value(&py_silent).to_bits()
+        );
+    }
+
+    /// `state_hash` cannot tell two draw orders apart; `ordered_hash` can,
+    /// and agrees on identical states.
+    #[test]
+    fn ordered_hash_sees_the_draw_order_state_hash_does_not() {
+        card_dispatch::ensure_installed();
+        sts2_content::relics::dispatch::ensure_installed();
+        sts2_content::potions::dispatch::ensure_installed();
+        let deck: Vec<String> = [
+            "STRIKE_IRONCLAD",
+            "STRIKE_IRONCLAD",
+            "DEFEND_IRONCLAD",
+            "DEFEND_IRONCLAD",
+            "BASH",
+            "INFLAME",
+            "SHRUG_IT_OFF",
+            "TWIN_STRIKE",
+            "ANGER",
+            "POMMEL_STRIKE",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        let s = build_scenario_state_impl(
+            5,
+            "Ironclad",
+            &deck,
+            60,
+            80,
+            &["BURNING_BLOOD".to_owned()],
+            &[],
+            "NIBBITS_WEAK",
+            0,
+            None,
+            None,
+        )
+        .expect("scenario builds");
+        assert!(s.player.draw.len() >= 2, "a draw pile to reorder");
+        assert_eq!(ordered_state_hash(&s), ordered_state_hash(&s.clone()));
+        let mut swapped = s.clone();
+        let n = swapped.player.draw.len();
+        swapped.player.draw.swap(0, n - 1);
+        assert_eq!(core_state_hash(&s), core_state_hash(&swapped));
+        assert_ne!(ordered_state_hash(&s), ordered_state_hash(&swapped));
     }
 }

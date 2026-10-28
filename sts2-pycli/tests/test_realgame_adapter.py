@@ -212,6 +212,19 @@ class TestToHeadlessCombatPlayShape:
             if slot.get("empty"):
                 assert slot.get("name") is None
 
+    def test_potion_slot_count_reaches_the_player_as_potion_slots(self) -> None:
+        """GH #893: the mod's ``run_state.potion_slot_count`` (C#
+        ``Player.MaxPotionCount``) is the belt capacity; it rides to the
+        wire as ``player.potion_slots``."""
+        fixture = _load_fixture("single_enemy_ironclad.json")
+        bridge_state = fixture["state"]
+        bridge_state["run_state"]["potion_slot_count"] = 2
+        out = to_headless_combat_play(bridge_state)
+        assert out["player"]["potion_slots"] == 2
+
+        del bridge_state["run_state"]["potion_slot_count"]
+        assert "potion_slots" not in to_headless_combat_play(bridge_state)["player"]
+
     def test_rejects_non_combat_action_state(self) -> None:
         with pytest.raises(ValueError, match="combat_action"):
             to_headless_combat_play({"type": "map_select"})

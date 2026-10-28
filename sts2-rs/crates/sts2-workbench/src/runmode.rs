@@ -318,6 +318,7 @@ impl RunAgent {
                             o.ties,
                             o.value_sum,
                             o.hp_sum,
+                            o.hp_sq_sum,
                             o.hp_n,
                             false,
                             false,

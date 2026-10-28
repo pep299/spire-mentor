@@ -1083,10 +1083,112 @@ pub fn roll_infested_touch_core_card(rs: &mut RunState) -> Option<CardId> {
 /// `CardCreationSource.Encounter` pity-updating combat roller). Wired as
 /// `ContentCallbacks::generate_noncombat_card_reward_options` and used by
 /// `RunManager::drain_pending_rewards` (PARITY132).
+///
+/// The slate is a real `CardReward` (`new CardReward(options, 3, owner)`), so
+/// it runs the same relic hooks as a combat reward: `CardReward`'s constructor
+/// stamps `CardCreationFlags.IsCardReward` (`CardReward.cs:115`) and
+/// `CardFactory.CreateForReward` folds `Hook.ModifyCardRewardCreationOptions`
+/// per card (`CardFactory.cs:218`, DingyRug / PrismaticGem), then runs
+/// `Hook.TryModifyCardRewardOptions`, the mid AND the late listeners
+/// (`CardFactory.cs:104`, `Hook.cs:1589-1612`), on the rolled slate. So
+/// SilkenTress, SilverCrucible, FresnelLens, Glitter, WingCharm and the eggs
+/// see these slates too. The rolled upgrade flags and relic-stamped
+/// enchantments ride the `RunState` side channels (as in
+/// [`crate::run_callbacks::generate_card_reward_options`]) so the pick keeps
+/// them. The same C# runs at v0.107.1 and v0.111.0. GH #806.
 #[must_use]
 pub fn roll_noncombat_card_reward_options(rs: &mut RunState) -> Vec<CardId> {
+    let cards = roll_noncombat_card_reward_cards(rs);
+    rs.card_reward_upgraded_flags = cards.iter().map(|c| c.upgraded).collect();
+    rs.card_reward_enchantments = cards.iter().map(|c| c.enchantments).collect();
+    cards.into_iter().map(|c| c.card_id).collect()
+}
+
+/// The card instances behind [`roll_noncombat_card_reward_options`]: fold the
+/// creation options, roll 3 cards at base RegularEncounter odds (rarity, pick,
+/// upgrade per card on `PlayerRng.Rewards`, no pity), then run the
+/// `modify_card_reward_options_late` listeners on the slate.
+///
+/// `LastingCandy.TryModifyCardRewardOptions`, the one shipped mid listener,
+/// returns early on `creationOptions.Source != CardCreationSource.Encounter`
+/// (`LastingCandy.cs:107`), so a `CardCreationSource.Other` slate skips it.
+#[must_use]
+pub fn roll_noncombat_card_reward_cards(rs: &mut RunState) -> Vec<sts2_core::cards::Card> {
+    use sts2_core::card_rewards::{
+        combat_card_upgrade_base_chance, roll_for_upgrade_with_dotnet, RarityContext,
+    };
     let character = rs.character_id;
-    roll_reward_options_base_odds(rs, 3, true, &[character], false)
+    let opts =
+        rs.modify_card_reward_creation_options(sts2_core::runstate::CardRewardGenerationOptions {
+            card_creation_source: "other",
+            ..sts2_core::runstate::CardRewardGenerationOptions::default()
+        });
+    let character_ids: Vec<CharacterId> = if !opts.character_ids.is_empty() {
+        opts.character_ids.clone()
+    } else if opts.use_default_character_pool {
+        vec![character]
+    } else {
+        Vec::new()
+    };
+    let version = rs.game_version;
+    let act_index = rs.act_index.saturating_sub(1);
+    let ascension_level = rs.card_rarity_odds.ascension_level;
+    let upgrade_base = combat_card_upgrade_base_chance();
+    let mut chosen: Vec<CardId> = Vec::new();
+    let mut cards: Vec<sts2_core::cards::Card> = Vec::new();
+    for _ in 0..usize::from(opts.num_cards) {
+        let mut rarity = rs.card_rarity_odds.roll_with_base_odds_with_dotnet_for(
+            version,
+            &mut rs.rng.rewards,
+            RarityContext::Regular,
+        );
+        // `RollForRarity` escalates a rarity absent from the post-blacklist
+        // pool to the next-highest (`GetNextHighestRarity`), as in
+        // [`roll_reward_options_base_odds`].
+        let mut candidates: Vec<CardId>;
+        loop {
+            let cr = reward_rarity_to_card_rarity(rarity);
+            candidates = if opts.has_custom_card_pool {
+                opts.custom_card_ids
+                    .iter()
+                    .copied()
+                    .filter(|&id| rarity_for_card_id_in(id, version) == Some(cr))
+                    .collect()
+            } else {
+                eligible_ids_for_rarity_in(&character_ids, opts.include_colorless, cr, version)
+            };
+            candidates.retain(|id| !chosen.contains(id));
+            if !candidates.is_empty() {
+                break;
+            }
+            match next_highest_reward_rarity(rarity) {
+                Some(next) => rarity = next,
+                None => break,
+            }
+        }
+        if candidates.is_empty() {
+            continue;
+        }
+        let idx = rs
+            .rng
+            .rewards
+            .next_int_exclusive(0, candidates.len() as i32) as usize;
+        let pick = candidates[idx];
+        chosen.push(pick);
+        let upgraded = opts.roll_upgrade
+            && roll_for_upgrade_with_dotnet(
+                &mut rs.rng.rewards,
+                rarity,
+                act_index,
+                ascension_level,
+                upgrade_base,
+            );
+        if let Some(card) = super::v0111::card_pod_for(pick, upgraded, version) {
+            cards.push(card);
+        }
+    }
+    let _ = sts2_core::run_effects::dispatch_modify_card_reward_options_late(rs, &mut cards);
+    cards
 }
 
 /// The ordinal sort key C# uses for a character's `CardPoolModel` inside
@@ -1978,7 +2080,7 @@ pub fn card_is_removable_instance(card: &sts2_core::cards::Card) -> bool {
 #[must_use]
 pub fn card_is_removable_csharp(card_id: CardId) -> bool {
     use super::types::CardKeywords;
-    spec_for_card_id(card_id).map_or(true, |spec| !spec.keywords.contains(CardKeywords::ETERNAL))
+    spec_for_card_id(card_id).is_none_or(|spec| !spec.keywords.contains(CardKeywords::ETERNAL))
 }
 
 /// Rewrite a card's spec-level POD stats (cost / base_damage / base_block)

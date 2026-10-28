@@ -30,7 +30,7 @@ def mcnemar_exact(b: int, c: int) -> float:
 
 def _load(path: str) -> dict[int, dict]:
     rows: dict[int, dict] = {}
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             if line.strip():
                 r = json.loads(line)

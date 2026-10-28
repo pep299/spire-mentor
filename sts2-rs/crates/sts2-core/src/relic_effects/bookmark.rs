@@ -36,7 +36,8 @@ pub(crate) fn on_after_turn_end_bookmark(state: &mut CombatState, side: Side) ->
             crate::card_by_uid(&state.cards, *uid).is_some_and(|c| {
                 c.cost > 0
                     && !c.is_x_cost()
-                    && (c.local_energy_cost.is_some() || c.combat_var(crate::cards::VarKey::FreeThisTurn) == 0)
+                    && (c.local_energy_cost.is_some()
+                        || c.combat_var(crate::cards::VarKey::FreeThisTurn) == 0)
             })
         })
         .collect();

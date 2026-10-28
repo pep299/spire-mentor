@@ -119,10 +119,12 @@ export function RunEndScene({ step, heading, tone, primaryAction, secondaryActio
  *  route to it was the toolbar's red "End run" (which lands on RunEnded), so a
  *  player who climbed to the top and read "Victory!" had no visible way back
  *  into their own run. */
-export default function GameOver({ step, onNewRun, onReviewReplay }: {
+export default function GameOver({ step, onNewRun, onReviewReplay, onCoachReview }: {
   step: Step;
   onNewRun?: () => void;
   onReviewReplay?: () => void;
+  /** Open the Coach review (the autopsy, on a death). */
+  onCoachReview?: () => void;
 }) {
   const victory = step.state.victory;
   return (
@@ -130,10 +132,19 @@ export default function GameOver({ step, onNewRun, onReviewReplay }: {
       step={step}
       heading={victory ? "Victory!" : "Defeat"}
       tone={victory ? "victory" : "defeat"}
-      secondaryActions={onReviewReplay && (
-        <button className="gs-runend-btn gs-runend-btn--secondary" onClick={onReviewReplay}>
-          <span className="gs-runend-btnface">Review replay</span>
+      secondaryActions={(onReviewReplay || onCoachReview) && (
+        <>
+          {onReviewReplay && (
+            <button className="gs-runend-btn gs-runend-btn--secondary" onClick={onReviewReplay}>
+              <span className="gs-runend-btnface">Review replay</span>
+            </button>
+          )}
+      {onCoachReview && (
+        <button className="gs-runend-btn gs-runend-btn--secondary" onClick={onCoachReview}>
+          <span className="gs-runend-btnface">Coach review</span>
         </button>
+      )}
+        </>
       )}
       primaryAction={onNewRun && (
         <button className="gs-runend-btn gs-runend-btn--primary" onClick={onNewRun}>

@@ -7,12 +7,17 @@
 //! through `_randbelow_with_getrandbits`), the play policy is the same
 //! first-maximal pick, and every reported number is rounded like Python's
 //! `round(x, 1)` (exact, ties to even).
+//!
+//! The tables are per game build (GH #877): every entry point has a
+//! `*_for(version, …)` form reading that build's tables
+//! ([`crate::data::data_for`]); the plain form is the default build's.
 
 use std::collections::BTreeMap;
 
 use serde_json::{json, Map, Value};
+use sts2_core::GameVersion;
 
-use crate::data::data;
+use crate::data::data_for;
 
 pub const DEFAULT_ENERGY: i64 = 3;
 pub const DEFAULT_HAND: i64 = 5;
@@ -178,12 +183,12 @@ impl PyRandom {
 
 // ── the tables ───────────────────────────────────────────────────────────
 
-fn card_db() -> &'static BTreeMap<String, Value> {
-    &data().deck_card_db
+fn card_db(version: GameVersion) -> &'static BTreeMap<String, Value> {
+    &data_for(version).deck_card_db
 }
 
-fn card_tags() -> &'static BTreeMap<String, Value> {
-    &data().deck_card_tags
+fn card_tags(version: GameVersion) -> &'static BTreeMap<String, Value> {
+    &data_for(version).deck_card_tags
 }
 
 /// `_card_id`: a deck entry's loc-key (a `"<KEY>.title"` suffix and any
@@ -260,14 +265,14 @@ fn or_int(up: Option<&Value>, base: i64) -> i64 {
     }
 }
 
-fn resolved(card: &Value) -> Card {
+fn resolved(card: &Value, version: GameVersion) -> Card {
     let cid = card_id(card);
     let empty = Map::new();
-    let db = card_db()
+    let db = card_db(version)
         .get(&cid)
         .and_then(Value::as_object)
         .unwrap_or(&empty);
-    let tags = card_tags()
+    let tags = card_tags(version)
         .get(&cid)
         .and_then(Value::as_object)
         .unwrap_or(&empty);
@@ -646,10 +651,25 @@ fn saturate(raw: f64, scale: f64) -> f64 {
     round1(100.0 * (1.0 - (-raw.max(0.0) / scale).exp()))
 }
 
-/// `analyze_deck`: the full report (`{"empty": true}` for an empty deck).
+/// `analyze_deck`: the full report (`{"empty": true}` for an empty deck),
+/// over the default build's tables.
 #[must_use]
 pub fn analyze_deck(deck: &[Value], energy: i64, hand: i64, samples: i64, seed: u64) -> Value {
-    let cards: Vec<Card> = deck.iter().map(resolved).collect();
+    analyze_deck_for(GameVersion::default(), deck, energy, hand, samples, seed)
+}
+
+/// `analyze_deck(…, game_version=version)`: [`analyze_deck`] over build
+/// `version`'s tables.
+#[must_use]
+pub fn analyze_deck_for(
+    version: GameVersion,
+    deck: &[Value],
+    energy: i64,
+    hand: i64,
+    samples: i64,
+    seed: u64,
+) -> Value {
+    let cards: Vec<Card> = deck.iter().map(|c| resolved(c, version)).collect();
     let n = cards.len();
     if n == 0 {
         return json!({"empty": true});
@@ -915,10 +935,23 @@ fn scores_of(report: &Value) -> Value {
 }
 
 /// `reward_preview`: the deck's scores, then the deck + each candidate with
-/// the paired-seed deltas.
+/// the paired-seed deltas (default build's tables).
 #[must_use]
 pub fn reward_preview(deck: &[Value], candidates: &[Value], samples: i64, seed: u64) -> Value {
-    let base = scores_of(&analyze_deck(
+    reward_preview_for(GameVersion::default(), deck, candidates, samples, seed)
+}
+
+/// [`reward_preview`] over build `version`'s tables.
+#[must_use]
+pub fn reward_preview_for(
+    version: GameVersion,
+    deck: &[Value],
+    candidates: &[Value],
+    samples: i64,
+    seed: u64,
+) -> Value {
+    let base = scores_of(&analyze_deck_for(
+        version,
         deck,
         DEFAULT_ENERGY,
         DEFAULT_HAND,
@@ -929,7 +962,8 @@ pub fn reward_preview(deck: &[Value], candidates: &[Value], samples: i64, seed: 
     for cand in candidates {
         let mut with: Vec<Value> = deck.to_vec();
         with.push(cand.clone());
-        let sc = scores_of(&analyze_deck(
+        let sc = scores_of(&analyze_deck_for(
+            version,
             &with,
             DEFAULT_ENERGY,
             DEFAULT_HAND,

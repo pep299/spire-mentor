@@ -13,6 +13,8 @@ export interface ShortcutContext {
   onChoose: (action: string, args: Record<string, unknown>) => void;
   onPlayBest: () => void;
   onPlayToEnd: () => void;
+  /** P: peek at the AI's pick for this decision (Coach style). */
+  onPeek?: () => void;
   autoRunning: boolean;
   onStart: () => void;
   onToggleHelp: () => void;
@@ -55,6 +57,7 @@ export function useShortcuts(ctx: ShortcutContext): void {
       // decision (card reward, event, path, …) — the off-combat twin of combat's
       // play-best (G) / autoplay (A). On a single screen both reduce to one pick.
       if (e.key === "a" || e.key === "A" || e.key === "g" || e.key === "G") { e.preventDefault(); c.onPlayBest(); return; }
+      if (e.key === "p" || e.key === "P") { e.preventDefault(); c.onPeek?.(); return; }
       const n = Number(e.key);
       if (!Number.isInteger(n) || n < 1 || n > 9) return;
       const enabled = (c.live.state.options ?? []).filter((o) => o.enabled);

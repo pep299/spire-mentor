@@ -380,7 +380,8 @@ export interface Step {
   meta: {
     turn: number | null; step_no: number; floor?: number | null; act?: number | null;
     act_name?: string | null; advice?: StepAdvice | null;
-    bg_seed?: number | null; bg_row?: number | null; bg_col?: number | null;
+    /** GH #878: a decimal string when the seed is past 2^53 (v0.111.0's `ulong`). */
+    bg_seed?: number | string | null; bg_row?: number | null; bg_col?: number | null;
     /** GH #801: the session's game build; absent = v0.107.1. */
     game_version?: string;
   };
@@ -397,6 +398,97 @@ export interface Step {
 export interface ResumeCapability {
   kind: "combat" | "run" | null;
   reason: string | null;
+}
+/** The live coach's records, as the real-game advisor writes them into a run
+ *  log (`type: "coach"` lines). Field names follow PROTOCOL.md, "`coach`"
+ *  (v5.1); `GET /api/coach` serves them. */
+export interface CoachTurnContext {
+  hand: string[];
+  energy: number;
+  max_energy: number;
+  hp: number;
+  max_hp: number;
+  block: number;
+  enemies: { name: string; hp: number; intent: string }[];
+}
+export interface CoachTurnRecord {
+  kind: "turn";
+  id: string;
+  node_id: string | number | null;
+  turn: number | null;
+  floor: number | null;
+  /** `ungraded` appears only in logs: the mod is never sent one. */
+  verdict: "best" | "tie" | "slip" | "blunder" | "ungraded";
+  you: string[];
+  ai: string[];
+  /** What one line did on the board that the other did not ("Your line
+   *  wakes Lagavulin Matriarch on turn 1"); absent / null when nothing. */
+  why?: string | null;
+  hp_drop: number | null;
+  win_before: number | null;
+  win_after: number | null;
+  peeked: boolean;
+  ungraded_actions: number;
+  log_name?: string | null;
+  log_idx?: number | null;
+  severity?: number;
+  context?: CoachTurnContext | null;
+}
+export interface CoachChoiceRecord {
+  kind: "choice";
+  id: string;
+  node_id: string | number | null;
+  decision: string;
+  label_kind: string;
+  verdict: "agree" | "tossup" | "flag" | "ungraded";
+  strength?: string;
+  played: { label: string; prob: number; rank: number };
+  top: { label: string; prob: number };
+  alternatives: { label: string; prob: number }[];
+  peeked: boolean;
+  path?: { you: unknown[]; ai: unknown[] };
+  log_name?: string | null;
+  log_idx?: number | null;
+}
+export interface CoachRecapRecord {
+  kind: "recap";
+  id: string;
+  node_id: string | number | null;
+  log_name: string | null;
+  log_idx: number | null;
+  floor: number | null;
+  room_type: string | null;
+  hp_start: number;
+  hp_end: number;
+  hp_lost: number;
+  /** Reserved, always null today (GH #856). */
+  ai_hp_lost: number | null;
+  turns: number;
+  turns_graded: number;
+  turns_ungraded: number;
+  unfinished_turns: number;
+  costliest: CoachTurnRecord[];
+}
+export interface CoachAutopsyRecord {
+  kind: "autopsy";
+  id: string;
+  log_name: string | null;
+  floor: number | null;
+  act: number | null;
+  items: (
+    | { kind: "turn"; record: CoachTurnRecord }
+    | { kind: "choice"; record: CoachChoiceRecord }
+  )[];
+  turns_ungraded: number;
+  decisions_graded: number;
+}
+export type CoachRecord = CoachTurnRecord | CoachChoiceRecord | CoachRecapRecord;
+/** `GET /api/coach`: the loaded run's records, withdrawals applied.
+ *  `by_step` maps a replay step index to the ids of the graded records on it. */
+export interface CoachLog {
+  records: CoachRecord[];
+  by_step: Record<string, string[]>;
+  autopsy: CoachAutopsyRecord | null;
 }
 export interface TimelineEntry {
   idx: number;
@@ -1191,6 +1283,8 @@ export const DEFAULT_MCTS_CONFIG: MctsConfig = {
   // (`MctsConfig::apply_mode_dialect`, GH #758), so it is not repeated here.
   // `sts2-workbench/tests/search_dialect_parity.rs` parses this object and
   // fails if it stops searching like the run agent.
+  // It matches the run agent's BASE dialect on purpose (GH #830): the run
+  // agent's Ironclad layer (knobs + BC move prior) is not taken here.
   hidden_info: "beliefdraw",
   draw_widening_c: 2.0,
   // Workbench-only on purpose: the run agent does not prune. It cuts the
@@ -1368,14 +1462,17 @@ export const api = {
   deckAnalysis: (idx: number) =>
     apiFetch(`/api/step/${idx}/deck-analysis`).then(json<DeckAnalysis>),
   deckTrend: () => apiFetch("/api/deck/trend").then(json<{ points: TrendPoint[] }>),
-  deckRewardPreview: (deck: unknown[], candidates: unknown[]) =>
+  // `gameVersion` (GH #877): the build whose card tables grade the cards;
+  // sent only when it is not the default, like every other route.
+  deckRewardPreview: (deck: unknown[], candidates: unknown[], gameVersion?: string | null) =>
     apiFetch("/api/deck/reward-preview", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ deck, candidates }),
+      body: JSON.stringify({ deck, candidates, ...gameVersionBody(gameVersion) }),
     }).then(json<RewardPreview>),
   timeline: () => apiFetch("/api/timeline").then(json<{ steps: TimelineEntry[] }>),
   map: () => apiFetch("/api/map").then(json<{ rows: MapRow[]; graphs: MapGraph[] }>),
+  coach: () => apiFetch("/api/coach").then(json<CoachLog>),
   recommend: (idx: number, config: Record<string, unknown>) =>
     apiFetch("/api/recommend", {
       method: "POST",
@@ -1695,6 +1792,14 @@ export const api = {
       if (result == null) throw new Error("choice check stream ended without a result");
       return result;
     },
+    // Per-turn coach: grade the combat turn the End turn just closed, as the
+    // live advisor's `turn` record (409 = nothing to grade or a silent turn).
+    lastTurnGrade: (config: Record<string, unknown>) =>
+      apiFetch("/api/live/last-turn-grade", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ config }),
+      }).then(json<CoachTurnRecord & { searches?: number }>),
     lastMoveRegret: (config: Record<string, unknown>) =>
       apiFetch("/api/live/last-move-regret", {
         method: "POST",

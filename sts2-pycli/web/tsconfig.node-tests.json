@@ -63,6 +63,10 @@
     // and that a flipbook without a curve is frame-by-offset rather than a
     // missing animation.
     "src/effects/particles/__tests__/shaders.test.ts",
+    // Reads the coach fixture shared with the Python advisor's tests
+    // (tests/fixtures/coach/rank_autopsy_cases.json), so the autopsy ranking
+    // twins are pinned by one file.
+    "src/coach/coachRank.test.ts",
     // `types: ["node"]` above replaces the app project's `types: []`, and
     // neither pulls in `vite/client` — that arrives via this triple-slash
     // d.ts, which tsconfig.app.json gets for free from `include: ["src"]`.

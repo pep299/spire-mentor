@@ -1,0 +1,75 @@
+{
+  "_doc": "Shared cases for the death autopsy's ranking: realgame_coach.rank_autopsy (Python, the live advisor) and coachRank.rankAutopsy (TypeScript, the browser workbench's live play) both load this file. Records carry only the fields the rule reads. expect = [kind, id] in display order.",
+  "cases": [
+    {
+      "name": "turns_and_choices_interleave_turns_first",
+      "turns": [
+        {"id": "t2", "verdict": "blunder", "hp_drop": 4.0, "severity": 9.0, "context": {"hand": []}},
+        {"id": "t1", "verdict": "slip", "hp_drop": 9.0, "severity": 9.0, "context": {"hand": []}}
+      ],
+      "choices": [
+        {"id": "c2", "verdict": "flag", "top": {"prob": 0.5}, "played": {"prob": 0.3}},
+        {"id": "c1", "verdict": "flag", "top": {"prob": 0.7}, "played": {"prob": 0.1}}
+      ],
+      "k": 3,
+      "expect": [["turn", "t1"], ["choice", "c1"], ["turn", "t2"]]
+    },
+    {
+      "name": "turns_rank_by_hp_else_severity",
+      "turns": [
+        {"id": "hp9", "verdict": "slip", "hp_drop": 9.0, "severity": 9.0, "context": {"hand": []}},
+        {"id": "pts12", "verdict": "blunder", "hp_drop": null, "severity": 12.0, "context": {"hand": []}}
+      ],
+      "choices": [],
+      "k": 3,
+      "expect": [["turn", "pts12"], ["turn", "hp9"]]
+    },
+    {
+      "name": "only_costly_turns_with_a_position_and_flagged_choices",
+      "turns": [
+        {"id": "good", "verdict": "best", "hp_drop": null, "severity": 0.0, "context": {"hand": []}},
+        {"id": "tie", "verdict": "tie", "hp_drop": 2.0, "severity": 2.0, "context": {"hand": []}},
+        {"id": "nopos", "verdict": "blunder", "hp_drop": 15.0, "severity": 15.0, "context": null},
+        {"id": "kept", "verdict": "slip", "hp_drop": 3.5, "severity": 3.5, "context": {"hand": []}}
+      ],
+      "choices": [
+        {"id": "agreed", "verdict": "agree", "top": {"prob": 0.9}, "played": {"prob": 0.9}},
+        {"id": "flagged", "verdict": "flag", "top": {"prob": 0.6}, "played": {"prob": 0.2}}
+      ],
+      "k": 3,
+      "expect": [["turn", "kept"], ["choice", "flagged"]]
+    },
+    {
+      "name": "choices_fill_when_there_are_no_turns_ties_by_top",
+      "turns": [],
+      "choices": [
+        {"id": "small", "verdict": "flag", "top": {"prob": 0.4}, "played": {"prob": 0.3}},
+        {"id": "gap5_low", "verdict": "flag", "top": {"prob": 0.6}, "played": {"prob": 0.1}},
+        {"id": "gap5_high", "verdict": "flag", "top": {"prob": 0.8}, "played": {"prob": 0.3}},
+        {"id": "big", "verdict": "flag", "top": {"prob": 0.9}, "played": {"prob": 0.05}}
+      ],
+      "k": 3,
+      "expect": [["choice", "big"], ["choice", "gap5_high"], ["choice", "gap5_low"]]
+    },
+    {
+      "name": "turns_fill_when_choices_run_out",
+      "turns": [
+        {"id": "a", "verdict": "blunder", "hp_drop": 12.0, "severity": 12.0, "context": {"hand": []}},
+        {"id": "b", "verdict": "slip", "hp_drop": 6.0, "severity": 6.0, "context": {"hand": []}},
+        {"id": "c", "verdict": "slip", "hp_drop": 4.0, "severity": 4.0, "context": {"hand": []}}
+      ],
+      "choices": [
+        {"id": "x", "verdict": "flag", "top": {"prob": 0.5}, "played": {"prob": 0.1}}
+      ],
+      "k": 4,
+      "expect": [["turn", "a"], ["choice", "x"], ["turn", "b"], ["turn", "c"]]
+    },
+    {
+      "name": "nothing_costly",
+      "turns": [],
+      "choices": [],
+      "k": 3,
+      "expect": []
+    }
+  ]
+}

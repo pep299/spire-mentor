@@ -87,6 +87,30 @@ def test_ironclad_vs_nibbit_mid_turn():
     assert out["player"]["relics"][0]["id"] == "BURNING_BLOOD"
 
 
+def test_potion_slots_passthrough():
+    """GH #893: the belt CAPACITY reaches the wire as ``player.potion_slots``.
+
+    ``potions`` is not the slot count on every producer (the C# headless
+    ``PlayerSummary`` drops empty slots), so without the explicit key a
+    rebuilt A4+ board (Tight Belt: 2 slots) filled potions as if it had 5.
+    Absent or malformed -> omitted, so the engine keeps its unset default.
+    """
+    state = base_state(
+        player=player_summary(hp=70, max_hp=75, block=0, relics=[], potions=[]),
+        hand=[card(index=0, cid="IRONCLAD/STRIKE", name="Strike", cost=1)],
+        enemies=[enemy(index=0, name="Nibbit", hp=48, max_hp=48, intents=[])],
+    )
+    state["player"]["potion_slots"] = 2
+    out = adapter.translate(state)
+    assert out["player"]["potion_slots"] == 2
+
+    for bad in (None, True, "2", 0):
+        state["player"]["potion_slots"] = bad
+        assert "potion_slots" not in adapter.translate(state)["player"], bad
+    del state["player"]["potion_slots"]
+    assert "potion_slots" not in adapter.translate(state)["player"]
+
+
 def test_cards_played_this_turn_passthrough():
     """The optional per-turn play counters reach the wire player dict.
 

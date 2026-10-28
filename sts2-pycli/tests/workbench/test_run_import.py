@@ -214,7 +214,12 @@ def test_a_v0111_seed_above_i64_max_is_restored():
     seed, rm = next(
         (s, r)
         for s, r in (
-            (s, sts2_rs.RunManager(string_seed=s, character="Ironclad", act1="roll", game_version=v111))
+            (
+                s,
+                sts2_rs.RunManager(
+                    string_seed=s, character="Ironclad", act1="roll", game_version=v111
+                ),
+            )
             for s in (f"BIGSEED{i}" for i in range(64))
         )
         if r.run_seed > 2**63 - 1

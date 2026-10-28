@@ -810,7 +810,7 @@
    },
    "target_index": null,
    "ties": 0,
-   "value_sum": 5.481,
+   "value_sum": 5.4811,
    "visits": 5,
    "wins": 5
   },
@@ -1506,7 +1506,7 @@
    "parent": 28,
    "proven_loss": false,
    "proven_win": false,
-   "q": 1.1141,
+   "q": 1.114,
    "summary": {
     "enemies": [
      {
@@ -1523,7 +1523,7 @@
    },
    "target_index": null,
    "ties": 0,
-   "value_sum": 1.1141,
+   "value_sum": 1.114,
    "visits": 1,
    "wins": 1
   },

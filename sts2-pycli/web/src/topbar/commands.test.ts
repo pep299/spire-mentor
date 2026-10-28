@@ -20,7 +20,7 @@ function ctx(over: Partial<CommandContext> = {}): CommandContext {
     busy: {},
     actions: {
       save: noop, load: noop, importState: noop, importLive: noop, endRun: noop,
-      analyze: noop, regretReview: noop, runReview: noop, searchTree: noop,
+      analyze: noop, regretReview: noop, coachReview: noop, runReview: noop, searchTree: noop,
       simlabFromHere: noop, recommend: noop, playFromHere: noop,
       bridgeTree: noop, liveSearch: noop, bridgeSeek: noop,
     },

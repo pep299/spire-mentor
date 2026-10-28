@@ -46,7 +46,7 @@ def classify(ex: dict) -> tuple[str, str]:
 
 def main() -> None:
     tmp = sys.argv[1]
-    ex = json.load(open(f"{tmp}/examples.json"))
+    ex = json.load(open(f"{tmp}/examples.json", encoding="utf-8"))
     klass = Counter()
     real = []
     for k, v in ex.items():

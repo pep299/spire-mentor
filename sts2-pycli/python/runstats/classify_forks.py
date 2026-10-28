@@ -47,7 +47,7 @@ def main() -> None:
     enc: dict[int, str] = {}
     act: dict[int, int] = {}
     for path in args.jsonl:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             for line in f:
                 r = json.loads(line)
                 if r.get("kind") != "rep":
@@ -91,7 +91,7 @@ def main() -> None:
                 for s, p in complete.items()
             },
         }
-        with open(args.json, "w") as f:
+        with open(args.json, "w", encoding="utf-8") as f:
             json.dump(out, f, indent=1)
 
 
