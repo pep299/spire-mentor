@@ -199,8 +199,6 @@ pub(crate) fn card_rarity_for_id_in(
 /// Catastrophe `StableShuffle` (`PILE_COUNT|CATASTROPHE`, seed 1490). The
 /// `OrderBy`/`ThenBy` is LINQ-stable → stable `sort_by`; and unlike
 /// Catastrophe's own StableShuffle it carries NO `upgraded` tiebreak.
-/// `card_rarity_rank_csharp` is the C# `CardRarity` ordinal (NOT
-/// `rarity_sort_key`, whose ordering diverges).
 ///
 /// Bead `sts2-rs-1xmxp` — replaces the prior random `state.rng` stub
 /// (the `NOTE(sts2-rs-sr3ql)` "stays on legacy rng" caveat is now
@@ -304,31 +302,6 @@ pub const PURITY_MAX_EXHAUST: i32 = 3;
 /// Upgraded-form exhaust cap for `Purity` (C# `CardsVar(3) + 2`).
 /// Bead `sts2-rs-sqfx2`.
 pub const PURITY_MAX_EXHAUST_UPGRADED: i32 = 5;
-
-/// Map [`CardRarity`] to Python's `auto()`-assigned value (1-based,
-/// declaration order). Used as the primary sort key for choice-collapsed
-/// card-pick bodies like [`play_wish`]. Returns `u8::MAX` for `None` so
-/// rarity-unknown cards sort last.
-pub(crate) fn rarity_sort_key(rarity: Option<crate::cards::types::CardRarity>) -> u8 {
-    use crate::cards::types::CardRarity;
-    match rarity {
-        Some(CardRarity::Basic) => 1,
-        Some(CardRarity::Common) => 2,
-        Some(CardRarity::Uncommon) => 3,
-        Some(CardRarity::Rare) => 4,
-        Some(CardRarity::Ancient) => 5,
-        Some(CardRarity::Status) => 6,
-        // Token shares Status's slot in this declaration-order approximation
-        // so token cards keep their prior sort position here unchanged; the
-        // C#-ordinal sorts that actually drive draw-order parity place Token
-        // at its true ordinal 7 (`card_rarity_rank_csharp`). Bead `p52dg`.
-        Some(CardRarity::Token) => 6,
-        Some(CardRarity::Curse) => 7,
-        Some(CardRarity::Event) => 8,
-        Some(CardRarity::Quest) => 9,
-        None => u8::MAX,
-    }
-}
 
 /// Sample `count` distinct cards (without replacement) from the given
 /// `character`'s spec slice, optionally filtered to `card_type`, then

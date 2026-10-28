@@ -2180,42 +2180,75 @@ fn play_secret_technique_with_no_skills_is_noop() {
 }
 
 #[test]
-fn play_wish_picks_lowest_rarity_card_from_draw() {
-    use sts2_core::cards::{Card, CardType, TargetType};
-    use sts2_core::CardUid;
+fn play_wish_waits_for_a_choice_over_sorted_draw_cards() {
     install_pool();
     let (mut state, _euid) = fresh_state(CardId::Wish, 0, 0);
-    // Seed draw with one Rare (DemonForm) and one Common (Anger).
-    // Wish must pick Anger (lower rarity_key).
-    let push = |state: &mut CombatState, card_id: CardId| {
-        let raw = u32::try_from(state.cards.len() + 1).unwrap();
-        let uid = CardUid(NonZeroU32::new(raw).unwrap());
-        state.cards.push(Card {
-            uid,
-            card_id,
-            cost: 1,
-            card_type: CardType::Skill,
-            target_type: TargetType::Self_,
-            upgraded: false,
-            base_damage: 0,
-            base_block: 0,
-            ..Card::pod_defaults()
-        });
-        state.player.draw.push(uid);
-        uid
-    };
-    let _rare = push(&mut state, CardId::DemonFormCard);
-    let common = push(&mut state, CardId::Anger);
-    let draw_before = state.player.draw.len();
-    let hand_before = state.player.hand.len();
-    let f = lookup(CardId::Wish).expect("registered");
-    f(&mut state, None);
-    assert_eq!(state.player.draw.len(), draw_before - 1);
-    assert_eq!(state.player.hand.len(), hand_before + 1);
-    assert!(
-        state.player.hand.contains(&common),
-        "Wish picked the lowest-rarity card (Anger/Common)"
+    state.game_version = sts2_core::GameVersion::V0_111_0;
+    let rare = push_draw_card_id(&mut state, CardId::DemonFormCard);
+    let common = push_draw_card_id(&mut state, CardId::Anger);
+    let basic = push_draw_card_id(&mut state, CardId::StrikeIronclad);
+    let draw_before = state.player.draw.clone();
+    lookup(CardId::Wish).expect("registered")(&mut state, None);
+    assert_eq!(state.player.draw, draw_before);
+    assert!(state.player.hand.is_empty());
+    let pending = state.pending_choice.as_ref().expect("選択を待つ");
+    assert_eq!(pending.kind, sts2_core::ChoiceKind::AddFromDrawToHand);
+    assert_eq!(
+        (pending.min_select, pending.max_select, pending.can_skip),
+        (1, 1, false)
     );
+    assert_eq!(
+        pending.options.iter().map(|option| option.card_uid).collect::<Vec<_>>(),
+        vec![Some(basic), Some(common), Some(rare)]
+    );
+    sts2_core::apply(
+        &mut state,
+        sts2_core::Action::ResolveChoice {
+            selection: [2u8].into_iter().collect(),
+        },
+    );
+    assert_eq!(state.player.hand.as_slice(), &[rare]);
+    assert_eq!(state.player.draw.as_slice(), &[common, basic]);
+    assert!(state.pending_choice.is_none());
+}
+
+#[test]
+fn play_wish_keeps_same_name_instances_separate() {
+    install_pool();
+    let (mut state, _euid) = fresh_state(CardId::Wish, 0, 0);
+    let first = push_draw_card_id(&mut state, CardId::Anger);
+    let second = push_draw_card_id(&mut state, CardId::Anger);
+    state.cards[second.get() as usize - 1].upgraded = true;
+    state.cards[second.get() as usize - 1].base_damage = 17;
+    lookup(CardId::Wish).expect("registered")(&mut state, None);
+    let pending = state.pending_choice.as_ref().expect("同名でも選択を待つ");
+    assert!(!pending.options[0].upgraded);
+    assert!(pending.options[1].upgraded);
+    sts2_core::apply(
+        &mut state,
+        sts2_core::Action::ResolveChoice {
+            selection: [1u8].into_iter().collect(),
+        },
+    );
+    assert_eq!(state.player.hand.as_slice(), &[second]);
+    assert_eq!(state.player.draw.as_slice(), &[first]);
+    assert_eq!(state.cards[second.get() as usize - 1].base_damage, 17);
+}
+
+#[test]
+fn play_wish_single_candidate_uses_the_normal_hand_limit() {
+    install_pool();
+    let (mut state, _euid) = fresh_state(CardId::Wish, 0, 0);
+    for _ in 0..sts2_core::cards::HAND_LIMIT {
+        let uid = push_draw_card_id(&mut state, CardId::DefendIronclad);
+        state.move_card_to_hand(uid);
+    }
+    let chosen = push_draw_card_id(&mut state, CardId::Anger);
+    lookup(CardId::Wish).expect("registered")(&mut state, None);
+    assert!(state.pending_choice.is_none());
+    assert!(state.player.draw.is_empty());
+    assert_eq!(state.player.hand.len(), sts2_core::cards::HAND_LIMIT);
+    assert_eq!(state.player.discard.as_slice(), &[chosen]);
 }
 
 #[test]
@@ -2228,6 +2261,7 @@ fn play_wish_with_empty_draw_is_noop() {
     f(&mut state, None);
     assert_eq!(state.player.draw.len(), draw_before);
     assert_eq!(state.player.hand.len(), hand_before);
+    assert!(state.pending_choice.is_none());
 }
 
 #[test]
