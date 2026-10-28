@@ -68,6 +68,7 @@ fn push_play_card(
     let raw = u32::try_from(state.cards.len() + 1).expect("cards len fits in u32");
     let uid = sts2_core::CardUid::new(raw).expect("non-zero uid");
     state.cards.push(Card {
+        local_energy_cost: None,
         uid,
         card_id,
         cost: 1,
@@ -94,6 +95,7 @@ fn push_hand_card(state: &mut CombatState, card_id: CardId) -> sts2_core::CardUi
     let raw = u32::try_from(state.cards.len() + 1).expect("cards len fits in u32");
     let uid = sts2_core::CardUid::new(raw).expect("non-zero uid");
     state.cards.push(Card {
+        local_energy_cost: None,
         uid,
         card_id,
         cost: 1,
@@ -2098,6 +2100,7 @@ fn bombardment_auto_plays_from_exhaust_at_turn_start() {
         let raw = u32::try_from(state.cards.len() + 1).expect("fits");
         let uid = sts2_core::CardUid::new(raw).expect("non-zero");
         state.cards.push(Card {
+            local_energy_cost: None,
             uid,
             card_id: CardId::Bombardment,
             cost: 3,
@@ -2192,6 +2195,7 @@ fn bombardment_follows_rampart_block() {
         let raw = u32::try_from(state.cards.len() + 1).expect("fits");
         let uid = sts2_core::CardUid::new(raw).expect("non-zero");
         state.cards.push(Card {
+            local_energy_cost: None,
             uid,
             card_id: CardId::Bombardment,
             cost: 3,

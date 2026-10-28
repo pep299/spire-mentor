@@ -1495,6 +1495,7 @@ mod tests {
             .map_or(1, |m| m.saturating_add(1));
         let uid = sts2_core::CardUid(NonZeroU32::new(next_raw).expect("non-zero"));
         state.cards.push(Card {
+            local_energy_cost: None,
             uid,
             card_id: CardId::StrikeIronclad,
             cost: 3,
@@ -1639,6 +1640,7 @@ mod tests {
             .map_or(1, |m| m.saturating_add(1));
         let uid = sts2_core::CardUid(NonZeroU32::new(next_raw).expect("non-zero"));
         state.cards.push(Card {
+            local_energy_cost: None,
             uid,
             card_id,
             cost: 0,
@@ -2015,6 +2017,7 @@ mod tests {
         let mut state = CombatState::default();
         let enemy_uid = paper_krane_setup(&mut state, true, true, false);
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Enemy(enemy_uid),
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -2036,6 +2039,7 @@ mod tests {
         let mut state = CombatState::default();
         let enemy_uid = paper_krane_setup(&mut state, true, true, true);
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Enemy(enemy_uid),
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -2052,6 +2056,7 @@ mod tests {
         let mut state = CombatState::default();
         let enemy_uid = paper_krane_setup(&mut state, true, false, false);
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Enemy(enemy_uid),
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -2067,6 +2072,7 @@ mod tests {
         let mut state = CombatState::default();
         let enemy_uid = paper_krane_setup(&mut state, false, true, false);
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Enemy(enemy_uid),
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -2082,6 +2088,7 @@ mod tests {
         let mut state = CombatState::default();
         let enemy_uid = paper_krane_setup(&mut state, true, true, false);
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Enemy(enemy_uid),
             target: CreatureRef::Player,
             props: ValueProps::NONE,
@@ -2389,6 +2396,7 @@ mod tests {
         let mut state = CombatState::default();
         let enemy_uid = paper_krane_weak_amount_setup(&mut state, 0);
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Enemy(enemy_uid),
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -2447,6 +2455,7 @@ mod tests {
         });
         state.enemy_uids.push(enemy_uid);
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Enemy(enemy_uid),
             target: CreatureRef::Player,
             props: ValueProps::MOVE,

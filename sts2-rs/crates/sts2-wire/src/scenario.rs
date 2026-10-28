@@ -300,6 +300,8 @@ pub fn build_scenario_state_for_version(
     }
 
     let player = PlayerCombatState {
+        observed_draws: SmallVec::new(),
+        observed_draw_failed: false,
         hand: SmallVec::new(),
         draw,
         discard: SmallVec::new(),

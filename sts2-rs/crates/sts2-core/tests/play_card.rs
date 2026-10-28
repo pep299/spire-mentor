@@ -45,6 +45,7 @@ fn build_handful(cards: &[(CardId, i32, i32, i8, TargetType)]) -> CombatState {
             _ => CardType::Skill,
         };
         cards_arena.push(Card {
+            local_energy_cost: None,
             uid,
             card_id,
             cost,
@@ -65,6 +66,8 @@ fn build_handful(cards: &[(CardId, i32, i32, i8, TargetType)]) -> CombatState {
     }
 
     let player = PlayerCombatState {
+        observed_draws: smallvec::SmallVec::new(),
+        observed_draw_failed: false,
         current_hp: 50,
         max_hp: 50,
         block: 0,

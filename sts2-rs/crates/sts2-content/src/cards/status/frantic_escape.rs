@@ -10,8 +10,7 @@ use super::prelude::*;
 /// `dispatch_after_side_turn_start` Sandpit arm in `sts2_core::hooks`) and
 /// the card instance permanently costs 1 more for the rest of the combat
 /// (`AddThisCombat` has no turn-start revert, unlike Stomp's
-/// `AddThisTurn` — a direct `Card::cost` bump on the combat-scoped
-/// instance is exact). Was a `sts2-rs-kqpz` marker; bodied under
+/// `AddThisTurn`). Was a `sts2-rs-kqpz` marker; bodied under
 /// `sts2-rs-ytgbq` (coverage-sweep `encounter:THE_INSATIABLE_BOSS`
 /// powers[0].amount cs=4 rs=3 on the first FRANTIC_ESCAPE play).
 pub(crate) fn play_frantic_escape(
@@ -48,7 +47,14 @@ pub(crate) fn play_frantic_escape(
     {
         if let Some(card) = state.cards.get_mut(idx) {
             if card.card_id == CardId::FranticEscape {
-                card.cost = card.cost.saturating_add(1);
+                if card.local_energy_cost.is_some() {
+                    card.add_local_cost_modifier(sts2_core::cards::LocalCostModifier {
+                        kind: sts2_core::cards::LocalCostModifierKind::Relative,
+                        amount: 1, reduce_only: false, expiration: 0,
+                    });
+                } else {
+                    card.cost = card.cost.saturating_add(1);
+                }
             }
         }
     }

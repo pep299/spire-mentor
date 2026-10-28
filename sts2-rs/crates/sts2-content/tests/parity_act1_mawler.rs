@@ -175,6 +175,8 @@ fn build_state(fixture_initial: &Value, seed: u64) -> CombatState {
         .expect("Mawler's initial MoveState must carry ≥1 intent");
 
     let player = PlayerCombatState {
+        observed_draws: smallvec::SmallVec::new(),
+        observed_draw_failed: false,
         current_hp: 80,
         max_hp: 80,
         block: 0,

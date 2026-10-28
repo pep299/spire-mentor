@@ -3450,6 +3450,7 @@ mod tests {
 
         fn build_card(uid: u32, card_id: CardId) -> Card {
             Card {
+                local_energy_cost: None,
                 uid: CardUid::new(uid).expect("non-zero"),
                 card_id,
                 cost: 1,
@@ -3560,6 +3561,7 @@ mod tests {
         use sts2_core::cards::{Card, CardTags, CardType, TargetType};
         use sts2_core::CardUid;
         Card {
+            local_energy_cost: None,
             uid: CardUid::new(uid).unwrap(),
             card_id,
             cost,
@@ -3588,6 +3590,7 @@ mod tests {
         use sts2_core::cards::{Card, CardTags, CardType, TargetType};
         use sts2_core::CardUid;
         Card {
+            local_energy_cost: None,
             uid: CardUid::new(uid).unwrap(),
             card_id,
             cost,

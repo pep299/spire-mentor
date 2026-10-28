@@ -55,6 +55,7 @@ fn push_card(state: &mut CombatState, card_id: CardId, base_damage: i32) -> Card
     let raw = u32::try_from(state.cards.len() + 1).expect("cards len fits in u32");
     let uid = CardUid::new(raw).expect("non-zero uid");
     state.cards.push(Card {
+        local_energy_cost: None,
         uid,
         card_id,
         cost: 1,

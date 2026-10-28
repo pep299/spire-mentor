@@ -28,12 +28,9 @@ use super::prelude::*;
 //   this turn, OR whenever the Owner's Osty performs any attack, it calls
 //   `ReduceCost()` → `EnergyCost.SetThisTurn(0)` (cost drops to 0 for the rest of
 //   the turn). `SetThisTurn(0)` has an end-of-turn lifetime and
-//   `CombatLog::osty_attacks_this_turn` is monotonic within a turn (reset only at
-//   turn start), so the two reactive hooks reduce to a single predicate —
-//   "Osty attacked this turn" — evaluated at cost-read time. Implemented as a
-//   base-0 rider in `hooks::effective_card_cost` (CardId::Flatten +
-//   osty_attacks_this_turn > 0), mirroring the `FreeThisTurn` rider. (Cost is
-//   not affected by upgrade in C#.)
+//   `card_effects` stamps the expiring Absolute(0) after the Osty attack and
+//   when Flatten enters combat after such an attack. Later relative modifiers
+//   remain ordered after that stamp; end-of-turn cleanup removes it.
 //
 // `deal_damage_from_osty_to_enemy` is a no-op when the Osty is absent
 // (`osty_dealer_ref` → None), reproducing `CheckMissingWithAnim` (minus the

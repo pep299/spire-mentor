@@ -67,6 +67,7 @@ pub fn build_handful(
             _ => CardType::Skill,
         };
         cards_arena.push(Card {
+            local_energy_cost: None,
             uid,
             card_id,
             cost,
@@ -87,6 +88,8 @@ pub fn build_handful(
     }
 
     let player = PlayerCombatState {
+        observed_draws: smallvec::SmallVec::new(),
+        observed_draw_failed: false,
         current_hp: player_hp,
         max_hp: player_hp,
         block: 0,
@@ -237,6 +240,8 @@ pub fn build_vertical_slice_hp(seed: u64, player_hp: i32, cultist_hp: i32) -> Co
     }
 
     let player = PlayerCombatState {
+        observed_draws: smallvec::SmallVec::new(),
+        observed_draw_failed: false,
         hand: SmallVec::new(),
         draw,
         discard: SmallVec::new(),

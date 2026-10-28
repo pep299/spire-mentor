@@ -35,7 +35,7 @@ pub(crate) fn drink_touch_of_insanity(
             // selected the free RAMPAGE+1 off raw `cost > 0` and made it
             // free for the whole combat). The raw cost stays as a guard so
             // X-cost (-1) cards remain excluded.
-            if c.combat_var(sts2_core::cards::VarKey::FreeThisTurn) != 0 {
+            if c.local_energy_cost.is_none() && c.combat_var(sts2_core::cards::VarKey::FreeThisTurn) != 0 {
                 return false;
             }
             // C# filters on `CostsEnergyOrStars` — energy OR stars. A Regent
@@ -52,7 +52,14 @@ pub(crate) fn drink_touch_of_insanity(
         [uid] => {
             // FirstOrDefault: a single cost-bearing card, set free directly.
             let idx = uid.0.get() as usize - 1;
-            state.cards[idx].cost = 0;
+            if state.cards[idx].local_energy_cost.is_some() {
+                state.cards[idx].add_local_cost_modifier(sts2_core::cards::LocalCostModifier {
+                    kind: sts2_core::cards::LocalCostModifierKind::Absolute,
+                    amount: 0, reduce_only: false, expiration: 0,
+                });
+            } else {
+                state.cards[idx].cost = 0;
+            }
             // C# `SetToFreeThisCombat` zeros the star cost too (a Regent star
             // card freed this way is playable regardless of stars).
             state.cards[idx].set_combat_var(sts2_core::cards::VarKey::StarCostFreeThisCombat, 1);

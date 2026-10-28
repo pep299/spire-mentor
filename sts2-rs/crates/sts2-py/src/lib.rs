@@ -221,6 +221,8 @@ fn build_encounter_state(
     }
 
     let player = PlayerCombatState {
+        observed_draws: smallvec::SmallVec::new(),
+        observed_draw_failed: false,
         hand: SmallVec::new(),
         draw,
         discard: SmallVec::new(),
@@ -812,6 +814,24 @@ impl PyCombatState {
         Ok(())
     }
 
+    /// Resolve a complete public selection without MCTS's incremental-pick protocol.
+    fn resolve_public_choice(&mut self, selection: Vec<u8>) -> PyResult<()> {
+        let pending = self.inner.pending_choice.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyValueError::new_err("no public choice is open")
+        })?;
+        let distinct: std::collections::HashSet<_> = selection.iter().copied().collect();
+        if !pending.picked.is_empty()
+            || selection.len() < usize::from(pending.min_select)
+            || selection.len() > usize::from(pending.max_select)
+            || selection.iter().any(|&i| usize::from(i) >= pending.options.len())
+            || distinct.len() != selection.len()
+        {
+            return Err(pyo3::exceptions::PyValueError::new_err("invalid complete public selection"));
+        }
+        sts2_core::resolve_choice_atomic_apply(&mut self.inner, &selection);
+        Ok(())
+    }
+
     /// Run the engine's structural invariant suite against the current
     /// (UNCLAMPED) internal state and return the first violation message, or
     /// `None` when all invariants hold.
@@ -1184,9 +1204,10 @@ impl PyCombatState {
                 .get_by_id(puid.0)
                 .is_some_and(|p| p.kind == sts2_core::powers::PowerKind::Sloth)
         });
-        if !sloth_disclosed_the_count {
+        if !sloth_disclosed_the_count && !self.inner.combat_log.public_started_history {
             self.inner.player.card_plays_started_this_turn =
                 carried.inner.player.card_plays_started_this_turn;
+            self.inner.combat_log.cards_started_this_turn = carried.inner.combat_log.cards_started_this_turn;
         }
         // The rest of the GH #370 accumulator class. Each is a plain per-turn
         // or per-combat tally that content reads as a gate and no producer
@@ -1319,7 +1340,9 @@ impl PyCombatState {
             dst.unblocked_damage_received_this_combat = src.unblocked_damage_received_this_combat;
             dst.energy_spent_this_turn = src.energy_spent_this_turn;
             dst.zero_cost_attacks_played_this_turn = src.zero_cost_attacks_played_this_turn;
-            dst.card_plays_finished_this_turn = src.card_plays_finished_this_turn;
+            if !dst.public_finished_history {
+                dst.card_plays_finished_this_turn = src.card_plays_finished_this_turn;
+            }
             dst.card_plays_finished_last_player_turn = src.card_plays_finished_last_player_turn;
             dst.cards_discarded_this_turn = src.cards_discarded_this_turn;
             dst.lightning_orbs_channeled_this_combat = src.lightning_orbs_channeled_this_combat;
@@ -1329,8 +1352,10 @@ impl PyCombatState {
             dst.joss_paper_ethereal_count = src.joss_paper_ethereal_count;
             dst.block_zero_at_turn_end = src.block_zero_at_turn_end;
             dst.block_before_late_turn_end = src.block_before_late_turn_end;
-            dst.unmovable_card_block_plays
-                .clone_from(&src.unmovable_card_block_plays);
+            if !dst.public_block_history {
+                dst.unmovable_card_block_plays.clone_from(&src.unmovable_card_block_plays);
+                dst.next_card_play = src.next_card_play;
+            }
             // The HistoryCourse slots, with the uid component dropped — the
             // reconstruction reallocated every CardUid, and
             // `listener_history_course` already falls back to
@@ -1736,6 +1761,115 @@ impl PyCombatState {
             post_effect: carried_post,
             picked: smallvec::SmallVec::new(),
         });
+        Ok(())
+    }
+
+    /// Condition replay on a finite sequence of draws already visible to the player.
+    fn condition_observed_draws(&mut self, cards: &Bound<'_, PyList>) -> PyResult<()> {
+        let mut observed = smallvec::SmallVec::new();
+        for (index, item) in cards.iter().enumerate() {
+            let option = self.parse_injected_option(item.downcast::<PyDict>()?, index)?;
+            let uid = option.card_uid.ok_or_else(|| pyo3::exceptions::PyValueError::new_err(
+                "observed draw requires an existing card locator"))?;
+            observed.push(uid);
+        }
+        self.inner.player.observed_draws = observed;
+        self.inner.player.observed_draw_failed = false;
+        Ok(())
+    }
+
+    fn observed_draws_consumed(&self) -> bool {
+        self.inner.player.observed_draws.is_empty() && !self.inner.player.observed_draw_failed
+    }
+
+    fn local_cost_signature<'py>(&self, data: &Bound<'py, PyDict>) -> PyResult<Bound<'py, PyAny>> {
+        let card = state_dict::card_from_dict(data, CardUid::new(1).expect("nonzero"), "card")?;
+        match card.local_energy_cost {
+            Some(model) => value_to_py(data.py(), &sts2_wire::emit::combat::local_cost_value(model)),
+            None => Ok(data.py().None().into_bound(data.py())),
+        }
+    }
+
+    fn open_generated_choice(
+        &mut self,
+        kind: &str,
+        cards: &Bound<'_, PyList>,
+        min_select: u8,
+        max_select: u8,
+        can_skip: bool,
+    ) -> PyResult<()> {
+        if !choice_kind_is_generative(kind)? {
+            return Err(pyo3::exceptions::PyValueError::new_err("choice is not generative"));
+        }
+        let mut templates = Vec::with_capacity(cards.len());
+        let mut options = Vec::with_capacity(cards.len());
+        for (index, item) in cards.iter().enumerate() {
+            let data = item.downcast::<PyDict>()?;
+            let raw = u32::try_from(self.inner.cards.len() + index + 1)
+                .map_err(|_| pyo3::exceptions::PyValueError::new_err("too many card templates"))?;
+            let uid = CardUid::new(raw).ok_or_else(|| pyo3::exceptions::PyValueError::new_err("invalid card uid"))?;
+            let card = state_dict::card_from_dict(data, uid, "generated_choice")?;
+            let option = PyDict::new(cards.py());
+            option.set_item("id", card.card_id.to_python_name())?;
+            option.set_item("upgraded", card.upgraded)?;
+            options.push(option);
+            templates.push(card);
+        }
+        let offered = PyList::new(cards.py(), options)?;
+        self.open_injected_choice(kind, &offered, min_select, max_select, can_skip, true)?;
+        self.inner.cards.extend(templates);
+        let base = self.inner.cards.len() - cards.len();
+        let pending = self.inner.pending_choice.as_mut().expect("choice was opened");
+        for (index, option) in pending.options.iter_mut().enumerate() {
+            option.card_uid = Some(self.inner.cards[base + index].uid);
+        }
+        Ok(())
+    }
+
+    /// Re-enter the one relic hook currently waiting for the player's public choice.
+    fn open_relic_start_choice(
+        &mut self,
+        relic: &str,
+    ) -> PyResult<()> {
+        use sts2_core::relic_effects as effects;
+        use sts2_core::relics::RelicId;
+        if self.inner.game_version < sts2_core::GameVersion::V0_111_0 {
+            return Err(pyo3::exceptions::PyValueError::new_err("public start-choice reconstruction requires v0.111.0"));
+        }
+        let id = match relic {
+            "TOOLBOX" => RelicId::Toolbox,
+            "TOASTY_MITTENS" => RelicId::ToastyMittens,
+            "GAMBLING_CHIP" => RelicId::GamblingChip,
+            "CHOICES_PARADOX" => RelicId::ChoicesParadox,
+            _ => return Err(pyo3::exceptions::PyValueError::new_err("unsupported start-choice relic")),
+        };
+        let index = self.inner.relics.iter().position(|r| Some(r.kind) == id.to_relic_kind() && !r.is_melted)
+            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("start-choice relic is not equipped"))?;
+        if self.inner.pending_choice.is_some() {
+            return Err(pyo3::exceptions::PyValueError::new_err("start choice is already open"));
+        }
+        if matches!(id, RelicId::Toolbox | RelicId::ChoicesParadox) {
+            self.inner.relics[index].counter = 0;
+        }
+        if id == RelicId::Toolbox {
+            let listener = effects::lookup_before_hand_draw(id)
+                .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("missing before-draw listener"))?;
+            listener(&mut self.inner);
+        } else {
+            let listener = effects::lookup_after_player_turn_start(id)
+                .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("missing turn-start listener"))?;
+            listener(&mut self.inner);
+        }
+        if self.inner.pending_choice.is_none() {
+            return Err(pyo3::exceptions::PyValueError::new_err("relic did not request a choice"));
+        }
+        if id == RelicId::Toolbox {
+            let count = sts2_core::combat_loop::player_hand_draw_count(&mut self.inner);
+            let next = u8::try_from(index + 1).map_err(|_| pyo3::exceptions::PyValueError::new_err("too many equipped relics"))?;
+            self.inner.pending_relic_hand_draw_resume = Some((count, next));
+        } else if !self.arm_turn_start_resume(relic)? {
+            return Err(pyo3::exceptions::PyValueError::new_err("turn-start continuation could not be armed"));
+        }
         Ok(())
     }
 
@@ -4819,6 +4953,146 @@ mod tests {
                 cs.inner.pending_choice.is_none(),
                 "resolving must close the choice"
             );
+        });
+    }
+
+    fn equip_start_fixture(cs: &mut PyCombatState, kind: sts2_core::RelicKind) {
+        use sts2_core::{Relic, RelicKind};
+        cs.inner.game_version = sts2_core::GameVersion::V0_111_0;
+        for kind in [kind, RelicKind::MercuryHourglass, RelicKind::Lantern] {
+            let id = std::num::NonZeroU32::new(cs.inner.relics.len() as u32 + 1).unwrap();
+            cs.inner.relics.push(Relic {id,kind,counter:0,is_wax:false,is_melted:false});
+        }
+    }
+
+    fn resolve_public_choice(cs: &mut PyCombatState, py: Python<'_>, index: u8) {
+        let action = PyDict::new(py);
+        action.set_item("action", "choose").unwrap();
+        action.set_item("index", index).unwrap();
+        cs.apply_step(action.as_any()).unwrap();
+    }
+
+    fn assert_start_tail_once(cs: &mut PyCombatState) {
+        assert_eq!(cs.inner.player.energy, 4, "Lantern follows the selected hook exactly once");
+        let enemy = cs.inner.creatures.iter().find(|c| cs.inner.enemy_uids.contains(&sts2_core::CreatureUid(c.id))).unwrap();
+        assert_eq!(enemy.current_hp,37,"Mercury Hourglass follows the selected hook exactly once");
+        assert!(cs.inner.pending_choice.is_none());
+        assert!(cs.inner.pending_cluster_resume.is_none());
+        assert_eq!(cs.inner.phase,sts2_core::CombatPhase::PlayerPlayPhase);
+        let before = (cs.inner.player.energy,enemy.current_hp,cs.inner.player.hand.len());
+        sts2_core::apply(&mut cs.inner, Action::ResolveChoice {selection:smallvec::smallvec![0]});
+        let hp = cs.inner.creatures.iter().find(|c| cs.inner.enemy_uids.contains(&sts2_core::CreatureUid(c.id))).unwrap().current_hp;
+        assert_eq!((cs.inner.player.energy,hp,cs.inner.player.hand.len()),before,"a consumed continuation cannot run again");
+    }
+
+    #[test]
+    fn public_start_choice_toasty_exhausts_then_grants_strength_before_remaining_hooks() {
+        Python::with_gil(|py| {
+            let mut cs = mirror_fixture(py);
+            equip_start_fixture(&mut cs,sts2_core::RelicKind::ToastyMittens);
+            let selected = cs.inner.player.hand[0];
+            cs.open_relic_start_choice("TOASTY_MITTENS").unwrap();
+            assert_eq!(cs.inner.player_power_amount(sts2_core::PowerKind::Strength),0);
+            assert_eq!(cs.inner.player.energy,3);
+            assert_eq!(cs.inner.pending_choice.as_ref().unwrap().post_effect,Some(sts2_core::PostChoiceEffect::GainStrength(1)));
+            resolve_public_choice(&mut cs,py,0);
+            assert!(cs.inner.player.exhaust.contains(&selected));
+            assert_eq!(cs.inner.player_power_amount(sts2_core::PowerKind::Strength),1);
+            assert_start_tail_once(&mut cs);
+        });
+    }
+
+    #[test]
+    fn public_start_choice_gambling_discards_and_draws_before_remaining_hooks() {
+        Python::with_gil(|py| {
+            let mut cs = mirror_fixture(py);
+            equip_start_fixture(&mut cs,sts2_core::RelicKind::GamblingChip);
+            let selected = cs.inner.player.hand[0];
+            let next_draw = cs.inner.player.draw[0];
+            cs.open_relic_start_choice("GAMBLING_CHIP").unwrap();
+            resolve_public_choice(&mut cs,py,0);
+            assert!(cs.inner.pending_choice.is_some(), "one pick remains staged until the optional selection is confirmed");
+            let confirm=PyDict::new(py);
+            confirm.set_item("action","choose").unwrap();
+            confirm.set_item("selection",Vec::<u8>::new()).unwrap();
+            cs.apply_step(confirm.as_any()).unwrap();
+            assert!(cs.inner.player.discard.contains(&selected));
+            assert!(cs.inner.player.hand.contains(&next_draw));
+            assert_eq!(cs.inner.player.hand.len(),2);
+            assert_start_tail_once(&mut cs);
+        });
+    }
+
+    #[test]
+    fn public_choice_single_pick_completes_optional_multi_select_atomically() {
+        Python::with_gil(|py| {
+            let mut cs = mirror_fixture(py);
+            equip_start_fixture(&mut cs, sts2_core::RelicKind::GamblingChip);
+            let selected = cs.inner.player.hand[0];
+            let next_draw = cs.inner.player.draw[0];
+            cs.open_relic_start_choice("GAMBLING_CHIP").unwrap();
+            assert!(cs.resolve_public_choice(vec![0, 0]).is_err());
+            assert!(cs.inner.player.hand.contains(&selected));
+            assert!(cs.inner.pending_choice.is_some());
+            cs.resolve_public_choice(vec![0]).unwrap();
+            assert!(cs.inner.player.discard.contains(&selected));
+            assert!(cs.inner.player.hand.contains(&next_draw));
+            assert_start_tail_once(&mut cs);
+            assert!(cs.resolve_public_choice(vec![0]).is_err());
+        });
+    }
+
+    #[test]
+    fn public_start_choice_choices_paradox_adds_permanent_retain_then_remaining_hooks() {
+        Python::with_gil(|py| {
+            let mut cs = mirror_fixture(py);
+            equip_start_fixture(&mut cs,sts2_core::RelicKind::ChoicesParadox);
+            cs.open_relic_start_choice("CHOICES_PARADOX").unwrap();
+            resolve_public_choice(&mut cs,py,0);
+            let added = *cs.inner.player.hand.last().unwrap();
+            let card = &cs.inner.cards[added.get() as usize - 1];
+            assert!(card.keyword_override.unwrap().contains(sts2_core::cards::KeywordOverride::RETAIN));
+            assert!(!cs.inner.player.retain_this_turn.contains(&added));
+            assert_start_tail_once(&mut cs);
+        });
+    }
+
+    #[test]
+    fn public_start_choice_toolbox_resumes_later_before_draw_hooks_and_one_modified_draw() {
+        Python::with_gil(|py| {
+            use sts2_core::{Relic,RelicKind};
+            let mut cs = mirror_fixture(py);
+            equip_start_fixture(&mut cs,RelicKind::Toolbox);
+            cs.inner.player.draw.extend(cs.inner.player.hand.drain(..));
+            let prototype = cs.inner.cards[0];
+            for _ in 0..10 { let _ = cs.inner.add_card_to_draw_pile(prototype); }
+            let power = sts2_core::build_card_for_version(sts2_core::cards::CardId::Inflame,false,cs.inner.game_version).unwrap();
+            let power = cs.inner.add_card_to_draw_pile(power);
+            for kind in [RelicKind::BagOfPreparation,RelicKind::JeweledMask] {
+                let id=std::num::NonZeroU32::new(cs.inner.relics.len() as u32+1).unwrap();
+                cs.inner.relics.push(Relic{id,kind,counter:0,is_wax:false,is_melted:false});
+            }
+            let draw_before=cs.inner.player.draw.len();
+            cs.open_relic_start_choice("TOOLBOX").unwrap();
+            assert_eq!(cs.inner.player.draw.len(),draw_before);
+            resolve_public_choice(&mut cs,py,0);
+            assert_eq!(cs.inner.player.hand.len(),9,"selected + Jeweled Mask + modified draw of seven");
+            assert_eq!(cs.inner.player.draw.len(),draw_before-8);
+            assert!(cs.inner.player.hand.contains(&power));
+            assert_eq!(cs.inner.cards[power.get() as usize-1].combat_var(sts2_core::cards::VarKey::FreeThisTurn),1,"the later BeforeHandDraw listener ran after selection");
+            assert_start_tail_once(&mut cs);
+        });
+    }
+
+    #[test]
+    fn public_start_choice_keeps_the_hooks_required_arity() {
+        Python::with_gil(|py| {
+            let mut cs=mirror_fixture(py);
+            equip_start_fixture(&mut cs,sts2_core::RelicKind::ChoicesParadox);
+            cs.open_relic_start_choice("CHOICES_PARADOX").unwrap();
+            let pending=cs.inner.pending_choice.as_ref().unwrap();
+            assert_eq!((pending.min_select,pending.max_select,pending.can_skip),(1,1,false));
+            assert_eq!(pending.options.len(),5);
         });
     }
 

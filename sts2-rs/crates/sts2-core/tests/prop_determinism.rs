@@ -36,6 +36,8 @@ fn make_draw_pile() -> SmallVec<[CardUid; 32]> {
 
 fn make_player() -> PlayerCombatState {
     PlayerCombatState {
+        observed_draws: smallvec::SmallVec::new(),
+        observed_draw_failed: false,
         hand: SmallVec::new(),
         draw: make_draw_pile(),
         discard: SmallVec::new(),

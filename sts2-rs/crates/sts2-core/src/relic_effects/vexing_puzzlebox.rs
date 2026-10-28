@@ -3,19 +3,10 @@ use super::prelude::*;
 
 /// `VexingPuzzlebox.after_side_turn_start` — round-1 PLAYER side:
 /// sample 1 distinct card from the player's character pool, set its
-/// cost to 0, route into hand. Per C# canon
+/// cost to 0 until played or turn end, route into hand. Per C# canon
 /// `VexingPuzzlebox.cs::AfterPlayerTurnStart`:
 ///
 /// [decompiled C# omitted — see the cited path]
-///
-/// "Free this turn" is modeled as a permanent `cost = 0` on the
-/// freshly generated instance: the instance is created for this combat
-/// only and the round-1 trigger fires once. Slight semantic drift vs.
-/// the C# per-turn cost override (a held card would re-pay on turn 2),
-/// but acceptable for parity given expected play patterns. Python pin
-/// `relics/rare.py::VexingPuzzlebox` references a
-/// `combat.generate_free_card_in_hand(owner)` stub that doesn't exist
-/// in the pin — C# decompilation is the source of truth.
 ///
 /// Gracefully no-ops when the player's character is unset, the
 /// character sampler isn't installed (core-only test build), or the
@@ -41,7 +32,7 @@ pub(crate) fn on_after_side_turn_start_vexing_puzzlebox(
     }
     for &uid in &uids {
         if let Some(card) = crate::card_by_uid_mut(&mut state.cards, uid) {
-            card.cost = 0;
+            card.set_combat_var(crate::cards::VarKey::FreeThisTurn, 1);
         }
     }
     crate::card_effects::route_generated_into_hand(state, &uids);

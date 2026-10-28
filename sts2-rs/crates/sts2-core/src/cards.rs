@@ -833,6 +833,145 @@ pub type CombatVars = crate::inline_kv::InlineKv<VarKey, 16>;
 /// the 2-inline typical stack. Overflow panics loudly.
 pub type CardEnchantments = crate::inline_kv::InlineKv<EnchantmentId, 6>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LocalCostModifierKind {
+    Absolute,
+    Relative,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LocalCostModifier {
+    pub kind: LocalCostModifierKind,
+    pub amount: i32,
+    pub reduce_only: bool,
+    pub expiration: u8,
+}
+
+/// Ordered local modifiers reduce to an affine function capped by constants.
+/// The suffix offset preserves how absolute operands clamp on a base upgrade.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LocalCostFunction {
+    pub offset: i32,
+    pub ceiling: i32,
+    pub absolute_offset: i32,
+    pub uses_base: bool,
+}
+
+impl Default for LocalCostFunction {
+    fn default() -> Self {
+        Self {
+            offset: 0,
+            ceiling: i32::MAX,
+            absolute_offset: i32::MAX,
+            uses_base: true,
+        }
+    }
+}
+
+impl LocalCostFunction {
+    fn append(&mut self, modifier: LocalCostModifier) {
+        match modifier.kind {
+            LocalCostModifierKind::Relative => {
+                let amount = if modifier.reduce_only {
+                    modifier.amount.min(0)
+                } else {
+                    modifier.amount
+                };
+                self.offset = self.offset.saturating_add(amount);
+                if self.ceiling != i32::MAX {
+                    self.ceiling = self.ceiling.saturating_add(amount);
+                }
+                if self.absolute_offset != i32::MAX {
+                    self.absolute_offset = self.absolute_offset.saturating_add(amount);
+                }
+            }
+            LocalCostModifierKind::Absolute => {
+                if modifier.reduce_only {
+                    self.ceiling = self.ceiling.min(modifier.amount);
+                    self.absolute_offset = self.absolute_offset.min(0);
+                } else {
+                    self.offset = 0;
+                    self.ceiling = modifier.amount;
+                    self.absolute_offset = 0;
+                    self.uses_base = false;
+                }
+            }
+        }
+    }
+
+    fn value(self, base: i32) -> i32 {
+        let value = if self.uses_base {
+            base.saturating_add(self.offset)
+        } else {
+            self.ceiling
+        };
+        value.min(self.ceiling).max(0)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LocalEnergyCost {
+    pub base: i32,
+    pub costs_x: bool,
+    pub functions: [LocalCostFunction; 4],
+}
+
+impl LocalEnergyCost {
+    #[must_use]
+    pub fn new(base: i32, costs_x: bool) -> Self {
+        Self {
+            base,
+            costs_x,
+            functions: [LocalCostFunction::default(); 4],
+        }
+    }
+
+    pub fn append(&mut self, modifier: LocalCostModifier) {
+        for (function, expired) in self.functions.iter_mut().zip([0, 2, 4, 6]) {
+            if modifier.expiration & expired == 0 {
+                function.append(modifier);
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn costs(self) -> [i32; 4] {
+        if self.costs_x {
+            [-1; 4]
+        } else if self.base < 0 {
+            [self.base; 4]
+        } else {
+            self.functions.map(|f| f.value(self.base))
+        }
+    }
+
+    pub fn expire(&mut self, expiration: u8) {
+        self.functions = match expiration {
+            2 => [
+                self.functions[1], self.functions[1], self.functions[3], self.functions[3],
+            ],
+            4 => [
+                self.functions[2], self.functions[3], self.functions[2], self.functions[3],
+            ],
+            6 => [self.functions[3]; 4],
+            _ => self.functions,
+        };
+    }
+
+    pub fn upgrade_base(&mut self, delta: i32) {
+        self.base = self.base.saturating_add(delta);
+        if delta >= 0 {
+            return;
+        }
+        for function in &mut self.functions {
+            if function.absolute_offset != i32::MAX {
+                let clamp = self.base.saturating_add(function.absolute_offset);
+                function.ceiling = function.ceiling.min(clamp);
+            }
+        }
+    }
+}
+
 /// Concrete card POD. Mirrors the load-bearing fields of
 /// `sts2_env/cards/card.py::CardInstance`. Bead sts2-rs-ov4 (P6-1) added
 /// `combat_vars` (per-combat scratch state for Rampage / Claw / etc.) and
@@ -862,6 +1001,7 @@ pub struct Card {
     pub uid: CardUid,
     pub card_id: CardId,
     pub cost: i8,
+    pub local_energy_cost: Option<LocalEnergyCost>,
     pub card_type: CardType,
     pub target_type: TargetType,
     pub upgraded: bool,
@@ -930,15 +1070,17 @@ pub struct Card {
 }
 
 // Layout tripwire: the card arena (`CombatState.cards: Vec<Card>`) is
-// memcpy-cloned 2–3× per MCTS simulation, so every byte here is hot. 224 =
+// memcpy-cloned 2–3× per MCTS simulation, so every byte here is hot. The legacy 224 =
 // 40 (scalar fields) + 132 (CombatVars, cap 16) + 52 (CardEnchantments,
 // cap 6). The 160→224 growth is the deliberate GH #474 capacity raise
 // (clone bench 2026-08-18: combatstate_clone_grown_arena_48 3.03→3.05µs,
 // +0.5%; the isolated card_arena_clone_48 memcpy 94→116ns).
+// Exact observed energy modifiers add a fixed Copy function model; no heap
+// allocation or per-card clone traversal is introduced.
 // If this fires, you grew `Card` — decide deliberately (and re-run the
 // grown-arena clone bench in sts2-bench) rather than letting it drift.
 const _: () = assert!(
-    core::mem::size_of::<Card>() == 224,
+    core::mem::size_of::<Card>() == 224 + core::mem::size_of::<Option<LocalEnergyCost>>(),
     "size_of::<Card>() changed — see the comment above this assert"
 );
 
@@ -958,6 +1100,7 @@ impl Card {
             uid: CardUid::new(1).expect("non-zero"),
             card_id: CardId::StrikeIronclad,
             cost: 1,
+            local_energy_cost: None,
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -1032,7 +1175,131 @@ impl Card {
     /// Set / overwrite a `combat_vars` slot. Inserts a new entry if absent.
     #[inline]
     pub fn set_combat_var(&mut self, key: VarKey, value: i32) {
+        let old = self.combat_vars.get(key);
         self.combat_vars.set(key, value);
+        if self.local_energy_cost.is_some() {
+            let modifier = match key {
+                VarKey::FreeThisTurn if value != 0 => Some(LocalCostModifier {
+                    kind: LocalCostModifierKind::Absolute, amount: 0, reduce_only: false, expiration: 6 }),
+                VarKey::FreeUntilPlayed if value != 0 => Some(LocalCostModifier {
+                    kind: LocalCostModifierKind::Absolute, amount: 0, reduce_only: false, expiration: 4 }),
+                VarKey::CostReductionUntilPlayed if value > old => Some(LocalCostModifier {
+                    kind: LocalCostModifierKind::Relative, amount: old - value, reduce_only: false, expiration: 4 }),
+                _ => None,
+            };
+            if let Some(modifier) = modifier { self.add_local_cost_modifier(modifier); }
+        }
+    }
+
+    pub fn set_local_energy_cost(&mut self, model: LocalEnergyCost) {
+        self.local_energy_cost = Some(model);
+        self.cost = i8::try_from(model.costs()[0]).expect("local card cost fits i8");
+        for key in [VarKey::StompCostReductionThisTurn, VarKey::PinpointCostReductionThisTurn,
+            VarKey::SneckoCostDeltaThisTurn, VarKey::SneckoRollLive, VarKey::CostReductionUntilPlayed,
+            VarKey::WireTransientCostThisTurn, VarKey::WireCostExpiringOnPlay, VarKey::WireCostStable] {
+            self.combat_vars.zero(key);
+        }
+        if model.functions[0].absolute_offset != i32::MAX { self.combat_vars.set(VarKey::CostAbsolutelySet, 1); }
+        else { self.combat_vars.zero(VarKey::CostAbsolutelySet); }
+    }
+
+    /// Finish construction of a fresh POD before combat listeners can mutate
+    /// its cost. A legacy card with collapsed cost banks keeps that model.
+    pub fn initialize_local_energy_cost(&mut self, version: crate::GameVersion) {
+        if version < crate::GameVersion::V0_111_0 { return; }
+        if self.local_energy_cost.is_some()
+            || [VarKey::CostAbsolutelySet, VarKey::StompCostReductionThisTurn,
+                VarKey::PinpointCostReductionThisTurn, VarKey::SneckoCostDeltaThisTurn,
+                VarKey::SneckoRollLive, VarKey::WireTransientCostThisTurn,
+                VarKey::WireCostExpiringOnPlay, VarKey::WireCostStable]
+                .into_iter().any(|key| self.combat_var(key) != 0)
+        { return; }
+        let costs_x = self.is_x_cost();
+        let mut model = LocalEnergyCost::new(if costs_x { 0 } else { i32::from(self.cost) }, costs_x);
+        for (key, expiration) in [(VarKey::FreeThisTurn, 6), (VarKey::FreeUntilPlayed, 4)] {
+            if self.combat_var(key) != 0 {
+                model.append(LocalCostModifier { kind: LocalCostModifierKind::Absolute,
+                    amount: 0, reduce_only: false, expiration });
+            }
+        }
+        let reduction = self.combat_var(VarKey::CostReductionUntilPlayed);
+        if reduction != 0 {
+            model.append(LocalCostModifier { kind: LocalCostModifierKind::Relative,
+                amount: -reduction, reduce_only: false, expiration: 4 });
+        }
+        self.set_local_energy_cost(model);
+    }
+
+    pub fn add_local_cost_modifier(&mut self, modifier: LocalCostModifier) {
+        let mut model = self.local_energy_cost.unwrap_or_else(|| {
+            let mut model = LocalEnergyCost::new(i32::from(self.cost), self.is_x_cost());
+            let costs = self.local_costs_after_expiration();
+            for (function, cost) in model.functions.iter_mut().zip(costs) {
+                function.offset = cost - model.base;
+            }
+            model
+        });
+        model.append(modifier);
+        self.set_local_energy_cost(model);
+    }
+
+    pub fn expire_local_energy_cost(&mut self, expiration: u8) {
+        if let Some(mut model) = self.local_energy_cost {
+            model.expire(expiration);
+            self.set_local_energy_cost(model);
+        }
+    }
+
+    /// Local energy costs at current, turn-expired, play-expired and both
+    /// boundaries. Global power/relic cost hooks are deliberately excluded.
+    #[must_use]
+    pub fn local_costs_after_expiration(&self) -> [i32; 4] {
+        if let Some(model) = self.local_energy_cost { return model.costs(); }
+        let local = |card: &Self| {
+            if card.cost < 0 {
+                i32::from(card.cost)
+            } else if card.combat_var(VarKey::FreeThisTurn) != 0
+                || card.combat_var(VarKey::FreeUntilPlayed) != 0
+            {
+                0
+            } else {
+                (i32::from(card.cost) - card.combat_var(VarKey::CostReductionUntilPlayed)).max(0)
+            }
+        };
+        let expire = |card: &mut Self, turn: bool| {
+            if turn {
+                for key in [VarKey::StompCostReductionThisTurn, VarKey::PinpointCostReductionThisTurn] {
+                    card.cost = card.cost.saturating_add(card.combat_var(key) as i8);
+                    card.combat_vars.zero(key);
+                }
+                card.combat_vars.zero(VarKey::FreeThisTurn);
+            } else {
+                card.combat_vars.zero(VarKey::FreeThisTurn);
+                card.combat_vars.zero(VarKey::FreeUntilPlayed);
+                card.combat_vars.zero(VarKey::CostReductionUntilPlayed);
+            }
+            card.expire_snecko_roll();
+            let (key, other) = if turn {
+                (VarKey::WireTransientCostThisTurn, VarKey::WireCostExpiringOnPlay)
+            } else {
+                (VarKey::WireCostExpiringOnPlay, VarKey::WireTransientCostThisTurn)
+            };
+            let bank = card.combat_var(key);
+            if bank != 0 {
+                card.cost = card.cost.saturating_add(bank as i8);
+                card.combat_vars.zero(key);
+                if card.combat_var(other) != 0 {
+                    card.set_combat_var(other, card.combat_var(VarKey::WireCostStable) - i32::from(card.cost));
+                }
+            }
+        };
+        let mut after_turn = *self;
+        expire(&mut after_turn, true);
+        let mut after_play = *self;
+        expire(&mut after_play, false);
+        let mut after_both = after_turn;
+        expire(&mut after_both, false);
+        [local(self), local(&after_turn), local(&after_play), local(&after_both)]
     }
 
     /// Expire this card's Snecko Oil roll, if one is live: C#'s
@@ -1044,6 +1311,9 @@ impl Card {
     /// A bank without the [`VarKey::SneckoRollLive`] marker (a state that
     /// predates it) expires as a roll that raised the flag.
     pub fn expire_snecko_roll(&mut self) {
+        if self.local_energy_cost.is_some() {
+            return;
+        }
         let live = self.combat_var(VarKey::SneckoRollLive);
         let banked = self.combat_var(VarKey::SneckoCostDeltaThisTurn);
         if live == 0 && banked == 0 {
@@ -1217,7 +1487,9 @@ impl Card {
         // turning a rolled 1 on BeaconOfHope+ into the build's 2 (Ironclad mid
         // seed 1809, hand_costs[0] cs=1 rs=2). The default build never gets
         // here.
-        if self.cost == old.cost && self.combat_var(VarKey::CostAbsolutelySet) == 0 {
+        if self.local_energy_cost.is_none()
+            && self.cost == old.cost
+            && self.combat_var(VarKey::CostAbsolutelySet) == 0 {
             self.cost = new.cost;
         }
         if self.base_damage == old.base_damage {
@@ -1293,7 +1565,10 @@ impl Card {
     /// upgraded factory builds of this card's id.
     fn apply_upgrade_delta(&mut self, base: &Card, upgraded: &Card) {
         let cost_delta = upgraded.cost - base.cost;
-        if self.combat_var(VarKey::CostAbsolutelySet) != 0 {
+        if let Some(mut model) = self.local_energy_cost {
+            model.upgrade_base(i32::from(cost_delta));
+            self.set_local_energy_cost(model);
+        } else if self.combat_var(VarKey::CostAbsolutelySet) != 0 {
             // C# `CardEnergyCost.UpgradeBy` (CardEnergyCost.cs:179-200):
             // the upgrade mutates the BASE; an Absolute local modifier
             // (Confused/SneckoOil roll, held in `self.cost` in the
@@ -1376,7 +1651,12 @@ impl Card {
     }
 
     fn revert_upgrade_delta(&mut self, base: &Card, upgraded: &Card) {
-        self.cost = self.cost.saturating_sub(upgraded.cost - base.cost);
+        if let Some(mut model) = self.local_energy_cost {
+            model.upgrade_base(i32::from(base.cost) - i32::from(upgraded.cost));
+            self.set_local_energy_cost(model);
+        } else {
+            self.cost = self.cost.saturating_sub(upgraded.cost - base.cost);
+        }
         self.base_damage = self
             .base_damage
             .saturating_sub(upgraded.base_damage - base.base_damage);
@@ -1425,6 +1705,9 @@ impl Card {
     /// `VarKey`, so the equivalent is the broader combat-vars reset.
     pub fn reset_combat_vars(&mut self) {
         self.combat_vars.clear();
+        if let Some(model) = self.local_energy_cost {
+            self.set_local_energy_cost(LocalEnergyCost::new(model.base, model.costs_x));
+        }
         self.energy_spent = 0;
     }
 
@@ -2032,6 +2315,34 @@ pub fn unknown_middle_uids(player: &PlayerCombatState) -> SmallVec<[CardUid; 32]
 ///
 /// Panics if `player.draw` is empty — callers check first, mirroring the
 /// unchecked `draw.remove(0)` this replaces.
+pub(crate) fn pop_observed_or_next_draw(
+    player: &mut PlayerCombatState,
+    rng: &mut CombatRng,
+) -> Option<CardUid> {
+    let Some(&uid) = player.observed_draws.first() else {
+        return Some(pop_next_card(player, rng));
+    };
+    let pinned = player.pinned_top.iter().find(|u| player.draw.contains(u));
+    if pinned.is_some_and(|top| *top != uid) {
+        player.observed_draw_failed = true;
+        return None;
+    }
+    if player.pinned_bottom.contains(&uid) {
+        let has_middle = player.draw.iter().any(|card| !player.pinned_bottom.contains(card));
+        let bottom = player.pinned_bottom.iter().find(|card| player.draw.contains(card));
+        if has_middle || bottom.is_some_and(|first| *first != uid) {
+            player.observed_draw_failed = true;
+            return None;
+        }
+    }
+    let Some(index) = player.draw.iter().position(|candidate| *candidate == uid) else {
+        player.observed_draw_failed = true;
+        return None;
+    };
+    player.observed_draws.remove(0);
+    Some(player.draw.remove(index))
+}
+
 pub(crate) fn pop_next_card(player: &mut PlayerCombatState, rng: &mut CombatRng) -> CardUid {
     if !player.deferred_draw_order {
         return player.draw.remove(0);
@@ -2662,7 +2973,9 @@ pub fn draw_signaling(
         // choice of which card is drawn to here when
         // `deferred_draw_order` is set — byte-identical `draw.remove(0)`
         // otherwise.
-        let uid = pop_next_card(player, rng);
+        let Some(uid) = pop_observed_or_next_draw(player, rng) else {
+            break;
+        };
         // Bead `sts2-rs-o6xw`: drawing a pinned card consumes its pin.
         unpin(player, uid);
         player.hand.push(uid);
@@ -2773,7 +3086,9 @@ pub fn draw(
         // typical draws on the stack). Bead `sts2-rs-09x5n` (F2):
         // `pop_next_card` defers the random choice to here under
         // `deferred_draw_order` — byte-identical `draw.remove(0)` otherwise.
-        let uid = pop_next_card(player, rng);
+        let Some(uid) = pop_observed_or_next_draw(player, rng) else {
+            break;
+        };
         // Bead `sts2-rs-o6xw`: drawing a pinned card consumes its pin.
         unpin(player, uid);
         // Hand is guaranteed to have room because of the is_hand_full
@@ -2974,10 +3289,166 @@ pub fn draw_via_state(state: &mut crate::CombatState, n: i32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_cost_functions_match_ordered_modifiers_and_upgrade_clamps() {
+        use LocalCostModifierKind::{Absolute, Relative};
+        let cases = [(Relative, -2, false, 0), (Relative, 2, false, 0),
+            (Relative, 2, true, 0), (Absolute, 1, true, 0),
+            (Absolute, 3, false, 0), (Relative, -1, false, 2),
+            (Relative, 1, false, 4), (Absolute, 0, false, 6)]
+            .map(|(kind, amount, reduce_only, expiration)| LocalCostModifier { kind, amount, reduce_only, expiration });
+        for a in cases { for b in cases { for c in cases {
+            let program = [a, b, c];
+            for delta in [0, -1, -3, -6] {
+                let base = 6 + delta;
+                let mut model = LocalEnergyCost::new(6, false);
+                for modifier in program { model.append(modifier); }
+                model.upgrade_base(delta);
+                for (index, expired) in [0, 2, 4, 6].into_iter().enumerate() {
+                    let mut expected = base;
+                    for modifier in program {
+                        if modifier.expiration & expired != 0 { continue; }
+                        let amount = if delta < 0 && modifier.kind == Absolute { modifier.amount.min(base) }
+                            else { modifier.amount };
+                        let modified = if modifier.kind == Absolute { amount } else { expected + amount };
+                        expected = if modifier.reduce_only { expected.min(modified) } else { modified };
+                    }
+                    assert_eq!(model.costs()[index], expected.max(0), "{program:?}, delta {delta}, expired {expired}");
+                }
+            }
+        } } }
+    }
+
+    #[test]
+    fn local_cost_initialization_preserves_clones_and_legacy_banks() {
+        let mut old_build = Card::pod_defaults();
+        old_build.cost = 3;
+        old_build.initialize_local_energy_cost(crate::GameVersion::V0_107_1);
+        assert!(old_build.local_energy_cost.is_none());
+        let mut fresh = Card::pod_defaults();
+        fresh.cost = 3;
+        fresh.set_combat_var(VarKey::FreeThisTurn, 1);
+        fresh.initialize_local_energy_cost(crate::GameVersion::V0_111_0);
+        assert_eq!(fresh.local_costs_after_expiration(), [0, 3, 3, 3]);
+        let mut cloned = fresh.clone_with_seed(7);
+        cloned.initialize_local_energy_cost(crate::GameVersion::V0_111_0);
+        assert_eq!(fresh.local_energy_cost, cloned.local_energy_cost);
+        cloned.reset_combat_vars();
+        assert_eq!(cloned.local_costs_after_expiration(), [3; 4]);
+        let mut legacy = Card::pod_defaults();
+        legacy.set_combat_var(VarKey::WireTransientCostThisTurn, 2);
+        legacy.initialize_local_energy_cost(crate::GameVersion::V0_111_0);
+        assert!(legacy.local_energy_cost.is_none());
+    }
+
+    #[test]
+    fn local_cost_negative_sentinel_bypasses_local_modifiers() {
+        let mut model = LocalEnergyCost::new(-1, false);
+        model.append(LocalCostModifier { kind: LocalCostModifierKind::Relative,
+            amount: 2, reduce_only: false, expiration: 6 });
+        assert_eq!(model.costs(), [-1; 4]);
+        let mut card = Card::pod_defaults();
+        card.cost = -1;
+        card.card_type = CardType::Status;
+        card.initialize_local_energy_cost(crate::GameVersion::V0_111_0);
+        assert_eq!(card.cost, -1);
+        assert!(!card.is_x_cost());
+        card.local_energy_cost = None;
+        card.card_type = CardType::Attack;
+        card.initialize_local_energy_cost(crate::GameVersion::V0_111_0);
+        assert_eq!(card.local_energy_cost.unwrap().base, 0);
+        assert_eq!(card.local_costs_after_expiration(), [-1; 4]);
+    }
+
+    #[test]
+    fn local_cost_matches_v0111_dll_order_and_upgrade_vectors() {
+        use LocalCostModifierKind::{Absolute, Relative};
+        let mut fixed = LocalEnergyCost::new(1, false);
+        fixed.append(LocalCostModifier { kind: Absolute, amount: 0,
+            reduce_only: false, expiration: 2 });
+        fixed.append(LocalCostModifier { kind: Relative, amount: 2,
+            reduce_only: false, expiration: 4 });
+        assert_eq!(fixed.costs(), [2, 3, 0, 1]);
+        fixed.upgrade_base(-1);
+        assert_eq!(fixed.costs(), [2, 2, 0, 0]);
+        let mut capped = LocalEnergyCost::new(1, false);
+        capped.append(LocalCostModifier { kind: Absolute, amount: 1,
+            reduce_only: true, expiration: 6 });
+        capped.append(LocalCostModifier { kind: Relative, amount: 1,
+            reduce_only: false, expiration: 0 });
+        assert_eq!(capped.costs(), [2; 4]);
+        capped.upgrade_base(-1);
+        assert_eq!(capped.costs(), [1; 4]);
+    }
     use crate::{CardUid, PlayerCombatState};
 
     fn uid(n: u32) -> CardUid {
         CardUid::new(n).expect("non-zero")
+    }
+
+    #[test]
+    fn observed_draws_condition_only_the_visible_prefix() {
+        let mut player = player_with_draw(&[1, 2, 3]);
+        player.observed_draws.push(uid(3));
+        let mut random = rng();
+        assert_eq!(draw(&mut player, 2, &empty_store(), &mut random), 2);
+        assert_eq!(player.hand.as_slice(), &[uid(3), uid(1)]);
+        assert!(player.observed_draws.is_empty());
+        assert!(!player.observed_draw_failed);
+    }
+
+    #[test]
+    fn observed_draws_preserve_the_real_reshuffle_boundary() {
+        let mut player = player_with_draw(&[1]);
+        player.discard.extend([uid(2), uid(3)]);
+        player.observed_draws.extend([uid(1), uid(3)]);
+        let mut random = rng();
+        assert_eq!(draw(&mut player, 2, &empty_store(), &mut random), 2);
+        assert_eq!(player.hand.as_slice(), &[uid(1), uid(3)]);
+        assert!(player.discard.is_empty());
+        assert_eq!(player.draw.as_slice(), &[uid(2)]);
+        assert!(!player.observed_draw_failed);
+    }
+
+    #[test]
+    fn observed_draw_cannot_take_a_card_before_its_reshuffle_or_override_known_top() {
+        let mut player = player_with_draw(&[1, 2]);
+        player.discard.push(uid(3));
+        player.observed_draws.push(uid(3));
+        let mut random = rng();
+        assert_eq!(draw(&mut player, 1, &empty_store(), &mut random), 0);
+        assert!(player.observed_draw_failed);
+        assert_eq!(player.discard.as_slice(), &[uid(3)]);
+        player.observed_draws[0] = uid(2);
+        player.observed_draw_failed = false;
+        player.pinned_top.push(uid(1));
+        assert_eq!(draw(&mut player, 1, &empty_store(), &mut random), 0);
+        assert!(player.observed_draw_failed);
+        assert_eq!(player.draw.as_slice(), &[uid(1), uid(2)]);
+    }
+
+    #[test]
+    fn observed_draw_respects_known_bottom_and_its_order() {
+        let mut player = player_with_draw(&[1, 2, 3]);
+        pin_bottom(&mut player, uid(3));
+        pin_bottom(&mut player, uid(2));
+        player.observed_draws.push(uid(2));
+        let mut random = rng();
+        assert_eq!(draw(&mut player, 1, &empty_store(), &mut random), 0);
+        assert!(player.observed_draw_failed);
+        player.observed_draw_failed = false;
+        player.observed_draws[0] = uid(1);
+        assert_eq!(draw(&mut player, 1, &empty_store(), &mut random), 1);
+        player.observed_draws.push(uid(3));
+        assert_eq!(draw(&mut player, 1, &empty_store(), &mut random), 0);
+        assert!(player.observed_draw_failed);
+        player.observed_draw_failed = false;
+        player.observed_draws[0] = uid(2);
+        player.observed_draws.push(uid(3));
+        assert_eq!(draw(&mut player, 2, &empty_store(), &mut random), 2);
+        assert_eq!(player.hand.as_slice(), &[uid(1), uid(2), uid(3)]);
+        assert!(player.observed_draws.is_empty());
     }
 
     /// `sts2-rs-pkpgr` (vxvvs.1): structural variant-count pin on
@@ -3193,6 +3664,7 @@ mod tests {
     fn card_pod_round_trips_clone_eq() {
         // The Card POD must satisfy Copy + Eq for use in arena stores.
         let c = Card {
+            local_energy_cost: None,
             uid: uid(1),
             card_id: CardId::StrikeIronclad,
             cost: 1,
@@ -3650,6 +4122,7 @@ mod tests {
 
     fn sample_card(u: u32) -> Card {
         Card {
+            local_energy_cost: None,
             uid: uid(u),
             card_id: CardId::StrikeIronclad,
             cost: 1,
@@ -3720,7 +4193,7 @@ mod tests {
     /// seed 41100016, `CostAbsolutelySet` via net_search forks).
     #[test]
     fn combat_vars_capacity_holds_worst_case_distinct_key_set() {
-        // 16 keys: 11 generic + 3 wire trio + Thrash's pair.
+        // 16 keys: 11 generic + 3 wire costs + Thrash's pair.
         let worst_case = [
             VarKey::FreeThisTurn,
             VarKey::EtherealThisCombat,

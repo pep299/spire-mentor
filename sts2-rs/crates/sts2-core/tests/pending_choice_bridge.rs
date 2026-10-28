@@ -81,6 +81,7 @@ fn build_arena(options_json: &[Value]) -> (CardStore, Vec<ChoiceOption>) {
             _ => CardType::Skill,
         };
         arena.push(Card {
+            local_energy_cost: None,
             uid,
             card_id,
             cost: 1,

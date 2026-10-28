@@ -15,11 +15,7 @@ use super::prelude::*;
 /// set. Selection now uses the `CombatCardSelection` RNG (`NextItem` ==
 /// `NextInt(0, count)`), replacing the prior Python-pin first-card pick.
 ///
-/// Fidelity caveats: (a) the −1 is applied as a direct `card.cost`
-/// decrement (combat-lifetime POD, reset at combat start) rather than C#'s
-/// `AddUntilPlayed(-1)` until-played modifier — the two differ only if the
-/// reduced retained card is played and redrawn within the same combat;
-/// (b) `c.cost` is the local (non-global-modifier) cost, matching
+/// `c.cost` is the local (non-global-modifier) cost, matching
 /// `GetWithModifiers(CostModifiers.Local)`. Bead `sts2-rs-gsda` (initial) /
 /// `…wb8lk.9` (v0.107.1 AfterFlush + random pick).
 pub(crate) fn on_after_turn_end_bookmark(state: &mut CombatState, side: Side) -> EffectResult {
@@ -40,7 +36,7 @@ pub(crate) fn on_after_turn_end_bookmark(state: &mut CombatState, side: Side) ->
             crate::card_by_uid(&state.cards, *uid).is_some_and(|c| {
                 c.cost > 0
                     && !c.is_x_cost()
-                    && c.combat_var(crate::cards::VarKey::FreeThisTurn) == 0
+                    && (c.local_energy_cost.is_some() || c.combat_var(crate::cards::VarKey::FreeThisTurn) == 0)
             })
         })
         .collect();
@@ -54,7 +50,14 @@ pub(crate) fn on_after_turn_end_bookmark(state: &mut CombatState, side: Side) ->
         .combat_card_selection
         .next_int_exclusive(0, eligible.len() as i32) as usize];
     if let Some(card) = crate::card_by_uid_mut(&mut state.cards, chosen) {
-        card.cost = (card.cost - 1).max(0);
+        if card.local_energy_cost.is_some() {
+            card.add_local_cost_modifier(crate::cards::LocalCostModifier {
+                kind: crate::cards::LocalCostModifierKind::Relative,
+                amount: -1, reduce_only: false, expiration: 4,
+            });
+        } else {
+            card.cost = (card.cost - 1).max(0);
+        }
     }
     EffectResult::Resolved
 }

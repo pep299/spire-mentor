@@ -65,6 +65,7 @@ fn add_to_hand(state: &mut CombatState, card_id: CardId) -> CardUid {
 /// The multiplicative damage fold applied to 100 base damage.
 fn mul_of_100(state: &CombatState, dealer: CreatureRef, target: CreatureRef) -> i32 {
     let ctx = DamageCtx {
+        card_source: None,
         dealer,
         target,
         props: ValueProps::MOVE,
@@ -652,6 +653,7 @@ fn one_for_all_bonus(cost_paid: i32) -> i32 {
     state.player.play.push(uid);
     state.cards[uid.0.get() as usize - 1].energy_spent = cost_paid;
     let ctx = DamageCtx {
+        card_source: None,
         dealer: CreatureRef::Player,
         target: CreatureRef::Enemy(enemy),
         props: ValueProps::MOVE,

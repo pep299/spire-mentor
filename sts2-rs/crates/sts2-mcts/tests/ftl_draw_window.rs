@@ -77,6 +77,7 @@ fn fixture(
         let raw = u32::try_from(state.cards.len() + 1).expect("fits u32");
         let uid = CardUid::new(raw).expect("non-zero");
         state.cards.push(Card {
+            local_energy_cost: None,
             uid,
             card_id: CardId::StrikeDefect,
             cost: 1,

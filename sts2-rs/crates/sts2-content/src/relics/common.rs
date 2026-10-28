@@ -2127,6 +2127,7 @@ mod tests {
             .map_or(1, |m| m.saturating_add(1));
         let uid = sts2_core::CardUid(NonZeroU32::new(next_raw).expect("non-zero"));
         state.cards.push(Card {
+            local_energy_cost: None,
             uid,
             card_id: CardId::StrikeIronclad,
             cost: 1,

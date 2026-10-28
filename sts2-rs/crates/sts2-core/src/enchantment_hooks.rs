@@ -293,7 +293,14 @@ fn on_card_drawn_stub(state: &mut CombatState, card_uid: CardUid, _from_hand_dra
     }
     let new_cost: i8 = state.run_rng.combat_energy_costs.next_int(0, 3) as i8;
     if let Some(card) = state.cards.get_mut(idx) {
-        card.cost = new_cost;
+        if card.local_energy_cost.is_some() {
+            card.add_local_cost_modifier(crate::cards::LocalCostModifier {
+                kind: crate::cards::LocalCostModifierKind::Absolute,
+                amount: i32::from(new_cost), reduce_only: false, expiration: 0,
+            });
+        } else {
+            card.cost = new_cost;
+        }
     }
 }
 
@@ -434,7 +441,14 @@ fn before_flush_stub(state: &mut CombatState) {
             continue;
         }
         if card.cost > 0 {
-            card.cost -= 1;
+            if card.local_energy_cost.is_some() {
+                card.add_local_cost_modifier(crate::cards::LocalCostModifier {
+                    kind: crate::cards::LocalCostModifierKind::Relative,
+                    amount: -1, reduce_only: false, expiration: 4,
+                });
+            } else {
+                card.cost -= 1;
+            }
         }
     }
 }
@@ -846,6 +860,7 @@ mod tests {
         state.player.hand.clear();
         state.player.play.push(uid(1));
         let powered = crate::hooks::DamageCtx {
+            card_source: None,
             dealer: crate::hooks::CreatureRef::Player,
             target: crate::hooks::CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -879,6 +894,7 @@ mod tests {
         state.player.hand.clear();
         state.player.play.push(uid(1));
         let powered = crate::hooks::DamageCtx {
+            card_source: None,
             dealer: crate::hooks::CreatureRef::Player,
             target: crate::hooks::CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -907,6 +923,7 @@ mod tests {
         state.player.hand.clear();
         state.player.play.push(uid(1));
         let powered = crate::hooks::DamageCtx {
+            card_source: None,
             dealer: crate::hooks::CreatureRef::Player,
             target: crate::hooks::CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -972,6 +989,7 @@ mod tests {
         state.player.hand.clear();
         state.player.play.push(uid(1));
         let powered = crate::hooks::DamageCtx {
+            card_source: None,
             dealer: crate::hooks::CreatureRef::Player,
             target: crate::hooks::CreatureRef::Player,
             props: ValueProps::MOVE,

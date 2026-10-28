@@ -1147,7 +1147,7 @@ impl Policy for SharedPolicy {
 ///
 /// `EdgeAction` decouples the edge identity from the volatile hand
 /// index: for `PlayCard` we capture the **card identity** tuple
-/// `(card_id, upgraded, cost, free, affliction, target)`. At UCT
+/// `(card_id, upgraded, cost, local_cost, free, affliction, target)`. At UCT
 /// descent / expansion
 /// time the edge is resolved back to a concrete `Action::PlayCard`
 /// against the *current* simulation state, by scanning the hand for a
@@ -1182,6 +1182,7 @@ pub enum EdgeAction {
         card_id: sts2_core::cards::CardId,
         upgraded: bool,
         cost: i8,
+        local_cost: Option<sts2_core::cards::LocalEnergyCost>,
         free: bool,
         affliction: Option<sts2_core::card_afflictions::CardAfflictionKind>,
         target: Option<u8>,
@@ -1196,7 +1197,7 @@ impl EdgeAction {
     /// Build an `EdgeAction` from a legal `Action` at the moment of
     /// expansion. For `PlayCard`, looks up the card in `state.cards`
     /// via `state.player.hand[hand_index] -> CardUid` and captures
-    /// `(card_id, upgraded, cost, free, affliction, target)`. For
+    /// `(card_id, upgraded, cost, local_cost, free, affliction, target)`. For
     /// unrecognized hand
     /// indices (shouldn't occur — `legal_actions` only emits valid
     /// indices) falls back to `Other` with the original action so the
@@ -1210,6 +1211,7 @@ impl EdgeAction {
                         card_id: card.card_id,
                         upgraded: card.upgraded,
                         cost: card.cost,
+                        local_cost: card.local_energy_cost,
                         free: sts2_core::hooks::card_cost_locally_zeroed(state, card),
                         affliction: card.affliction.map(|a| a.kind),
                         target: *target,
@@ -1233,6 +1235,7 @@ impl EdgeAction {
                 card_id,
                 upgraded,
                 cost,
+                local_cost,
                 free,
                 affliction,
                 target,
@@ -1249,6 +1252,7 @@ impl EdgeAction {
                     if card.card_id == *card_id
                         && card.upgraded == *upgraded
                         && card.cost == *cost
+                        && card.local_energy_cost == *local_cost
                         && sts2_core::hooks::card_cost_locally_zeroed(state, card) == *free
                         && card.affliction.map(|a| a.kind) == *affliction
                     {
@@ -5776,7 +5780,7 @@ fn depth_cut_value(state: &CombatState, leaf_eval: &LeafEval, cfg: &MctsConfig) 
 ///
 /// Steps:
 /// 1. Sort [`Action::PlayCard`] entries by the [`EdgeAction::PlayCard`]
-///    identity tuple `(card_id, upgraded, cost, free, target)` so equal
+///    identity tuple `(card_id, upgraded, cost, local_cost, free, affliction, target)` so equal
 ///    cards are adjacent.
 /// 2. Collapse adjacent equal `PlayCard` entries — different hand
 ///    indices of the same edge identity back the same tree child.
@@ -5797,7 +5801,7 @@ fn canonicalize_actions(
     //
     // INVARIANT (A8 audit §7b): this key is exactly the
     // [`EdgeAction::PlayCard`] identity tuple `(card_id, upgraded,
-    // cost, free, affliction, target)`, because `EdgeAction` is the identity
+    // cost, local_cost, free, affliction, target)`, because `EdgeAction` is the identity
     // the tree actually keys and resolves edges by. A FINER key here
     // manufactures sibling children that map to the same `EdgeAction`
     // and resolve to the same concrete hand slot — byte-identical
@@ -5821,6 +5825,7 @@ fn canonicalize_actions(
         sts2_core::cards::CardId,
         bool,
         i8,
+        Option<sts2_core::cards::LocalEnergyCost>,
         bool,
         Option<sts2_core::card_afflictions::CardAfflictionKind>,
         Option<u8>,
@@ -5835,6 +5840,7 @@ fn canonicalize_actions(
                     card.card_id,
                     card.upgraded,
                     card.cost,
+                    card.local_energy_cost,
                     sts2_core::hooks::card_cost_locally_zeroed(state, card),
                     card.affliction.map(|a| a.kind),
                     *target,
@@ -6214,6 +6220,67 @@ mod tests {
         assert_eq!(non_free_edge.resolve(&state), Some(non_free_play));
     }
 
+    #[test]
+    fn equal_current_costs_with_different_expirations_keep_separate_edges() {
+        use sts2_core::cards::{Card, CardId, CardType, LocalCostModifier, LocalCostModifierKind, TargetType};
+        let mut state = CombatState::default();
+        for (index, expiration) in [2, 4].into_iter().enumerate() {
+            let uid = sts2_core::CardUid::new(index as u32 + 1).unwrap();
+            let mut card = Card {
+                uid, card_id: CardId::BarricadeCard, cost: 3,
+                card_type: CardType::Power, target_type: TargetType::Self_,
+                ..Card::pod_defaults()
+            };
+            card.add_local_cost_modifier(LocalCostModifier {
+                kind: LocalCostModifierKind::Absolute, amount: 0, reduce_only: false, expiration,
+            });
+            state.cards.push(card);
+            state.player.hand.push(uid);
+        }
+        assert_eq!(state.cards[0].cost, state.cards[1].cost);
+        let plays = smallvec::smallvec![
+            Action::PlayCard { hand_index: 0, target: None },
+            Action::PlayCard { hand_index: 1, target: None },
+        ];
+        assert_eq!(canonicalize_actions(&state, plays).len(), 2);
+        let edge = EdgeAction::from_action(&Action::PlayCard { hand_index: 1, target: None }, &state);
+        state.player.hand.swap(0, 1);
+        assert_eq!(edge.resolve(&state), Some(Action::PlayCard { hand_index: 0, target: None }));
+        state.cards[0].expire_local_energy_cost(2);
+        state.cards[1].expire_local_energy_cost(2);
+        assert_eq!((state.cards[0].cost, state.cards[1].cost), (3, 0));
+    }
+
+    #[test]
+    fn equal_lifetime_costs_with_different_upgrade_semantics_keep_separate_edges() {
+        use sts2_core::cards::{Card, CardId, CardType, LocalCostModifier, LocalCostModifierKind, TargetType};
+        let mut state = CombatState::default();
+        for (index, kind) in [LocalCostModifierKind::Absolute, LocalCostModifierKind::Relative].into_iter().enumerate() {
+            let uid = sts2_core::CardUid::new(index as u32 + 1).unwrap();
+            let mut card = Card {
+                uid, card_id: CardId::BarricadeCard, cost: 3,
+                card_type: CardType::Power, target_type: TargetType::Self_,
+                ..Card::pod_defaults()
+            };
+            card.add_local_cost_modifier(LocalCostModifier {
+                kind, amount: if index == 0 { 1 } else { -2 }, reduce_only: true, expiration: 0,
+            });
+            state.cards.push(card);
+            state.player.hand.push(uid);
+        }
+        assert_eq!(state.cards[0].local_costs_after_expiration(), state.cards[1].local_costs_after_expiration());
+        let plays = smallvec::smallvec![
+            Action::PlayCard { hand_index: 0, target: None },
+            Action::PlayCard { hand_index: 1, target: None },
+        ];
+        assert_eq!(canonicalize_actions(&state, plays).len(), 2);
+        let mut capped = state.cards[0].local_energy_cost.unwrap();
+        let mut relative = state.cards[1].local_energy_cost.unwrap();
+        capped.upgrade_base(-1);
+        relative.upgrade_base(-1);
+        assert_eq!((capped.costs()[0], relative.costs()[0]), (1, 0));
+    }
+
     /// Bead `sts2-rs-y3a28` (b32is.1): try_search (no-arg wrapper)
     /// matches try_search_n's TerminalRoot behavior under the
     /// configured max_simulations budget.
@@ -6478,6 +6545,8 @@ mod tests {
                 ai: None,
             };
             let player = PlayerCombatState {
+                observed_draws: smallvec::SmallVec::new(),
+                observed_draw_failed: false,
                 hand: smallvec::SmallVec::new(),
                 draw,
                 discard: smallvec::SmallVec::new(),
@@ -6756,6 +6825,8 @@ mod tests {
         discard.push(curse_uid);
 
         let player = PlayerCombatState {
+            observed_draws: smallvec::SmallVec::new(),
+            observed_draw_failed: false,
             hand: SmallVec::new(),
             draw: SmallVec::new(),
             discard,
@@ -7110,6 +7181,8 @@ mod tests {
             hand.push(hand_uid);
 
             let player = PlayerCombatState {
+                observed_draws: smallvec::SmallVec::new(),
+                observed_draw_failed: false,
                 hand,
                 draw: SmallVec::new(),
                 discard: SmallVec::new(),
@@ -7304,6 +7377,8 @@ mod tests {
             draw.push(CardUid::new(idx).expect("non-zero"));
         }
         let player = PlayerCombatState {
+            observed_draws: smallvec::SmallVec::new(),
+            observed_draw_failed: false,
             hand: smallvec::SmallVec::new(),
             draw,
             discard: smallvec::SmallVec::new(),
@@ -7476,6 +7551,8 @@ mod tests {
             ai: None,
         };
         let player = PlayerCombatState {
+            observed_draws: smallvec::SmallVec::new(),
+            observed_draw_failed: false,
             hand: smallvec::SmallVec::new(),
             draw,
             discard: smallvec::SmallVec::new(),
@@ -8226,6 +8303,7 @@ mod tests {
         for idx in 1..=10u32 {
             let uid = CardUid::new(idx).expect("non-zero");
             state.cards.push(Card {
+                local_energy_cost: None,
                 uid,
                 card_id: CardId::DefendIronclad,
                 cost: 1,
@@ -8329,6 +8407,7 @@ mod tests {
             let uid = CardUid::new(idx).expect("non-zero");
             let attack = idx % 2 == 1;
             state.cards.push(Card {
+                local_energy_cost: None,
                 uid,
                 card_id: if attack {
                     CardId::StrikeIronclad
@@ -10414,6 +10493,8 @@ mod tests {
         };
 
         let player = PlayerCombatState {
+            observed_draws: smallvec::SmallVec::new(),
+            observed_draw_failed: false,
             hand,
             draw,
             discard: SmallVec::new(),

@@ -293,6 +293,7 @@ pub fn pending_choice_to_bridge_value(pc: &PendingChoice, cards: &[Card]) -> Val
         crate::ChoiceKind::PaelsToothStash => "paels_tooth_stash",
         crate::ChoiceKind::UpgradeInHand => "upgrade_in_hand",
         crate::ChoiceKind::AddFromDrawByType => "add_from_draw_by_type",
+        crate::ChoiceKind::AddFromRandomDrawSubset => "add_from_random_draw_subset",
         crate::ChoiceKind::AddFromDiscardFree => "add_from_discard_free",
         crate::ChoiceKind::DiscardFromHand => "discard_from_hand",
         crate::ChoiceKind::ExhaustFromHand => "exhaust_from_hand",

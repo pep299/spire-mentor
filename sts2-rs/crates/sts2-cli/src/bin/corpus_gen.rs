@@ -3334,6 +3334,8 @@ fn build_combat_state(
     }
 
     let player_state = PlayerCombatState {
+        observed_draws: smallvec::SmallVec::new(),
+        observed_draw_failed: false,
         current_hp: max_hp,
         max_hp,
         block: 0,

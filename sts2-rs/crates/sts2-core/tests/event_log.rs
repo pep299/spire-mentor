@@ -33,6 +33,7 @@ fn make_card(
     base_block: i32,
 ) -> Card {
     Card {
+        local_energy_cost: None,
         uid: CardUid::new(uid_raw).expect("non-zero uid"),
         card_id,
         cost,

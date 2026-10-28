@@ -127,24 +127,11 @@ pub fn install_pool() {
     // has been removed; do NOT re-add a content-side GremlinHorn listener.
     // Bead `sts2-rs-gpsvo`.
 
-    // Bead `sts2-rs-cr4y8`: PenNib doubles the 10th attack's damage.
-    // C# `PenNib.ModifyDamageMultiplicative` returns `2m` — a TRUE
-    // multiplicative on the FULLY-computed attack damage (base +
-    // Strength + other additive bonuses). The prior port (`sts2-rs-w46z`)
-    // routed it through `modify_damage_additive` returning `+base_damage`,
-    // which doubled only the card's BASE and dropped Strength/flat
-    // bonuses (base 10 + Str 3: C# `(10+3)*2 = 26` vs additive
-    // `10+3+10 = 23`). The relic-side `modify_damage_multiplicative`
-    // channel now exists (`sts2-rs-mcsra`), so PenNib composes a `×2`
-    // alongside Vulnerable etc. and floors once — byte-faithful to C#.
-    //
-    // 1. `modify_damage_multiplicative` returns `×2` when the damage is
-    //    a powered attack dealt by the player AND `(relic.counter + 1)
-    //    % THRESHOLD == 0` (the attacks-played count anticipates the
-    //    post-card-played increment, so the active window is
-    //    `counter == 9`).
-    // 2. `after_card_played` increments `relic.counter` when the just-
-    //    played card was an Attack.
+    // PenNib.cs: BeforeCardPlayed increments modulo ten and marks that
+    // card source; an awaited selection must keep the mark until its tail.
+    sts2_core::relic_effects::register_before_card_played(
+        RelicId::PenNib, listener_pen_nib_before_card_played,
+    );
     register_modify_damage_multiplicative(
         RelicId::PenNib,
         listener_pen_nib_modify_damage as ModifyDamageMultiplicativeFn,
@@ -1054,34 +1041,9 @@ fn listener_eternal_feather(rs: &mut RunState, room_type: RoomType) -> EffectRes
     EffectResult::Resolved
 }
 
-/// `PenNib::modify_damage_multiplicative` listener body — bead
-/// `sts2-rs-cr4y8`. Faithful port of C#
-/// `PenNib.ModifyDamageMultiplicative` (PenNib.cs): the 10th attack
-/// deals double damage via a TRUE multiplicative on the fully-computed
-/// attack damage (base + Strength + flat bonuses), composing with
-/// Vulnerable etc. and flooring once.
-///
-/// Returns `DamageMul::new(2, 1)` (×2) when:
-/// - player owns PenNib AND
-/// - the damage is a powered attack (`props.is_powered()`, the Rust
-///   analogue of C# `props.IsPoweredAttack()`) AND
-/// - the dealer is the player (PenNib's owner) AND
-/// - `(relic.counter + 1) % PEN_NIB_THRESHOLD == 0` — i.e. this damage
-///   event belongs to the upcoming 10th attack-card play (the
-///   `after_card_played` increment fires post-damage, so the active
-///   window is `counter == 9`).
-///
-/// Returns `DamageMul::ONE` otherwise.
-///
-/// Faithfulness note: C# additionally gates on `cardSource != null`
-/// and `cardSource == AttackToDouble` (the specific marked card). The
-/// relic-side multiplicative channel carries no card identity
-/// (`hooks::DamageCtx` has only dealer/target/props), so the card gate
-/// is approximated by `is_powered()` + the player-dealer check + the
-/// per-attack counter window. During the marked 10th attack's play the
-/// only player powered-attack damage is that card's own hits, so the
-/// two are equivalent for every realistic combat — the same card-less
-/// multiplicative pattern used by [`listener_paper_krane`].
+/// C# PenNib.ModifyDamageMultiplicative: only powered damage from the
+/// marked card source is doubled. Outside an in-flight play, the ninth
+/// counter previews the upcoming tenth attack.
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn listener_pen_nib_modify_damage(state: &CombatState, ctx: &hooks::DamageCtx) -> hooks::DamageMul {
     use hooks::DamageMul;
@@ -1103,35 +1065,32 @@ fn listener_pen_nib_modify_damage(state: &CombatState, ctx: &hooks::DamageCtx) -
     if !is_player_or_osty {
         return DamageMul::ONE;
     }
-    if (relic.counter + 1) % PEN_NIB_THRESHOLD != 0 {
+    let Some(source) = ctx.card_source else {
         return DamageMul::ONE;
-    }
-    DamageMul::new(2, 1)
+    };
+    let active = match state.combat_log.pen_nib_attack_to_double {
+        Some(marked) => source == marked,
+        None => !state.player.play.contains(&source) && relic.counter == PEN_NIB_THRESHOLD - 1,
+    };
+    if active { DamageMul::new(2, 1) } else { DamageMul::ONE }
 }
 
-/// `PenNib::after_card_played` listener body — bead `sts2-rs-w46z`.
-/// Increments the attacks-played counter when the just-played card
-/// was an `Attack`. Counter is the per-relic-instance scratch field
-/// (`Relic.counter`) — wraps at i32::MAX (saturating add); the
-/// `% THRESHOLD` predicate makes wrap-around behavior cosmetic in
-/// practice.
-fn listener_pen_nib_after_card_played(state: &mut CombatState, ctx: &CardEventCtx) -> EffectResult {
-    let Some(uid) = ctx.card_uid else {
-        return EffectResult::NotImplemented;
-    };
-    let is_attack = sts2_core::card_by_uid(&state.cards, uid)
-        .is_some_and(|c| c.card_type == sts2_core::cards::CardType::Attack);
-    if !is_attack {
+fn listener_pen_nib_before_card_played(state: &mut CombatState, ctx: &CardEventCtx) -> EffectResult {
+    let Some(uid) = ctx.card_uid else { return EffectResult::NotImplemented; };
+    if !sts2_core::card_by_uid(&state.cards, uid).is_some_and(|c| c.card_type == sts2_core::cards::CardType::Attack) {
         return EffectResult::NotImplemented;
     }
-    if let Some(r) = state
-        .relics
-        .iter_mut()
-        .find(|r| !r.is_melted && r.kind == RelicKind::PenNib)
-    {
-        r.counter = r.counter.saturating_add(1);
-    } else {
+    let Some(relic) = state.relics.iter_mut().find(|r| !r.is_melted && r.kind == RelicKind::PenNib) else {
         return EffectResult::NotImplemented;
+    };
+    relic.counter = (relic.counter.rem_euclid(PEN_NIB_THRESHOLD) + 1) % PEN_NIB_THRESHOLD;
+    if relic.counter == 0 { state.combat_log.pen_nib_attack_to_double = Some(uid); }
+    EffectResult::Resolved
+}
+
+fn listener_pen_nib_after_card_played(state: &mut CombatState, ctx: &CardEventCtx) -> EffectResult {
+    if ctx.card_uid.is_some() && state.combat_log.pen_nib_attack_to_double == ctx.card_uid {
+        state.combat_log.pen_nib_attack_to_double = None;
     }
     EffectResult::Resolved
 }
@@ -1493,8 +1452,11 @@ mod tests {
             is_melted: false,
         });
 
+        state.resolving_card = Some(CardUid::new(1).unwrap());
+
         // Powered attack dealt by the player.
         let ctx = sts2_core::hooks::DamageCtx {
+            card_source: Some(CardUid::new(1).unwrap()),
             dealer: CreatureRef::Player,
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -1528,8 +1490,8 @@ mod tests {
         set_counter(&mut state, 10);
         assert_eq!(listener(&state, &ctx), DamageMul::ONE, "11th attack: ×1");
 
-        // counter=19 → next attack is #20, divisible → ×2 again.
-        set_counter(&mut state, 19);
+        // The counter wraps modulo ten.
+        set_counter(&mut state, 9);
         assert_eq!(
             listener(&state, &ctx),
             DamageMul::new(2, 1),
@@ -1539,6 +1501,7 @@ mod tests {
         // Unpowered attack on the 10th window → ×1 (C# IsPoweredAttack gate).
         set_counter(&mut state, 9);
         let unpowered = sts2_core::hooks::DamageCtx {
+            card_source: Some(CardUid::new(1).unwrap()),
             dealer: CreatureRef::Player,
             target: CreatureRef::Player,
             props: ValueProps::MOVE.union(ValueProps::UNPOWERED),
@@ -1579,7 +1542,9 @@ mod tests {
             is_melted: false,
         });
 
+        state.resolving_card = Some(CardUid::new(1).unwrap());
         let ctx = DamageCtx {
+            card_source: Some(CardUid::new(1).unwrap()),
             dealer: CreatureRef::Player,
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -2558,6 +2523,7 @@ mod tests {
             .map_or(1, |m| m.saturating_add(1));
         let uid = sts2_core::CardUid(NonZeroU32::new(next_raw).expect("non-zero"));
         state.cards.push(Card {
+            local_energy_cost: None,
             uid,
             card_id: CardId::StrikeIronclad,
             cost: 1,
@@ -2684,6 +2650,7 @@ mod tests {
             .map_or(1, |m| m.saturating_add(1));
         let uid = sts2_core::CardUid(NonZeroU32::new(next_raw).expect("non-zero"));
         state.cards.push(Card {
+            local_energy_cost: None,
             uid,
             card_id: CardId::StrikeIronclad,
             cost: 1,
@@ -3164,7 +3131,9 @@ mod tests {
         crate::relics::dispatch::ensure_installed();
         let mut state = CombatState::default();
         let enemy = paper_phrog_vuln_enemy(&mut state);
+        state.resolving_card = Some(CardUid::new(1).unwrap());
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: enemy,
             props: ValueProps::MOVE,
@@ -3222,7 +3191,9 @@ mod tests {
             is_wax: false,
             is_melted: false,
         });
+        state.resolving_card = Some(CardUid::new(1).unwrap());
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(enemy_uid),
             props: ValueProps::MOVE,
@@ -3252,6 +3223,7 @@ mod tests {
         });
         // Unpowered hit: Vulnerable itself does not fire, so 6 stays 6.
         let unpowered = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: enemy,
             props: ValueProps::MOVE.union(ValueProps::UNPOWERED),
@@ -3294,6 +3266,7 @@ mod tests {
             .map_or(1, |m| m.saturating_add(1));
         let uid = CardUid(NonZeroU32::new(next_raw).expect("non-zero"));
         state.cards.push(Card {
+            local_energy_cost: None,
             uid,
             card_id,
             cost: 1,

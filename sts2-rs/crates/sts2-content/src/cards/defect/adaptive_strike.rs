@@ -6,11 +6,8 @@ use super::prelude::*;
 /// the card, set the clone's EnergyCost-this-combat to 0, and add it
 /// to the discard pile.
 ///
-/// Bead `sts2-rs-o6ioo` wires the clone+discard step the prior body
-/// dropped. The engine has no separate cost-modifier stack at this
-/// pin, so the "this combat 0-cost" semantic is approximated by
-/// writing `cost = 0` directly on the freshly-spawned card POD —
-/// the clone never re-derives its cost from a spec.
+/// The clone retains its instance attributes, then gains its own
+/// combat-lifetime absolute cost modifier (`AdaptiveStrike.OnPlay`).
 pub(crate) fn play_adaptive_strike(
     state: &mut CombatState,
     target: Option<CreatureUid>,
@@ -27,7 +24,14 @@ pub(crate) fn play_adaptive_strike(
         .last()
         .expect("AdaptiveStrike: dispatch contract guarantees a Play-pile entry");
     let mut clone = state.cards[src_uid.0.get() as usize - 1];
-    clone.cost = 0;
+    if clone.local_energy_cost.is_some() {
+        clone.add_local_cost_modifier(sts2_core::cards::LocalCostModifier {
+            kind: sts2_core::cards::LocalCostModifierKind::Absolute,
+            amount: 0, reduce_only: false, expiration: 0,
+        });
+    } else {
+        clone.cost = 0;
+    }
     let _ = sts2_core::card_effects::spawn_card_into_pile(state, clone, PileKind::Discard);
     EffectResult::Resolved
 }

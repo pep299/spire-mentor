@@ -39,6 +39,7 @@ fn push_play_card(state: &mut CombatState, card_id: CardId) -> CardUid {
     // base_damage=6 (Strike-like baseline), base_block=5 (Defend-like baseline),
     // target_type=Enemy (matched at dispatch site below).
     state.cards.push(Card {
+        local_energy_cost: None,
         uid,
         card_id,
         cost: 1,

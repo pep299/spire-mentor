@@ -735,6 +735,10 @@ pub fn install_pool() {
         RelicId::ChoicesParadox,
         listener_choices_paradox as AfterSideTurnStartFn,
     );
+    register_after_player_turn_start(
+        RelicId::ChoicesParadox,
+        listener_choices_paradox_v0111 as AfterPlayerTurnStartFn,
+    );
     register_before_combat_start(
         RelicId::ChoicesParadox,
         listener_choices_paradox_reset as BeforeCombatStartFn,
@@ -3859,16 +3863,23 @@ fn listener_toolbox_reset(state: &mut CombatState) -> EffectResult {
 /// choice. Mirrors Python `shop_event.py::ChoicesParadox.after_player_turn_start`
 /// at `sts2-rl-agent@01c094d:sts2_env/relics/shop_event.py:1340`.
 ///
-/// Routed through the Rust `after_side_turn_start(Side::Player)` channel
-/// — Python's `after_player_turn_start` is the player-side specialization
-/// of the general after-turn-start fire. Per-combat latch on Relic.counter.
-///
-/// Divergence: Python applies the `retain` keyword (persistent across
-/// turns); the Rust port pushes the resolved uid into
-/// `player.retain_this_turn` (one-turn flag) at resolver time. If the
-/// player doesn't play the card on round 1, it discards at end-of-turn.
-/// Bead `sts2-rs-70anj.3.13.cp`.
+/// v0.111.0 uses AfterPlayerTurnStart; older builds use AfterSideTurnStart.
+/// Generated candidates gain the persistent Retain keyword (ChoicesParadox.cs).
 fn listener_choices_paradox(state: &mut CombatState, side: Side) -> EffectResult {
+    if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        return EffectResult::NotImplemented;
+    }
+    choices_paradox_choice(state, side)
+}
+
+fn listener_choices_paradox_v0111(state: &mut CombatState) -> EffectResult {
+    if state.game_version < sts2_core::GameVersion::V0_111_0 {
+        return EffectResult::NotImplemented;
+    }
+    choices_paradox_choice(state, Side::Player)
+}
+
+fn choices_paradox_choice(state: &mut CombatState, side: Side) -> EffectResult {
     use sts2_core::cards::CardId;
     use sts2_core::{ChoiceKind, ChoiceOption};
 
@@ -12266,8 +12277,8 @@ mod tests {
         assert_eq!(s.player.hand.len(), hand_before + 1);
         let added_uid = *s.player.hand.last().expect("card was added");
         assert!(
-            s.player.retain_this_turn.contains(&added_uid),
-            "added card must be tagged for retain this turn",
+            sts2_core::card_by_uid(&s.cards, added_uid).unwrap().keyword_override.unwrap().contains(sts2_core::cards::KeywordOverride::RETAIN),
+            "added card must carry the persistent Retain keyword",
         );
     }
 
@@ -12291,6 +12302,7 @@ mod tests {
             .map_or(1, |m| m.saturating_add(1));
         let uid = sts2_core::CardUid(NonZeroU32::new(next_raw).expect("non-zero"));
         state.cards.push(Card {
+            local_energy_cost: None,
             uid,
             card_id,
             cost: 1,

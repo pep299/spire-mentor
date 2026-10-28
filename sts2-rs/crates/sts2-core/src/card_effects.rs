@@ -121,6 +121,7 @@ pub fn deal_damage_player_to_enemy_frac(
 #[must_use]
 pub fn player_modified_card_damage(state: &CombatState, base: i32) -> i32 {
     let ctx = hooks::DamageCtx {
+        card_source: None,
         dealer: CreatureRef::Player,
         target: CreatureRef::Nobody,
         props: ValueProps::MOVE,
@@ -293,7 +294,9 @@ pub fn deal_damage_from_osty_to_enemy(
         return 0;
     };
     let card = originating_card_id(state);
-    damage::apply_damage(state, dealer, target_uid, base, ValueProps::MOVE, card)
+    let dealt = damage::apply_damage(state, dealer, target_uid, base, ValueProps::MOVE, card);
+    after_osty_attack_costs(state);
+    dealt
 }
 
 /// Osty-dealer analogue of [`deal_damage_to_all_alive_enemies`] (C#
@@ -335,7 +338,25 @@ pub fn deal_damage_from_osty_to_all_alive_enemies(state: &mut CombatState, base:
             card,
         ));
     }
+    after_osty_attack_costs(state);
     total
+}
+
+fn after_osty_attack_costs(state: &mut CombatState) {
+    if state.game_version < crate::GameVersion::V0_111_0 { return; }
+    let active: smallvec::SmallVec<[CardUid; 32]> = state.player.hand.iter()
+        .chain(&state.player.draw).chain(&state.player.discard)
+        .chain(&state.player.exhaust).chain(&state.player.play).copied().collect();
+    for uid in active {
+        if let Some(card) = state.cards.get_mut(uid.get() as usize - 1) {
+            if card.card_id == crate::cards::CardId::Flatten {
+                card.add_local_cost_modifier(crate::cards::LocalCostModifier {
+                    kind: crate::cards::LocalCostModifierKind::Absolute,
+                    amount: 0, reduce_only: false, expiration: 2,
+                });
+            }
+        }
+    }
 }
 
 /// Sample a uniform-random alive enemy from `state.enemy_uids`, filtered
@@ -2126,6 +2147,7 @@ pub fn spawn_card_into_pile_with_origin(
     card.set_combat_var(crate::cards::VarKey::GeneratedInCombat, 1);
     // v0.111.0 values for a card minted on a v0.107.1-only path (GH #793).
     card.normalize_for_version(state.game_version);
+    card.initialize_local_energy_cost(state.game_version);
     state.cards.push(card);
     // C# `CardPileCmd.Add` hand-cap redirect (`CardPileCmd.cs:420-424`):
     // `isFullHandAdd = targetPile.Type == Hand && Cards.Count >= MaxCardsInHand`
@@ -2173,6 +2195,7 @@ pub fn spawn_card_into_draw_pile_random(
     card.set_combat_var(crate::cards::VarKey::GeneratedInCombat, 1);
     // v0.111.0 values for a card minted on a v0.107.1-only path (GH #793).
     card.normalize_for_version(state.game_version);
+    card.initialize_local_energy_cost(state.game_version);
     state.cards.push(card);
     // Bead `sts2-rs-09x5n` (F2 `HiddenInfoMode::BeliefDraw`): under a
     // deferred-draw-order pile there is no physical position for a random
@@ -2628,9 +2651,20 @@ fn fire_after_card_entered_combat(
 /// Bead `sts2-rs-1hlal`.
 pub fn stamp_entered_combat_cost_backfill(state: &mut CombatState, uid: CardUid) {
     let idx = uid.0.get() as usize - 1;
+    if let Some(card) = state.cards.get_mut(idx) {
+        card.initialize_local_energy_cost(state.game_version);
+    }
     let Some(card) = state.cards.get(idx) else {
         return;
     };
+    if card.card_id == crate::cards::CardId::Flatten && state.game_version >= crate::GameVersion::V0_111_0
+        && state.combat_log.osty_attacks_this_turn > 0 {
+        state.cards[idx].add_local_cost_modifier(crate::cards::LocalCostModifier {
+            kind: crate::cards::LocalCostModifierKind::Absolute,
+            amount: 0, reduce_only: false, expiration: 2,
+        });
+        return;
+    }
     let (var, plays) = match card.card_id {
         crate::cards::CardId::Stomp => (
             crate::cards::VarKey::StompCostReductionThisTurn,
@@ -2643,6 +2677,16 @@ pub fn stamp_entered_combat_cost_backfill(state: &mut CombatState, uid: CardUid)
         _ => return,
     };
     let card = &mut state.cards[idx];
+    if card.local_energy_cost.is_some() {
+        let plays = i32::try_from(plays).unwrap_or(i32::MAX);
+        if plays > 0 {
+            card.add_local_cost_modifier(crate::cards::LocalCostModifier {
+                kind: crate::cards::LocalCostModifierKind::Relative,
+                amount: -plays, reduce_only: false, expiration: 2,
+            });
+        }
+        return;
+    }
     let shave = i32::try_from(plays)
         .unwrap_or(i32::MAX)
         .min(i32::from(card.cost.max(0)));
@@ -2706,6 +2750,7 @@ pub fn spawn_card_into_draw_pile_random_position(
     }
     // v0.111.0 values for a card minted on a v0.107.1-only path (GH #793).
     card.normalize_for_version(state.game_version);
+    card.initialize_local_energy_cost(state.game_version);
     state.cards.push(card);
     // Bead `sts2-rs-09x5n` (F2 `HiddenInfoMode::BeliefDraw`): see the
     // matching gate in `spawn_card_into_draw_pile_random` above.
@@ -2755,6 +2800,7 @@ pub fn spawn_card_into_draw_pile_bottom(
     card.set_combat_var(crate::cards::VarKey::GeneratedInCombat, 1);
     // v0.111.0 values for a card minted on a v0.107.1-only path (GH #793).
     card.normalize_for_version(state.game_version);
+    card.initialize_local_energy_cost(state.game_version);
     state.cards.push(card);
     state.player.draw.push(uid);
     fire_after_card_entered_combat(state, uid, PileKind::Draw, true);
@@ -2816,6 +2862,7 @@ pub fn spawn_card_into_hand_with_origin(
     card.set_combat_var(crate::cards::VarKey::GeneratedInCombat, 1);
     // v0.111.0 values for a card minted on a v0.107.1-only path (GH #793).
     card.normalize_for_version(state.game_version);
+    card.initialize_local_energy_cost(state.game_version);
     state.cards.push(card);
     // Bead `sts2-rs-8h2q`: log the generation *before* the hand-cap
     // check, matching Python's `_add_generated_cards_to_hand` at
@@ -3243,6 +3290,7 @@ pub fn transform_card_in_place(
     new_card.set_combat_var(crate::cards::VarKey::GeneratedInCombat, 1);
     // v0.111.0 values for a card minted on a v0.107.1-only path (GH #793).
     new_card.normalize_for_version(state.game_version);
+    new_card.initialize_local_energy_cost(state.game_version);
     state.cards.push(new_card);
     // C# `CardCmd.Transform` records a `CardGeneratedEntry` for every
     // non-Deck destination pile (`CardCmd.cs:444`,
@@ -5514,6 +5562,7 @@ mod tests {
 
     fn placeholder_card(card_id: crate::cards::CardId) -> crate::cards::Card {
         crate::cards::Card {
+            local_energy_cost: None,
             uid: CardUid::new(u32::MAX).expect("placeholder, reassigned by spawn"),
             card_id,
             cost: 0,
@@ -7617,6 +7666,7 @@ mod tests {
         // sampler would leave it), routed into hand.
         let card_uid = CardUid::new(1).expect("nz");
         state.cards.push(crate::cards::Card {
+            local_energy_cost: None,
             uid: card_uid,
             card_id: crate::cards::CardId::Shiv,
             cost: 0,
@@ -7671,6 +7721,7 @@ mod tests {
         assert!(state.player.play.is_empty());
 
         let make_card = || crate::cards::Card {
+            local_energy_cost: None,
             uid: CardUid::new(1).expect("nz"),
             card_id: crate::cards::CardId::Shiv,
             cost: 0,

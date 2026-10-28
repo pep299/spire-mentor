@@ -43,6 +43,7 @@ fn fresh_state_with_enemy() -> (CombatState, CreatureUid) {
 fn push_play(state: &mut CombatState, card_id: CardId, damage: i32, block: i32) -> CardUid {
     let uid = CardUid::new(u32::try_from(state.cards.len() + 1).expect("u32")).expect("nz");
     state.cards.push(Card {
+        local_energy_cost: None,
         uid,
         card_id,
         cost: 1,

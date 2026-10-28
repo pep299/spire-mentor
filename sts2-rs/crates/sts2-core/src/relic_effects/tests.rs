@@ -4738,6 +4738,7 @@ fn beating_remnant_after_damage_received_bumps_counter() {
     let mut state = fresh_state_with_player(100, 100);
     give_player_relic(&mut state, RelicKind::BeatingRemnant);
     let ctx = crate::hooks::DamageCtx {
+        card_source: None,
         dealer: crate::hooks::CreatureRef::Player,
         target: crate::hooks::CreatureRef::Player,
         props: crate::hooks::ValueProps::NONE,
@@ -5292,6 +5293,7 @@ fn red_skull_crossing_below_threshold_mid_combat_arms() {
     // Mid-combat drop to 40/100 — under threshold (50).
     state.player.current_hp = 40;
     let ctx = crate::hooks::DamageCtx {
+        card_source: None,
         dealer: crate::hooks::CreatureRef::Player,
         target: crate::hooks::CreatureRef::Player,
         props: crate::hooks::ValueProps::NONE,
@@ -5317,6 +5319,7 @@ fn red_skull_crossing_back_above_threshold_removes_strength() {
     // Heal back to 80/100 — above threshold.
     state.player.current_hp = 80;
     let ctx = crate::hooks::DamageCtx {
+        card_source: None,
         dealer: crate::hooks::CreatureRef::Player,
         target: crate::hooks::CreatureRef::Player,
         props: crate::hooks::ValueProps::NONE,
@@ -5337,6 +5340,7 @@ fn red_skull_enemy_damage_does_not_re_probe() {
     state.player.current_hp = 30; // pretend low but probe shouldn't fire
     let enemy_uid = push_enemy(&mut state, 90, 20);
     let ctx = crate::hooks::DamageCtx {
+        card_source: None,
         dealer: crate::hooks::CreatureRef::Player,
         target: crate::hooks::CreatureRef::Enemy(enemy_uid),
         props: crate::hooks::ValueProps::NONE,
@@ -8572,6 +8576,7 @@ fn push_card_of_type(
     let raw = u32::try_from(state.cards.len() + 1).expect("fits");
     let uid = crate::CardUid::new(raw).expect("non-zero");
     state.cards.push(crate::Card {
+        local_energy_cost: None,
         uid,
         card_id: CardId::StrikeIronclad,
         cost,

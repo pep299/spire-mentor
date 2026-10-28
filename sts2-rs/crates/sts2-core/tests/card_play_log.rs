@@ -36,6 +36,7 @@ fn make_card(
     base_block: i32,
 ) -> Card {
     Card {
+        local_energy_cost: None,
         uid: CardUid::new(uid_raw).expect("non-zero uid"),
         card_id,
         cost,
@@ -115,6 +116,8 @@ fn cascade_logs_trigger_then_auto_plays_in_order() {
     draw.push(CardUid::new(4).expect("non-zero")); // DefendIronclad
 
     let player = PlayerCombatState {
+        observed_draws: smallvec::SmallVec::new(),
+        observed_draw_failed: false,
         current_hp: 50,
         max_hp: 50,
         block: 0,

@@ -99,6 +99,8 @@ fn build_player(deck: &[CardSpec]) -> (PlayerCombatState, Vec<Card>) {
         });
     }
     let player = PlayerCombatState {
+        observed_draws: smallvec::SmallVec::new(),
+        observed_draw_failed: false,
         hand: SmallVec::new(),
         draw,
         discard: SmallVec::new(),

@@ -10,7 +10,7 @@ use super::prelude::*;
 /// Bead `sts2-rs-at4vs`: the prior body (`sts2-rs-w5np`) only dealt damage
 /// and dropped the draw-3 + select-1-to-hand mechanic. We now shuffle a
 /// copy of `draw` off the `combat_card_selection` stream, take up to 3, and
-/// open a single-pick [`AddFromDrawByType`](sts2_core::ChoiceKind::AddFromDrawByType)
+/// open a single-pick [`AddFromRandomDrawSubset`](sts2_core::ChoiceKind::AddFromRandomDrawSubset)
 /// choice — the resolver moves the chosen draw uid to hand regardless of
 /// type (the "ByType" only describes how options were pre-filtered; here
 /// the filter is "top-3 of the shuffled pile").
@@ -122,7 +122,7 @@ pub(crate) fn play_seeker_strike(
         })
         .collect();
     state.request_card_choice(
-        sts2_core::ChoiceKind::AddFromDrawByType,
+        sts2_core::ChoiceKind::AddFromRandomDrawSubset,
         options,
         1,
         1,

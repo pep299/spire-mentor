@@ -340,11 +340,13 @@ fn registrations() -> Vec<Registration> {
             let enemy = CreatureRef::Enemy(first_enemy(s));
             let ctx = match i {
                 0 => DamageCtx {
+                    card_source: None,
                     dealer: CreatureRef::Player,
                     target: enemy,
                     props: ValueProps::MOVE,
                 },
                 1 => DamageCtx {
+                    card_source: None,
                     dealer: enemy,
                     target: CreatureRef::Player,
                     props: ValueProps::MOVE,

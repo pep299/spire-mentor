@@ -115,6 +115,7 @@ pub const fn choice_kind_python_name(k: ChoiceKind) -> &'static str {
         ChoiceKind::PaelsToothStash => "paels_tooth_stash",
         ChoiceKind::UpgradeInHand => "upgrade_in_hand",
         ChoiceKind::AddFromDrawByType => "add_from_draw_by_type",
+        ChoiceKind::AddFromRandomDrawSubset => "add_from_random_draw_subset",
         ChoiceKind::AddFromDiscardFree => "add_from_discard_free",
         ChoiceKind::DiscardFromHand => "discard_from_hand",
         ChoiceKind::ExhaustFromHand => "exhaust_from_hand",

@@ -271,6 +271,7 @@ mod tests {
         for (i, &(id, cost, dmg, target, card_type)) in hand.iter().enumerate() {
             let uid = CardUid::new((i + 1) as u32).unwrap();
             cards.push(Card {
+                local_energy_cost: None,
                 uid,
                 card_id: id,
                 cost,

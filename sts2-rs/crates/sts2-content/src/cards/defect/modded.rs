@@ -2,7 +2,7 @@
 use super::prelude::*;
 
 /// Modded. Cost 0, Skill. Draw 1 + gain 1 orb slot + bump THIS card's
-/// cost by 1 (persists in deck). Pin:
+/// cost by 1 for this combat. Pin:
 /// `sts2-rl-agent@01c094d:sts2_env/cards/defect.py:750-754`. Bead
 /// `sts2-rs-e0vm`.
 pub(crate) fn play_modded(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
@@ -23,14 +23,19 @@ pub(crate) fn play_modded(state: &mut CombatState, _t: Option<CreatureUid>) -> E
         state.player.orbs = sts2_core::OrbSlots::with_default_capacity();
     }
     state.player.orbs.add_slots(1);
-    // Bump the just-played card's persistent cost (mirrors Python
-    // `card.cost += 1`, which mutates the CardInstance held in the
-    // master deck — the next play of this same instance costs +1).
+    // `Modded.OnPlay`: AddThisCombat(1), after any earlier modifier.
     if let Some(idx) =
         sts2_core::card_effects::resolving_card_uid(state).map(|u| u.0.get() as usize - 1)
     {
         if let Some(card) = state.cards.get_mut(idx) {
-            card.cost = card.cost.saturating_add(1);
+            if card.local_energy_cost.is_some() {
+                card.add_local_cost_modifier(sts2_core::cards::LocalCostModifier {
+                    kind: sts2_core::cards::LocalCostModifierKind::Relative,
+                    amount: 1, reduce_only: false, expiration: 0,
+                });
+            } else {
+                card.cost = card.cost.saturating_add(1);
+            }
         }
     }
     EffectResult::Resolved

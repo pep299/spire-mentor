@@ -106,6 +106,7 @@ mod tests {
         let raw = u32::try_from(state.cards.len() + 1).expect("fits");
         let uid = sts2_core::CardUid::new(raw).expect("non-zero");
         state.cards.push(Card {
+            local_energy_cost: None,
             uid,
             card_id: CardId::StrikeIronclad,
             cost: 1,

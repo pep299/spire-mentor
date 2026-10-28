@@ -1218,6 +1218,15 @@ fn listener_history_course(state: &mut CombatState) -> EffectResult {
     };
     let dupe_is_ethereal =
         sts2_core::combat_loop::card_is_ethereal_at_play(state, &state.cards[dupe_idx_for_cost]);
+    let (parent_card_play, _) = sts2_core::combat_loop::start_card_play(state, dupe_card_type);
+    let played_ctx = sts2_core::relic_effects::CardEventCtx {
+        card_id,
+        card_uid: Some(new_uid),
+        target,
+        card_tags: dupe_tags,
+        energy_spent: dupe_resolved_cost,
+    };
+    let _ = sts2_core::relic_effects::dispatch_before_card_played(state, &played_ctx);
     sts2_core::hooks::dispatch_before_card_played_powers(
         state,
         dupe_resolved_cost,
@@ -1286,13 +1295,9 @@ fn listener_history_course(state: &mut CombatState) -> EffectResult {
     // counts every finished play this turn, dupes included (decomp
     // PaleBlueDotPower.cs:27). v0.107.1 keeps its tally untouched.
     bump_card_plays_finished_this_turn_v0111(state);
-    let played_ctx = sts2_core::relic_effects::CardEventCtx {
-        card_id,
-        card_uid: Some(new_uid),
-        target,
-        card_tags: dupe_tags,
-        energy_spent: 0,
-    };
+    state.combat_log.player_card_plays_this_combat = state.combat_log.player_card_plays_this_combat.saturating_add(1);
+    let kind = dupe_card_type.index();
+    state.player.cards_played_this_turn[kind] = state.player.cards_played_this_turn[kind].saturating_add(1);
     let _ = sts2_core::relic_effects::dispatch_after_card_played(state, &played_ctx);
     let hook_played_ctx = sts2_core::hooks::CardCtx {
         card_id: Some(card_id),
@@ -1316,10 +1321,6 @@ fn listener_history_course(state: &mut CombatState) -> EffectResult {
     // 2761: GoldAxe damage rs short by the dupe count). Same minimal-path
     // hook-coverage class as `sts2-rs-{uh2mt,ay8cl,evd6m}`; bump after the dupe
     // fully resolves, mirroring C#'s end-of-OnPlayWrapper record.
-    state.combat_log.player_card_plays_this_combat = state
-        .combat_log
-        .player_card_plays_this_combat
-        .saturating_add(1);
     // The dupe is also a STARTED + FINISHED play for the per-turn tallies:
     // C# `History.CardPlays{Started,Finished}` include dupes (only scans
     // that explicitly filter `!IsDupe`, like HistoryCourse itself, skip
@@ -1327,17 +1328,10 @@ fn listener_history_course(state: &mut CombatState) -> EffectResult {
     // Ringing/Sloth ShouldPlay gates therefore count the round-start dupe
     // (sweep seed 5645: C# Stampede CONFLAGRATION = 8 + 2x3 incl. the
     // SPITE dupe, Rust counted 2). Skill tally feeds MakeItSo.
-    {
-        let idx = dupe_card_type.index();
-        state.player.cards_played_this_turn[idx] =
-            state.player.cards_played_this_turn[idx].saturating_add(1);
-    }
     if dupe_card_type == sts2_core::cards::CardType::Skill {
         state.player.skills_played_this_turn =
             state.player.skills_played_this_turn.saturating_add(1);
     }
-    state.player.card_plays_started_this_turn =
-        state.player.card_plays_started_this_turn.saturating_add(1);
     // C# `Hook.AfterCardPlayed` ends with `AfterCardPlayedLate` (Hook.cs:431)
     // for the dupe's auto-play too; fired after the tallies so MakeItSo sees
     // this play counted, and once per replay below.
@@ -1384,30 +1378,29 @@ fn listener_history_course(state: &mut CombatState) -> EffectResult {
             if state.is_over {
                 break;
             }
+            let _ = sts2_core::combat_loop::start_card_play(state, dupe_card_type);
+            let _ = sts2_core::relic_effects::dispatch_before_card_played(state, &played_ctx);
+            sts2_core::hooks::dispatch_before_card_played_powers(state, dupe_resolved_cost, dupe_is_ethereal);
+            sts2_core::hooks::juggling_before_card_played_v0111(state, new_uid, dupe_card_type);
             let _ = sts2_core::card_effects::dispatch_for_auto_played_card(
                 state, new_uid, card_id, target,
             );
             bump_card_plays_finished_this_turn_v0111(state);
+            state.combat_log.player_card_plays_this_combat = state.combat_log.player_card_plays_this_combat.saturating_add(1);
+            let kind = dupe_card_type.index();
+            state.player.cards_played_this_turn[kind] = state.player.cards_played_this_turn[kind].saturating_add(1);
             let _ = sts2_core::relic_effects::dispatch_after_card_played(state, &played_ctx);
             sts2_core::hooks::dispatch_after_card_played(state, &hook_played_ctx);
             sts2_core::combat_loop::flush_rupture_deferred_strength(state);
-            state.combat_log.player_card_plays_this_combat = state
-                .combat_log
-                .player_card_plays_this_combat
-                .saturating_add(1);
-            let idx = dupe_card_type.index();
-            state.player.cards_played_this_turn[idx] =
-                state.player.cards_played_this_turn[idx].saturating_add(1);
             if dupe_card_type == sts2_core::cards::CardType::Skill {
                 state.player.skills_played_this_turn =
                     state.player.skills_played_this_turn.saturating_add(1);
             }
-            state.player.card_plays_started_this_turn =
-                state.player.card_plays_started_this_turn.saturating_add(1);
             sts2_core::card_effects::fire_late_effects(state, &hook_played_ctx);
         }
     }
     state.autoplay_inline_resolve = prev_inline;
+    state.combat_log.current_card_play = parent_card_play;
     // Dupe disposal: C# resolves the dupe's result pile through
     // `Hook.ModifyCardPlayResultPileTypeAndPosition` (`CardModel.cs:1459`).
     // `GetResultPileType()` returns `PileType.None` for a dupe
@@ -2748,6 +2741,7 @@ mod tests {
             .map_or(1, |m| m.saturating_add(1));
         let uid = CardUid(NonZeroU32::new(next_raw).expect("non-zero"));
         state.cards.push(sts2_core::Card {
+            local_energy_cost: None,
             uid,
             card_id: sts2_core::cards::CardId::StrikeIronclad,
             cost: 1,
@@ -2776,6 +2770,7 @@ mod tests {
             .map_or(1, |m| m.saturating_add(1));
         let uid = CardUid(NonZeroU32::new(next_raw).expect("non-zero"));
         state.cards.push(sts2_core::Card {
+            local_energy_cost: None,
             uid,
             card_id: sts2_core::cards::CardId::DefendIronclad,
             cost: 1,
@@ -3920,6 +3915,7 @@ mod tests {
             .map_or(1, |m| m.saturating_add(1));
         let power_uid = CardUid(NonZeroU32::new(next_raw).expect("non-zero"));
         state.cards.push(sts2_core::Card {
+            local_energy_cost: None,
             uid: power_uid,
             card_id: sts2_core::cards::CardId::DefendIronclad,
             cost: 1,

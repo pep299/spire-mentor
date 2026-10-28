@@ -2132,6 +2132,7 @@ fn apply_dealhploss(
             // left alone so the default build stays bit-identical.
             let amount = if state.game_version >= crate::GameVersion::V0_111_0 {
                 let cap_ctx = DamageCtx {
+                    card_source: None,
                     dealer,
                     target: CreatureRef::Player,
                     props,
@@ -2245,6 +2246,7 @@ fn apply_dealhploss(
                 state.game_version >= crate::GameVersion::V0_111_0 && state.player.current_hp == 0;
             if modified > 0 && !killed_v0111 {
                 let dctx = DamageCtx {
+                    card_source: None,
                     dealer,
                     target: CreatureRef::Player,
                     props,
@@ -2438,6 +2440,9 @@ pub fn doom_kill(state: &mut CombatState, target: CreatureRef) {
 /// [`crate::TurnEvents::resolving_auto_play`] for the latter.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DamageCtx {
+    /// Explicit card source for modifier calls. Card-less effects pass `None`
+    /// even while a parent card is resolving; callers without a source omit it.
+    pub card_source: Option<CardUid>,
     /// Creature dealing the damage (Python's `dealer`). May coincide with
     /// `target` for self-inflicted damage; never optional in this Rust
     /// surface (Python's `dealer: Creature | None` collapses to
@@ -4491,7 +4496,8 @@ fn power_modify_block_multiplicative(
             }
             // `num` = this-turn card-block-gain history entries from a
             // DIFFERENT CardPlay (identified by the play-sequence tag).
-            let current_play = state.combat_log.player_card_plays_this_combat;
+            let current_play = state.combat_log.current_card_play
+                .unwrap_or(state.combat_log.player_card_plays_this_combat);
             let num = state
                 .combat_log
                 .unmovable_card_block_plays
@@ -11934,6 +11940,7 @@ pub fn modify_damage_frac(
 #[must_use]
 pub fn player_modified_card_damage_frac(state: &CombatState, base: i32) -> (i64, i64) {
     let ctx = DamageCtx {
+        card_source: None,
         dealer: CreatureRef::Player,
         target: CreatureRef::Nobody,
         props: ValueProps::MOVE,
@@ -12146,25 +12153,11 @@ const AFTER_BLOCK_GAINED_KINDS: crate::PowerKindSet =
 /// Mirrors the collect/apply split used by
 /// [`dispatch_before_side_turn_start`].
 ///
-/// **Empty-bus early-out (mirrors `sts2-rs-4lk9` pattern)**: when both
-/// `state.powers` and `state.relics` are empty, no listener can react,
-/// so the dispatcher skips the walks. Hot path for fresh
-/// combats / random rollouts where no block-react powers are active. That
-/// return also skips the Unmovable history tail, which C# records whatever
-/// the listeners; the divergence is kept as it is (exactness). The walks no
-/// longer visit relics, but the `relics.is_empty()` half stays: it still
-/// decides whether that tail runs.
-///
-/// Between the two, the walks and the Juggernaut lane are skipped when no
-/// Grapple or Juggernaut is live (`PowerHook::AfterBlockGained`). The
-/// Unmovable tail stays outside that guard: it records every card block
-/// gain, with or without a listener.
+/// Block-gain history is recorded even when no reactive listener exists:
+/// an Unmovable applied later this turn must see earlier card block gains.
 #[allow(clippy::inline_always)]
 #[inline(always)]
 pub fn dispatch_after_block_gained(state: &mut CombatState, ctx: &BlockGainedCtx) {
-    if state.powers.is_empty() && state.relics.is_empty() {
-        return;
-    }
     power_hook_dispatch(state, PowerHook::AfterBlockGained, |state| {
         after_block_gained_listeners(state, ctx);
     });
@@ -12183,7 +12176,8 @@ pub fn dispatch_after_block_gained(state: &mut CombatState, ctx: &BlockGainedCtx
     // 2329: the gate hid the turn-start block gain, so Rust's `num=0`
     // doubled RALLY where C#'s `num=1 >= Amount` passed it through).
     if ctx.amount > 0 && matches!(ctx.target, CreatureRef::Player) && ctx.card_source.is_some() {
-        let tag = state.combat_log.player_card_plays_this_combat;
+        let tag = state.combat_log.current_card_play
+            .unwrap_or(state.combat_log.player_card_plays_this_combat);
         state.combat_log.unmovable_card_block_plays.push(tag);
     }
 }
@@ -12991,6 +12985,10 @@ const MODIFY_CARD_COST_KINDS: crate::PowerKindSet = crate::PowerKindSet::from_ki
 /// then rejects the 3-cost play for lack of energy (GH bug report).
 #[must_use]
 pub fn card_cost_locally_zeroed(state: &CombatState, card: &crate::cards::Card) -> bool {
+    if let Some(model) = card.local_energy_cost {
+        return card.cost == 0
+            && model.functions[0] != crate::cards::LocalCostFunction::default();
+    }
     (card.card_id == crate::cards::CardId::Flatten && state.combat_log.osty_attacks_this_turn > 0)
         || card.combat_var(crate::cards::VarKey::FreeThisTurn) != 0
         || card.combat_var(crate::cards::VarKey::FreeUntilPlayed) != 0
@@ -13097,7 +13095,8 @@ pub fn effective_card_cost_inst_with_mask(
         // local modifier, so it lands before the global walk; the final
         // `max(0)` below is C#'s `Math.Max(0, num)` (CardEnergyCost.cs:83).
         // The var is never set at v0.107.1, so this subtracts 0 there.
-        i32::from(card.cost) - card.combat_var(crate::cards::VarKey::CostReductionUntilPlayed)
+        i32::from(card.cost) - if card.local_energy_cost.is_some() { 0 }
+            else { card.combat_var(crate::cards::VarKey::CostReductionUntilPlayed) }
     };
     // Perf 2026-07-04: the same presence-mask early-out
     // [`dispatch_modify_card_cost`] opens with, hoisted BEFORE the ctx
@@ -15619,7 +15618,12 @@ fn reduce_midnight_costs_v0111(state: &mut CombatState) {
         .collect();
     for u in midnights {
         if let Some(c) = state.cards.get_mut(u.0.get() as usize - 1) {
-            if c.cost > 0 {
+            if c.local_energy_cost.is_some() {
+                c.add_local_cost_modifier(crate::cards::LocalCostModifier {
+                    kind: crate::cards::LocalCostModifierKind::Relative,
+                    amount: -1, reduce_only: false, expiration: 0,
+                });
+            } else if c.cost > 0 {
                 c.cost -= 1;
             }
         }
@@ -18337,6 +18341,7 @@ mod tests {
         // P2-2c sts2-rs-v7d: Vulnerable now requires `target == owner`
         // (the cultist) AND `props.is_powered()` (MOVE bit) to fire.
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(CreatureUid::new(1).unwrap()),
             props: ValueProps::MOVE,
@@ -18388,6 +18393,7 @@ mod tests {
             .push(CreatureUid(NonZeroU32::new(1).unwrap()));
 
         let powered_at_effigy = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(CreatureUid::new(1).unwrap()),
             props: ValueProps::MOVE,
@@ -19359,6 +19365,7 @@ mod tests {
         let mut state = CombatState::default();
         let uid = crate::CardUid::new(1).expect("non-zero");
         state.cards.push(crate::Card {
+            local_energy_cost: None,
             uid,
             card_id: CardId::StrikeIronclad,
             cost: 3,
@@ -19398,6 +19405,7 @@ mod tests {
         let mut state = CombatState::default();
         let uid = crate::CardUid::new(1).expect("non-zero");
         state.cards.push(crate::Card {
+            local_energy_cost: None,
             uid,
             card_id: CardId::Flatten,
             cost: 2,
@@ -19447,6 +19455,7 @@ mod tests {
             is_melted: false,
         });
         let mk = |raw: u32, card_id, cost, card_type| crate::Card {
+            local_energy_cost: None,
             uid: crate::CardUid::new(raw).expect("non-zero"),
             card_id,
             cost,
@@ -19502,6 +19511,7 @@ mod tests {
         let attack_uid = crate::CardUid::new(2).expect("non-zero");
         let free_power_uid = crate::CardUid::new(3).expect("non-zero");
         let mk = |uid, card_id, cost, card_type| crate::Card {
+            local_energy_cost: None,
             uid,
             card_id,
             cost,
@@ -20224,6 +20234,7 @@ mod tests {
     fn strength_adds_to_player_damage() {
         let (state, _) = state_with_player_power(PowerKind::Strength, 3);
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(CreatureUid::new(99).unwrap()),
             props: ValueProps::MOVE,
@@ -20269,6 +20280,7 @@ mod tests {
     fn push_test_card(state: &mut CombatState, raw: u32, card_id: crate::cards::CardId) -> CardUid {
         let uid = CardUid::new(raw).expect("non-zero");
         state.cards.push(crate::Card {
+            local_energy_cost: None,
             uid,
             card_id,
             cost: 1,
@@ -20539,6 +20551,7 @@ mod tests {
     fn vigor_adds_to_player_attack_damage() {
         let (state, _) = state_with_player_power(PowerKind::Vigor, 8);
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(CreatureUid::new(99).unwrap()),
             props: ValueProps::MOVE,
@@ -20559,6 +20572,7 @@ mod tests {
         let card_a = CardUid::new(11).unwrap();
         let card_b = CardUid::new(22).unwrap();
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(CreatureUid::new(99).unwrap()),
             props: ValueProps::MOVE,
@@ -20582,6 +20596,7 @@ mod tests {
     fn vigor_does_not_add_to_unpowered_damage() {
         let (state, _) = state_with_player_power(PowerKind::Vigor, 8);
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(CreatureUid::new(99).unwrap()),
             props: ValueProps::MOVE.union(ValueProps::UNPOWERED),
@@ -20625,6 +20640,7 @@ mod tests {
 
         // Second powered attack now gets +0 from Vigor.
         let dmg_ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(CreatureUid::new(99).unwrap()),
             props: ValueProps::MOVE,
@@ -20643,6 +20659,7 @@ mod tests {
         use crate::cards::CardType;
         let (mut state, uid) = state_with_player_power(PowerKind::Gigantification, 1);
         let dmg_ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(CreatureUid::new(99).unwrap()),
             props: ValueProps::MOVE,
@@ -20712,6 +20729,7 @@ mod tests {
         let (mut state, uid) = state_with_player_power(PowerKind::TheGambit, 1);
         state.player.current_hp = 54;
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Enemy(CreatureUid::new(99).unwrap()),
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -20741,6 +20759,7 @@ mod tests {
         let enemy = CreatureRef::Enemy(CreatureUid::new(99).unwrap());
         // Unpowered unblocked hit: no kill.
         let unpowered = DamageCtx {
+            card_source: None,
             dealer: enemy,
             target: CreatureRef::Player,
             props: ValueProps::NONE,
@@ -20975,6 +20994,7 @@ mod tests {
             .push(crate::CreatureUid(NonZeroU32::new(1).unwrap()));
 
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(CreatureUid::new(1).unwrap()),
             props: ValueProps::MOVE,
@@ -20990,6 +21010,7 @@ mod tests {
     fn weak_multiplies_attacker_damage_by_three_quarters() {
         let (state, _) = state_with_player_power(PowerKind::Weak, 1);
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(CreatureUid::new(99).unwrap()),
             props: ValueProps::MOVE,
@@ -21009,6 +21030,7 @@ mod tests {
     fn shrink_multiplies_attacker_powered_damage_by_seven_tenths() {
         let (state, _) = state_with_player_power(PowerKind::Shrink, -1);
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(CreatureUid::new(99).unwrap()),
             props: ValueProps::MOVE,
@@ -21026,6 +21048,7 @@ mod tests {
     fn shrink_leaves_unpowered_damage_unchanged() {
         let (state, _) = state_with_player_power(PowerKind::Shrink, -1);
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(CreatureUid::new(99).unwrap()),
             props: ValueProps::UNPOWERED,
@@ -21113,6 +21136,7 @@ mod tests {
     fn intangible_caps_damage_at_one() {
         let (state, _) = state_with_player_power(PowerKind::Intangible, 1);
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Enemy(CreatureUid::new(99).unwrap()),
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -21209,6 +21233,7 @@ mod tests {
 
         // Powered attack from player on cultist → Thorns fires.
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(CreatureUid::new(1).unwrap()),
             props: ValueProps::MOVE,
@@ -21286,6 +21311,7 @@ mod tests {
             .push(CreatureUid(NonZeroU32::new(1).unwrap()));
 
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(CreatureUid::new(1).unwrap()),
             props: ValueProps::MOVE,
@@ -21704,6 +21730,7 @@ mod tests {
         // when the player is the genuine target of a powered hit. Without this
         // the assertion below would pass on an empty power list.
         let incoming = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Enemy(CreatureUid::new(1).unwrap()),
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -21767,6 +21794,7 @@ mod tests {
 
         // Powered attack on Vulnerable target → 3/2 multiplier.
         let powered = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: cultist_ref,
             props: ValueProps::MOVE,
@@ -21823,6 +21851,7 @@ mod tests {
 
         // Player as dealer → Strength fires.
         let player_attacks = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(CreatureUid::new(99).unwrap()),
             props: ValueProps::MOVE,
@@ -21835,6 +21864,7 @@ mod tests {
 
         // Enemy as dealer → Strength does NOT fire (dealer != owner).
         let enemy_attacks = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Enemy(CreatureUid::new(42).unwrap()),
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -21847,6 +21877,7 @@ mod tests {
 
         // Player attacks but unpowered → does NOT fire.
         let unpowered = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(CreatureUid::new(99).unwrap()),
             props: ValueProps::NONE,
@@ -21869,6 +21900,7 @@ mod tests {
 
         // Powered player attack → Weak fires (3/4).
         let powered = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(CreatureUid::new(99).unwrap()),
             props: ValueProps::MOVE,
@@ -22019,6 +22051,7 @@ mod tests {
 
         // Player is the target → Intangible caps at 1.
         let player_target = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Enemy(CreatureUid::new(99).unwrap()),
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -22031,6 +22064,7 @@ mod tests {
 
         // Enemy is the target → Intangible on player does NOT cap.
         let enemy_target = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(CreatureUid::new(42).unwrap()),
             props: ValueProps::MOVE,
@@ -22281,6 +22315,7 @@ mod tests {
         for stacks in [1, 2, 3] {
             let (state, dealer) = amalgam_beam_board(Some(stacks));
             let ctx = DamageCtx {
+                card_source: None,
                 dealer,
                 target: CreatureRef::Player,
                 props: ValueProps::MOVE,
@@ -22290,6 +22325,7 @@ mod tests {
         }
         let (state, dealer) = amalgam_beam_board(None);
         let ctx = DamageCtx {
+            card_source: None,
             dealer,
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -22306,6 +22342,7 @@ mod tests {
     fn damage_modifier_breakdown_names_the_listeners_that_moved_the_number() {
         let (state, dealer) = amalgam_beam_board(Some(3));
         let ctx = DamageCtx {
+            card_source: None,
             dealer,
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -22373,6 +22410,7 @@ mod tests {
         let uid = CreatureUid::new(1).unwrap();
         state.enemy_uids.push(uid);
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Enemy(uid),
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -22456,6 +22494,7 @@ mod tests {
 
         // Cultist attacks the player → Strength fires.
         let cultist_attacks = DamageCtx {
+            card_source: None,
             dealer: cultist,
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -22471,6 +22510,7 @@ mod tests {
         // Player attacks the cultist → Strength on cultist does NOT fire
         // (dealer != owner).
         let player_attacks = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: cultist,
             props: ValueProps::MOVE,
@@ -22507,6 +22547,7 @@ mod tests {
 
         // Player powered attack on the cultist → Vulnerable fires.
         let powered = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: cultist,
             props: ValueProps::MOVE,
@@ -22521,6 +22562,7 @@ mod tests {
         // Cultist attacks the player → Vulnerable on cultist does NOT
         // fire (target != owner).
         let wrong_target = DamageCtx {
+            card_source: None,
             dealer: cultist,
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -22553,6 +22595,7 @@ mod tests {
 
         // Cultist powered attack on the player → Weak fires.
         let cultist_attacks = DamageCtx {
+            card_source: None,
             dealer: cultist,
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -22568,6 +22611,7 @@ mod tests {
         // Player attacks the cultist → Weak on cultist does NOT fire
         // (dealer != owner).
         let player_attacks = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: cultist,
             props: ValueProps::MOVE,
@@ -22661,6 +22705,7 @@ mod tests {
 
         // Player attacks the cultist → Intangible caps at 1.
         let cultist_target = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: cultist,
             props: ValueProps::MOVE,
@@ -22676,6 +22721,7 @@ mod tests {
         // Cultist attacks the player → Intangible on cultist does NOT
         // cap (target != owner).
         let player_target = DamageCtx {
+            card_source: None,
             dealer: cultist,
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -22713,6 +22759,7 @@ mod tests {
 
         // Player powered attack on cultist → Thorns fires.
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: cultist,
             props: ValueProps::MOVE,
@@ -22768,6 +22815,7 @@ mod tests {
         let (state, cultist) = state_with_enemy_power(PowerKind::FlameBarrier, 5);
 
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: cultist,
             props: ValueProps::MOVE,
@@ -22980,6 +23028,7 @@ mod tests {
 
         // Cultist A attacks → +5 (owner == dealer).
         let a_attacks = DamageCtx {
+            card_source: None,
             dealer: cultist_a,
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -22992,6 +23041,7 @@ mod tests {
 
         // Cultist B attacks → 0 (dealer != owner of A's Strength).
         let b_attacks = DamageCtx {
+            card_source: None,
             dealer: cultist_b,
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -23020,6 +23070,7 @@ mod tests {
         // Player attacks the cultist → Strength on cultist does NOT
         // fire (dealer = Player, owner = Enemy).
         let player_attacks = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: cultist,
             props: ValueProps::MOVE,
@@ -23052,6 +23103,7 @@ mod tests {
         state.player.powers.push(PowerUid(vuln_pid));
 
         let enemy_to_enemy = DamageCtx {
+            card_source: None,
             dealer: cultist,
             target: cultist, // self-targeting (synthetic) — owner check still applies
             props: ValueProps::MOVE,
@@ -23747,6 +23799,7 @@ mod tests {
     fn sic_em_osty_hit_on_marked_enemy_summons_osty() {
         let (mut state, enemy_uid, osty_uid) = state_with_sic_em(2);
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Enemy(osty_uid),
             target: CreatureRef::Enemy(enemy_uid),
             props: ValueProps::MOVE,
@@ -23768,6 +23821,7 @@ mod tests {
     fn sic_em_summons_even_on_fully_blocked_osty_hit() {
         let (mut state, enemy_uid, osty_uid) = state_with_sic_em(2);
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Enemy(osty_uid),
             target: CreatureRef::Enemy(enemy_uid),
             props: ValueProps::MOVE,
@@ -23785,6 +23839,7 @@ mod tests {
         let (mut state, enemy_uid, osty_uid) = state_with_sic_em(2);
         // Player (not the Osty) hits the marked enemy.
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(enemy_uid),
             props: ValueProps::MOVE,
@@ -24121,6 +24176,7 @@ mod tests {
             c.powers.push(d);
         }
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(enemy_uid),
             props: ValueProps::MOVE,
@@ -24158,6 +24214,7 @@ mod tests {
         }
         // Enemy (Weak'd dealer) attacks the player with a powered hit.
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Enemy(enemy_uid),
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -24612,6 +24669,7 @@ mod tests {
         // pop. (CardId::Strike is fine — the body only needs *something*
         // to move from draw → hand.)
         let _ = state.add_card_to_draw_pile(crate::Card {
+            local_energy_cost: None,
             uid: crate::CardUid::new(u32::MAX).expect("non-zero placeholder"),
             card_id: CardId::StrikeIronclad,
             cost: 1,
@@ -24662,6 +24720,7 @@ mod tests {
         // to pop.
         for _ in 0..6 {
             let _ = state.add_card_to_draw_pile(crate::Card {
+                local_energy_cost: None,
                 uid: crate::CardUid::new(u32::MAX).expect("non-zero placeholder"),
                 card_id: CardId::StrikeIronclad,
                 cost: 1,
@@ -24946,6 +25005,7 @@ mod tests {
 
         // Seed a draw-pile card so DE has something to draw.
         let _ = state.add_card_to_draw_pile(crate::Card {
+            local_energy_cost: None,
             uid: crate::CardUid::new(u32::MAX).expect("non-zero placeholder"),
             card_id: CardId::StrikeIronclad,
             cost: 1,
@@ -25229,6 +25289,7 @@ mod tests {
         state.enemy_uids.push(cultist_uid);
 
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(cultist_uid),
             props: ValueProps::MOVE, // powered
@@ -25289,6 +25350,7 @@ mod tests {
         let cultist_uid = CreatureUid::new(2).unwrap();
         state.enemy_uids.push(cultist_uid);
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(cultist_uid),
             props: ValueProps::MOVE,
@@ -25338,6 +25400,7 @@ mod tests {
         state.enemy_uids.push(cultist_uid);
         // Unpowered: ValueProps::NONE (no MOVE bit set).
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(cultist_uid),
             props: ValueProps::NONE,
@@ -25404,6 +25467,7 @@ mod tests {
 
         let discard_pre = state.player.discard.len();
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Enemy(enemy_uid),
             target: CreatureRef::Player,
             props: ValueProps::MOVE, // powered
@@ -25440,6 +25504,7 @@ mod tests {
 
         let discard_pre = state.player.discard.len();
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Enemy(enemy_uid),
             target: CreatureRef::Player,
             props: ValueProps::MOVE, // powered
@@ -27622,6 +27687,7 @@ mod tests {
         let raw = u32::try_from(state.cards.len() + 1).expect("fits");
         let uid = crate::CardUid::new(raw).expect("non-zero");
         state.cards.push(crate::Card {
+            local_energy_cost: None,
             uid,
             card_id: CardId::StrikeIronclad,
             cost: 1,
@@ -27893,6 +27959,7 @@ mod tests {
         );
 
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -28018,6 +28085,7 @@ mod tests {
 
         // Synthesize a "player took 5 unblocked damage on own turn" event.
         let ctx = DamageCtx {
+            card_source: None,
             dealer: enemy_ref,
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -28071,6 +28139,7 @@ mod tests {
             .expect("enemy creature present");
 
         let ctx = DamageCtx {
+            card_source: None,
             dealer: enemy_ref,
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -28112,6 +28181,7 @@ mod tests {
 
         // Powered enemy attack whose target IS the owner (player) → +Amount.
         let ctx_owner = DamageCtx {
+            card_source: None,
             dealer: other,
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -28124,6 +28194,7 @@ mod tests {
 
         // Unpowered attack vs the owner → 0.
         let ctx_unpowered = DamageCtx {
+            card_source: None,
             dealer: other,
             target: CreatureRef::Player,
             props: ValueProps::MOVE.union(ValueProps::UNPOWERED),
@@ -28136,6 +28207,7 @@ mod tests {
 
         // Powered attack vs a DIFFERENT target (not the owner) → 0.
         let ctx_other = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: other,
             props: ValueProps::MOVE,
@@ -28299,6 +28371,7 @@ mod tests {
             .expect("enemy creature present");
 
         let ctx = DamageCtx {
+            card_source: None,
             dealer: enemy_ref,
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -28345,6 +28418,7 @@ mod tests {
             .expect("enemy present");
 
         let ctx = DamageCtx {
+            card_source: None,
             dealer: enemy_ref,
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -28565,6 +28639,7 @@ mod tests {
         let raw = u32::try_from(state.cards.len() + 1).expect("fits");
         let uid = crate::CardUid::new(raw).expect("non-zero");
         state.cards.push(crate::Card {
+            local_energy_cost: None,
             uid,
             card_id: CardId::StrikeIronclad,
             cost: 1,
@@ -28592,6 +28667,7 @@ mod tests {
     /// A powered player-attack DamageCtx aimed at a dummy enemy.
     fn powered_player_ctx() -> DamageCtx {
         DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(CreatureUid::new(99).unwrap()),
             props: ValueProps::MOVE,
@@ -28651,6 +28727,7 @@ mod tests {
         state.player.pet_uid = Some(osty_uid);
         state.player.play.push(crate::CardUid::new(1).unwrap());
         let osty_ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Enemy(osty_uid),
             target: CreatureRef::Enemy(CreatureUid::new(99).unwrap()),
             props: ValueProps::MOVE,
@@ -28668,6 +28745,7 @@ mod tests {
         state.player.pet_uid = Some(CreatureUid::new(7).unwrap());
         state.player.play.push(crate::CardUid::new(1).unwrap());
         let other_ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Enemy(CreatureUid::new(50).unwrap()),
             target: CreatureRef::Enemy(CreatureUid::new(99).unwrap()),
             props: ValueProps::MOVE,
@@ -28682,6 +28760,7 @@ mod tests {
         let (mut state, _) = state_with_player_power(PowerKind::Lethality, 50);
         state.player.play.push(crate::CardUid::new(1).unwrap());
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(CreatureUid::new(99).unwrap()),
             props: ValueProps::MOVE.union(ValueProps::UNPOWERED),
@@ -28710,6 +28789,7 @@ mod tests {
         let _ = push_play_card_with_tags(&mut state, tags);
 
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(CreatureUid::new(99).unwrap()),
             props: ValueProps::MOVE,
@@ -28724,6 +28804,7 @@ mod tests {
         let _ = push_play_card_with_tags(&mut state, crate::cards::CardTags::NONE);
 
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(CreatureUid::new(99).unwrap()),
             props: ValueProps::MOVE,
@@ -28737,6 +28818,7 @@ mod tests {
     fn vitruvian_minion_passes_through_when_play_stack_empty() {
         let state = state_with_vitruvian_minion();
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(CreatureUid::new(99).unwrap()),
             props: ValueProps::MOVE,
@@ -28753,6 +28835,7 @@ mod tests {
         let _ = push_play_card_with_tags(&mut state, tags);
 
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Enemy(CreatureUid::new(99).unwrap()),
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -28885,6 +28968,7 @@ mod tests {
     fn modify_damage_fuzz_saturating_and_non_negative() {
         let state = CombatState::default();
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(CreatureUid(NonZeroU32::new(99).unwrap())),
             props: ValueProps::MOVE,
@@ -29978,6 +30062,7 @@ mod power_kind_mask_drift {
 
     fn damage_ctx(p: &Probe) -> DamageCtx {
         DamageCtx {
+            card_source: None,
             dealer: p.a,
             target: p.b,
             props: p.props,
@@ -30234,6 +30319,7 @@ mod power_kind_mask_drift {
         state.player.current_hp = 50;
         state.player.max_hp = 50;
         state.cards.push(crate::Card {
+            local_energy_cost: None,
             uid: CardUid::new(1).unwrap(),
             card_id: crate::cards::CardId::DefendIronclad,
             cost: 1,
@@ -30394,6 +30480,7 @@ mod power_kind_mask_drift {
                     for target in parties {
                         for props in [ValueProps::NONE, ValueProps::MOVE, ValueProps::UNPOWERED] {
                             let ctx = DamageCtx {
+                                card_source: None,
                                 dealer,
                                 target,
                                 props,
@@ -30699,6 +30786,7 @@ mod relic_kind_mask_drift {
                     for target in others {
                         for props in [ValueProps::NONE, ValueProps::MOVE, ValueProps::UNPOWERED] {
                             let d = DamageCtx {
+                                card_source: None,
                                 dealer,
                                 target,
                                 props,
@@ -30835,6 +30923,7 @@ mod relic_kind_mask_drift {
                     for &b in &refs {
                         for props in [ValueProps::NONE, ValueProps::MOVE, ValueProps::UNPOWERED] {
                             let d = DamageCtx {
+                                card_source: None,
                                 dealer: a,
                                 target: b,
                                 props,
@@ -30970,6 +31059,7 @@ mod relic_kind_mask_drift {
                 }
                 for target in [CreatureRef::Player, CreatureRef::Nobody] {
                     let ctx = DamageCtx {
+                        card_source: None,
                         dealer: CreatureRef::Player,
                         target,
                         props: ValueProps::MOVE,
@@ -31547,6 +31637,7 @@ mod power_hook_liveness {
     /// fold answered something other than its identity.
     fn run_body(hook: PowerHook, s: &mut CombatState, p: &Probe) -> bool {
         let damage = DamageCtx {
+            card_source: None,
             dealer: p.a,
             target: p.b,
             props: p.props,
@@ -31767,6 +31858,7 @@ mod power_hook_liveness {
     fn defend(state: &mut CombatState, raw: u32, amount: i32) {
         let uid = CardUid::new(raw).expect("non-zero");
         state.cards.push(crate::Card {
+            local_energy_cost: None,
             uid,
             card_id: crate::cards::CardId::DefendIronclad,
             cost: 1,
@@ -31823,18 +31915,15 @@ mod power_hook_liveness {
         }
     }
 
-    /// Trap 4 (B5): with no power and no relic at all, the empty-bus return of
-    /// `dispatch_after_block_gained` also skips the Unmovable history tail,
-    /// which C# records unconditionally. J06 keeps that divergence (JIT study
-    /// §6.7): the first Defend is NOT recorded, so the second one, after
-    /// Unmovable lands, IS doubled.
+    /// Unmovable must count earlier card block gains even if no listener was
+    /// installed when those gains occurred (UnmovablePower.cs history scan).
     #[test]
-    fn empty_bus_block_gain_keeps_skipping_the_unmovable_history() {
+    fn empty_bus_block_gain_records_the_unmovable_history() {
         for armed in [false, true] {
             let (mut state, player) = combat(armed);
             assert!(state.powers.is_empty() && state.relics.is_empty());
             defend(&mut state, 1, 5);
-            assert!(state.combat_log.unmovable_card_block_plays.is_empty());
+            assert_eq!(state.combat_log.unmovable_card_block_plays.len(), 1);
             crate::card_effects::apply_power_to_creature(
                 &mut state,
                 player,
@@ -31842,7 +31931,7 @@ mod power_hook_liveness {
                 1,
             );
             defend(&mut state, 2, 5);
-            assert_eq!(state.player.block, 15, "the second Defend is doubled");
+            assert_eq!(state.player.block, 10, "the second Defend is not doubled");
         }
     }
 
@@ -32092,6 +32181,7 @@ mod owner_scoped_power_folds {
 
     fn card(n: u32, card_id: CardId, card_type: CardType, tags: CardTags) -> crate::Card {
         crate::Card {
+            local_energy_cost: None,
             uid: CardUid::new(n).unwrap(),
             card_id,
             cost: 1,
@@ -32279,6 +32369,7 @@ mod owner_scoped_power_folds {
                 for &b in &parties {
                     for props in PROPS {
                         let ctx = DamageCtx {
+                            card_source: None,
                             dealer: a,
                             target: b,
                             props,
@@ -32349,6 +32440,7 @@ mod owner_scoped_power_folds {
                 for &b in &parties {
                     for props in PROPS {
                         let ctx = DamageCtx {
+                            card_source: None,
                             dealer: a,
                             target: b,
                             props,
@@ -32422,6 +32514,7 @@ mod owner_scoped_power_folds {
             .push(card(1, CardId::Hang, CardType::Attack, CardTags::NONE));
         state.player.play.push(CardUid::new(1).unwrap());
         let ctx = DamageCtx {
+            card_source: None,
             dealer: enemy(OSTY),
             target: enemy(2),
             props: ValueProps::MOVE,
@@ -32447,6 +32540,7 @@ mod owner_scoped_power_folds {
         state.player.pet_uid = Some(CreatureUid(id(OSTY)));
         for (dealer, target) in [(enemy(OSTY), enemy(2)), (enemy(2), enemy(OSTY))] {
             let ctx = DamageCtx {
+                card_source: None,
                 dealer,
                 target,
                 props: ValueProps::MOVE,
@@ -32467,6 +32561,7 @@ mod owner_scoped_power_folds {
         state.creatures[0].powers.push(vulnerable);
         state.enemy_uids.push(CreatureUid(id(MIRROR)));
         let ctx = DamageCtx {
+            card_source: None,
             dealer: enemy(2),
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -32478,6 +32573,7 @@ mod owner_scoped_power_folds {
         state.creatures[1].powers.push(vulnerable);
         state.enemy_uids.push(CreatureUid(id(2)));
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: enemy(2),
             props: ValueProps::MOVE,
@@ -32495,6 +32591,7 @@ mod owner_scoped_power_folds {
         state.creatures[0].powers.push(shared);
         state.player.powers.extend([shared, legacy]);
         let ctx = DamageCtx {
+            card_source: None,
             dealer: CreatureRef::Player,
             target: enemy(2),
             props: ValueProps::MOVE,
