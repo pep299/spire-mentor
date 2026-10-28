@@ -86,6 +86,12 @@ pub fn local_cost_value(model: LocalEnergyCost) -> Value {
 /// Serialize a runtime card, keeping local cost separate from global hooks.
 #[must_use]
 pub fn card_to_value(state: &CombatState, card: &Card) -> Value {
+    card_to_value_with_cost(state, card, sts2_core::hooks::effective_card_cost(state, card.uid))
+}
+
+/// 所在を持たない公開候補は、観測された実効費用とカード自身の状態を直列化する。
+#[must_use]
+pub fn card_to_value_with_cost(state: &CombatState, card: &Card, effective_cost: i32) -> Value {
     let mut d = obj();
     set(&mut d, "id", card.card_id.to_python_name());
     // `stable_idx` is wire-only metadata; we emit the uid as a
@@ -106,7 +112,7 @@ pub fn card_to_value(state: &CombatState, card: &Card) -> Value {
     set(
         &mut d,
         "cost_override",
-        sts2_core::hooks::effective_card_cost(state, card.uid),
+        effective_cost,
     );
     // The instance's own cost, separate from the effective one above, plus
     // the per-instance scratch that explains the difference. Emitting only

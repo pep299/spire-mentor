@@ -49,6 +49,26 @@ fn generated_card_templates_use_the_same_instance_decoder() {
 }
 
 #[test]
+fn granted_sly_survives_when_the_game_version_removes_intrinsic_sly() {
+    for (version, intrinsic) in [("0.107.1", true), ("0.111.0", false)] {
+        for granted in [false, true] {
+            let mut value = fixture();
+            value["game_version"] = json!(version);
+            value["deck"]["hand"] = json!([{
+                "id":"HAZE", "stable_idx":0, "kind":"card", "upgraded":false,
+                "flags": if granted { vec!["sly"] } else { vec![] }
+            }]);
+            let state = rebuild(&value);
+            let uid = state.player.hand[0];
+            assert_eq!(sts2_core::card_effects::card_is_sly(&state, uid), intrinsic || granted);
+            assert_eq!(state.player.sly_this_combat.contains(&uid), granted && !intrinsic);
+            let back = rebuild(&combat_state_to_value(&state).unwrap());
+            assert_eq!(sts2_core::card_effects::card_is_sly(&back, back.player.hand[0]), intrinsic || granted);
+        }
+    }
+}
+
+#[test]
 fn public_effect_state_roundtrips_identity_and_history() {
     let mut value = fixture();
     value["player"]["cards_started_this_turn"] = json!([2, 3, 1, 0, 0]);

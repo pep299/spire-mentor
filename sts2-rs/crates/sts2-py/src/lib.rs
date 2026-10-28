@@ -1790,6 +1790,31 @@ impl PyCombatState {
         }
     }
 
+    /// 公開候補をカード単位で正規化し、手札・山札・継続状態は変更しない。
+    fn normalize_public_cards<'py>(&self, cards: &Bound<'py, PyList>) -> PyResult<Bound<'py, PyAny>> {
+        let mut result = Vec::with_capacity(cards.len());
+        for (index, item) in cards.iter().enumerate() {
+            let data = item.downcast::<PyDict>()?;
+            let raw = u32::try_from(self.inner.cards.len() + index + 1)
+                .map_err(|_| pyo3::exceptions::PyValueError::new_err("too many card templates"))?;
+            let uid = CardUid::new(raw).ok_or_else(|| pyo3::exceptions::PyValueError::new_err("invalid card uid"))?;
+            let card = state_dict::card_from_dict(data, uid, "public_candidate")?;
+            let cost = data.get_item("cost_override")?.filter(|value| !value.is_none())
+                .map(|value| value.extract::<i32>()).transpose()?.unwrap_or(i32::from(card.cost));
+            let mut value = sts2_wire::emit::combat::card_to_value_with_cost(&self.inner, &card, cost);
+            let mut flags = value.get("flags").and_then(serde_json::Value::as_array).cloned().unwrap_or_default();
+            if let Some(input) = data.get_item("flags")?.filter(|value| !value.is_none()) {
+                for flag in input.extract::<Vec<String>>()? {
+                    let flag = serde_json::Value::String(flag);
+                    if !flags.contains(&flag) { flags.push(flag); }
+                }
+            }
+            value["flags"] = serde_json::Value::Array(flags);
+            result.push(value);
+        }
+        value_to_py(cards.py(), &serde_json::Value::Array(result))
+    }
+
     fn open_generated_choice(
         &mut self,
         kind: &str,
@@ -1809,6 +1834,17 @@ impl PyCombatState {
                 .map_err(|_| pyo3::exceptions::PyValueError::new_err("too many card templates"))?;
             let uid = CardUid::new(raw).ok_or_else(|| pyo3::exceptions::PyValueError::new_err("invalid card uid"))?;
             let card = state_dict::card_from_dict(data, uid, "generated_choice")?;
+            if let Some(flags) = data.get_item("flags")?.filter(|value| !value.is_none()) {
+                for flag in flags.extract::<Vec<String>>()? {
+                    if matches!(flag.as_str(), "retain_turn" | "sly_turn")
+                        || (flag == "sly" && !sts2_core::card_effects::card_sly_in(card.card_id, self.inner.game_version))
+                    {
+                        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                            "generated choice cannot preserve instance flag `{flag}`"
+                        )));
+                    }
+                }
+            }
             let option = PyDict::new(cards.py());
             option.set_item("id", card.card_id.to_python_name())?;
             option.set_item("upgraded", card.upgraded)?;

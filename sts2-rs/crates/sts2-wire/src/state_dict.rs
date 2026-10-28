@@ -2175,11 +2175,9 @@ fn side_from_str(s: &str) -> Side {
 /// Bead `sts2-rs-osyf` (T2). The status-card path is intentionally
 /// loose so unmodelled card flavors don't crash the adapter.
 /// Decode one public card template with the same validation and instance
-/// restoration used by a full combat snapshot. The caller owns arena insertion.
+/// restoration used by a full combat snapshot. The caller owns registry setup
+/// and arena insertion; decoding must not replace registered card handlers.
 pub fn card_from_wire<V: WireValue>(value: &V, uid: CardUid, path: &str) -> WireResult<Card> {
-    sts2_content::cards::dispatch::ensure_installed();
-    sts2_core::register_card_factory(sts2_content::cards::spec_index::card_pod_from_id);
-    sts2_core::register_card_factory_for_version(sts2_content::cards::v0111::card_pod_for);
     let d = as_dict(value, path)?;
     build_card(&parse_card(&d, path)?, uid, path)
 }
@@ -3546,7 +3544,7 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
                     let intrinsic = state
                         .cards
                         .get(uid.0.get() as usize - 1)
-                        .is_some_and(|c| sts2_core::card_effects::card_sly(c.card_id));
+                        .is_some_and(|c| sts2_core::card_effects::card_sly_in(c.card_id, state.game_version));
                     if !intrinsic {
                         state.player.sly_this_combat.push(uid);
                     }
