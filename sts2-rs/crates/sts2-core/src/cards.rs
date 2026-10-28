@@ -1243,6 +1243,56 @@ impl Card {
         self.set_local_energy_cost(model);
     }
 
+    pub fn set_combat_cost(&mut self, amount: i8) {
+        if self.local_energy_cost.is_some() {
+            self.add_local_cost_modifier(LocalCostModifier {
+                kind: LocalCostModifierKind::Absolute,
+                amount: i32::from(amount),
+                reduce_only: false,
+                expiration: 0,
+            });
+        } else {
+            self.cost = amount;
+        }
+    }
+
+    pub fn add_combat_cost(&mut self, amount: i8) {
+        if self.local_energy_cost.is_some() {
+            self.add_local_cost_modifier(LocalCostModifier {
+                kind: LocalCostModifierKind::Relative,
+                amount: i32::from(amount),
+                reduce_only: false,
+                expiration: 0,
+            });
+        } else {
+            self.cost = self.cost.saturating_add(amount);
+            if amount < 0 {
+                self.cost = self.cost.max(0);
+            }
+        }
+    }
+
+    /// 旧コスト表現では、既存の戦闘中減額の近似を維持する。
+    pub fn reduce_cost_until_played(&mut self, amount: i8) {
+        if self.local_energy_cost.is_some() {
+            self.add_local_cost_modifier(LocalCostModifier {
+                kind: LocalCostModifierKind::Relative,
+                amount: -i32::from(amount),
+                reduce_only: false,
+                expiration: 4,
+            });
+        } else {
+            self.cost = self.cost.saturating_sub(amount).max(0);
+        }
+    }
+
+    /// 旧表現でも無料化後の強化でXコストにならないよう、絶対補正を記録する。
+    pub fn set_free_for_combat(&mut self) {
+        self.set_combat_cost(0);
+        self.set_combat_var(VarKey::StarCostFreeThisCombat, 1);
+        self.set_combat_var(VarKey::CostAbsolutelySet, 1);
+    }
+
     pub fn expire_local_energy_cost(&mut self, expiration: u8) {
         if let Some(mut model) = self.local_energy_cost {
             model.expire(expiration);

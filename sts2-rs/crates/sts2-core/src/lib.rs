@@ -5479,14 +5479,7 @@ impl CombatState {
             if let Some(c) = self.cards.iter_mut().find(|c| c.uid == uid) {
                 if c.card_id == crate::cards::CardId::Melancholy {
                     // C# `EnergyCost.AddThisCombat(-1)`, clamped at 0.
-                    if c.local_energy_cost.is_some() {
-                        c.add_local_cost_modifier(crate::cards::LocalCostModifier {
-                            kind: crate::cards::LocalCostModifierKind::Relative,
-                            amount: -1, reduce_only: false, expiration: 0,
-                        });
-                    } else {
-                        c.cost = c.cost.saturating_sub(1).max(0);
-                    }
+                    c.add_combat_cost(-1);
                 }
             }
         }
@@ -7459,14 +7452,7 @@ impl CombatState {
             // ordering is behavior-neutral.
             if card_id == crate::cards::CardId::KinglyKick {
                 if let Some(c) = self.cards.get_mut(idx) {
-                    if c.local_energy_cost.is_some() {
-                        c.add_local_cost_modifier(crate::cards::LocalCostModifier {
-                            kind: crate::cards::LocalCostModifierKind::Relative,
-                            amount: -1, reduce_only: false, expiration: 0,
-                        });
-                    } else {
-                    c.cost = c.cost.saturating_sub(1).max(0);
-                    }
+                    c.add_combat_cost(-1);
                 }
             }
             // Bead `sts2-rs-kese5` (f933s sub-1): ChainsOfBindingPower
@@ -10051,14 +10037,7 @@ fn resolve_transfigure_card_in_hand(state: &mut CombatState, pc: &PendingChoice,
     let idx = uid.0.get() as usize - 1;
     if let Some(card) = state.cards.get_mut(idx) {
         if !card.is_x_cost() && card.cost >= 0 {
-            if card.local_energy_cost.is_some() {
-                card.add_local_cost_modifier(crate::cards::LocalCostModifier {
-                    kind: crate::cards::LocalCostModifierKind::Relative,
-                    amount: 1, reduce_only: false, expiration: 0,
-                });
-            } else {
-                card.cost = card.cost.saturating_add(1);
-            }
+            card.add_combat_cost(1);
         }
         card.base_replay_count = card.base_replay_count.saturating_add(1);
     }
@@ -10525,29 +10504,7 @@ fn resolve_make_free_in_hand(state: &mut CombatState, pc: &PendingChoice, select
     };
     let idx = uid.0.get() as usize - 1;
     if let Some(c) = state.cards.get_mut(idx) {
-        if c.local_energy_cost.is_some() {
-            c.add_local_cost_modifier(crate::cards::LocalCostModifier {
-                kind: crate::cards::LocalCostModifierKind::Absolute,
-                amount: 0, reduce_only: false, expiration: 0,
-            });
-        } else {
-            c.cost = 0;
-        }
-        // C# `SetToFreeThisCombat` zeros the star cost too — mark it so the
-        // legal-action gate and play-time spend treat this star card as free.
-        c.set_combat_var(crate::cards::VarKey::StarCostFreeThisCombat, 1);
-        // C# `SetThisCombat(0)` (CardModel.cs:1275 → CardEnergyCost.cs:238)
-        // installs an *Absolute* local cost modifier that owns the evaluated
-        // cost for the rest of combat. Mark it so a later in-combat upgrade
-        // (e.g. ARMAMENTS+1 on a freed CALAMITY, EnergyCost.UpgradeBy(-1))
-        // takes `Card::upgrade`'s absolute-modifier clamp branch
-        // (cards.rs:819-838) — which keeps the evaluated cost at 0 — instead
-        // of the additive else-branch that would underflow 0 + (2-3) = -1.
-        // A -1 cost reads as an X-cost (is_x_cost), draining all energy on
-        // play. The collapsed base+modifier model otherwise has no way to
-        // distinguish a freed card from a genuinely 0-base one. Bead
-        // `sts2-rs-2e9q2` (gh#180 colorless/potion slice).
-        c.set_combat_var(crate::cards::VarKey::CostAbsolutelySet, 1);
+        c.set_free_for_combat();
     }
 }
 

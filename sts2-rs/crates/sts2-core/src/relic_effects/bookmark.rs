@@ -50,14 +50,7 @@ pub(crate) fn on_after_turn_end_bookmark(state: &mut CombatState, side: Side) ->
         .combat_card_selection
         .next_int_exclusive(0, eligible.len() as i32) as usize];
     if let Some(card) = crate::card_by_uid_mut(&mut state.cards, chosen) {
-        if card.local_energy_cost.is_some() {
-            card.add_local_cost_modifier(crate::cards::LocalCostModifier {
-                kind: crate::cards::LocalCostModifierKind::Relative,
-                amount: -1, reduce_only: false, expiration: 4,
-            });
-        } else {
-            card.cost = (card.cost - 1).max(0);
-        }
+        card.reduce_cost_until_played(1);
     }
     EffectResult::Resolved
 }

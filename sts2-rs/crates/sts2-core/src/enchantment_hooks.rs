@@ -293,14 +293,7 @@ fn on_card_drawn_stub(state: &mut CombatState, card_uid: CardUid, _from_hand_dra
     }
     let new_cost: i8 = state.run_rng.combat_energy_costs.next_int(0, 3) as i8;
     if let Some(card) = state.cards.get_mut(idx) {
-        if card.local_energy_cost.is_some() {
-            card.add_local_cost_modifier(crate::cards::LocalCostModifier {
-                kind: crate::cards::LocalCostModifierKind::Absolute,
-                amount: i32::from(new_cost), reduce_only: false, expiration: 0,
-            });
-        } else {
-            card.cost = new_cost;
-        }
+        card.set_combat_cost(new_cost);
     }
 }
 
@@ -441,14 +434,7 @@ fn before_flush_stub(state: &mut CombatState) {
             continue;
         }
         if card.cost > 0 {
-            if card.local_energy_cost.is_some() {
-                card.add_local_cost_modifier(crate::cards::LocalCostModifier {
-                    kind: crate::cards::LocalCostModifierKind::Relative,
-                    amount: -1, reduce_only: false, expiration: 4,
-                });
-            } else {
-                card.cost -= 1;
-            }
+            card.reduce_cost_until_played(1);
         }
     }
 }

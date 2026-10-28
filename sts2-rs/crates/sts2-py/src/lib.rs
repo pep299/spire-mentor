@@ -1686,47 +1686,12 @@ impl PyCombatState {
         can_skip: bool,
         replace_parked: bool,
     ) -> PyResult<()> {
-        let mut carried_post = None;
-        if let Some(parked) = &self.inner.pending_choice {
-            if !replace_parked {
-                return Err(pyo3::exceptions::PyValueError::new_err(
-                    "open_injected_choice: a choice is already open — resolve or drop it first",
-                ));
-            }
-            // The caller is a mirror PARKED on its own derived list, swapping
-            // in the world's. That is the plan's normal path ("record the
-            // parked choice's kind and arity … re-open the choice via
-            // open_injected_choice"), and it is only reachable once the mirror
-            // stopped being rebuilt mid-play — before that the rebuild cleared
-            // the choice as a side effect and this could never trigger.
-            //
-            // Clearing the choice alone is the point: `pending_play` (the
-            // suspended rest of the card) must SURVIVE, which is the whole
-            // reason the mirror is still parked here. And the parked choice
-            // itself is half of that suspended tail: `post_effect` is what
-            // runs AFTER the pick (Brand's GainStrength, BurningPact's Draw,
-            // Scavenge's EnergyNextTurn), so swapping the option list must
-            // not amputate it — dropping it here was 60 of the 188
-            // `$.player.powers` divergences on the v27wr sweep (a Brand that
-            // exhausted its card and never granted its Strength).
-            carried_post = parked.post_effect.map(|pe| (parked.kind, pe));
-            self.inner.pending_choice = None;
-        }
         let kind = choice_kind_from_python_name(kind).ok_or_else(|| {
             pyo3::exceptions::PyValueError::new_err(format!(
                 "open_injected_choice: unknown choice kind {kind:?}"
             ))
         })?;
-        // Only the SAME screen keeps the tail — a genuinely different
-        // injected kind must not inherit a foreign card's post-effect.
-        let carried_post = carried_post.and_then(|(pk, pe)| (pk == kind).then_some(pe));
-        if min_select > max_select {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "open_injected_choice: min_select ({min_select}) > max_select ({max_select})"
-            )));
-        }
-
-        let mut parsed: Vec<ChoiceOption> = Vec::with_capacity(options.len());
+        let mut parsed = Vec::with_capacity(options.len());
         for (i, item) in options.iter().enumerate() {
             let d = item.downcast::<PyDict>().map_err(|_| {
                 pyo3::exceptions::PyValueError::new_err(format!(
@@ -1735,32 +1700,15 @@ impl PyCombatState {
             })?;
             parsed.push(self.parse_injected_option(d, i)?);
         }
-        if usize::from(min_select) > parsed.len() {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "open_injected_choice: min_select ({min_select}) exceeds the {} options offered",
-                parsed.len()
-            )));
-        }
-        // `max_select` gets the same bound. Both drivers clamp before
-        // calling, which is exactly why this has to be checked HERE: this
-        // method is the only thing standing between an unclamped caller and
-        // a choice whose arity the option list cannot satisfy.
-        if usize::from(max_select) > parsed.len() {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "open_injected_choice: max_select ({max_select}) exceeds the {} options offered",
-                parsed.len()
-            )));
-        }
-
-        self.inner.pending_choice = Some(PendingChoice {
+        let choice = self.injected_choice(
             kind,
-            options: parsed,
+            parsed,
             min_select,
             max_select,
             can_skip,
-            post_effect: carried_post,
-            picked: smallvec::SmallVec::new(),
-        });
+            replace_parked,
+        )?;
+        self.inner.pending_choice = Some(choice);
         Ok(())
     }
 
@@ -1780,14 +1728,6 @@ impl PyCombatState {
 
     fn observed_draws_consumed(&self) -> bool {
         self.inner.player.observed_draws.is_empty() && !self.inner.player.observed_draw_failed
-    }
-
-    fn local_cost_signature<'py>(&self, data: &Bound<'py, PyDict>) -> PyResult<Bound<'py, PyAny>> {
-        let card = state_dict::card_from_dict(data, CardUid::new(1).expect("nonzero"), "card")?;
-        match card.local_energy_cost {
-            Some(model) => value_to_py(data.py(), &sts2_wire::emit::combat::local_cost_value(model)),
-            None => Ok(data.py().None().into_bound(data.py())),
-        }
     }
 
     /// 公開候補をカード単位で正規化し、手札・山札・継続状態は変更しない。
@@ -1845,20 +1785,18 @@ impl PyCombatState {
                     }
                 }
             }
-            let option = PyDict::new(cards.py());
-            option.set_item("id", card.card_id.to_python_name())?;
-            option.set_item("upgraded", card.upgraded)?;
-            options.push(option);
+            options.push(ChoiceOption {
+                card_id: card.card_id,
+                upgraded: card.upgraded,
+                card_uid: Some(uid),
+                source_pile: None,
+            });
             templates.push(card);
         }
-        let offered = PyList::new(cards.py(), options)?;
-        self.open_injected_choice(kind, &offered, min_select, max_select, can_skip, true)?;
+        let kind = choice_kind_from_python_name(kind).expect("validated generative kind");
+        let choice = self.injected_choice(kind, options, min_select, max_select, can_skip, true)?;
         self.inner.cards.extend(templates);
-        let base = self.inner.cards.len() - cards.len();
-        let pending = self.inner.pending_choice.as_mut().expect("choice was opened");
-        for (index, option) in pending.options.iter_mut().enumerate() {
-            option.card_uid = Some(self.inner.cards[base + index].uid);
-        }
+        self.inner.pending_choice = Some(choice);
         Ok(())
     }
 
@@ -2372,6 +2310,51 @@ fn damage_trace_dropped() -> u32 {
 }
 
 impl PyCombatState {
+    fn injected_choice(
+        &self,
+        kind: ChoiceKind,
+        options: Vec<ChoiceOption>,
+        min_select: u8,
+        max_select: u8,
+        can_skip: bool,
+        replace_parked: bool,
+    ) -> PyResult<PendingChoice> {
+        let error = |message: String| pyo3::exceptions::PyValueError::new_err(message);
+        if self.inner.pending_choice.is_some() && !replace_parked {
+            return Err(error(
+                "open_injected_choice: a choice is already open — resolve or drop it first".to_owned(),
+            ));
+        }
+        if min_select > max_select {
+            return Err(error(format!(
+                "open_injected_choice: min_select ({min_select}) > max_select ({max_select})"
+            )));
+        }
+        for (name, count) in [("min_select", min_select), ("max_select", max_select)] {
+            if usize::from(count) > options.len() {
+                return Err(error(format!(
+                    "open_injected_choice: {name} ({count}) exceeds the {} options offered",
+                    options.len()
+                )));
+            }
+        }
+        let post_effect = self
+            .inner
+            .pending_choice
+            .as_ref()
+            .filter(|parked| parked.kind == kind)
+            .and_then(|parked| parked.post_effect);
+        Ok(PendingChoice {
+            kind,
+            options,
+            min_select,
+            max_select,
+            can_skip,
+            post_effect,
+            picked: smallvec::SmallVec::new(),
+        })
+    }
+
     /// Decode one `open_injected_choice` option dict.
     ///
     /// `pile` + `index` are the concrete-card locator; they must appear

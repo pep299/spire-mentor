@@ -28,14 +28,7 @@ pub(crate) fn play_modded(state: &mut CombatState, _t: Option<CreatureUid>) -> E
         sts2_core::card_effects::resolving_card_uid(state).map(|u| u.0.get() as usize - 1)
     {
         if let Some(card) = state.cards.get_mut(idx) {
-            if card.local_energy_cost.is_some() {
-                card.add_local_cost_modifier(sts2_core::cards::LocalCostModifier {
-                    kind: sts2_core::cards::LocalCostModifierKind::Relative,
-                    amount: 1, reduce_only: false, expiration: 0,
-                });
-            } else {
-                card.cost = card.cost.saturating_add(1);
-            }
+            card.add_combat_cost(1);
         }
     }
     EffectResult::Resolved

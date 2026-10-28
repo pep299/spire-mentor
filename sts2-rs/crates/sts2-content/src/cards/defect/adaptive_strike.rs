@@ -24,14 +24,7 @@ pub(crate) fn play_adaptive_strike(
         .last()
         .expect("AdaptiveStrike: dispatch contract guarantees a Play-pile entry");
     let mut clone = state.cards[src_uid.0.get() as usize - 1];
-    if clone.local_energy_cost.is_some() {
-        clone.add_local_cost_modifier(sts2_core::cards::LocalCostModifier {
-            kind: sts2_core::cards::LocalCostModifierKind::Absolute,
-            amount: 0, reduce_only: false, expiration: 0,
-        });
-    } else {
-        clone.cost = 0;
-    }
+    clone.set_combat_cost(0);
     let _ = sts2_core::card_effects::spawn_card_into_pile(state, clone, PileKind::Discard);
     EffectResult::Resolved
 }

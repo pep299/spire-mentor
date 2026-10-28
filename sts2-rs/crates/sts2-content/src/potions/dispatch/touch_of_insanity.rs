@@ -52,23 +52,7 @@ pub(crate) fn drink_touch_of_insanity(
         [uid] => {
             // FirstOrDefault: a single cost-bearing card, set free directly.
             let idx = uid.0.get() as usize - 1;
-            if state.cards[idx].local_energy_cost.is_some() {
-                state.cards[idx].add_local_cost_modifier(sts2_core::cards::LocalCostModifier {
-                    kind: sts2_core::cards::LocalCostModifierKind::Absolute,
-                    amount: 0, reduce_only: false, expiration: 0,
-                });
-            } else {
-                state.cards[idx].cost = 0;
-            }
-            // C# `SetToFreeThisCombat` zeros the star cost too (a Regent star
-            // card freed this way is playable regardless of stars).
-            state.cards[idx].set_combat_var(sts2_core::cards::VarKey::StarCostFreeThisCombat, 1);
-            // C# `SetThisCombat(0)` is an *Absolute* local cost modifier — mark
-            // it so a later in-combat cost-reducing upgrade clamps (stays 0)
-            // instead of underflowing to -1 (an X-cost that drains all energy).
-            // Mirrors the multi-pick `resolve_make_free_in_hand` resolver in
-            // sts2-core. Bead `sts2-rs-2e9q2` (gh#180 CALAMITY).
-            state.cards[idx].set_combat_var(sts2_core::cards::VarKey::CostAbsolutelySet, 1);
+            state.cards[idx].set_free_for_combat();
         }
         _ => {
             let options: Vec<sts2_core::ChoiceOption> = candidates

@@ -6436,7 +6436,6 @@ pub struct CardPlayFinish {
     card_play: u32,
     parent_card_play: Option<u32>,
     card: crate::cards::Card,
-    card_idx: usize,
     card_uid: crate::CardUid,
     target_uid: Option<CreatureUid>,
     resolved_cost: i32,
@@ -6473,6 +6472,19 @@ pub fn start_card_play(state: &mut CombatState, card_type: cards::CardType) -> (
         }
     }
     (parent, tag)
+}
+
+fn record_card_play_finished(state: &mut CombatState, card_type: cards::CardType) {
+    let log = &mut state.combat_log;
+    log.player_card_plays_this_combat = log.player_card_plays_this_combat.saturating_add(1);
+    log.card_plays_finished_this_turn = log.card_plays_finished_this_turn.saturating_add(1);
+    let count = &mut state.player.cards_played_this_turn[card_type.index()];
+    *count = count.saturating_add(1);
+}
+
+fn cleanup_played_card_cost(state: &mut CombatState, uid: crate::CardUid) {
+    state.restore_wire_cost_expiring_on_play(uid);
+    state.cards[uid.get() as usize - 1].expire_snecko_roll();
 }
 
 pub fn play_card(state: &mut CombatState, hand_index: u8, target: Option<u8>) -> StepResult {
@@ -7050,7 +7062,6 @@ pub fn play_card(state: &mut CombatState, hand_index: u8, target: Option<u8>) ->
         card_play,
         parent_card_play,
         card,
-        card_idx,
         card_uid,
         target_uid,
         resolved_cost,
@@ -7257,7 +7268,6 @@ pub(crate) fn finish_card_play(state: &mut CombatState, fin: CardPlayFinish) -> 
         card_play,
         parent_card_play,
         card,
-        card_idx,
         card_uid,
         target_uid,
         resolved_cost,
@@ -7325,16 +7335,7 @@ pub(crate) fn finish_card_play(state: &mut CombatState, fin: CardPlayFinish) -> 
     // Catastrophe) read it WITHOUT this still-in-flight parent. The replay
     // loop below bumps once more per replay (each replay is its own C#
     // `CardPlayFinished`). GoldAxe is the sole reader of this counter.
-    state.combat_log.player_card_plays_this_combat = state
-        .combat_log
-        .player_card_plays_this_combat
-        .saturating_add(1);
-    state.combat_log.card_plays_finished_this_turn = state
-        .combat_log
-        .card_plays_finished_this_turn
-        .saturating_add(1);
-    let kind = card.card_type.index();
-    state.player.cards_played_this_turn[kind] = state.player.cards_played_this_turn[kind].saturating_add(1);
+    record_card_play_finished(state, card.card_type);
     // Event log (C# `CardPlayFinishedEntry`), which also closes this play's
     // source frame — see the auto-play twin in `finish_auto_played_card`.
     crate::event_log::record(
@@ -7495,16 +7496,7 @@ pub(crate) fn finish_card_play(state: &mut CombatState, fin: CardPlayFinish) -> 
             resolve_inline_auto_play_choices(state);
         }
         // CardModel.OnPlayWrapper records this iteration before AfterCardPlayed.
-        state.combat_log.player_card_plays_this_combat = state
-            .combat_log
-            .player_card_plays_this_combat
-            .saturating_add(1);
-        state.combat_log.card_plays_finished_this_turn = state
-            .combat_log
-            .card_plays_finished_this_turn
-            .saturating_add(1);
-        let kind = card.card_type.index();
-        state.player.cards_played_this_turn[kind] = state.player.cards_played_this_turn[kind].saturating_add(1);
+        record_card_play_finished(state, card.card_type);
         if relic_channel_live(state, PlannedChannel::AfterCardPlayed) {
             let _ = crate::relic_effects::dispatch_after_card_played(state, &played_ctx);
         }
@@ -7633,16 +7625,7 @@ pub(crate) fn finish_card_play(state: &mut CombatState, fin: CardPlayFinish) -> 
                 resolve_inline_auto_play_choices(state);
             }
             // CardModel.OnPlayWrapper records this iteration before AfterCardPlayed.
-            state.combat_log.player_card_plays_this_combat = state
-                .combat_log
-                .player_card_plays_this_combat
-                .saturating_add(1);
-            state.combat_log.card_plays_finished_this_turn = state
-                .combat_log
-                .card_plays_finished_this_turn
-                .saturating_add(1);
-            let kind = card.card_type.index();
-            state.player.cards_played_this_turn[kind] = state.player.cards_played_this_turn[kind].saturating_add(1);
+            record_card_play_finished(state, card.card_type);
             // Re-fire both after_card_played buses so Rage / Afterimage /
             // PhantomBlades / Storm / SerpentForm (hooks) and event-reward
             // relics (relic_effects) tick once per replay.
@@ -7918,8 +7901,7 @@ pub(crate) fn finish_card_play(state: &mut CombatState, fin: CardPlayFinish) -> 
     // CardModel.OnPlayWrapper cleans WhenPlayed modifiers after every result
     // route, while AfterCardPlayed listeners still see their live cost.
     if state.pending_choice.is_none() {
-        state.restore_wire_cost_expiring_on_play(card_uid);
-        state.cards[card_idx].expire_snecko_roll();
+        cleanup_played_card_cost(state, card_uid);
     }
 
     // ── Per-turn played-card counters ────────────────────────────────────
@@ -8052,15 +8034,13 @@ pub fn flush_played_cards_after_choice(state: &mut CombatState) {
             if let Some(pos) = state.player.play.iter().position(|&u| u == uid) {
                 state.player.play.remove(pos);
             }
-            state.restore_wire_cost_expiring_on_play(uid);
-            state.cards[idx].expire_snecko_roll();
+            cleanup_played_card_cost(state, uid);
             continue;
         }
         if crate::card_effects::card_exhausts_inst(&card) || corruption_exhausts_skill {
             let _ = cards::move_card(&mut state.player, uid, PileKind::Play, PileKind::Exhaust);
             fire_after_card_exhausted(state, card.card_id, uid, None, card.tags, card.card_type);
-            state.restore_wire_cost_expiring_on_play(uid);
-            state.cards[idx].expire_snecko_roll();
+            cleanup_played_card_cost(state, uid);
             continue;
         }
         let is_attack_or_skill = matches!(
@@ -8100,8 +8080,7 @@ pub fn flush_played_cards_after_choice(state: &mut CombatState) {
         } else {
             let _ = cards::move_card(&mut state.player, uid, PileKind::Play, PileKind::Discard);
         }
-        state.restore_wire_cost_expiring_on_play(uid);
-        state.cards[idx].expire_snecko_roll();
+        cleanup_played_card_cost(state, uid);
     }
 }
 
@@ -9512,16 +9491,7 @@ pub(crate) fn finish_auto_played_card(state: &mut CombatState, fin: AutoPlayFini
     // `CardPlayFinished` unconditionally after `OnPlay`. Unplayable
     // curses/status returned early above (C# `MoveToResultPileWithoutPlaying`
     // records no `CardPlayFinished`), so they stay excluded.
-    state.combat_log.player_card_plays_this_combat = state
-        .combat_log
-        .player_card_plays_this_combat
-        .saturating_add(1);
-    state.combat_log.card_plays_finished_this_turn = state
-        .combat_log
-        .card_plays_finished_this_turn
-        .saturating_add(1);
-    let kind = top_card_type.index();
-    state.player.cards_played_this_turn[kind] = state.player.cards_played_this_turn[kind].saturating_add(1);
+    record_card_play_finished(state, top_card_type);
     // Event log (C# `CardPlayFinishedEntry`) at the same pin, which also
     // CLOSES this play's source frame so the parent that auto-played it
     // reclaims attribution for anything it dispatches next.
@@ -9680,16 +9650,7 @@ pub(crate) fn finish_auto_played_card(state: &mut CombatState, fin: AutoPlayFini
                 target_uid,
             );
             resolve_inline_auto_play_choices(state);
-            state.combat_log.player_card_plays_this_combat = state
-                .combat_log
-                .player_card_plays_this_combat
-                .saturating_add(1);
-            state.combat_log.card_plays_finished_this_turn = state
-                .combat_log
-                .card_plays_finished_this_turn
-                .saturating_add(1);
-            let kind = top_card_type.index();
-            state.player.cards_played_this_turn[kind] = state.player.cards_played_this_turn[kind].saturating_add(1);
+            record_card_play_finished(state, top_card_type);
             if relic_channel_live(state, PlannedChannel::AfterCardPlayed) {
                 let _ = crate::relic_effects::dispatch_after_card_played(state, &played_ctx);
             }
@@ -9914,8 +9875,7 @@ pub(crate) fn finish_auto_played_card(state: &mut CombatState, fin: AutoPlayFini
         }
     }
 
-    state.restore_wire_cost_expiring_on_play(top_uid);
-    state.cards[top_idx].expire_snecko_roll();
+    cleanup_played_card_cost(state, top_uid);
 
     // FeralPower budget tally: an auto-played 0-cost owner Attack consumes the
     // budget too (C# records a `CardPlayStartedEntry` for auto-plays). Bumped

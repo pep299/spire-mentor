@@ -78,14 +78,7 @@ fn apply_transfigure_to(state: &mut CombatState, uid: sts2_core::CardUid) {
     let idx = uid.0.get() as usize - 1;
     if let Some(card) = state.cards.get_mut(idx) {
         if !card.is_x_cost() && card.cost >= 0 {
-            if card.local_energy_cost.is_some() {
-                card.add_local_cost_modifier(sts2_core::cards::LocalCostModifier {
-                    kind: sts2_core::cards::LocalCostModifierKind::Relative,
-                    amount: 1, reduce_only: false, expiration: 0,
-                });
-            } else {
-                card.cost = card.cost.saturating_add(1);
-            }
+            card.add_combat_cost(1);
         }
         card.base_replay_count = card.base_replay_count.saturating_add(1);
     }
