@@ -213,8 +213,14 @@ fn history_course_dupe_lands_after_the_whole_mayhem_batch() {
 
     let _ = answer_choice(&mut state);
     assert!(
+        state.pending_choice.is_some(),
+        "the second ARMAMENTS awaits its selection"
+    );
+    assert!(state.pending_cluster_resume.is_some());
+    let _ = answer_choice(&mut state);
+    assert!(
         state.pending_choice.is_none(),
-        "the second ARMAMENTS' select drains inline during the resume"
+        "both ARMAMENTS selections have completed"
     );
     assert!(
         state.pending_cluster_resume.is_none(),
@@ -295,8 +301,14 @@ fn catastrophes_loop_finishes_before_its_tail_and_the_batch_sibling() {
 
     let _ = answer_choice(&mut state);
     assert!(
+        state.pending_choice.is_some(),
+        "the nested second ARMAMENTS awaits its selection"
+    );
+    assert!(state.pending_autoplay_resume.is_some());
+    let _ = answer_choice(&mut state);
+    assert!(
         state.pending_choice.is_none(),
-        "the second ARMAMENTS' select drains inline during the resume"
+        "both nested ARMAMENTS selections have completed"
     );
     assert!(
         state.pending_autoplay_resume.is_none(),

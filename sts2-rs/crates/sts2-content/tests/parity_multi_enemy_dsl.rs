@@ -229,6 +229,8 @@ fn build_state(fixture_initial: &Value, encounter: &str, seed: u64) -> CombatSta
     // Player shape mirrors the Python recorder's "no start_combat" snapshot:
     // energy = 0, round = 0 (Python `CombatState.__init__` defaults), hand empty.
     let player = PlayerCombatState {
+        observed_draws: smallvec::SmallVec::new(),
+        observed_draw_failed: false,
         current_hp: 80,
         max_hp: 80,
         block: 0,

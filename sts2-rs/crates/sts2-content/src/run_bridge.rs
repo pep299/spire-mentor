@@ -1797,6 +1797,7 @@ mod tests {
         // the dispatcher routes through `on_after_damage_received_lava_lamp`,
         // which latches `Relic.counter = 1`.
         let ctx = sts2_core::hooks::DamageCtx {
+            card_source: None,
             // LavaLamp gates on `target == Player`; dealer is
             // unused so any variant is fine. Mirror the "unknown
             // dealer" shape from the Phase-2 fixture: `Player`.
@@ -1917,6 +1918,7 @@ mod tests {
             .expect("player-Creature initialized");
         // UNBLOCKABLE damage must NOT trip the flag (Python parity).
         let ctx = sts2_core::hooks::DamageCtx {
+            card_source: None,
             dealer: sts2_core::hooks::CreatureRef::Enemy(player_uid),
             target: sts2_core::hooks::CreatureRef::Player,
             props: sts2_core::hooks::ValueProps::UNBLOCKABLE,
@@ -1969,6 +1971,7 @@ mod tests {
         reset_lava_lamp_flag(&mut rs);
         let mut state = enter_combat(&rs, select_first(act1_normal_pool()));
         let ctx = sts2_core::hooks::DamageCtx {
+            card_source: None,
             dealer: sts2_core::hooks::CreatureRef::Player,
             target: sts2_core::hooks::CreatureRef::Player,
             props: sts2_core::hooks::ValueProps::NONE,

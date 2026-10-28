@@ -43,16 +43,21 @@ fn tree_fingerprint<P: sts2_mcts::Policy>(m: &Mcts<P>, chosen: &sts2_core::Actio
         let children: Vec<(String, u32)> = n
             .children
             .iter()
-            .map(|(e, c)| (format!("{e:?}"), c.0))
+            .map(|(e, c)| (common::legacy_edge_text(e), c.0))
             .collect();
         let outcomes: Vec<(u32, u32)> =
             n.chance_outcomes.iter().map(|o| (o.n, o.child.0)).collect();
+        let untried = n
+            .untried_actions
+            .iter()
+            .map(common::legacy_edge_text)
+            .collect::<Vec<_>>()
+            .join(", ");
         let line = format!(
-            "{:?}|{}|{:08x}|{children:?}|{outcomes:?}|{:?}\n",
+            "{:?}|{}|{:08x}|{children:?}|{outcomes:?}|[{untried}]\n",
             n.kind,
             n.visits,
             n.value_sum.to_bits(),
-            n.untried_actions,
         );
         h = fnv1a(h, line.as_bytes());
     }

@@ -2451,6 +2451,25 @@ pub fn dispatch_before_hand_draw(state: &mut CombatState) -> EffectResult {
     )
 }
 
+/// Resume BeforeHandDraw in relic equip order, suspending after a new choice.
+pub fn dispatch_before_hand_draw_from(state: &mut CombatState, from: u8) -> Option<u8> {
+    let owned = collect_equip_order_listeners(registry_before_hand_draw(), state);
+    for (idx, _, listener) in owned {
+        if idx < usize::from(from) {
+            continue;
+        }
+        let had_choice = state.pending_choice.is_some();
+        listener(state);
+        if !had_choice && state.pending_choice.is_some() {
+            return Some(u8::try_from(idx + 1).expect("relic equip index fits u8"));
+        }
+        if state.is_over {
+            break;
+        }
+    }
+    None
+}
+
 /// Dispatch `after_side_turn_start` to every OWNED relic's listener, in
 /// player EQUIP order (`state.relics` order).
 pub fn dispatch_after_side_turn_start(state: &mut CombatState, side: Side) -> EffectResult {
@@ -2581,10 +2600,7 @@ fn run_after_player_turn_start(
         if idx < usize::from(from) {
             continue;
         }
-        // A choice may already be open from an EARLIER, non-deferring surface
-        // (Toolbox's `before_hand_draw` select — the Rust port deliberately
-        // lets the rest of turn setup run past it, see `combat_loop`). Only a
-        // choice THIS listener opened suspends the walk.
+        // Only a choice opened by this listener suspends this walk.
         let had_choice = state.pending_choice.is_some();
         let _ = f(state);
         if !had_choice && state.pending_choice.is_some() {

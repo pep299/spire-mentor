@@ -17,6 +17,25 @@ use sts2_core::{
     MonsterKind, PlayerCombatState, Side, TurnEvents,
 };
 
+/// 一時コスト導入前に固定した探索木の表記を保つ。
+/// コスト情報が存在する場合は文字列に含め、比較対象から除外しない。
+pub fn legacy_edge_text(edge: &sts2_mcts::EdgeAction) -> String {
+    match edge {
+        sts2_mcts::EdgeAction::PlayCard {
+            card_id,
+            upgraded,
+            cost,
+            local_cost: None,
+            free,
+            affliction,
+            target,
+        } => format!(
+            "PlayCard {{ card_id: {card_id:?}, upgraded: {upgraded}, cost: {cost}, free: {free}, affliction: {affliction:?}, target: {target:?} }}"
+        ),
+        _ => format!("{edge:?}"),
+    }
+}
+
 /// Same as [`build_handful`] but with full control over the cultist's
 /// intent and the player's potion inventory. Used by the value-function
 /// regression tests (bead `sts2-rs-v2oh`) where the eval depends on
@@ -68,6 +87,7 @@ pub fn build_handful(
             _ => CardType::Skill,
         };
         cards_arena.push(Card {
+            local_energy_cost: None,
             uid,
             card_id,
             cost,
@@ -88,6 +108,8 @@ pub fn build_handful(
     }
 
     let player = PlayerCombatState {
+        observed_draws: smallvec::SmallVec::new(),
+        observed_draw_failed: false,
         current_hp: player_hp,
         max_hp: player_hp,
         block: 0,
@@ -240,6 +262,8 @@ pub fn build_vertical_slice_hp(seed: u64, player_hp: i32, cultist_hp: i32) -> Co
     }
 
     let player = PlayerCombatState {
+        observed_draws: smallvec::SmallVec::new(),
+        observed_draw_failed: false,
         hand: SmallVec::new(),
         draw,
         discard: SmallVec::new(),

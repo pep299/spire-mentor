@@ -47,6 +47,8 @@ fn make_state(seed: u64) -> CombatState {
     };
 
     let player = PlayerCombatState {
+        observed_draws: smallvec::SmallVec::new(),
+        observed_draw_failed: false,
         hand: SmallVec::new(),
         draw,
         discard: SmallVec::new(),

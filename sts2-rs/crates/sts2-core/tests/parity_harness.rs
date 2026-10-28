@@ -1448,6 +1448,8 @@ mod vthin1_setup_only {
     /// once `Creature` grows hp/block fields).
     fn construct_setup_only_state() -> CombatState {
         let player = PlayerCombatState {
+            observed_draws: smallvec::SmallVec::new(),
+            observed_draw_failed: false,
             current_hp: 50,
             max_hp: 50,
             block: 0,
@@ -1634,6 +1636,8 @@ mod vthin2_vulnerable_damage {
     /// argument).
     fn construct_vulnerable_scenario() -> (CombatState, CreatureUid) {
         let player = PlayerCombatState {
+            observed_draws: smallvec::SmallVec::new(),
+            observed_draw_failed: false,
             current_hp: 50,
             max_hp: 50,
             block: 0,
@@ -2023,6 +2027,8 @@ mod wave_a_fixtures {
             relics: Vec::new().into(),
             potions: Vec::new(),
             player: PlayerCombatState {
+                observed_draws: smallvec::SmallVec::new(),
+                observed_draw_failed: false,
                 current_hp: player_current_hp,
                 max_hp: player_max_hp,
                 block: player_block,
@@ -2823,6 +2829,8 @@ mod zizk_relic_install {
     /// `combat.relics = [create_relic_by_name("BurningBlood")]` line.
     fn construct_burning_blood_setup_only_state() -> CombatState {
         let player = PlayerCombatState {
+            observed_draws: smallvec::SmallVec::new(),
+            observed_draw_failed: false,
             current_hp: 80,
             max_hp: 80,
             block: 0,
@@ -3033,6 +3041,8 @@ mod s16y_starter_relics {
     /// pattern with `max_hp` + `RelicKind` parameterized.
     fn construct_relic_setup_state(max_hp: i32, kind: RelicKind) -> CombatState {
         let player = PlayerCombatState {
+            observed_draws: smallvec::SmallVec::new(),
+            observed_draw_failed: false,
             current_hp: max_hp,
             max_hp,
             block: 0,
@@ -3293,6 +3303,8 @@ mod vmko_heavenly_drill {
             relics: Vec::new().into(),
             potions: Vec::new(),
             player: PlayerCombatState {
+                observed_draws: smallvec::SmallVec::new(),
+                observed_draw_failed: false,
                 current_hp: 50,
                 max_hp: 50,
                 block: 0,
@@ -3577,6 +3589,8 @@ mod rggx_act2_tunneler {
     /// canonical encounter id is "Tunneler" so we set it directly).
     fn construct_tunneler_setup_state() -> CombatState {
         let player = PlayerCombatState {
+            observed_draws: smallvec::SmallVec::new(),
+            observed_draw_failed: false,
             current_hp: 80,
             max_hp: 80,
             block: 0,

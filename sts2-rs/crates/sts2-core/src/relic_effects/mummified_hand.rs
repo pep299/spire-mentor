@@ -43,7 +43,10 @@ pub(crate) fn on_after_card_played_mummified_hand(
     // (`CostModifiers.None` — intrinsic cost, ignoring local discounts).
     let is_favorable = |uid: &crate::CardUid| {
         crate::card_by_uid(&state.cards, *uid).is_some_and(|c| {
-            (c.cost > 0 && !c.is_x_cost()) || crate::card_base_star_cost(c.card_id) > 0
+            let base = c
+                .local_energy_cost
+                .map_or(i32::from(c.cost), |model| model.base);
+            (base > 0 && !c.is_x_cost()) || crate::card_base_star_cost(c.card_id) > 0
         })
     };
     // `costs_now` = `CostsEnergyOrStars(includeGlobalModifiers: true)`: the
@@ -54,8 +57,9 @@ pub(crate) fn on_after_card_played_mummified_hand(
         crate::card_by_uid(&state.cards, *uid).is_some_and(|c| {
             let energy_now = c.cost > 0
                 && !c.is_x_cost()
-                && c.combat_var(crate::cards::VarKey::FreeThisTurn) == 0
-                && c.combat_var(crate::cards::VarKey::FreeUntilPlayed) == 0;
+                && (c.local_energy_cost.is_some()
+                    || (c.combat_var(crate::cards::VarKey::FreeThisTurn) == 0
+                        && c.combat_var(crate::cards::VarKey::FreeUntilPlayed) == 0));
             energy_now || crate::effective_star_cost(c) > 0
         })
     };

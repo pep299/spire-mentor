@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
-use sts2_core::cards::{Card, CardType, VarKey};
+use sts2_core::cards::{Card, CardType, LocalEnergyCost, VarKey};
 use sts2_core::{
     Action, CardUid, CharacterId, ChoiceOption, CombatPhase, CombatState, CreatureUid, Intent,
     MonsterKind, Orb, PendingChoice, Power, PowerKind, PowerUid, Side, DARK_ORB_BASE_EVOKE,
@@ -73,17 +73,31 @@ const fn class_str_from_character(c: Option<CharacterId>) -> &'static str {
     }
 }
 
-/// Serialize a single [`Card`] runtime POD into the wire-format
-/// `CardSpec` dict.
-///
-/// `state` is needed to resolve the card's *effective* energy cost
-/// (base cost plus any active cost modifiers); the resolved value is
-/// emitted as the additive `cost_override` field so display consumers
-/// (e.g. the workbench combat panel) can show the real cost without
-/// re-deriving it. `cost_override` is not a required CardSpec key, so
-/// emitting it is backward-compatible and ignored on round-trip.
+/// Canonical local-cost program, shared by serialization and input signatures.
+#[must_use]
+pub fn local_cost_value(model: LocalEnergyCost) -> Value {
+    let functions = model.functions.map(|function| {
+        serde_json::json!({
+            "offset": function.offset, "ceiling": function.ceiling,
+            "absolute_offset": function.absolute_offset, "uses_base": function.uses_base,
+        })
+    });
+    serde_json::json!({"base": model.base, "costs_x": model.costs_x, "functions": functions})
+}
+
+/// Serialize a runtime card, keeping local cost separate from global hooks.
 #[must_use]
 pub fn card_to_value(state: &CombatState, card: &Card) -> Value {
+    card_to_value_with_cost(
+        state,
+        card,
+        sts2_core::hooks::effective_card_cost(state, card.uid),
+    )
+}
+
+/// 所在を持たない公開候補は、観測された実効費用とカード自身の状態を直列化する。
+#[must_use]
+pub fn card_to_value_with_cost(state: &CombatState, card: &Card, effective_cost: i32) -> Value {
     let mut d = obj();
     set(&mut d, "id", card.card_id.to_python_name());
     // `stable_idx` is wire-only metadata; we emit the uid as a
@@ -101,16 +115,23 @@ pub fn card_to_value(state: &CombatState, card: &Card) -> Value {
     };
     set(&mut d, "kind", kind);
     set(&mut d, "upgraded", card.upgraded);
-    set(
-        &mut d,
-        "cost_override",
-        sts2_core::hooks::effective_card_cost(state, card.uid),
-    );
+    set(&mut d, "cost_override", effective_cost);
     // The instance's own cost, separate from the effective one above, plus
     // the per-instance scratch that explains the difference. Emitting only
     // the effective cost made every transient discount permanent on rebuild;
     // see `ParsedCard::base_cost`.
     set(&mut d, "base_cost", i32::from(card.cost));
+    let [local, after_turn, after_play, after_both] = card.local_costs_after_expiration();
+    d.insert(
+        "public_costs".to_owned(),
+        serde_json::json!({
+            "local": local, "afterTurn": after_turn, "afterPlay": after_play,
+            "afterTurnAndPlay": after_both,
+        }),
+    );
+    if let Some(model) = card.local_energy_cost {
+        d.insert("local_cost".to_owned(), local_cost_value(model));
+    }
     if !card.combat_vars.is_empty() {
         let mut cv = obj();
         for (key, value) in &card.combat_vars {
@@ -133,31 +154,7 @@ pub fn card_to_value(state: &CombatState, card: &Card) -> Value {
     if let Some(v) = sts2_content::cards::preview::calculated_value(state, card, None) {
         set(&mut d, "calculated_value", v);
     }
-    // Instance keyword flags, in the C# producers' vocabulary
-    // (`VALID_CARD_FLAGS`), so the mirror's `_card_key` can compare them —
-    // with neither side emitting flags, the diff was structurally BLIND to
-    // every keyword divergence. ONLY the override/registry-derived subset is
-    // emitted: the C# producer names flags only on HAND cards and never
-    // names the free riders at all, so a var-derived emission (FreeThisTurn,
-    // GhostSeed's EtherealThisCombat) is knowledge only the mirror's own
-    // model holds — emitting it manufactured a per-decision tuple desync on
-    // every generated-free card (the v29wr hand/discard explosion: mirror
-    // `('free_turn',)` vs world `()`). The vars still DO their behavioral
-    // work; they are just not part of the comparison vocabulary.
-    //
-    // The keyword `retain` stays unemitted, as it has since this block
-    // landed. That IS an asymmetry — the adapter maps the C# keyword onto a
-    // `retain` flag — but it is pre-existing, orthogonal to GH #370, and
-    // making it symmetric would start surfacing engine-vs-C# Retain-registry
-    // divergences as fresh desyncs. Worth doing deliberately, not as a side
-    // effect of this change.
-    //
-    // The Sly/Retain trio is emitted only for cards IN HAND, because that is
-    // where the adapter computes flags — the C# producers ship keywords on
-    // pile cards too, but `_flags_for_card` is called for the hand alone. An
-    // asymmetric emit here would manufacture a per-decision desync on every
-    // Well-Laid-Plans / Hand-Trick / MasterPlanner card, which is exactly the
-    // failure the paragraph above records for the free riders. GH #370.
+    // Keyword and single-turn grants are public card attributes in every pile.
     {
         let mut flags: Vec<&str> = Vec::new();
         // GH #372. Two independent sources make a card Ethereal and the emit
@@ -190,21 +187,22 @@ pub fn card_to_value(state: &CombatState, card: &Card) -> Value {
         if sts2_core::card_effects::card_innate_inst(card) {
             flags.push("innate");
         }
-        if state.player.hand.contains(&card.uid) {
+        {
             // Mirrors the adapter: keyword first, then the single-turn halves
             // with the keyword subtracted, so a card that is BOTH intrinsically
             // Sly and Hand-Tricked emits `sly` alone — as C# does, since
             // `IsSlyThisTurn` short-circuits on the keyword.
-            let sly_keyword = sts2_core::card_effects::card_sly(card.card_id)
-                || state.player.sly_this_combat.contains(&card.uid);
+            let sly_keyword =
+                sts2_core::card_effects::card_sly_in(card.card_id, state.game_version)
+                    || state.player.sly_this_combat.contains(&card.uid);
             if sly_keyword {
                 flags.push("sly");
             } else if state.player.sly_this_turn.contains(&card.uid) {
                 flags.push("sly_turn");
             }
-            if !sts2_core::card_effects::card_retain_inst(card)
-                && state.player.retain_this_turn.contains(&card.uid)
-            {
+            if sts2_core::card_effects::card_retain_inst(card) {
+                flags.push("retain");
+            } else if state.player.retain_this_turn.contains(&card.uid) {
                 flags.push("retain_turn");
             }
         }
@@ -502,6 +500,16 @@ pub fn powers_to_value(uids: &[PowerUid], arena: &[Power], path: &str) -> Result
         // `SlowAmount * 10` (the per-instance `counter`, bumped per card
         // played and reset at the owner's turn start).
         let display_amount = match pow.kind {
+            PowerKind::Tender | PowerKind::Sloth => pow.counter,
+            PowerKind::Panache => {
+                if pow.counter < 0 {
+                    5
+                } else {
+                    pow.counter
+                }
+            }
+            PowerKind::Automation => 10 - pow.counter.clamp(0, 10),
+            PowerKind::WitheringPresence => pow.amount.saturating_sub(pow.counter).max(0),
             PowerKind::Slow => pow.counter.saturating_mul(10),
             // GH #363 A1: C# `OrbitPower.DisplayAmount => 4 - energySpent % 4`
             // (`OrbitPower.cs:25`) — the energy still owed before the next
@@ -705,12 +713,70 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
     // so start-of-turn dicts keep the historical shape. The parser side
     // documents why dropping these stalls round-tripped searches (Ringing/
     // Normality/Sloth ShouldPlay gates).
-    if state.player.cards_played_this_turn.iter().any(|&n| n > 0) {
+    if state.combat_log.public_finished_history
+        || state.player.cards_played_this_turn.iter().any(|&n| n > 0)
+    {
         set(
             &mut player,
             "cards_played_this_turn",
             state.player.cards_played_this_turn.to_vec(),
         );
+    }
+    let log = &state.combat_log;
+    if log.public_started_history || log.cards_started_this_turn.iter().any(|&n| n > 0) {
+        set(
+            &mut player,
+            "cards_started_this_turn",
+            log.cards_started_this_turn.to_vec(),
+        );
+    }
+    if log.public_block_history || !log.unmovable_card_block_plays.is_empty() {
+        set(
+            &mut player,
+            "block_gained_card_plays_this_turn",
+            log.unmovable_card_block_plays.to_vec(),
+        );
+    }
+    if let Some(tag) = log.current_card_play {
+        set(&mut player, "current_card_play", tag);
+    }
+    if log.next_card_play != 0 {
+        set(&mut player, "next_card_play", log.next_card_play);
+    }
+    let card_location = |uid: CardUid| -> Option<Value> {
+        [
+            ("hand", state.player.hand.as_slice()),
+            ("draw", state.player.draw.as_slice()),
+            ("discard", state.player.discard.as_slice()),
+            ("exhaust", state.player.exhaust.as_slice()),
+            ("play", state.player.play.as_slice()),
+        ]
+        .into_iter()
+        .find_map(|(pile, cards)| {
+            cards
+                .iter()
+                .position(|&c| c == uid)
+                .map(|index| serde_json::json!({"pile": pile, "index": index}))
+        })
+    };
+    if let Some(uid) = log.pen_nib_attack_to_double {
+        if let Some(location) = card_location(uid) {
+            player.insert("pen_nib_attack_to_double".to_owned(), location);
+        }
+    }
+    if let Some(relic) = state
+        .relics
+        .iter()
+        .find(|r| r.kind == sts2_core::RelicKind::Vambrace && r.counter < 0)
+    {
+        if let Some(location) = relic
+            .counter
+            .checked_neg()
+            .and_then(|n| CardUid::new(n as u32))
+            .and_then(card_location)
+        {
+            player.insert("vambrace_triggering_card".to_owned(), location);
+        }
     }
     // ChainsOfBinding's once-per-turn Bound gate — same rationale as the
     // buckets above: dropping it re-opens vetoed plays on round-trip.
@@ -1390,6 +1456,19 @@ pub fn staged_for_play(state: &CombatState, card_uid: CardUid) -> CombatState {
         staged.player.hand.remove(pos);
     }
     staged.player.play.push(card_uid);
+    staged.resolving_card = Some(card_uid);
+    if staged.combat_log.pen_nib_attack_to_double.is_none()
+        && staged
+            .cards
+            .get(card_uid.get() as usize - 1)
+            .is_some_and(|c| c.card_type == CardType::Attack)
+        && staged
+            .relics
+            .iter()
+            .any(|r| !r.is_melted && r.kind == sts2_core::RelicKind::PenNib && r.counter == 9)
+    {
+        staged.combat_log.pen_nib_attack_to_double = Some(card_uid);
+    }
     staged
 }
 

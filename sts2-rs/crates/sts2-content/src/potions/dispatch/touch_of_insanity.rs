@@ -35,7 +35,9 @@ pub(crate) fn drink_touch_of_insanity(
             // selected the free RAMPAGE+1 off raw `cost > 0` and made it
             // free for the whole combat). The raw cost stays as a guard so
             // X-cost (-1) cards remain excluded.
-            if c.combat_var(sts2_core::cards::VarKey::FreeThisTurn) != 0 {
+            if c.local_energy_cost.is_none()
+                && c.combat_var(sts2_core::cards::VarKey::FreeThisTurn) != 0
+            {
                 return false;
             }
             // C# filters on `CostsEnergyOrStars` — energy OR stars. A Regent
@@ -52,16 +54,7 @@ pub(crate) fn drink_touch_of_insanity(
         [uid] => {
             // FirstOrDefault: a single cost-bearing card, set free directly.
             let idx = uid.0.get() as usize - 1;
-            state.cards[idx].cost = 0;
-            // C# `SetToFreeThisCombat` zeros the star cost too (a Regent star
-            // card freed this way is playable regardless of stars).
-            state.cards[idx].set_combat_var(sts2_core::cards::VarKey::StarCostFreeThisCombat, 1);
-            // C# `SetThisCombat(0)` is an *Absolute* local cost modifier — mark
-            // it so a later in-combat cost-reducing upgrade clamps (stays 0)
-            // instead of underflowing to -1 (an X-cost that drains all energy).
-            // Mirrors the multi-pick `resolve_make_free_in_hand` resolver in
-            // sts2-core. Bead `sts2-rs-2e9q2` (gh#180 CALAMITY).
-            state.cards[idx].set_combat_var(sts2_core::cards::VarKey::CostAbsolutelySet, 1);
+            state.cards[idx].set_free_for_combat();
         }
         _ => {
             let options: Vec<sts2_core::ChoiceOption> = candidates

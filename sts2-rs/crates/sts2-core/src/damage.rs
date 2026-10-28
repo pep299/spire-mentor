@@ -476,7 +476,10 @@ pub fn apply_damage(
 /// when the proximate source isn't the top-of-`Play` card (e.g. a relic
 /// listener that passes an explicit `card_id`). Bead `sts2-rs-nwz1n`.
 #[inline]
-fn originating_card_uid(state: &CombatState, card: Option<CardId>) -> Option<crate::CardUid> {
+pub(crate) fn originating_card_uid(
+    state: &CombatState,
+    card: Option<CardId>,
+) -> Option<crate::CardUid> {
     let card_id = card?;
     let uid = crate::card_effects::resolving_card_uid(state)?;
     let idx = uid.0.get() as usize - 1;
@@ -547,6 +550,7 @@ pub fn compute_modified_damage(
     card: Option<CardId>,
 ) -> i32 {
     let ctx = DamageCtx {
+        card_source: originating_card_uid(state, card),
         dealer,
         target: CreatureRef::Enemy(target),
         props,
@@ -660,6 +664,7 @@ pub fn flash_damage_amount_modifiers(
         return;
     }
     let ctx = hooks::DamageCtx {
+        card_source: None,
         dealer,
         target,
         props,
@@ -743,6 +748,7 @@ fn apply_damage_with_final_impl(
 ) -> DamageOutcome {
     let target_ref = CreatureRef::Enemy(target);
     let ctx = DamageCtx {
+        card_source: None,
         dealer,
         target: target_ref,
         props,
@@ -1292,6 +1298,7 @@ pub fn compute_modified_damage_frac(
     card: Option<CardId>,
 ) -> i32 {
     let ctx = DamageCtx {
+        card_source: originating_card_uid(state, card),
         dealer,
         target: CreatureRef::Enemy(target),
         props,
@@ -3798,6 +3805,7 @@ mod tests {
     fn originating_card_uid_matches_top_of_play() {
         use crate::cards::{CardId, CardTags, CardType, TargetType};
         let mk_card = |raw: u32, card_id: CardId| crate::Card {
+            local_energy_cost: None,
             uid: crate::CardUid::new(raw).expect("non-zero"),
             card_id,
             cost: 1,

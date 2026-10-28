@@ -361,6 +361,12 @@ pub struct ParsedPlayer {
     pub stars: Option<i32>,
     pub osty: Option<ParsedOsty>,
     pub cards_played_this_turn: Option<[u32; 5]>,
+    pub cards_started_this_turn: Option<[u32; 5]>,
+    pub block_gained_card_plays_this_turn: Option<Vec<u32>>,
+    pub current_card_play: Option<u32>,
+    pub next_card_play: Option<u32>,
+    pub pen_nib_attack_to_double: Option<(String, usize)>,
+    pub vambrace_triggering_card: Option<(String, usize)>,
     /// Run gold. Optional — older producers omit it. Gates in-combat relic
     /// hooks (SealOfGold spends 5 gold for +1 energy at every player turn
     /// start); rebuilt without it the hook could never fire — 90 of the 178
@@ -525,6 +531,7 @@ pub struct ParsedCard {
     pub persistent_cost: Option<i32>,
     pub played_cost: Option<i32>,
     pub stable_cost: Option<i32>,
+    pub local_cost: Option<sts2_core::cards::LocalEnergyCost>,
     pub flags: Vec<String>,
     pub enchantment: Option<String>,
     /// Stack size of [`Self::enchantment`] (C# `EnchantmentModel.Amount`).
@@ -1206,6 +1213,23 @@ fn parse_player<V: WireValue>(d: &V) -> WireResult<ParsedPlayer> {
         None => None,
     };
 
+    let cards_started_this_turn = optional_u32_list(d, "cards_started_this_turn")?
+        .map(|v| {
+            <[u32; 5]>::try_from(v).map_err(|_| {
+                schema_err(
+                    "$.player.cards_started_this_turn",
+                    "must be a list of 5 counters",
+                )
+            })
+        })
+        .transpose()?;
+    let block_gained_card_plays_this_turn =
+        optional_u32_list(d, "block_gained_card_plays_this_turn")?;
+    let current_card_play = optional_u32(d, "current_card_play")?;
+    let next_card_play = optional_u32(d, "next_card_play")?;
+    let pen_nib_attack_to_double = optional_card_location(d, "pen_nib_attack_to_double")?;
+    let vambrace_triggering_card = optional_card_location(d, "vambrace_triggering_card")?;
+
     let bound_card_played_this_turn = match extract_optional(d, "bound_card_played_this_turn") {
         Some(v) => v.as_bool().ok_or_else(|| {
             schema_err(
@@ -1245,9 +1269,65 @@ fn parse_player<V: WireValue>(d: &V) -> WireResult<ParsedPlayer> {
         stars,
         osty,
         cards_played_this_turn,
+        cards_started_this_turn,
+        block_gained_card_plays_this_turn,
+        current_card_play,
+        next_card_play,
+        pen_nib_attack_to_double,
+        vambrace_triggering_card,
         gold,
         bound_card_played_this_turn,
     })
+}
+
+fn optional_u32<V: WireValue>(d: &V, key: &str) -> WireResult<Option<u32>> {
+    extract_optional(d, key)
+        .map(|v| {
+            v.as_i64()
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or_else(|| schema_err(format!("$.player.{key}"), "must be a u32"))
+        })
+        .transpose()
+}
+
+fn optional_u32_list<V: WireValue>(d: &V, key: &str) -> WireResult<Option<Vec<u32>>> {
+    let path = format!("$.player.{key}");
+    extract_optional(d, key)
+        .map(|v| {
+            as_list(&v, &path)?
+                .iter()
+                .enumerate()
+                .map(|(i, item)| {
+                    item.as_i64()
+                        .and_then(|n| u32::try_from(n).ok())
+                        .ok_or_else(|| schema_err(format!("{path}[{i}]"), "must be a u32"))
+                })
+                .collect()
+        })
+        .transpose()
+}
+
+fn optional_card_location<V: WireValue>(d: &V, key: &str) -> WireResult<Option<(String, usize)>> {
+    let path = format!("$.player.{key}");
+    extract_optional(d, key)
+        .map(|v| {
+            let loc = as_dict(&v, &path)?;
+            let pile = extract_str(&loc, &path, "pile")?;
+            if !matches!(
+                pile.as_str(),
+                "hand" | "draw" | "discard" | "exhaust" | "play"
+            ) {
+                return Err(schema_err(format!("{path}.pile"), "unknown card pile"));
+            }
+            let index = get_item(&loc, &path, "index")?
+                .as_i64()
+                .and_then(|n| usize::try_from(n).ok())
+                .ok_or_else(|| {
+                    schema_err(format!("{path}.index"), "must be a nonnegative index")
+                })?;
+            Ok((pile, index))
+        })
+        .transpose()
 }
 
 fn parse_powers<V: WireValue>(value: &V, path: &str) -> WireResult<Vec<ParsedPower>> {
@@ -1264,14 +1344,22 @@ fn parse_powers<V: WireValue>(value: &V, path: &str) -> WireResult<Vec<ParsedPow
             .ok_or_else(|| unsupported(format!("{pp}.name"), &name))?;
         let amount = extract_i32(&pd, &pp, "amount")?;
         let has_extra = extract_optional(&pd, "extra").is_some();
-        let display = match extract_optional(&pd, "display") {
-            Some(v) => Some(
-                v.as_i64()
-                    .and_then(|n| i32::try_from(n).ok())
-                    .ok_or_else(|| schema_err(&pp, "`display` must fit in i32"))?,
-            ),
-            None => None,
+        let display_field = |key| -> WireResult<Option<i32>> {
+            match extract_optional(&pd, key) {
+                Some(v) => Ok(Some(
+                    v.as_i64()
+                        .and_then(|n| i32::try_from(n).ok())
+                        .ok_or_else(|| schema_err(&pp, &format!("`{key}` must fit in i32")))?,
+                )),
+                None => Ok(None),
+            }
         };
+        let display = display_field("display")?;
+        let display_amount = display_field("display_amount")?;
+        if display.is_some() && display_amount.is_some() && display != display_amount {
+            return Err(schema_err(&pp, "`display` and `display_amount` disagree"));
+        }
+        let display = display.or(display_amount);
         let counter = match extract_optional(&pd, "counter") {
             Some(v) => Some(
                 v.as_i64()
@@ -1289,6 +1377,94 @@ fn parse_powers<V: WireValue>(value: &V, path: &str) -> WireResult<Vec<ParsedPow
         });
     }
     Ok(out)
+}
+
+fn parse_local_energy_cost<V: WireValue>(
+    value: &V,
+    path: &str,
+) -> WireResult<sts2_core::cards::LocalEnergyCost> {
+    use sts2_core::cards::{
+        LocalCostFunction, LocalCostModifier, LocalCostModifierKind, LocalEnergyCost,
+    };
+    let d = as_dict(value, path)?;
+    let base = extract_i32(&d, path, "base")?;
+    let costs_x = extract_bool(&d, path, "costs_x")?;
+    let modifiers = extract_optional(&d, "modifiers");
+    let functions = extract_optional(&d, "functions");
+    if modifiers.is_some() == functions.is_some() {
+        return Err(schema_err(
+            path,
+            "provide exactly one of modifiers or functions",
+        ));
+    }
+    let mut model = LocalEnergyCost::new(base, costs_x);
+    if let Some(values) = modifiers {
+        for (i, value) in as_list(&values, &format!("{path}.modifiers"))?
+            .iter()
+            .enumerate()
+        {
+            let p = format!("{path}.modifiers[{i}]");
+            let d = as_dict(value, &p)?;
+            let raw_kind = extract_str(&d, &p, "kind")?;
+            let kind = match raw_kind.as_str() {
+                "absolute" => LocalCostModifierKind::Absolute,
+                "relative" => LocalCostModifierKind::Relative,
+                _ => return Err(unsupported(format!("{p}.kind"), &raw_kind)),
+            };
+            let amount = extract_i32(&d, &p, "amount")?;
+            let reduce_only = extract_bool(&d, &p, "reduce_only")?;
+            let expiration = extract_i32(&d, &p, "expiration")?;
+            if !matches!(expiration, 0 | 2 | 4 | 6) {
+                return Err(schema_err(
+                    format!("{p}.expiration"),
+                    "must be 0, 2, 4 or 6",
+                ));
+            }
+            model.append(LocalCostModifier {
+                kind,
+                amount,
+                reduce_only,
+                expiration: expiration as u8,
+            });
+        }
+    }
+    if let Some(values) = functions {
+        let values = as_list(&values, &format!("{path}.functions"))?;
+        if values.len() != 4 {
+            return Err(schema_err(
+                format!("{path}.functions"),
+                "must contain 4 expiry functions",
+            ));
+        }
+        for (i, value) in values.iter().enumerate() {
+            let p = format!("{path}.functions[{i}]");
+            let d = as_dict(value, &p)?;
+            let function = LocalCostFunction {
+                offset: extract_i32(&d, &p, "offset")?,
+                ceiling: extract_i32(&d, &p, "ceiling")?,
+                absolute_offset: extract_i32(&d, &p, "absolute_offset")?,
+                uses_base: extract_bool(&d, &p, "uses_base")?,
+            };
+            if !function.uses_base && function.ceiling == i32::MAX {
+                return Err(schema_err(
+                    &p,
+                    "a constant cost function requires a ceiling",
+                ));
+            }
+            model.functions[i] = function;
+        }
+    }
+    if model
+        .costs()
+        .iter()
+        .any(|&cost| i8::try_from(cost).is_err())
+    {
+        return Err(schema_err(
+            path,
+            "local cost exceeds the engine's i8 cost range",
+        ));
+    }
+    Ok(model)
 }
 
 fn parse_deck<V: WireValue>(d: &V) -> WireResult<ParsedDeck> {
@@ -1524,6 +1700,9 @@ fn parse_card<V: WireValue>(d: &V, path: &str) -> WireResult<ParsedCard> {
     let persistent_cost = opt_i32("persistent_cost", "`persistent_cost` must be int or null")?;
     let played_cost = opt_i32("played_cost", "`played_cost` must be int or null")?;
     let stable_cost = opt_i32("stable_cost", "`stable_cost` must be int or null")?;
+    let local_cost = extract_optional(d, "local_cost")
+        .map(|v| parse_local_energy_cost(&v, &format!("{path}.local_cost")))
+        .transpose()?;
     // Two banks require the third number. `rebank_wire_cost_after_edge`
     // recomputes the surviving bank against `stable_cost`, which it reads back
     // out of a combat var that DEFAULTS TO 0 — so with BOTH banks live and no
@@ -1624,6 +1803,7 @@ fn parse_card<V: WireValue>(d: &V, path: &str) -> WireResult<ParsedCard> {
         persistent_cost,
         played_cost,
         stable_cost,
+        local_cost,
         flags,
         enchantment,
         enchantment_amount,
@@ -2217,6 +2397,14 @@ fn side_from_str(s: &str) -> Side {
 ///
 /// Bead `sts2-rs-osyf` (T2). The status-card path is intentionally
 /// loose so unmodelled card flavors don't crash the adapter.
+/// Decode one public card template with the same validation and instance
+/// restoration used by a full combat snapshot. The caller owns registry setup
+/// and arena insertion; decoding must not replace registered card handlers.
+pub fn card_from_wire<V: WireValue>(value: &V, uid: CardUid, path: &str) -> WireResult<Card> {
+    let d = as_dict(value, path)?;
+    build_card(&parse_card(&d, path)?, uid, path)
+}
+
 fn build_card(parsed: &ParsedCard, uid: CardUid, path: &str) -> WireResult<Card> {
     // Resolve `card_id` → CardSpec via the content registry. Falls back
     // to a synthetic AscendersBane curse for status/curse paths whose
@@ -2281,6 +2469,7 @@ fn build_card(parsed: &ParsedCard, uid: CardUid, path: &str) -> WireResult<Card>
         (None, None) => upgraded_build.as_ref().map_or(spec.cost, |b| b.cost),
     };
     let mut card = Card {
+        local_energy_cost: None,
         uid,
         card_id,
         cost,
@@ -2364,13 +2553,10 @@ fn build_card(parsed: &ParsedCard, uid: CardUid, path: &str) -> WireResult<Card>
     // card-flow records, 1:1 with the flag). `ethereal` maps to the same
     // per-instance var the engine's own GhostSeed arm stamps; the free flags
     // map to their cost riders; `unplayable`/`innate` fold into the keyword
-    // override on top of the effective base set. `retain` is deliberately NOT
-    // folded here — folding a transient grant into the permanent override
-    // would retain the card for the rest of the fight. The wire CAN now tell
-    // an intrinsic Retain from a this-turn one (GH #370 added the
-    // `retain_turn` / `sly_turn` / `sly` flags), and the transient halves are
-    // seeded into the per-turn uid lists at the pile walk instead, where they
-    // expire on schedule. `sly` is likewise handled there, not here.
+    // override on top of the effective base set. `retain` is a persistent
+    // keyword; the separate `retain_turn`/`sly_turn` flags are seeded into the
+    // per-turn uid lists at the pile walk and expire on schedule. `sly` is
+    // handled by that walk's combat-scoped granted-keyword list.
     if !parsed.flags.is_empty() {
         let fold = |card: &mut Card, bit: sts2_core::cards::KeywordOverride| {
             let base = card
@@ -2385,7 +2571,7 @@ fn build_card(parsed: &ParsedCard, uid: CardUid, path: &str) -> WireResult<Card>
                 "free_once" => card.set_combat_var(VarKey::FreeUntilPlayed, 1),
                 "unplayable" => fold(&mut card, sts2_core::cards::KeywordOverride::UNPLAYABLE),
                 "innate" => fold(&mut card, sts2_core::cards::KeywordOverride::INNATE),
-                // `retain`: see above.
+                "retain" => fold(&mut card, sts2_core::cards::KeywordOverride::RETAIN),
                 _ => {}
             }
         }
@@ -2457,7 +2643,10 @@ fn build_card(parsed: &ParsedCard, uid: CardUid, path: &str) -> WireResult<Card>
     // exclusive by construction (only the C# dialects send `persistent_cost`,
     // only `state_to_dict` sends the banks), so disagreement is a schema
     // error rather than something to reconcile.
-    if let Some(persistent) = parsed.persistent_cost {
+    if let Some(persistent) = parsed
+        .persistent_cost
+        .filter(|_| parsed.local_cost.is_none())
+    {
         const ENGINE_OWNED: [VarKey; 4] = [
             VarKey::StompCostReductionThisTurn,
             VarKey::PinpointCostReductionThisTurn,
@@ -2487,7 +2676,7 @@ fn build_card(parsed: &ParsedCard, uid: CardUid, path: &str) -> WireResult<Card>
     // The other transient edge. A "this turn" discount is really "this turn
     // OR until played" (C# `SetThisTurnOrUntilPlayed`), so restoring it only
     // at the turn boundary leaves it alive on the card that just spent it.
-    if let Some(played) = parsed.played_cost {
+    if let Some(played) = parsed.played_cost.filter(|_| parsed.local_cost.is_none()) {
         let shave = played - i32::from(cost);
         if shave != 0 && cost >= 0 {
             card.set_combat_var(VarKey::WireCostExpiringOnPlay, shave);
@@ -2498,7 +2687,7 @@ fn build_card(parsed: &ParsedCard, uid: CardUid, path: &str) -> WireResult<Card>
     // so an absent `stable_cost` would read back as a legitimate-looking
     // `stable == 0`. `parse_card`'s all-or-nothing gate on the trio is what
     // makes that unreachable, not this condition.
-    if let Some(stable) = parsed.stable_cost {
+    if let Some(stable) = parsed.stable_cost.filter(|_| parsed.local_cost.is_none()) {
         if card.combat_var(VarKey::WireTransientCostThisTurn) != 0
             || card.combat_var(VarKey::WireCostExpiringOnPlay) != 0
         {
@@ -2541,6 +2730,9 @@ fn build_card(parsed: &ParsedCard, uid: CardUid, path: &str) -> WireResult<Card>
                 ),
             ));
         }
+    }
+    if let Some(model) = parsed.local_cost {
+        card.set_local_energy_cost(model);
     }
     Ok(card)
 }
@@ -3135,6 +3327,8 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
     // every `Action::PlayCard` against the produced state silently no-ops
     // and MCTS rollouts can never win. Idempotent.
     sts2_content::cards::dispatch::ensure_installed();
+    sts2_content::relics::dispatch::ensure_installed();
+    sts2_content::potions::dispatch::ensure_installed();
     // Same defensive shape for the card FACTORY (normally registered by the
     // pymodule init via `relics::dispatch::ensure_installed`): `build_card`
     // uses it for the upgraded-card keyword override and, for stats-less
@@ -3255,7 +3449,7 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
             // Strength and Dexterity that the world had given back and pruned
             // (13 of the 43 single-field `$.player.powers` records in v17,
             // shaped `mirror STRENGTH -3 / DEXTERITY -3` vs `world` nothing).
-            PowerKind::Tender => pp.display.unwrap_or(0),
+            PowerKind::Tender | PowerKind::Sloth => pp.display.unwrap_or(0),
             // Same family, same carrier. C# `PanachePower.DisplayAmount =>
             // DynamicVars["CardsLeft"]` (`PanachePower.cs:33`) and the engine's
             // `counter` IS CardsLeft (5 at max, decrement per card, fire and
@@ -3333,38 +3527,58 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
     state.player.stars = i8::try_from(parsed.player.stars.unwrap_or(0)).unwrap_or(0);
     if let Some(buckets) = parsed.player.cards_played_this_turn {
         state.player.cards_played_this_turn = buckets;
+        state.combat_log.card_plays_finished_this_turn =
+            buckets.iter().copied().fold(0u32, u32::saturating_add);
+        state.combat_log.public_finished_history = true;
     }
-    // GH #370. `card_plays_started_this_turn` gates card LEGALITY, not damage:
-    // `SlothPower.ShouldPlay` returns `_cardsPlayedThisTurn < Amount` and
-    // `RingingPower.ShouldPlay` refuses an afflicted card once any play has
-    // started this turn. Rebuilt at 0 on every reconcile, both gates stay
-    // stuck OPEN for the whole fight, so the mirror plans through actions the
-    // world forbids.
-    //
-    // C# `SlothPower.DisplayAmount => _cardsPlayedThisTurn` (SlothPower.cs:21)
-    // — `amount` is the THRESHOLD and `display` is the live count, the same
-    // split as the Tender/Panache/Automation/Orbit family above. So when a
-    // Sloth is up the wire discloses this exactly; `transplant_hidden` falls
-    // back to the mirror's own accumulation when it does not (Ringing has no
-    // carrier at all — its C# side is a `History.CardPlaysStarted` scan with
-    // nothing stored on the power).
-    // Seeded on Sloth's PRESENCE, not on `display` being populated, so that
-    // this and `transplant_hidden`'s "did the wire disclose it?" guard test
-    // exactly the same condition — otherwise a Sloth arriving without a
-    // `display` would suppress the carry without supplying a replacement, and
-    // the field would sit at 0 with neither mechanism owning it. Both
-    // producers emit `display_amount` unconditionally
-    // (`RunSimulator.cs:3747`, `SimStateExtractor.cs:816`), so the `None`
-    // branch is defensive rather than a live path.
-    if let Some(pp) = parsed
-        .player
-        .powers
-        .iter()
-        .find(|pp| pp.kind == PowerKind::Sloth)
-    {
+    if let Some(buckets) = parsed.player.cards_started_this_turn {
+        state.combat_log.cards_started_this_turn = buckets;
         state.player.card_plays_started_this_turn =
-            u32::try_from(pp.display.unwrap_or(0)).unwrap_or(0);
+            buckets.iter().copied().fold(0u32, u32::saturating_add);
+        state.combat_log.public_started_history = true;
+        for power in state
+            .powers
+            .iter_mut()
+            .filter(|p| p.kind == PowerKind::Juggling)
+        {
+            if parsed
+                .player
+                .powers
+                .iter()
+                .find(|p| p.kind == PowerKind::Juggling)
+                .is_some_and(|p| p.counter.is_none())
+            {
+                power.counter = i32::try_from(buckets[sts2_core::cards::CardType::Attack.index()])
+                    .unwrap_or(i32::MAX);
+            }
+        }
     }
+    if let Some(tags) = &parsed.player.block_gained_card_plays_this_turn {
+        state.combat_log.unmovable_card_block_plays = tags.iter().copied().collect();
+        state.combat_log.public_block_history = true;
+    }
+    state.combat_log.current_card_play = parsed.player.current_card_play;
+    let largest_tag = parsed
+        .player
+        .block_gained_card_plays_this_turn
+        .as_ref()
+        .into_iter()
+        .flatten()
+        .copied()
+        .chain(parsed.player.current_card_play)
+        .max();
+    let minimum_next = largest_tag.map_or(0, |n| n.saturating_add(1));
+    if parsed
+        .player
+        .next_card_play
+        .is_some_and(|n| n < minimum_next)
+    {
+        return Err(schema_err(
+            "$.player.next_card_play",
+            "must exceed every current or historical play tag",
+        ));
+    }
+    state.combat_log.next_card_play = parsed.player.next_card_play.unwrap_or(minimum_next);
     state.combat_log.chains_bound_card_played_this_turn = parsed.player.bound_card_played_this_turn;
     // Run gold gates in-combat relic hooks (SealOfGold: spend 5 gold, +1
     // energy at every player turn start). The constructors hardcode 0 for
@@ -3550,6 +3764,33 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
         let path = format!("$.deck.play_pile[{i}]");
         play_uids.push(alloc_card_into(&mut state, pc, &path)?);
     }
+    let locate = |location: &(String, usize), key: &str| -> WireResult<CardUid> {
+        let pile: &[CardUid] = match location.0.as_str() {
+            "draw" => &draw_uids,
+            "hand" => &hand_uids,
+            "discard" => &discard_uids,
+            "exhaust" => &exhaust_uids,
+            "play" => &play_uids,
+            _ => unreachable!("validated pile"),
+        };
+        pile.get(location.1)
+            .copied()
+            .ok_or_else(|| schema_err(format!("$.player.{key}.index"), "card index outside pile"))
+    };
+    if let Some(location) = &parsed.player.pen_nib_attack_to_double {
+        state.combat_log.pen_nib_attack_to_double =
+            Some(locate(location, "pen_nib_attack_to_double")?);
+    }
+    if let Some(location) = &parsed.player.vambrace_triggering_card {
+        let uid = locate(location, "vambrace_triggering_card")?;
+        let relic = state
+            .relics
+            .iter_mut()
+            .find(|r| r.kind == RelicKind::Vambrace)
+            .ok_or_else(|| schema_err("$.player.vambrace_triggering_card", "requires VAMBRACE"))?;
+        relic.counter = -i32::try_from(uid.0.get())
+            .map_err(|_| schema_err("$.player.vambrace_triggering_card", "card uid exceeds i32"))?;
+    }
     // Draw-pile knowledge. `parse_deck` already range-checked every
     // index against `draw_pile.len()`, and `draw_uids` was built from
     // that same list, so the lookups cannot fail.
@@ -3567,33 +3808,20 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
         .collect();
     state.player.deferred_draw_order = parsed.deck.deferred_draw_order;
 
-    // GH #370. Sly / Retain reach the engine through three per-instance uid
-    // lists with three different lifetimes, and a rebuilt mirror re-created
-    // all three empty — so a Well-Laid-Plans retain flushed at end of turn
-    // and a Hand-Trick / MasterPlanner Sly stopped auto-playing on discard.
-    //
-    // Seeded from the card flags rather than carried across the transplant,
-    // for the same reason Sloth's counter is: reality owns the value. The
-    // uid lists cannot be carried anyway — a rebuild re-allocates every
-    // `CardUid` from the pile walk above, and `transplant_hidden` aligns only
-    // the draw pile (length + index) and the enemy roster, so a carried uid
-    // would point at a different card or none.
-    //
-    // HAND-SCOPED on purpose. Both `card_is_sly` read sites
-    // (`card_effects.rs:1836`, `lib.rs:9167`) and both retain read sites
-    // (`combat_loop.rs:2551`, `:2626`) skip any card not in hand, and the
-    // producers emit flags for hand cards only. A MasterPlanner-marked Skill
-    // sitting in the discard pile therefore loses nothing: the mark is
-    // re-derived from the wire the moment it is drawn back into hand, which
-    // is the moment anything reads it.
-    for (&uid, pc) in hand_uids.iter().zip(parsed.deck.hand.iter()) {
+    // These flags belong to the card instance. A card may leave the hand
+    // and return in the same turn, so reconstruction must preserve them in
+    // every combat pile, including a suspended play.
+    for (&uid, pc) in hand_uids
+        .iter()
+        .zip(&parsed.deck.hand)
+        .chain(draw_uids.iter().zip(&parsed.deck.draw_pile))
+        .chain(discard_uids.iter().zip(&parsed.deck.discard_pile))
+        .chain(exhaust_uids.iter().zip(&parsed.deck.exhaust_pile))
+        .chain(play_uids.iter().zip(&parsed.deck.play_pile))
+    {
         for f in &pc.flags {
             match f.as_str() {
-                // C# `ShouldRetainThisTurn` minus the keyword — the
-                // Well-Laid-Plans single-turn grant. The keyword `retain`
-                // flag stays deliberately unfolded (see the flag-fold block
-                // above): folding a transient grant into the permanent
-                // keyword override would retain the card all fight.
+                // C# `ShouldRetainThisTurn` minus the persistent keyword.
                 "retain_turn" => state.player.retain_this_turn.push(uid),
                 // C# `IsSlyThisTurn` minus the keyword — Hand Trick.
                 "sly_turn" => state.player.sly_this_turn.push(uid),
@@ -3603,10 +3831,9 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
                 // from `AddKeyword` — MasterPlanner, which lasts the whole
                 // combat and belongs in the combat-scoped list.
                 "sly" => {
-                    let intrinsic = state
-                        .cards
-                        .get(uid.0.get() as usize - 1)
-                        .is_some_and(|c| sts2_core::card_effects::card_sly(c.card_id));
+                    let intrinsic = state.cards.get(uid.0.get() as usize - 1).is_some_and(|c| {
+                        sts2_core::card_effects::card_sly_in(c.card_id, state.game_version)
+                    });
                     if !intrinsic {
                         state.player.sly_this_combat.push(uid);
                     }
@@ -4401,6 +4628,9 @@ pub fn var_key_from_wire(name: &str) -> Option<VarKey> {
         VarKey::PendingBatchAutoPlay,
         VarKey::AutoPlayStarX,
         VarKey::WireTransientCostThisTurn,
+        VarKey::WireCostExpiringOnPlay,
+        VarKey::WireCostStable,
+        VarKey::CostReductionUntilPlayed,
         VarKey::Generic,
         VarKey::SneckoRollLive,
     ];

@@ -451,6 +451,8 @@ pub fn build_scenario_state_with_run_rng(
     let potion_slots =
         potion_slots.unwrap_or_else(|| scenario_potion_slots(ascension, potions_vec.len()));
     let player = PlayerCombatState {
+        observed_draws: SmallVec::new(),
+        observed_draw_failed: false,
         hand: SmallVec::new(),
         draw,
         discard: SmallVec::new(),

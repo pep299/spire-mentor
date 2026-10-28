@@ -207,6 +207,15 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> PyResult<CoreCombatState> {
     sts2_wire::state_from_dict_impl(parsed).map_err(wire_err)
 }
 
+/// Decode a public generated-card template through the combat card decoder.
+pub fn card_from_dict(
+    d: &Bound<'_, PyDict>,
+    uid: sts2_core::CardUid,
+    path: &str,
+) -> PyResult<sts2_core::cards::Card> {
+    sts2_wire::state_dict::card_from_wire(&PyWire::from_dict(d), uid, path).map_err(wire_err)
+}
+
 /// Translate one wire-dict intent into a Rust [`Intent`] value.
 ///
 /// # Errors
@@ -356,6 +365,68 @@ pub fn state_to_dict_py<'py>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn v111_card_names_decode_through_python_wire() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let template: serde_json::Value = serde_json::from_str(include_str!(
+                "../../sts2-wire/tests/fixtures/combat_action_ironclad.json"
+            ))
+            .unwrap();
+            for id in CardId::V0111_ONLY {
+                let mut value = template.clone();
+                value["game_version"] = serde_json::json!("0.111.0");
+                value["deck"]["hand"] = serde_json::json!([{
+                    "id": id.to_python_name(), "kind": "card", "stable_idx": 4, "upgraded": false
+                }]);
+                let d = pythonize::pythonize(py, &value)
+                    .unwrap()
+                    .downcast_into::<PyDict>()
+                    .unwrap();
+                let state = state_from_dict(&d).unwrap();
+                assert_eq!(
+                    state.cards[state.player.hand[0].get() as usize - 1].card_id,
+                    id
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn public_zero_histories_are_not_overwritten_by_carried_predictions() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let mut value: serde_json::Value = serde_json::from_str(include_str!(
+                "../../sts2-wire/tests/fixtures/combat_action_ironclad.json"
+            ))
+            .unwrap();
+            value["player"]["cards_played_this_turn"] = serde_json::json!([0, 0, 0, 0, 0]);
+            value["player"]["cards_started_this_turn"] = serde_json::json!([0, 0, 0, 0, 0]);
+            value["player"]["block_gained_card_plays_this_turn"] = serde_json::json!([]);
+            value["player"]["next_card_play"] = serde_json::json!(0);
+            let d = pythonize::pythonize(py, &value)
+                .unwrap()
+                .downcast_into::<PyDict>()
+                .unwrap();
+            let inner = state_from_dict(&d).unwrap();
+            let mut fresh = crate::PyCombatState::from_inner(inner.clone(), 0);
+            let mut carried = crate::PyCombatState::from_inner(inner, 0);
+            carried.inner.player.card_plays_started_this_turn = 3;
+            carried.inner.combat_log.cards_started_this_turn = [3, 0, 0, 0, 0];
+            carried.inner.combat_log.card_plays_finished_this_turn = 2;
+            carried.inner.combat_log.unmovable_card_block_plays.push(0);
+            carried.inner.combat_log.next_card_play = 3;
+            fresh
+                .transplant_hidden(&carried, None, false, None, None)
+                .unwrap();
+            assert_eq!(fresh.inner.player.card_plays_started_this_turn, 0);
+            assert_eq!(fresh.inner.combat_log.cards_started_this_turn, [0; 5]);
+            assert_eq!(fresh.inner.combat_log.card_plays_finished_this_turn, 0);
+            assert!(fresh.inner.combat_log.unmovable_card_block_plays.is_empty());
+            assert_eq!(fresh.inner.combat_log.next_card_play, 0);
+        });
+    }
 
     #[test]
     fn state_to_dict_emits_osty_for_summoned_pet() {
@@ -869,6 +940,7 @@ mod tests {
                 .downcast_into::<PyDict>()
                 .unwrap();
             p0.del_item("counter").unwrap();
+            p0.del_item("display_amount").unwrap();
             p0.set_item("display", display).unwrap();
             state_from_dict(&d)
                 .expect("state must rebuild")
@@ -1019,7 +1091,7 @@ mod tests {
     /// GH #370. Sloth gates card LEGALITY, so a count rebuilt at 0 does not
     /// mis-damage — it hands the search actions the world will refuse.
     #[test]
-    fn sloth_restores_the_started_play_count_from_its_display() {
+    fn sloth_restores_its_own_play_count_independently_of_turn_history() {
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
             let mut state = CoreCombatState::default();
@@ -1034,7 +1106,8 @@ mod tests {
                 skip_next_tick: false,
             });
             state.player.powers.push(PowerUid(pid));
-            state.player.card_plays_started_this_turn = 2;
+            state.player.card_plays_started_this_turn = 5;
+            state.combat_log.cards_started_this_turn = [5, 0, 0, 0, 0];
 
             let d = state_to_dict(py, &state).expect("state_to_dict");
             let p0 = d
@@ -1053,13 +1126,14 @@ mod tests {
                 .downcast_into::<PyDict>()
                 .unwrap();
             // The C# dialect: `amount` is the threshold, `display` the count.
+            p0.del_item("counter").unwrap();
+            p0.del_item("display_amount").unwrap();
             p0.set_item("display", 2).unwrap();
 
             let rebuilt = state_from_dict(&d).expect("sloth state must rebuild");
             assert_eq!(
-                rebuilt.player.card_plays_started_this_turn, 2,
-                "`SlothPower.DisplayAmount` is the live `_cardsPlayedThisTurn`; \
-                 rebuilding it at 0 re-opens a spent Sloth for the rest of the turn"
+                rebuilt.player.card_plays_started_this_turn, 5,
+                "turn history also includes plays before Sloth was applied"
             );
             let sloth = rebuilt
                 .powers
@@ -1069,6 +1143,10 @@ mod tests {
             assert_eq!(
                 sloth.amount, 2,
                 "`amount` stays the threshold — the count must NOT overwrite it"
+            );
+            assert_eq!(
+                sloth.counter, 2,
+                "Sloth retains only the plays since its own application"
             );
         });
     }

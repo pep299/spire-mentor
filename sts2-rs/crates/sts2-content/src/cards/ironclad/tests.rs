@@ -70,6 +70,7 @@ fn push_play_card(
     let raw = u32::try_from(state.cards.len() + 1).expect("cards len fits in u32");
     let uid = sts2_core::CardUid::new(raw).expect("non-zero uid");
     state.cards.push(Card {
+        local_energy_cost: None,
         uid,
         card_id,
         cost: 1,
@@ -101,6 +102,7 @@ fn push_draw_card(
     let raw = u32::try_from(state.cards.len() + 1).expect("cards len fits u32");
     let uid = sts2_core::CardUid::new(raw).expect("non-zero uid");
     state.cards.push(Card {
+        local_energy_cost: None,
         uid,
         card_id,
         cost: 1,
@@ -198,6 +200,7 @@ fn perfected_strike_counts_pile_strikes_not_orphans() {
         let raw = u32::try_from(state.cards.len() + 1).expect("fits");
         let uid = sts2_core::CardUid::new(raw).expect("non-zero");
         state.cards.push(Card {
+            local_energy_cost: None,
             uid,
             card_id: id,
             cost: 1,
@@ -463,6 +466,7 @@ fn hemokinesis_rupture_strength_lands_after_card_resolves() {
     let raw = u32::try_from(state.cards.len() + 1).expect("fits");
     let card_uid = sts2_core::CardUid::new(raw).expect("non-zero");
     state.cards.push(Card {
+        local_energy_cost: None,
         uid: card_uid,
         card_id: CardId::Hemokinesis,
         cost: 1,
@@ -968,6 +972,7 @@ fn push_draw_top_card(
     let raw = u32::try_from(state.cards.len() + 1).expect("cards len fits in u32");
     let uid = sts2_core::CardUid::new(raw).expect("non-zero uid");
     state.cards.push(Card {
+        local_energy_cost: None,
         uid,
         card_id,
         cost: 1,
@@ -1737,6 +1742,7 @@ fn push_hand_card(state: &mut CombatState, card_id: CardId) -> sts2_core::CardUi
     let raw = u32::try_from(state.cards.len() + 1).expect("cards len fits in u32");
     let uid = sts2_core::CardUid::new(raw).expect("non-zero uid");
     state.cards.push(Card {
+        local_energy_cost: None,
         uid,
         card_id,
         cost: 1,
@@ -1767,6 +1773,7 @@ fn push_hand_card_typed(
     let raw = u32::try_from(state.cards.len() + 1).expect("cards len fits in u32");
     let uid = sts2_core::CardUid::new(raw).expect("non-zero uid");
     state.cards.push(Card {
+        local_energy_cost: None,
         uid,
         card_id,
         cost: 1,
@@ -3843,6 +3850,7 @@ fn push_self_card(
     let raw = u32::try_from(state.cards.len() + 1).expect("cards len fits in u32");
     let uid = sts2_core::CardUid::new(raw).expect("non-zero uid");
     state.cards.push(Card {
+        local_energy_cost: None,
         uid,
         card_id,
         cost: 1,
@@ -4028,6 +4036,7 @@ fn spite_triple_hit_when_upgraded_and_hp_lost() {
     let raw = u32::try_from(state.cards.len() + 1).expect("cards len fits in u32");
     let uid = sts2_core::CardUid::new(raw).expect("non-zero uid");
     state.cards.push(Card {
+        local_energy_cost: None,
         uid,
         card_id: CardId::Spite,
         cost: 0,
@@ -4084,6 +4093,7 @@ fn spite_upgraded_damage_stays_5_not_9() {
     let uid = sts2_core::CardUid::new(raw).expect("non-zero uid");
     // upgraded=true + base_damage=5 (unchanged from base spec).
     state.cards.push(Card {
+        local_energy_cost: None,
         uid,
         card_id: CardId::Spite,
         cost: 0,
@@ -4311,6 +4321,7 @@ fn push_draw_tail(
     let raw = u32::try_from(state.cards.len() + 1).expect("cards len fits u32");
     let uid = sts2_core::CardUid::new(raw).expect("non-zero uid");
     state.cards.push(Card {
+        local_energy_cost: None,
         uid,
         card_id,
         cost: 1,

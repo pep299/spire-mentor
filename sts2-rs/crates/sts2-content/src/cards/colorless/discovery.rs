@@ -40,7 +40,7 @@ pub(crate) fn play_discovery(state: &mut CombatState, _t: Option<CreatureUid>) -
     state.request_card_choice(
         sts2_core::ChoiceKind::AddGeneratedFreeToHand,
         options,
-        1,
+        0,
         1,
         true,
     );

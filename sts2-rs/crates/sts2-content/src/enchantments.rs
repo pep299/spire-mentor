@@ -114,13 +114,22 @@ pub fn apply_static_enchantment(
             added = CardKeywords::RETAIN;
         }
         EnchantmentId::TezcatarasEmber => {
-            // C# `TezcatarasEmber.OnEnchant` does exactly
-            // `Card.AddKeyword(CardKeyword.Eternal)` (`TezcatarasEmber.cs:18`).
+            // C# `TezcatarasEmber.OnEnchant` grants Eternal and upgrades
+            // the unmodified base cost to zero (`TezcatarasEmber.cs`).
             // ETERNAL is the keyword `CardModel.IsRemovable` reads, so it is the
             // one that has to land; NON_REMOVABLE is the older local alias, kept
             // so existing readers of that flag still see it.
             added = CardKeywords::ETERNAL.with(CardKeywords::NON_REMOVABLE);
-            card.cost = 0;
+            if let Some(mut model) = card.local_energy_cost {
+                // TezcatarasEmber.OnEnchant upgrades the unmodified base to
+                // zero; this is not an additional Absolute combat modifier.
+                if !model.costs_x {
+                    model.upgrade_base(-model.base);
+                    card.set_local_energy_cost(model);
+                }
+            } else {
+                card.cost = 0;
+            }
         }
         EnchantmentId::SoulsPower => {
             removed = CardKeywords::EXHAUST;

@@ -128,6 +128,7 @@ fn build_hook_smoke_fixture() -> HookSmokeFixture {
     let a_card_uid = CardUid::new(1).expect("non-zero");
     let a_card_id = CardId::StrikeIronclad;
     state.cards.push(Card {
+        local_energy_cost: None,
         uid: a_card_uid,
         card_id: a_card_id,
         cost: 1,
@@ -203,6 +204,7 @@ fn make_damage_given_ctx(f: &HookSmokeFixture) -> DamageGivenCtx {
 
 fn make_damage_ctx(f: &HookSmokeFixture) -> DamageCtx {
     DamageCtx {
+        card_source: None,
         dealer: CreatureRef::Player,
         target: CreatureRef::Enemy(f.enemy_uid),
         props: ValueProps::NONE,
@@ -619,6 +621,7 @@ fn modify_damage_multiplicative_listener_fires() {
     );
     let f = build_hook_smoke_fixture();
     let ctx = DamageCtx {
+        card_source: None,
         dealer: CreatureRef::Player,
         target: CreatureRef::Enemy(f.enemy_uid),
         props: ValueProps::MOVE,

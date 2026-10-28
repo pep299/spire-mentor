@@ -109,7 +109,7 @@ fn add_player_creature(state: &mut CombatState) {
 }
 
 /// SeekerStrike (sts2-rs-at4vs): deals damage AND opens a single-pick
-/// AddFromDrawByType choice over (up to) 3 shuffled draw-pile cards.
+/// AddFromRandomDrawSubset choice over (up to) 3 shuffled draw-pile cards.
 #[test]
 fn seeker_strike_damages_and_opens_draw_select() {
     install_pool();
@@ -126,7 +126,7 @@ fn seeker_strike_damages_and_opens_draw_select() {
     let _ = lookup(CardId::SeekerStrike).expect("registered")(&mut state, Some(euid));
     assert_eq!(hp0 - state.creatures[0].current_hp, 9, "deals 9 damage");
     let pc = state.pending_choice.as_ref().expect("opens a choice");
-    assert_eq!(pc.kind, sts2_core::ChoiceKind::AddFromDrawByType);
+    assert_eq!(pc.kind, sts2_core::ChoiceKind::AddFromRandomDrawSubset);
     assert_eq!(pc.options.len(), 3, "presents 3 of the 5 draw cards");
 }
 
@@ -198,7 +198,7 @@ fn seeker_strike_stable_shuffle_key_is_entry_upgraded_not_uid() {
     let (mut state, euid) = make_state();
     let _ = lookup(CardId::SeekerStrike).expect("registered")(&mut state, Some(euid));
     let pc = state.pending_choice.as_ref().expect("opens a choice");
-    assert_eq!(pc.kind, sts2_core::ChoiceKind::AddFromDrawByType);
+    assert_eq!(pc.kind, sts2_core::ChoiceKind::AddFromRandomDrawSubset);
     assert_eq!(pc.options.len(), 3, "presents 3 of the 4 draw cards");
 
     // Compute the C#-correct expected subset: sort the FULL pile by
@@ -1542,6 +1542,7 @@ fn intercept_card_covers_the_teammate_and_doubles_the_players_hits() {
         dealer: CreatureRef::Enemy(enemy),
         target: CreatureRef::Player,
         props,
+        card_source: None,
     };
     assert_eq!(modify_damage(&state, 6, &hit(ValueProps::MOVE)), 12);
     assert_eq!(modify_damage(&state, 6, &hit(ValueProps::UNPOWERED)), 6);
@@ -1777,7 +1778,11 @@ fn y9hvo_discovery_flags_generated_card_free_this_turn() {
         .as_ref()
         .expect("Discovery opens a choose-a-card screen");
     assert_eq!(pc.kind, sts2_core::ChoiceKind::AddGeneratedFreeToHand);
-    assert_eq!((pc.min_select, pc.max_select), (1, 1), "single pick");
+    assert_eq!(
+        (pc.min_select, pc.max_select),
+        (0, 1),
+        "one card or an explicit skip"
+    );
     assert!(pc.can_skip, "C# canSkip: true");
     assert_eq!(pc.options.len(), 3, "GetDistinctForCombat(pool, 3)");
     assert_eq!(
@@ -2232,42 +2237,79 @@ fn play_secret_technique_with_no_skills_is_noop() {
 }
 
 #[test]
-fn play_wish_picks_lowest_rarity_card_from_draw() {
-    use sts2_core::cards::{Card, CardType, TargetType};
-    use sts2_core::CardUid;
+fn play_wish_waits_for_a_choice_over_sorted_draw_cards() {
     install_pool();
     let (mut state, _euid) = fresh_state(CardId::Wish, 0, 0);
-    // Seed draw with one Rare (DemonForm) and one Common (Anger).
-    // Wish must pick Anger (lower rarity_key).
-    let push = |state: &mut CombatState, card_id: CardId| {
-        let raw = u32::try_from(state.cards.len() + 1).unwrap();
-        let uid = CardUid(NonZeroU32::new(raw).unwrap());
-        state.cards.push(Card {
-            uid,
-            card_id,
-            cost: 1,
-            card_type: CardType::Skill,
-            target_type: TargetType::Self_,
-            upgraded: false,
-            base_damage: 0,
-            base_block: 0,
-            ..Card::pod_defaults()
-        });
-        state.player.draw.push(uid);
-        uid
-    };
-    let _rare = push(&mut state, CardId::DemonFormCard);
-    let common = push(&mut state, CardId::Anger);
-    let draw_before = state.player.draw.len();
-    let hand_before = state.player.hand.len();
-    let f = lookup(CardId::Wish).expect("registered");
-    f(&mut state, None);
-    assert_eq!(state.player.draw.len(), draw_before - 1);
-    assert_eq!(state.player.hand.len(), hand_before + 1);
-    assert!(
-        state.player.hand.contains(&common),
-        "Wish picked the lowest-rarity card (Anger/Common)"
+    state.game_version = sts2_core::GameVersion::V0_111_0;
+    let rare = push_draw_card_id(&mut state, CardId::DemonFormCard);
+    let common = push_draw_card_id(&mut state, CardId::Anger);
+    let basic = push_draw_card_id(&mut state, CardId::StrikeIronclad);
+    let draw_before = state.player.draw.clone();
+    lookup(CardId::Wish).expect("registered")(&mut state, None);
+    assert_eq!(state.player.draw, draw_before);
+    assert!(state.player.hand.is_empty());
+    let pending = state.pending_choice.as_ref().expect("選択を待つ");
+    assert_eq!(pending.kind, sts2_core::ChoiceKind::AddFromDrawToHand);
+    assert_eq!(
+        (pending.min_select, pending.max_select, pending.can_skip),
+        (1, 1, false)
     );
+    assert_eq!(
+        pending
+            .options
+            .iter()
+            .map(|option| option.card_uid)
+            .collect::<Vec<_>>(),
+        vec![Some(basic), Some(common), Some(rare)]
+    );
+    sts2_core::apply(
+        &mut state,
+        sts2_core::Action::ResolveChoice {
+            selection: [2u8].into_iter().collect(),
+        },
+    );
+    assert_eq!(state.player.hand.as_slice(), &[rare]);
+    assert_eq!(state.player.draw.as_slice(), &[common, basic]);
+    assert!(state.pending_choice.is_none());
+}
+
+#[test]
+fn play_wish_keeps_same_name_instances_separate() {
+    install_pool();
+    let (mut state, _euid) = fresh_state(CardId::Wish, 0, 0);
+    let first = push_draw_card_id(&mut state, CardId::Anger);
+    let second = push_draw_card_id(&mut state, CardId::Anger);
+    state.cards[second.get() as usize - 1].upgraded = true;
+    state.cards[second.get() as usize - 1].base_damage = 17;
+    lookup(CardId::Wish).expect("registered")(&mut state, None);
+    let pending = state.pending_choice.as_ref().expect("同名でも選択を待つ");
+    assert!(!pending.options[0].upgraded);
+    assert!(pending.options[1].upgraded);
+    sts2_core::apply(
+        &mut state,
+        sts2_core::Action::ResolveChoice {
+            selection: [1u8].into_iter().collect(),
+        },
+    );
+    assert_eq!(state.player.hand.as_slice(), &[second]);
+    assert_eq!(state.player.draw.as_slice(), &[first]);
+    assert_eq!(state.cards[second.get() as usize - 1].base_damage, 17);
+}
+
+#[test]
+fn play_wish_single_candidate_uses_the_normal_hand_limit() {
+    install_pool();
+    let (mut state, _euid) = fresh_state(CardId::Wish, 0, 0);
+    for _ in 0..sts2_core::cards::HAND_LIMIT {
+        let uid = push_draw_card_id(&mut state, CardId::DefendIronclad);
+        state.move_card_to_hand(uid);
+    }
+    let chosen = push_draw_card_id(&mut state, CardId::Anger);
+    lookup(CardId::Wish).expect("registered")(&mut state, None);
+    assert!(state.pending_choice.is_none());
+    assert!(state.player.draw.is_empty());
+    assert_eq!(state.player.hand.len(), sts2_core::cards::HAND_LIMIT);
+    assert_eq!(state.player.discard.as_slice(), &[chosen]);
 }
 
 #[test]
@@ -2280,6 +2322,7 @@ fn play_wish_with_empty_draw_is_noop() {
     f(&mut state, None);
     assert_eq!(state.player.draw.len(), draw_before);
     assert_eq!(state.player.hand.len(), hand_before);
+    assert!(state.pending_choice.is_none());
 }
 
 #[test]
@@ -4711,6 +4754,187 @@ fn play_enlightenment_skips_x_cost_cards() {
     );
 }
 
+fn enlightenment_with_barricade(upgraded: bool) -> (CombatState, CardUid) {
+    install_pool();
+    sts2_core::register_card_factory(crate::cards::spec_index::card_pod_from_id);
+    let (mut state, _) = fresh_state(CardId::Enlightenment, 0, 0);
+    state.game_version = sts2_core::GameVersion::V0_111_0;
+    state.cards[0].upgraded = upgraded;
+    let uid = CardUid::new(2).expect("nz");
+    let mut card = card_from_spec(&crate::cards::ironclad::barricade::spec());
+    card.uid = uid;
+    assert_eq!(card.cost, 3);
+    card.set_local_energy_cost(sts2_core::cards::LocalEnergyCost::new(3, false));
+    state.cards.push(card);
+    state.player.hand.push(uid);
+    (state, uid)
+}
+
+#[test]
+fn enlightenment_cost_expires_on_either_edge_once_and_upgrade_persists() {
+    for upgraded in [false, true] {
+        for play_first in [false, true] {
+            let (mut state, uid) = enlightenment_with_barricade(upgraded);
+            play_enlightenment(&mut state, None);
+            let expected = if upgraded { [1; 4] } else { [1, 3, 3, 3] };
+            assert_eq!(state.cards[1].local_costs_after_expiration(), expected);
+            for play in [play_first, !play_first] {
+                if play {
+                    state.restore_wire_cost_expiring_on_play(uid);
+                } else {
+                    state.restore_wire_transient_costs_for_turn_start();
+                }
+                assert_eq!(state.cards[1].cost, if upgraded { 1 } else { 3 });
+                assert_eq!(
+                    state.cards[1].combat_var(VarKey::CostAbsolutelySet),
+                    i32::from(upgraded)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn enlightenment_reduces_future_cost_even_when_a_temporary_free_card_is_already_zero() {
+    let (mut state, uid) = enlightenment_with_barricade(true);
+    state.cards[1].add_local_cost_modifier(sts2_core::cards::LocalCostModifier {
+        kind: sts2_core::cards::LocalCostModifierKind::Absolute,
+        amount: 0,
+        reduce_only: false,
+        expiration: 6,
+    });
+    play_enlightenment(&mut state, None);
+    assert_eq!(state.cards[1].local_costs_after_expiration(), [0, 1, 1, 1]);
+    state.restore_wire_cost_expiring_on_play(uid);
+    state.restore_wire_transient_costs_for_turn_start();
+    assert_eq!(state.cards[1].cost, 1);
+}
+
+#[test]
+fn enlightenment_preserves_preexisting_independent_lifetimes() {
+    for play_first in [false, true] {
+        let (mut state, uid) = enlightenment_with_barricade(false);
+        let mut model = sts2_core::cards::LocalEnergyCost::new(5, false);
+        for (amount, expiration) in [(-2, 2), (-1, 4)] {
+            model.append(sts2_core::cards::LocalCostModifier {
+                kind: sts2_core::cards::LocalCostModifierKind::Relative,
+                amount,
+                reduce_only: false,
+                expiration,
+            });
+        }
+        state.cards[1].set_local_energy_cost(model);
+        play_enlightenment(&mut state, None);
+        play_enlightenment(&mut state, None);
+        assert_eq!(state.cards[1].local_costs_after_expiration(), [1, 4, 3, 5]);
+        for play in [play_first, !play_first] {
+            if play {
+                state.restore_wire_cost_expiring_on_play(uid);
+            } else {
+                state.restore_wire_transient_costs_for_turn_start();
+            }
+        }
+        assert_eq!(state.cards[1].cost, 5);
+    }
+}
+
+#[test]
+fn enlightenment_absorbs_stomp_and_snecko_banks_without_double_restoration() {
+    for bank in [
+        VarKey::StompCostReductionThisTurn,
+        VarKey::SneckoCostDeltaThisTurn,
+    ] {
+        let (mut state, uid) = enlightenment_with_barricade(false);
+        state.cards[1].local_energy_cost = None;
+        state.cards[1].cost = 2;
+        state.cards[1].set_combat_var(
+            bank,
+            if bank == VarKey::SneckoCostDeltaThisTurn {
+                -1
+            } else {
+                1
+            },
+        );
+        if bank == VarKey::SneckoCostDeltaThisTurn {
+            state.cards[1].set_combat_var(
+                VarKey::SneckoRollLive,
+                sts2_core::cards::SNECKO_ROLL_RAISED_FLAG,
+            );
+            state.cards[1].set_combat_var(VarKey::CostAbsolutelySet, 1);
+        }
+        play_enlightenment(&mut state, None);
+        state.restore_wire_cost_expiring_on_play(uid);
+        state.restore_stomp_costs_for_turn_start();
+        state.restore_snecko_costs_for_turn_start();
+        state.restore_wire_transient_costs_for_turn_start();
+        assert_eq!(state.cards[1].cost, 3);
+    }
+}
+
+#[test]
+fn enlightenment_cap_survives_card_upgrade_but_expiry_reveals_the_upgraded_base() {
+    for upgraded_enlightenment in [false, true] {
+        let (mut state, uid) = enlightenment_with_barricade(upgraded_enlightenment);
+        play_enlightenment(&mut state, None);
+        assert!(state.cards[1].upgrade());
+        assert_eq!(state.cards[1].cost, 1);
+        state.restore_wire_cost_expiring_on_play(uid);
+        state.restore_wire_transient_costs_for_turn_start();
+        assert_eq!(
+            state.cards[1].cost,
+            if upgraded_enlightenment { 1 } else { 2 }
+        );
+    }
+}
+
+#[test]
+fn enlightenment_keeps_local_cost_distinct_from_global_corruption() {
+    let (mut state, _) = enlightenment_with_barricade(false);
+    let uid = state.cards[1].uid;
+    let mut card = card_from_spec(&crate::cards::ironclad::impervious::spec());
+    card.uid = uid;
+    card.initialize_local_energy_cost(sts2_core::GameVersion::V0_111_0);
+    state.cards[1] = card;
+    crate::cards::ironclad::helpers::apply_power_to_player(&mut state, PowerKind::Corruption, 1);
+    play_enlightenment(&mut state, None);
+    assert_eq!(state.cards[1].local_costs_after_expiration(), [1, 2, 2, 2]);
+    assert_eq!(sts2_core::hooks::effective_card_cost(&state, uid), 0);
+    state.restore_wire_cost_expiring_on_play(uid);
+    assert_eq!(state.cards[1].cost, 2);
+    assert_eq!(sts2_core::hooks::effective_card_cost(&state, uid), 0);
+}
+
+#[test]
+fn generated_card_keeps_ordered_cost_after_confused_enlightenment_upgrade_and_expiry() {
+    crate::cards::dispatch::ensure_installed();
+    let (mut state, _) = enlightenment_with_barricade(false);
+    state.player.hand.clear();
+    let card = card_from_spec(&crate::cards::ironclad::barricade::spec());
+    let uid = sts2_core::card_effects::spawn_card_into_hand(&mut state, card);
+    let card = &mut state.cards[uid.get() as usize - 1];
+    assert!(card.local_energy_cost.is_some());
+    // Confused.SetThisCombat(3), followed by a combat-relative increase.
+    card.add_local_cost_modifier(sts2_core::cards::LocalCostModifier {
+        kind: sts2_core::cards::LocalCostModifierKind::Absolute,
+        amount: 3,
+        reduce_only: false,
+        expiration: 0,
+    });
+    card.add_local_cost_modifier(sts2_core::cards::LocalCostModifier {
+        kind: sts2_core::cards::LocalCostModifierKind::Relative,
+        amount: 2,
+        reduce_only: false,
+        expiration: 0,
+    });
+    play_enlightenment(&mut state, None);
+    let card = &mut state.cards[uid.get() as usize - 1];
+    assert!(card.upgrade());
+    assert_eq!(card.local_costs_after_expiration(), [1, 4, 4, 4]);
+    state.restore_wire_cost_expiring_on_play(uid);
+    state.restore_wire_transient_costs_for_turn_start();
+    assert_eq!(state.cards[uid.get() as usize - 1].cost, 4);
+}
+
 /// Bead `sts2-rs-rnyme`: GoldAxe damage equals
 /// `TurnEvents::player_card_plays_this_combat` (combat-wide FINISHED-play
 /// counter), not the per-turn count. Pre-seed the counter to 4 finished
@@ -5448,7 +5672,7 @@ fn auto_played_purity_surfaces_exhaust_choice() {
 /// C# `AutoResolveInline` mirror raised). Net: each Purity exhausts one hand
 /// card, matching C#'s single `DoSelectCards` resume.
 #[test]
-fn two_auto_played_purities_surface_first_then_resume_inline() {
+fn two_auto_played_purities_surface_both_selections() {
     install_pool();
     let (mut state, _euid) = fresh_state(CardId::Finesse, 0, 0);
     add_player_creature(&mut state);
@@ -5481,10 +5705,7 @@ fn two_auto_played_purities_surface_first_then_resume_inline() {
     // Resolve the surfaced choice under the SEQUENTIAL decomposition (bead
     // `sts2-rs-sopgf`): the first Purity's `min0/max3` exhaust takes one
     // incremental `[0]` pick (re-opens, no effect) then FINALIZE `[]` (exhaust
-    // 1, finish the first Purity). The resume then plays the second Purity with
-    // inline-resolve raised — its choice DRAINS via
-    // `resolve_inline_auto_play_choices` (which picks `min_select.max(1) == 1`
-    // option, exhaust 1), not surfaces.
+    // 1, finish the first Purity). Its sibling then opens its own selection.
     let pick0: smallvec::SmallVec<[u8; 4]> = [0u8].into_iter().collect();
     let _ = sts2_core::apply(
         &mut state,
@@ -5503,6 +5724,15 @@ fn two_auto_played_purities_surface_first_then_resume_inline() {
     );
 
     assert!(
+        state.pending_choice.is_some(),
+        "the second Purity awaits its own choice"
+    );
+    assert!(state.pending_autoplay_resume.is_some());
+    for selection in [[0u8].into_iter().collect(), smallvec::SmallVec::new()] {
+        let _ = sts2_core::apply(&mut state, sts2_core::Action::ResolveChoice { selection });
+    }
+
+    assert!(
         state.pending_choice.is_none(),
         "no choice may be left pending after the resume completes"
     );
@@ -5510,8 +5740,7 @@ fn two_auto_played_purities_surface_first_then_resume_inline() {
         state.pending_autoplay_resume.is_none(),
         "the suspended two-card auto-play resumed and finished"
     );
-    // Each Purity exhausts one hand card (first surfaced + first-legal, second
-    // inline option-0), so two total.
+    // Each independently answered Purity exhausts one hand card.
     assert_eq!(
         state.player.hand.len(),
         hand_before - 2,

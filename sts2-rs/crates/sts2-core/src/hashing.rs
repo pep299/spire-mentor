@@ -330,6 +330,29 @@ fn hash_scalars<H: Hasher>(state: &CombatState, h: &mut H) {
     0x0Du8.hash(h);
     state.combat_log.doom_applied_by_player_this_turn.hash(h);
     state.combat_log.osty_attacks_this_turn.hash(h);
+    // These histories and in-flight source identities change future card
+    // effects even when the visible hand, powers and relic counters agree.
+    let log = &state.combat_log;
+    if state.game_version >= crate::GameVersion::V0_111_0
+        && (log.cards_started_this_turn.iter().any(|&n| n > 0)
+            || !log.unmovable_card_block_plays.is_empty()
+            || log.current_card_play.is_some()
+            || log.pen_nib_attack_to_double.is_some())
+    {
+        0x0Fu8.hash(h);
+        log.cards_started_this_turn.hash(h);
+        log.current_card_play.hash(h);
+        log.next_card_play.hash(h);
+        log.unmovable_card_block_plays.hash(h);
+        log.pen_nib_attack_to_double.hash(h);
+    }
+    if let Some(continuation) = state
+        .pending_relic_hand_draw_resume
+        .filter(|_| state.game_version >= crate::GameVersion::V0_111_0)
+    {
+        0x11u8.hash(h);
+        continuation.hash(h);
+    }
     // GH #806 per-turn Fetch / GangUp tallies: folded in only when non-empty
     // so every digest of a position without them is unchanged.
     if !state.combat_log.fetch_played_this_turn.is_empty()
@@ -487,6 +510,10 @@ fn hash_enemies_cards_items_pending_skipping<E: HashEncoding, H: Hasher>(
         // card (this block runs once per card, every node expansion).
         c.card_id.hash(h);
         c.cost.hash(h);
+        if let Some(model) = c.local_energy_cost {
+            0x10u8.hash(h);
+            model.hash(h);
+        }
         c.card_type.hash(h);
         c.target_type.hash(h);
         c.upgraded.hash(h);

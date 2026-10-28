@@ -444,6 +444,7 @@ fn play_card_state_with_one(card_id: CardId, cost: i8, ctype: CardType) -> Comba
     let raw = u32::try_from(state.cards.len() + 1).expect("u32");
     let uid = CardUid::new(raw).expect("nz");
     state.cards.push(Card {
+        local_energy_cost: None,
         uid,
         card_id,
         cost,

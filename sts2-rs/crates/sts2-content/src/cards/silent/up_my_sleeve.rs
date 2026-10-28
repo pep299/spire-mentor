@@ -9,10 +9,7 @@ use super::prelude::*;
 ///
 /// Per-play cost decrement (`EnergyCost.AddThisCombat(-1)` at
 /// `UpMySleeve.cs:46`): each play of this instance shaves 1 energy off its
-/// cost for the rest of combat (2 → 1 → 0 → 0…). Mutate the resolving card
-/// POD's `cost` field directly (`state.cards` is per-combat so it resets at
-/// next combat init) — same trampoline as `defect::play_momentum_strike`
-/// (bead `sts2-rs-j0wn5`). Bead `sts2-rs-dsljq`.
+/// cost for the rest of combat (2 → 1 → 0 → 0…). Bead `sts2-rs-dsljq`.
 ///
 /// The `TimesPlayedThisCombat` counter is purely cosmetic (hover-tip only at
 /// `UpMySleeve.cs:18-26`), so it stays unmodeled.
@@ -25,7 +22,7 @@ pub(crate) fn play_up_my_sleeve(state: &mut CombatState, _t: Option<CreatureUid>
         sts2_core::card_effects::resolving_card_uid(state).map(|u| u.0.get() as usize - 1)
     {
         if let Some(card) = state.cards.get_mut(idx) {
-            card.cost = card.cost.saturating_sub(1).max(0);
+            card.add_combat_cost(-1);
         }
     }
     EffectResult::Resolved

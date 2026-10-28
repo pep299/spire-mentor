@@ -44,17 +44,39 @@ fn push_card(state: &mut CombatState, id: CardId, card_type: CardType) -> sts2_c
 /// CATASTROPHE auto-plays two ARMAMENTS off the draw pile. The first one's
 /// upgrade select SURFACES (3 upgradable hand cards) and parks both the
 /// auto-play tail and CATASTROPHE's own play tail; resolving it resumes the
-/// loop, whose second ARMAMENTS opens another upgrade select that is drained
-/// INLINE. CATASTROPHE must still be the LAST of the three cards to reach the
-/// discard pile.
+/// ループの再開後、2枚目のARMAMENTSも選択を公開する。
+/// 両方の選択を終えるまでCATASTROPHEを廃棄しない。
 #[test]
 fn catastrophe_discards_after_the_auto_plays_it_is_still_awaiting() {
+    two_select_batch(CardId::Catastrophe, None);
+}
+
+#[test]
+fn cascade_surfaces_each_collected_sibling_selection() {
+    two_select_batch(CardId::Cascade, None);
+}
+
+#[test]
+fn cascade_preserves_outer_siblings_after_a_nested_havoc_selection() {
+    two_select_batch(CardId::Cascade, Some(CardId::Havoc));
+}
+
+#[test]
+fn cascade_keeps_nested_catastrophes_tail_parked_across_its_next_selection() {
+    two_select_batch(CardId::Cascade, Some(CardId::Catastrophe));
+}
+
+fn two_select_batch(parent: CardId, inner: Option<CardId>) {
     content_dispatch::ensure_installed();
 
     let mut state = CombatState::default();
     state.player.current_hp = 50;
     state.player.max_hp = 50;
-    state.player.energy = 99;
+    state.player.energy = if inner == Some(CardId::Catastrophe) {
+        1
+    } else {
+        2
+    };
     state.player.max_energy = 99;
     let _ = state.init_player_creature();
     state.phase = CombatPhase::PlayerPlayPhase;
@@ -63,7 +85,10 @@ fn catastrophe_discards_after_the_auto_plays_it_is_still_awaiting() {
     // Hand: CATASTROPHE (index 0) + three upgradable fodder cards, so BOTH
     // auto-played ARMAMENTS see >= 2 upgradable cards and open a real choice
     // (the decomp auto-picks at <= 1 without prompting).
-    let catastrophe = push_card(&mut state, CardId::Catastrophe, CardType::Skill);
+    let catastrophe = push_card(&mut state, parent, CardType::Skill);
+    if parent == CardId::Cascade {
+        state.cards[catastrophe.get() as usize - 1].cost = -1;
+    }
     state.player.hand.push(catastrophe);
     for _ in 0..3 {
         let fodder = push_card(&mut state, CardId::StrikeIronclad, CardType::Attack);
@@ -71,10 +96,18 @@ fn catastrophe_discards_after_the_auto_plays_it_is_still_awaiting() {
     }
     // Draw pile: exactly the two cards CATASTROPHE will auto-play. Identical
     // ids, so the `StableShuffle` pick order cannot change what the test sees.
-    let arm_a = push_card(&mut state, CardId::Armaments, CardType::Skill);
+    let arm_a = push_card(
+        &mut state,
+        inner.unwrap_or(CardId::Armaments),
+        CardType::Skill,
+    );
     let arm_b = push_card(&mut state, CardId::Armaments, CardType::Skill);
     state.player.draw.push(arm_a);
     state.player.draw.push(arm_b);
+    if inner.is_some() {
+        let inner = push_card(&mut state, CardId::Armaments, CardType::Skill);
+        state.player.draw.push(inner);
+    }
 
     let step = sts2_core::apply(
         &mut state,
@@ -100,9 +133,14 @@ fn catastrophe_discards_after_the_auto_plays_it_is_still_awaiting() {
     let selection: smallvec::SmallVec<[u8; 4]> = [0u8].into_iter().collect();
     let _ = sts2_core::apply(&mut state, Action::ResolveChoice { selection });
 
+    assert!(state.pending_choice.is_some());
+    assert!(state.pending_play.is_some());
+    assert!(!state.player.discard.contains(&catastrophe));
+    let selection: smallvec::SmallVec<[u8; 4]> = [0u8].into_iter().collect();
+    let _ = sts2_core::apply(&mut state, Action::ResolveChoice { selection });
     assert!(
         state.pending_choice.is_none(),
-        "the second ARMAMENTS' select is drained inline during the resume"
+        "両方のARMAMENTSの選択が完了した"
     );
     assert!(
         state.pending_play.is_none(),
@@ -121,7 +159,20 @@ fn catastrophe_discards_after_the_auto_plays_it_is_still_awaiting() {
         .collect();
     assert_eq!(
         discard_ids,
-        vec![CardId::Armaments, CardId::Armaments, CardId::Catastrophe],
+        if inner == Some(CardId::Catastrophe) {
+            vec![
+                CardId::Armaments,
+                CardId::Armaments,
+                CardId::Catastrophe,
+                parent,
+            ]
+        } else {
+            vec![
+                inner.unwrap_or(CardId::Armaments),
+                CardId::Armaments,
+                parent,
+            ]
+        },
         "C# awaits both auto-plays inside Catastrophe's OnPlay, so Catastrophe \
          is the LAST of the three to reach the discard pile"
     );

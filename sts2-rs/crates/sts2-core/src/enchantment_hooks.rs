@@ -293,7 +293,7 @@ fn on_card_drawn_stub(state: &mut CombatState, card_uid: CardUid, _from_hand_dra
     }
     let new_cost: i8 = state.run_rng.combat_energy_costs.next_int(0, 3) as i8;
     if let Some(card) = state.cards.get_mut(idx) {
-        card.cost = new_cost;
+        card.set_combat_cost(new_cost);
     }
 }
 
@@ -455,7 +455,7 @@ fn before_flush_stub(state: &mut CombatState) {
             continue;
         }
         if card.cost > 0 {
-            card.cost -= 1;
+            card.reduce_cost_until_played(1);
         }
     }
 }
@@ -874,6 +874,7 @@ mod tests {
         state.player.hand.clear();
         state.player.play.push(uid(1));
         let powered = crate::hooks::DamageCtx {
+            card_source: None,
             dealer: crate::hooks::CreatureRef::Player,
             target: crate::hooks::CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -907,6 +908,7 @@ mod tests {
         state.player.hand.clear();
         state.player.play.push(uid(1));
         let powered = crate::hooks::DamageCtx {
+            card_source: None,
             dealer: crate::hooks::CreatureRef::Player,
             target: crate::hooks::CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -935,6 +937,7 @@ mod tests {
         state.player.hand.clear();
         state.player.play.push(uid(1));
         let powered = crate::hooks::DamageCtx {
+            card_source: None,
             dealer: crate::hooks::CreatureRef::Player,
             target: crate::hooks::CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -1000,6 +1003,7 @@ mod tests {
         state.player.hand.clear();
         state.player.play.push(uid(1));
         let powered = crate::hooks::DamageCtx {
+            card_source: None,
             dealer: crate::hooks::CreatureRef::Player,
             target: crate::hooks::CreatureRef::Player,
             props: ValueProps::MOVE,

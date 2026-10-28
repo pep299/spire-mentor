@@ -82,6 +82,7 @@ fn kind_direction(kind: ChoiceKind) -> Option<Dir> {
         | AddGeneratedRetainedToHand
         | AddGeneratedFreeToHand
         | AddFromDrawByType
+        | ChoiceKind::AddFromRandomDrawSubset
         | AddFromDiscardFree
         | AddFromDiscardToHand
         | AddFromDrawToHand

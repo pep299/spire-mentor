@@ -16,7 +16,7 @@ pub(crate) fn play_juggling(state: &mut CombatState, _t: Option<CreatureUid>) ->
     // Fuzz seed 1531: FIGHT_ME played BEFORE Juggling, then BULLY/ANGER only
     // reached 2 in Rust → the 3rd-attack ANGER clone to hand was dropped
     // (hand_count cs=5 rs=4). Bead `sts2-rs-vdl` follow-up.
-    let attacks = state.count_player_cards_played_this_turn(Some(CardType::Attack));
+    let attacks = state.combat_log.cards_started_this_turn[CardType::Attack.index()];
     let uids = state.player_power_uids();
     for puid in uids {
         if let Some(power) = state
