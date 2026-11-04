@@ -462,6 +462,68 @@ fn well_laid_plans_keeps_whole_hand_v0111() {
 // The IsDupe guard (`FeralPower.cs:51`) only matters on the auto-play path:
 // the hand-play path excludes dupes in both builds (see `finish_card_play`).
 
+fn add_zero_cost_to_hand(state: &mut CombatState, card_id: CardId) -> CardUid {
+    let uid = add_to_hand(state, card_id);
+    state.cards[uid.get() as usize - 1].cost = 0;
+    uid
+}
+
+/// C# `CardModel.OnPlayWrapper` (CardModel.cs:1881-1886) fixes the result
+/// location, and `FeralPower.AfterModifyingCardPlayResultLocation` spends the
+/// budget, BEFORE `OnPlay`. A 0-cost Uproar under Feral(1) therefore claims
+/// the one slot before its `OnPlay` auto-plays FTL: Uproar returns to the top
+/// of the hand and FTL goes to discard. Rust used to decide at disposal, so
+/// the nested FTL (disposed first) took the slot (Defect act23 seed 1014).
+#[test]
+fn feral_slot_goes_to_the_outer_card_of_a_nested_auto_play() {
+    let (mut state, _) = fresh(GameVersion::V0_111_0);
+    let p = player_uid(&state);
+    give(&mut state, p, PowerKind::Feral, 1);
+    let uproar = add_zero_cost_to_hand(&mut state, CardId::Uproar);
+    let ftl = add_to_hand(&mut state, CardId::Ftl);
+    let defend = add_to_hand(&mut state, CardId::DefendIronclad);
+    // Move FTL and a Defend (FTL's draw) from the hand to the draw pile.
+    state.player.hand.retain(|u| *u == uproar);
+    state.player.draw.push(ftl);
+    state.player.draw.push(defend);
+
+    let _ = sts2_core::combat_loop::play_card(&mut state, 0, Some(0));
+
+    assert_eq!(
+        state.player.hand.first(),
+        Some(&uproar),
+        "Uproar at hand[0]"
+    );
+    assert!(state.player.discard.contains(&ftl), "FTL discarded");
+    assert!(!state.player.hand.contains(&ftl), "FTL not returned");
+}
+
+/// `FeralPower.cs:60-66`: once Feral is on, `zeroCostAttacksPlayed` only moves
+/// when Feral actually redirects a play. A 0-cost Attack played over budget
+/// does not spend anything, so a second Feral stack (Amount 2) leaves one more
+/// slot open for the next 0-cost Attack.
+#[test]
+fn feral_over_budget_attack_does_not_spend_the_tally() {
+    let (mut state, _) = fresh(GameVersion::V0_111_0);
+    state.player.energy = 10;
+    let p = player_uid(&state);
+    give(&mut state, p, PowerKind::Feral, 1);
+    let first = add_zero_cost_to_hand(&mut state, CardId::StrikeIronclad);
+    let _ = sts2_core::combat_loop::play_card(&mut state, 0, Some(0));
+    assert_eq!(state.player.hand.first(), Some(&first), "first returns");
+    // Over budget: the same card plays again and is discarded.
+    let _ = sts2_core::combat_loop::play_card(&mut state, 0, Some(0));
+    assert!(
+        state.player.discard.contains(&first),
+        "over budget: discard"
+    );
+
+    give(&mut state, p, PowerKind::Feral, 1);
+    let next = add_zero_cost_to_hand(&mut state, CardId::StrikeIronclad);
+    let _ = sts2_core::combat_loop::play_card(&mut state, 0, Some(0));
+    assert_eq!(state.player.hand.first(), Some(&next), "the second slot");
+}
+
 // ── SurprisePower: creature creation order ────────────────────────────────
 
 fn merc_dies(version: GameVersion) -> CombatState {
@@ -665,6 +727,46 @@ fn paels_eye_extra_turn_skips_the_enemy_side_both_versions() {
         assert!(
             state.round > 1,
             "the next end turn runs the enemy ({version:?})"
+        );
+    }
+}
+
+/// An enemy's Plating re-grants its round-1 block on a PaelsEye extra turn.
+/// C# `PlatingPower.BeforeSideTurnStart` (v0.111.0 and v0.107.1
+/// PlatingPower.cs:41-56) gates only on `side == Player`, a non-player owner
+/// and `RoundNumber <= 1`, with no once-only flag; the extra turn keeps the
+/// round at 1, and no enemy turn ran to clear the first grant, so the block
+/// stacks. Deep act23 probe Ironclad:1018 act3: `monsters[0].block` cs=30
+/// rs=15 (Rust's `counter` latch stopped the second grant).
+#[test]
+fn enemy_plating_regrants_round_one_block_on_paels_eye_extra_turn_both_versions() {
+    for version in [GameVersion::V0_107_1, GameVersion::V0_111_0] {
+        let (mut state, enemy) = fresh(version);
+        state.round = 1;
+        state.relics.push(sts2_core::Relic {
+            id: std::num::NonZeroU32::new(1).expect("nz"),
+            kind: sts2_core::RelicKind::PaelsEye,
+            counter: 0,
+            is_wax: false,
+            is_melted: false,
+        });
+        give(&mut state, enemy, PowerKind::Plating, 15);
+        let block = |s: &CombatState| {
+            s.creatures
+                .iter()
+                .find(|c| c.id == enemy.0)
+                .map_or(0, |c| c.block)
+        };
+        // Combat start's player-side turn start: the round-1 grant.
+        hooks::dispatch_before_side_turn_start(&mut state, &TurnSideCtx { side: Side::Player });
+        assert_eq!(block(&state), 15, "round-1 grant ({version:?})");
+        let _ = sts2_core::apply(&mut state, Action::EndTurn);
+        assert_eq!(state.phase, CombatPhase::PlayerPlayPhase, "{version:?}");
+        assert_eq!(state.round, 1, "extra turn keeps the round ({version:?})");
+        assert_eq!(
+            block(&state),
+            30,
+            "the extra turn re-grants the round-1 block ({version:?})"
         );
     }
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { damageNumberJitter } from "../Combatant";
+import { damageNumberJitter } from "../combatantMetrics";
 
 describe("damageNumberJitter", () => {
   it("throws consecutive hits along visibly different paths", () => {

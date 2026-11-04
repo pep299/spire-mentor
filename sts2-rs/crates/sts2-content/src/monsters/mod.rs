@@ -1,4 +1,3 @@
-// port-pin-skip — registration shim (no Python counterpart).
 pub mod dsl;
 
 // Act-1 has two zone variants in STS2: Overgrowth (default) and

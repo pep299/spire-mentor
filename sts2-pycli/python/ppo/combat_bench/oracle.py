@@ -625,7 +625,7 @@ class Planner:
             c = x.clone()
             res = c.apply_step(a)
             plan.stats["applies"] += 1
-            if res == "invalid_target":
+            if res in ("invalid_target", "illegal_play"):
                 continue
             if c.rng_fingerprint() != fp:
                 if d is None:
@@ -775,7 +775,7 @@ def det_dag_depth(view: Any, node_cap: int = 5000) -> int:
             if a["action"] == "end_turn":
                 continue
             c = x.clone()
-            if c.apply_step(a) == "invalid_target" or c.rng_fingerprint() != fp:
+            if c.apply_step(a) in ("invalid_target", "illegal_play") or c.rng_fingerprint() != fp:
                 continue
             best = max(best, 1 if c.terminal_value()[0] else 1 + walk(c))
         memo[obs] = best

@@ -58,7 +58,7 @@ fn summary(n: &Value) -> (i64, i64) {
 #[test]
 fn shared_nodes_are_labelled_per_edge() {
     let mut wb = Workbench::new(Config::default());
-    wb.restore_save(&save())
+    wb.restore_save(&save(), sts2_workbench::runlog::DEFAULT_NOW_ISO)
         .unwrap_or_else(|e| panic!("restore: {} {}", e.status, e.detail));
     let tree = wb
         .call(

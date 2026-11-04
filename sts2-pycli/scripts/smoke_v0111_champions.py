@@ -76,19 +76,16 @@ def main() -> int:
             assert champ is not None, character
             for seed in a.seeds:
                 t0 = time.time()
-                rm = sts2_rs.RunManager(
+                rm = sts2_rs.RunManager(  # ty: ignore[unresolved-attribute]
                     seed=seed,
                     character=character,
                     neow_start=True,
-                    interactive_card_removal=True,
-                    interactive_card_upgrade=True,
-                    interactive_card_transform=True,
-                    direct_event_relic_grant=True,
+                    mode="agent",
                     act1="roll",
                     game_version="v0.111.0",
                 )
                 assert rm.game_version == "v0.111.0"
-                agent = sts2_rs.PpoRunAgent(
+                agent = sts2_rs.PpoRunAgent(  # ty: ignore[unresolved-attribute]
                     seed=seed,
                     sims=a.sims,
                     boss_sims=a.boss_sims,

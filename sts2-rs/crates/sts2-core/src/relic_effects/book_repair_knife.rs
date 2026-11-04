@@ -23,9 +23,14 @@ pub(crate) fn on_after_died_to_doom(state: &mut CombatState, ctx: &DiedToDoomCtx
         return EffectResult::NotImplemented;
     }
     // C#'s `c != Owner.Creature` guard: a doom-killed *player* heals nobody.
-    // (`ShouldOwnerDeathTriggerFatal` — the revive/illusion exclusion — is not
-    // modeled per-power yet; the common case of an ordinary enemy death holds.)
     if state.player.creature_uid == Some(ctx.victim) {
+        return EffectResult::NotImplemented;
+    }
+    // `c.Powers.All(p => p.ShouldOwnerDeathTriggerFatal())`: a Minion, or a
+    // Decimillipede segment whose siblings stand (it REATTACHes), heals
+    // nothing (act23 Necrobinder:1004: Doom took two of three segments and
+    // Rust healed 6).
+    if !crate::card_effects::should_owner_death_trigger_fatal_after_doom_batch(state, ctx.victim) {
         return EffectResult::NotImplemented;
     }
     let Some(player_uid) = state.player.creature_uid else {

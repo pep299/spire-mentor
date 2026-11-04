@@ -622,62 +622,37 @@ pub(crate) fn red_skull_check_hp(state: &mut CombatState) {
             r.counter = 1;
         }
     } else if !low_hp && applied {
+        // C# `PowerCmd.Apply<StrengthPower>(-3)` (RedSkull.cs:59-83). Strength
+        // is `AllowNegative`, so the stack may go (further) negative and is
+        // dropped only at exactly 0; Artifact negates the Debuff-direction
+        // apply; the landed change fires the `AfterPowerAmountChanged`
+        // reactors like any signed drain.
         if let Some(player_uid) = state.player.creature_uid {
-            adjust_player_strength(state, player_uid, -RED_SKULL_STRENGTH);
+            crate::card_effects::signed_power_apply_with_reactors(
+                state,
+                player_uid,
+                PowerKind::Strength,
+                -RED_SKULL_STRENGTH,
+                |s| {
+                    if !crate::card_effects::try_consume_artifact_for_signed_debuff(
+                        s,
+                        player_uid,
+                        -RED_SKULL_STRENGTH,
+                    ) {
+                        crate::card_effects::apply_signed_attr_power(
+                            s,
+                            player_uid,
+                            PowerKind::Strength,
+                            -RED_SKULL_STRENGTH,
+                        );
+                    }
+                },
+            );
         }
         if let Some(r) = red_skull_relic_mut(state) {
             r.counter = 0;
         }
     }
-}
-
-/// Apply a signed delta to the player's `Strength` power stack,
-/// removing the `Power` entry entirely if the resulting amount
-/// would saturate to 0 or below. Mirrors Python's
-/// `owner.apply_power(STRENGTH, -3)` semantics for RedSkull —
-/// `apply_power_to_creature` rejects non-positive deltas so this
-/// targeted helper performs the direct mutation. Bead `sts2-rs-aqnv`.
-pub(crate) fn adjust_player_strength(
-    state: &mut CombatState,
-    player_uid: crate::CreatureUid,
-    delta: i32,
-) {
-    if delta == 0 {
-        return;
-    }
-    let Some(creature_idx) = state.creatures.iter().position(|c| c.id == player_uid.0) else {
-        return;
-    };
-    let power_uid = state.creatures[creature_idx]
-        .powers
-        .iter()
-        .copied()
-        .find(|uid| {
-            state
-                .powers
-                .iter()
-                .any(|p| p.id == uid.0 && p.kind == PowerKind::Strength)
-        });
-    if let Some(uid) = power_uid {
-        let new_amount = state
-            .powers
-            .iter()
-            .find(|p| p.id == uid.0)
-            .map_or(0, |p| p.amount.saturating_add(delta));
-        if new_amount > 0 {
-            if let Some(p) = state.powers.get_mut_by_id(uid.0) {
-                p.amount = new_amount;
-            }
-        } else {
-            // Drop the Power instance — mirrors Python where Strength at
-            // amount 0 is removed from `creature.powers`.
-            state.powers.retain(|p| p.id != uid.0);
-            state.creatures[creature_idx].powers.retain(|u| *u != uid);
-        }
-    } else if delta > 0 {
-        apply_power_to_creature(state, player_uid, PowerKind::Strength, delta);
-    }
-    // delta < 0 with no existing Strength → no-op (mirrors Python).
 }
 
 /// Mut ref to the player's CentennialPuzzle relic (if owned). Helper

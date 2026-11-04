@@ -25,4 +25,11 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    // Dev-only harness pages (not shipped): each is a Vite entry that renders
+    // its own page, so it has no exports to hot-swap and an edit reloads the
+    // page — which is what a harness wants. The rule has nothing to protect.
+    files: ['src/gallery.tsx', 'src/cardskin.tsx', 'src/boardpreview.tsx'],
+    rules: { 'react-refresh/only-export-components': 'off' },
+  },
 )

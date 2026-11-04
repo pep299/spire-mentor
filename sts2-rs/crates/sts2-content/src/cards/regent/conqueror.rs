@@ -3,7 +3,6 @@ use super::prelude::*;
 
 /// Conqueror — apply 1 Conqueror to target + Forge 3. Both effects
 /// real (forge wired by `sts2-rs-5o9w`).
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L321
 pub(crate) fn play_conqueror(state: &mut CombatState, target: Option<CreatureUid>) -> EffectResult {
     // C# Conqueror.cs OnUpgrade bumps ForgeVar 3->5; ConquerorPower
     // amount stays at 1 (marker). Python pin port had only base

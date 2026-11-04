@@ -1,6 +1,7 @@
 import { render } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
-import Combatant, { dyingChromeFadeSeconds, DEFAULT_DYING_FADE_SECONDS } from "../Combatant";
+import Combatant from "../Combatant";
+import { dyingChromeFadeSeconds, DEFAULT_DYING_FADE_SECONDS } from "../combatantMetrics";
 import type { DissolveEffect } from "../../effects/manifest";
 
 // A rigged combatant mounts `SpineSprite`, whose WebGL load has nothing to

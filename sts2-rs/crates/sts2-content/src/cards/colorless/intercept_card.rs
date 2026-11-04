@@ -14,21 +14,22 @@ pub(crate) fn play_intercept_card(
     _t: Option<CreatureUid>,
 ) -> EffectResult {
     // C#: the player gains the block, then `CoveredPower` goes on the
-    // teammate, whose `AfterApplied` gives the player `InterceptPower`:
-    // until the enemy turn ends the player takes the teammate's powered
-    // attack hits as well (x2) and the teammate takes none. The teammate is
-    // not attacked in the simulation, so only the player's side is modelled.
+    // teammate, whose `AfterApplied` gives the player `InterceptPower` unless
+    // they hold one: until the enemy turn ends the teammate takes no powered
+    // attack damage and the player takes it twice.
     gain_block_player(state, current_block(state));
-    if state.any_ally_card_target().is_some() {
-        if let Some(uid) = state.player.creature_uid {
-            if !state.player_power_uids().iter().any(|p| {
-                state
-                    .powers
-                    .get_by_id(p.0)
-                    .is_some_and(|p| p.kind == PowerKind::Intercept)
-            }) {
-                apply_power_to_creature(state, uid, PowerKind::Intercept, 1);
-            }
+    if state.any_ally_card_target().is_none() {
+        return EffectResult::Resolved;
+    }
+    sts2_core::coop::apply_power_to_card_target(state, PowerKind::Covered, 1);
+    if let Some(uid) = state.player.creature_uid {
+        if !state.player_power_uids().iter().any(|p| {
+            state
+                .powers
+                .get_by_id(p.0)
+                .is_some_and(|p| p.kind == PowerKind::Intercept)
+        }) {
+            apply_power_to_creature(state, uid, PowerKind::Intercept, 1);
         }
     }
     EffectResult::Resolved

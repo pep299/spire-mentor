@@ -8,13 +8,31 @@ use super::prelude::*;
 ///
 /// `AnyAlly` — C# `CardModel.CanPlay` (`CardModel.cs:1742`) rejects it
 /// without a living ally, which single-player never has
-/// (`card_effects::card_is_any_ally`), so the play never resolves here and
-/// the ally's draw-pile pick is not modelled.
-pub(crate) fn play_tutor(_state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
-    // C#: the teammate picks a card from their own draw pile into hand (Tutor.cs:20-29) — all of it lands on the co-op teammate
-    // (`cardPlay.Target`), whose turn is not simulated, so playing it
-    // changes nothing here but the energy and the card's own pile move.
-    // Unplayable without a living teammate (`card_is_any_ally`).
+/// (`card_effects::card_is_any_ally`); in co-op the teammate picks.
+pub(crate) fn play_tutor(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
+    // C#: the teammate picks a card from their own draw pile into their hand
+    // (Tutor.cs:20-29), answered on the spot (`coop::seated_player_picks`).
+    sts2_core::coop::with_card_target(state, |state| {
+        let options: Vec<sts2_core::ChoiceOption> = state
+            .player
+            .draw
+            .iter()
+            .filter_map(|&uid| {
+                let card = state.cards.get(uid.0.get() as usize - 1)?;
+                Some(sts2_core::ChoiceOption {
+                    card_id: card.card_id,
+                    upgraded: card.upgraded,
+                    card_uid: Some(uid),
+                    source_pile: Some(sts2_core::cards::PileKind::Draw),
+                })
+            })
+            .collect();
+        let picked =
+            sts2_core::coop::seated_player_picks(state, &options).and_then(|i| options[i].card_uid);
+        if let Some(uid) = picked {
+            state.move_card_to_hand(uid);
+        }
+    });
     EffectResult::Resolved
 }
 

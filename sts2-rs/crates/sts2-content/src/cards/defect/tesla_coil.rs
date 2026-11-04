@@ -21,6 +21,11 @@ pub(crate) fn play_tesla_coil(
     let t = target.expect("TeslaCoil: Enemy-targeted");
     let base = current_card_damage(state);
     let _ = deal_damage_player_to_enemy(state, t, base);
+    // The `DamageCmd.Attack` above is a finished command before the orb
+    // passives run (TeslaCoil.cs:29-38), so its `AfterAttack` has already
+    // granted a gardener's Skittish block (SkittishPower.cs:56-69) and the
+    // zaps hit that block (Defect full seeds 2490/4630, v0.111.0).
+    sts2_core::hooks::grant_latched_skittish(state);
     let lightning = state
         .player
         .orbs

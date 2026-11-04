@@ -10,7 +10,7 @@
   "bg_col": 2,
   "bg_row": 7,
   "bg_seed": 1772253313,
-  "floor": 7,
+  "floor": 8,
   "step_no": 0,
   "turn": null
  },
@@ -26,7 +26,7 @@
   "bg_row": 7,
   "bg_seed": 1772253313,
   "decision": "rest_site",
-  "floor": 7,
+  "floor": 8,
   "options": [
    {
     "action": "choose_option",

@@ -10,7 +10,7 @@
   "bg_col": 1,
   "bg_row": 12,
   "bg_seed": 1772253313,
-  "floor": 12,
+  "floor": 13,
   "step_no": 0,
   "turn": 3
  },
@@ -380,7 +380,7 @@
    }
   ],
   "exhaust_pile_count": 3,
-  "floor": 12,
+  "floor": 13,
   "hand": [
    {
     "base_cost": 1,
@@ -699,7 +699,7 @@
      "upgraded": false
     }
    ],
-   "gold": 107,
+   "gold": 106,
    "hp": 34,
    "image": "https://assets.test/character_sprites/ironclad.png",
    "max_hp": 80,

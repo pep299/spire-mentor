@@ -64,6 +64,19 @@ describe("useShortcuts", () => {
     expect(onPlayBest).toHaveBeenCalledTimes(2);
   });
 
+  it("play choice screen: Ctrl / Cmd chords stay the browser's", () => {
+    // Ctrl+A is select-all (to copy the log), not "take the best option";
+    // Ctrl+1 switches tabs, not "pick option 1".
+    const onPlayBest = vi.fn();
+    const onChoose = vi.fn();
+    render(<Harness mode="play" live={choiceStep()} onPlayBest={onPlayBest} onChoose={onChoose} />);
+    fireEvent.keyDown(document.body, { key: "a", ctrlKey: true });
+    fireEvent.keyDown(document.body, { key: "a", metaKey: true });
+    fireEvent.keyDown(document.body, { key: "1", ctrlKey: true });
+    expect(onPlayBest).not.toHaveBeenCalled();
+    expect(onChoose).not.toHaveBeenCalled();
+  });
+
   it("play choice screen: p peeks", () => {
     const onPeek = vi.fn();
     render(<Harness mode="play" live={choiceStep()} onPeek={onPeek} />);

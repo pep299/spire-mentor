@@ -17,7 +17,6 @@
   "route:/api/live/deck-analysis",
   "route:/api/live/from_replay",
   "route:/api/live/hint",
-  "route:/api/live/last-move-regret",
   "route:/api/live/map",
   "route:/api/live/ppo-policy",
   "route:/api/live/quit",
@@ -47,12 +46,12 @@
   "status:409"
  ],
  "engine": {
-  "src_hash": "13941df1bbea7678",
+  "src_hash": "4e5518f56fa396f6",
   "version": "0.0.1"
  },
  "final_act": 1,
- "final_floor": 6,
- "full_responses": 44,
+ "final_floor": 7,
+ "full_responses": 42,
  "full_steps": 0,
  "patches": {
   "assets_base_url": "https://assets.test",
@@ -61,7 +60,7 @@
  },
  "python": "3.13",
  "reached_game_over": false,
- "requests": 130,
+ "requests": 128,
  "scenario": {
   "act1": "roll",
   "ascension": 0,
@@ -90,10 +89,6 @@
    {
     "at": 30,
     "kind": "choice_ranker"
-   },
-   {
-    "at": 31,
-    "kind": "last_move_regret"
    },
    {
     "at": 35,
@@ -135,10 +130,6 @@
    {
     "at": 55,
     "kind": "search_tree"
-   },
-   {
-    "at": 56,
-    "kind": "last_move_regret"
    },
    {
     "at": 60,

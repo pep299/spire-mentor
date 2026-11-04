@@ -2,7 +2,6 @@
 use super::prelude::*;
 
 /// Hegemony — damage + apply 2 EnergyNextTurn to self.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L372
 pub(crate) fn play_hegemony(state: &mut CombatState, target: Option<CreatureUid>) -> EffectResult {
     // C# Hegemony.cs OnUpgrade bumps EnergyVar 2->3 (damage 15->18
     // already flows via current_damage). Bead `sts2-rs-a3428`.

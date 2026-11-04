@@ -66,9 +66,11 @@ class HintTag(NamedTuple):
         win_prob: ``p_win`` from MCTS, in ``[0, 1]``.
         bucket_label: Label from ``sts2_rs.WIN_PROB_BUCKETS``
             (e.g. ``"likely-win"``).
-        is_best: True iff this action was ranked #1 by the MCTS sort
-            (Q desc, visits desc tiebreak). Exactly one entry per
-            ``recommend`` call has this set.
+        is_best: True iff this is the search's own pick (``mcts_recommend``
+            ``is_best``: the engine's root rule, GH #1022), or, when a caller
+            dropped that row, the engine's next choice among the survivors
+            (:func:`crown_engine_heir`). Exactly one entry per ``recommend``
+            call has this set.
         visits: Raw visit count — useful for debug overlay; not
             displayed in the default tag format.
         q_saturated: True when the rollout policy couldn't distinguish
@@ -82,6 +84,15 @@ class HintTag(NamedTuple):
             untargeted actions. The MCTS action space lists one entry
             per (action, target) pair, so multiple HintTags can share
             a ``stable_idx`` while differing only on this field.
+        ally_index: Co-op: the teammate (``allies[]`` index) an ``AnyAlly``
+            card is aimed at (``PlayCardAtAlly``, GH #1017). ``None`` for every
+            other action, including an ``AnyAlly`` card with one teammate.
+        pick_rank: The engine's preference order (``mcts_recommend`` row
+            ``pick_rank``, GH #1022): 0 is its pick, and a caller that has to
+            drop rows crowns the lowest surviving rank. ``None`` when the
+            result carries none.
+        in_band: The engine cannot tell this action from its pick (inside
+            the ``tie_eps`` band its rule decided in).
     """
 
     stable_idx: int
@@ -99,6 +110,9 @@ class HintTag(NamedTuple):
     wins: int = 0
     losses: int = 0
     ties: int = 0
+    ally_index: int | None = None
+    pick_rank: int | None = None
+    in_band: bool = False
 
 
 def belief_draw_c_puct(sims: int, threads: int = 1) -> float:
@@ -122,8 +136,8 @@ def belief_draw_c_puct(sims: int, threads: int = 1) -> float:
     workers (``mcts_recommend``: "the sim budget is SPLIT across workers") and
     ``c_puct`` governs one tree, so the per-tree budget is what the sweep
     measured. NOTE this part is an extrapolation — the sweep itself ran
-    single-tree. The advisor's defaults (8000 sims, <=8 threads) give >=1000
-    per tree and land on 2.5 either way.
+    single-tree. The advisor's defaults (4000 sims, 16000 at bosses, one
+    tree) land on 2.5.
     """
     per_tree = sims // max(1, threads)
     if per_tree < 500:
@@ -169,7 +183,7 @@ class RecommendConfig:
     combat_id: int = 0
     # Rollout policy forwarded to sts2_rs.mcts_recommend. None (default) runs
     # what the hidden-info mode deploys: the playout net under "beliefdraw"
-    # (Ironclad's built-in net; the heuristic for a character without one),
+    # (the fight character's built-in net; all five characters ship one),
     # the heuristic otherwise. A named policy — "heuristic" (softmax over
     # expert priorities), "uniform" (un-biased random) or "net" — always runs.
     rollout_policy: str | None = None
@@ -513,6 +527,7 @@ def tags_from_result(result: dict[str, Any], hand: list[dict[str, Any]]) -> list
     for entry in result["actions"]:
         action = entry["action"]
         target = action.get("target_index")
+        ally = action.get("ally_index")
         p_win = float(entry["p_win"])
         try:
             stable_idx = _stable_idx_for_action(action, hand)
@@ -536,6 +551,9 @@ def tags_from_result(result: dict[str, Any], hand: list[dict[str, Any]]) -> list
                 wins=int(entry.get("wins", 0)),
                 losses=int(entry.get("losses", 0)),
                 ties=int(entry.get("ties", 0)),
+                ally_index=int(ally) if ally is not None else None,
+                pick_rank=int(entry["pick_rank"]) if entry.get("pick_rank") is not None else None,
+                in_band=bool(entry.get("in_band", False)),
             )
         )
     if dropped:
@@ -544,8 +562,29 @@ def tags_from_result(result: dict[str, Any], hand: list[dict[str, Any]]) -> list
             f"kept {len(out)}: {dropped[0]}",
             file=sys.stderr,
         )
+    out = crown_engine_heir(out)
     out.sort(key=lambda t: (not t.is_best, -t.win_prob))
     return out
+
+
+def crown_engine_heir(tags: list[HintTag]) -> list[HintTag]:
+    """Re-crown ``tags`` when the engine's pick is no longer among them.
+
+    A caller that drops rows after the search -- an unmappable row here, a
+    play the live game refuses in ``realgame_advisor.veto_unplayable`` --
+    must not crown a move by a rule of its own. The heir is the engine's own
+    next choice among the survivors: the lowest ``pick_rank`` (GH #1022),
+    falling back to the first tag only when no tag carries a rank.
+
+    Returns:
+        ``tags`` unchanged when one is still ``is_best``; otherwise the heir
+        first with ``is_best`` set, then the rest in their order.
+    """
+    if not tags or any(t.is_best for t in tags):
+        return tags
+    ranked = [t for t in tags if t.pick_rank is not None]
+    heir = min(ranked, key=lambda t: t.pick_rank) if ranked else tags[0]
+    return [heir._replace(is_best=True)] + [t for t in tags if t is not heir]
 
 
 def choice_picks_from_tags(

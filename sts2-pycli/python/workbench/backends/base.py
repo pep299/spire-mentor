@@ -54,7 +54,13 @@ class GameBackend:
 
     # -- required ------------------------------------------------------------
     def start(
-        self, *, character: str, seed: str, ascension: int, act1: str = "overgrowth"
+        self,
+        *,
+        character: str,
+        seed: str,
+        ascension: int,
+        act1: str = "overgrowth",
+        interactive_potion_swap: bool = False,
     ) -> dict[str, Any]:
         raise NotImplementedError
 
@@ -153,9 +159,20 @@ class DuckTypedBackend(GameBackend):
         self._game = game
 
     def start(
-        self, *, character: str, seed: str, ascension: int, act1: str = "overgrowth"
+        self,
+        *,
+        character: str,
+        seed: str,
+        ascension: int,
+        act1: str = "overgrowth",
+        interactive_potion_swap: bool = False,
     ) -> dict[str, Any]:
-        return self._game.start(character=character, seed=seed, ascension=ascension, act1=act1)
+        # Forwarded only when set, so a duck-typed engine without the
+        # keyword keeps working.
+        extra = {"interactive_potion_swap": True} if interactive_potion_swap else {}
+        return self._game.start(
+            character=character, seed=seed, ascension=ascension, act1=act1, **extra
+        )
 
     def act(self, action: str, **args: Any) -> dict[str, Any]:
         return self._game.act(action, **args)

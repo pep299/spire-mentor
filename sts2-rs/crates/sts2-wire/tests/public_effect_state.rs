@@ -390,14 +390,14 @@ fn effect_history_and_active_source_distinguish_search_states() {
     changed.combat_log.pen_nib_attack_to_double = Some(state.player.hand[0]);
     assert_ne!(sts2_core::search_hash(&changed), baseline);
     let mut before_draw = state.clone();
-    before_draw.pending_relic_hand_draw_resume = Some((5, 1));
+    before_draw.pending_relic_hand_draw_resume = Some((5, 1, false));
     let mut later_listener = before_draw.clone();
-    later_listener.pending_relic_hand_draw_resume = Some((5, 2));
+    later_listener.pending_relic_hand_draw_resume = Some((5, 2, false));
     assert_ne!(
         sts2_core::search_hash(&before_draw),
         sts2_core::search_hash(&later_listener)
     );
-    later_listener.pending_relic_hand_draw_resume = Some((6, 1));
+    later_listener.pending_relic_hand_draw_resume = Some((6, 1, false));
     assert_ne!(
         sts2_core::search_hash(&before_draw),
         sts2_core::search_hash(&later_listener)
@@ -720,10 +720,7 @@ fn vexing_generated_card_is_only_free_until_played_or_turn_end() {
         value["player"]["relics"] = json!([{"id":"VEXING_PUZZLEBOX","counter":0}]);
         let mut state = rebuild(&value);
         let arena_size = state.cards.len();
-        sts2_core::relic_effects::dispatch_after_side_turn_start(
-            &mut state,
-            sts2_core::Side::Player,
-        );
+        sts2_core::relic_effects::dispatch_after_player_turn_start(&mut state);
         assert_eq!(state.cards.len(), arena_size + 1);
         let card = state.cards.last().unwrap();
         let model = card

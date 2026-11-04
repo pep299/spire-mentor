@@ -5,6 +5,8 @@ import {
   MAX_BODY_BYTES,
   TTL_SECONDS,
   handleGet,
+  handleIntakeMiss,
+  handleIntakeProbe,
   handlePost,
   handleProbe,
   metadataOf,
@@ -128,6 +130,10 @@ describe("bug-report Function — routes", () => {
   it("rejects cross-origin, oversized, non-JSON and off-schema posts without touching the store", async () => {
     const { env, values } = fakeKv();
     expect((await handlePost(post(dump(), { origin: "https://evil.example" }), env)).status).toBe(403);
+    // A loopback page (the mod-bundled workbench) must go through its control
+    // plane's forward, never post here itself.
+    expect((await handlePost(post(dump(), { origin: "http://127.0.0.1:8079" }), env)).status).toBe(403);
+    // /api/ is the page's: a client without an Origin uses the intake.
     const noOrigin = new Request(`${ORIGIN}/api/bugreport`, { method: "POST", body: "{}" });
     expect((await handlePost(noOrigin, env)).status).toBe(403);
     expect((await handlePost(post(dump(), { "content-length": String(MAX_BODY_BYTES + 1) }), env)).status).toBe(413);
@@ -136,6 +142,50 @@ describe("bug-report Function — routes", () => {
     expect(off.status).toBe(422);
     expect(await off.json()).toEqual({ detail: "repro must be an object" });
     expect(values.size).toBe(0);
+  });
+
+  it("the intake takes a report from a client that sends no Origin (the mod, the advisor's forward)", async () => {
+    const { env, values, options } = fakeKv();
+    const modDump = {
+      schema_version: 1,
+      meta: { source: "mod", mode: "game", mod_version: "0.8.2", character: "Defect", user_agent: "SpireMentor/0.8.2 (Slay the Spire 2 mod)" },
+      repro: {},
+      state: { game_state: { type: "advice_request", advice_for: "combat_action" }, map: null },
+      ui: { screen: "combat_action", overlay: null },
+      logs: { mod: ["a"], game: "b", advisor: null },
+      note: "orb evoked twice",
+    };
+    const req = new Request(`${ORIGIN}/intake/bugreport`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "user-agent": "SpireMentor/0.8.2 (Slay the Spire 2 mod)" },
+      body: JSON.stringify(modDump),
+    });
+    const r = await handlePost(req, env, fixed, "intake");
+    expect(r.status).toBe(201);
+    const { id, url } = (await r.json()) as { id: string; url: string };
+    // The link is to the site's report view, where reading needs the sign-in.
+    expect(url).toBe(`${ORIGIN}/?report=${id}`);
+    const stored = JSON.parse(values.get(KEY_PREFIX + id)!);
+    // The mod's own fields ride through untouched.
+    expect(stored.logs).toEqual(modDump.logs);
+    expect(stored.meta).toMatchObject({ source: "mod", user_agent: "SpireMentor/0.8.2 (Slay the Spire 2 mod)", received_via: "pages" });
+    expect(options.get(KEY_PREFIX + id)?.metadata).toMatchObject({ source: "mod", build: "0.8.2", mode: "game", screen: "combat_action" });
+  });
+
+  it("the intake still refuses other sites' pages, and the page itself may use it", async () => {
+    const { env, values } = fakeKv();
+    const at = (headers: Record<string, string>) =>
+      new Request(`${ORIGIN}/intake/bugreport`, { method: "POST", headers, body: JSON.stringify(dump()) });
+    expect((await handlePost(at({ origin: "https://evil.example" }), env, {}, "intake")).status).toBe(403);
+    expect(values.size).toBe(0);
+    expect((await handlePost(at({ origin: ORIGIN }), env, fixed, "intake")).status).toBe(201);
+  });
+
+  it("the intake's probe says so, and nothing else under /intake/ answers", async () => {
+    expect(await handleIntakeProbe().json()).toEqual({ ok: true, store: "kv", intake: true });
+    const miss = handleIntakeMiss();
+    expect(miss.status).toBe(404);
+    expect(miss.headers.get("content-type")).toBe("application/json");
   });
 
   it("an unknown or malformed id is a 404, never a KV lookup outside the prefix", async () => {

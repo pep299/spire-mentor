@@ -363,7 +363,15 @@ in-combat values at the stop. An `error` record carries only `rep`, `seed`,
 - **Cost:** `sims_spent` is the primary cost metric. `cpu x base` is n/a when the arms ran on
   different hosts or wheel kinds (`pgo`), and a load difference gets a warning. `sims_cap` ends
   get a `!!! SIMS CAP` warning.
-- **Death weight:** 65 is the default of `report --death-hp`.
+- **Death weight:** 65 is the default of `report --death-hp`. It is a rough HP price of a death,
+  not a fitted one. A sweep over 0–120 (`docs/experiments/2026-10-30-combat-bench-death-weight.md`,
+  GH #1031) found that it changes no arm-vs-arm verdict: every paired ΔL keeps its sign and
+  significance, and the weight-free `deaths pp` agrees. Pilot-vs-human gaps are weight-sensitive:
+  B0's pro gap loses its CI at w ≤ 25, and the boss stratum's gap is mostly the weight. Quote
+  those gaps with `deaths pp`, and at `--death-hp 0`, next to the default. An observational
+  win-rate fit on human runs cannot set the weight, because exit HP proxies deck strength. A
+  counterfactual boss-2 HP curve gives w ≈ 20–130 after the first act-3 boss, ≈ 50 at the
+  median exit HP.
 
 What `report` expects of the played header, beyond the table above:
 

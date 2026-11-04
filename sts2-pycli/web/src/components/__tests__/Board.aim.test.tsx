@@ -59,6 +59,21 @@ describe("the targeting arrow", () => {
     expect(screen.queryByTestId("aim-arrow")).toBeNull();
   });
 
+  it("Ctrl / Cmd chords are not combat hotkeys", () => {
+    // Ctrl+A used to start autoplay instead of selecting the log to copy it.
+    const onAutoplay = vi.fn();
+    const onPlayCard = vi.fn();
+    render(<Board step={combatStep()} onPlayCard={onPlayCard} onEndTurn={() => {}}
+      onAutoplay={onAutoplay} />);
+    fireEvent.keyDown(window, { key: "a", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "a", metaKey: true });
+    fireEvent.keyDown(window, { key: "1", ctrlKey: true });
+    expect(onAutoplay).not.toHaveBeenCalled();
+    expect(screen.queryByText(/select a target/i)).toBeNull();
+    fireEvent.keyDown(window, { key: "a" });
+    expect(onAutoplay).toHaveBeenCalledTimes(1);
+  });
+
   it("Escape cancels the aim", () => {
     const { container } = render(
       <Board step={combatStep()} onPlayCard={() => {}} onEndTurn={() => {}} />,

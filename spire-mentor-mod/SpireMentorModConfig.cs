@@ -81,6 +81,8 @@ public sealed class SpireMentorModConfig : SimpleModConfig
     // Persisted preferences.
     // ------------------------------------------------------------------
 
+    public static bool StartupTipShown { get; set; } = false;
+
     public static bool ShowHud { get; set; } = true;
     public static bool ShowRankedList { get; set; } = true;
     public static bool ShowCardLabels { get; set; } = true;
@@ -141,6 +143,12 @@ public sealed class SpireMentorModConfig : SimpleModConfig
     /// read the control plane, only the same-machine workbench proxy. Passed
     /// to the advisor as <c>--control-allow-origin</c>.</summary>
     public static string BrowserWorkbenchOrigin { get; set; } = "";
+
+    /// <summary>Where "Report a bug" sends (SimBugReport): a workbench site
+    /// whose <c>/intake/bugreport</c> stores reports. Blank = the site this
+    /// build was packaged with, if any (a dev build has none, and saves
+    /// reports to a file).</summary>
+    public static string BugReportSite { get; set; } = "";
 
     // ------------------------------------------------------------------
 
@@ -212,8 +220,10 @@ public sealed class SpireMentorModConfig : SimpleModConfig
             "F5   Coach style: peek at the AI's next pick\n" +
             "F6   let the AI take just this one decision\n" +
             "F7   let the AI keep playing until you stop it\n" +
-            "F4   show / hide the HUD          F3   action log\n" +
-            "F9 / F10   game speed down / up   F1   help");
+            "F4   show / hide the HUD          Ctrl+L action log\n" +
+            "F9 / F10   game speed down / up   F1   help\n" +
+            "Ctrl+H   hide / show all the mod's panels\n" +
+            "Ctrl+Shift+B   report a bug (asks for a note, sends only on Send)");
 
         AddRestoreDefaultsButton(optionContainer);
         SetupFocusNeighbors(optionContainer);
@@ -256,6 +266,7 @@ public sealed class SpireMentorModConfig : SimpleModConfig
             cfg.AddLiveRow(advanced, "Advisor command (blank = default)", nameof(AdvisorCommand), cfg.CreateRawLineEditControl);
             cfg.AddLiveRow(advanced, "Workbench URL (blank = default)", nameof(WorkbenchUrl), cfg.CreateRawLineEditControl);
             cfg.AddLiveRow(advanced, "Browser workbench origin (blank = off)", nameof(BrowserWorkbenchOrigin), cfg.CreateRawLineEditControl);
+            cfg.AddLiveRow(advanced, "Bug report site (blank = default)", nameof(BugReportSite), cfg.CreateRawLineEditControl);
             return true;
         }
         catch (Exception ex)

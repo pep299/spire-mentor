@@ -7,11 +7,11 @@ use super::prelude::*;
 /// [decompiled C# omitted — see the cited path]
 ///
 /// `AnyAlly` — unplayable in single-player (`card_effects::card_is_any_ally`).
-pub(crate) fn play_soulbound(_state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
-    // C# `PowerCmd.Apply<SoulboundPower>(cardPlay.Target, 1)` — all of it lands on the co-op teammate
-    // (`cardPlay.Target`), whose turn is not simulated, so playing it
-    // changes nothing here but the energy and the card's own pile move.
-    // Unplayable without a living teammate (`card_is_any_ally`).
+pub(crate) fn play_soulbound(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
+    // C# `PowerCmd.Apply<SoulboundPower>(cardPlay.Target, 1)`: every Soul the
+    // player makes from now on gives the teammate one too
+    // (`card_effects::fire_soulbound_on_soul_generation`).
+    sts2_core::coop::apply_power_to_card_target(state, PowerKind::Soulbound, 1);
     EffectResult::Resolved
 }
 

@@ -10,7 +10,7 @@
    "upgraded": []
   },
   "deck_size": 14,
-  "from_floor": 3,
+  "from_floor": 4,
   "gold": 131,
   "gold_delta": 0,
   "hp": 24,
@@ -25,7 +25,7 @@
   "potions_lost": [],
   "relics_gained": [],
   "relics_lost": [],
-  "to_floor": 3
+  "to_floor": 4
  },
  "error": null,
  "over": false,
@@ -43,7 +43,7 @@
    "bg_col": 0,
    "bg_row": 3,
    "bg_seed": 3,
-   "floor": 3,
+   "floor": 4,
    "step_no": 0,
    "turn": null
   },
@@ -67,7 +67,7 @@
     }
    ],
    "decision": "map_select",
-   "floor": 3,
+   "floor": 4,
    "full_map": {
     "boss": {
      "col": 3,

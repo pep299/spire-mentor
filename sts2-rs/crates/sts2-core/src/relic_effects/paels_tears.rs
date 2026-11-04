@@ -51,6 +51,20 @@ pub(crate) fn on_after_side_turn_start_paels_tears(
     EffectResult::Resolved
 }
 
+/// `PaelsTears.AfterCombatEnd` — `HadLeftoverEnergy = false`
+/// (`PaelsTears.cs:57-61`). Without this, a fight that ends during the
+/// player's end-of-turn (after `before_turn_end` latched leftover
+/// energy, before the next player turn consumed it) leaves the latch
+/// at `1`; `exit_combat` writes it to `rs.relic_counters` and the next
+/// combat would grant a spurious +2 energy on turn 1.
+pub(crate) fn on_after_combat_end_paels_tears(state: &mut CombatState) -> EffectResult {
+    let Some(r) = paels_tears_relic_mut(state) else {
+        return EffectResult::NotImplemented;
+    };
+    r.counter = 0;
+    EffectResult::Resolved
+}
+
 pub(crate) fn install() {
     register_before_turn_end(
         RelicId::PaelsTears,
@@ -59,5 +73,10 @@ pub(crate) fn install() {
     register_after_side_turn_start(
         RelicId::PaelsTears,
         on_after_side_turn_start_paels_tears as AfterSideTurnStartFn,
+    );
+    register_owned_after_combat_end(
+        RelicId::PaelsTears,
+        crate::RelicKind::PaelsTears,
+        on_after_combat_end_paels_tears as AfterCombatEndFn,
     );
 }

@@ -10,7 +10,6 @@ use super::prelude::*;
 /// `GoldReward`. Python pin's `1` was a placeholder — bead
 /// `sts2-rs-b76sx` restored the value; 30 base / 40 upgraded
 /// (the upgrade delta is +10 in v0.107.1, was +5 → 35 in v0.103.2).
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L808
 pub(crate) fn play_royalties_card(
     state: &mut CombatState,
     _t: Option<CreatureUid>,

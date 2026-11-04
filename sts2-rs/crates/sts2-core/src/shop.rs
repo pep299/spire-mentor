@@ -518,6 +518,32 @@ pub fn potion_price(rarity: ShopPotionRarity, rng: &mut crate::dotnet_rng::Rng) 
     (base * factor).round_ties_even() as i32
 }
 
+/// Merchant potion price as the real game rolls it, bit-exact: C# `MerchantPotionEntry.CalcCost` (v0.111.0 `:66-70`) is
+/// `(int)Mathf.Round((float)cost * Shops.NextFloat(0.95f, 1.05f))`, and
+/// `Rng.NextFloat(float, float)` is `(float)(NextDouble() * (double)(max -
+/// min) + (double)min)` with `max - min` taken in `float`. That subtraction
+/// is exact (Sterbenz), so [`crate::dotnet_rng::Rng::next_float_range`] over
+/// the widened `f32` bounds gives the same `f64`. The cast back to `f32`, the
+/// `float` multiply and the banker's round then match C# step for step, so a
+/// product near `.5` rounds the same way. One read, the same one the C# makes
+/// from `PlayerRng.Shops`.
+///
+/// The game skips this read when `TestMode` is on. The headless oracle runs
+/// `CalcCost` with `TestMode` off (Harmony patch in
+/// `RunSimulator.PatchTestModeRelicRewards`) so it matches the real game.
+#[must_use]
+pub fn merchant_potion_price(rarity: ShopPotionRarity, rng: &mut crate::dotnet_rng::Rng) -> i32 {
+    const MIN: f32 = 0.95;
+    const MAX: f32 = 1.05;
+    #[allow(clippy::cast_possible_truncation)]
+    let factor = rng.next_float_range(f64::from(MIN), f64::from(MAX)) as f32;
+    #[allow(clippy::cast_precision_loss)]
+    let cost = potion_base_cost(rarity) as f32;
+    #[allow(clippy::cast_possible_truncation)]
+    let price = (cost * factor).round_ties_even() as i32;
+    price
+}
+
 /// Rolled relic price. Mirrors Python `relic_price(merchant_cost, rng)`
 /// (`shop.py:69-71`). Wider variance band than card / potion (0.85-1.15
 /// vs 0.95-1.05).
@@ -809,7 +835,7 @@ pub enum ShopPurchaseOutcome {
 /// `source` is [`crate::relic_effects::AddSource::ShopPurchase`]. Both hooks
 /// are RunState-level and consume NEITHER the `Shops` nor `Rewards` RNG
 /// stream, so merchant-inventory RNG alignment is unaffected. Shared by the
-/// interactive [`buy_card`] and the `LordsParasol` [`auto_purchase_shop_inventory`]
+/// interactive [`buy_card`] and the `LordsParasol` [`buy_card_free`]
 /// path so the two deck-add sites are byte-identical.
 fn push_shop_card_to_deck(run_state: &mut crate::runstate::RunState, mut card: crate::cards::Card) {
     run_state.modify_card_being_added_to_deck(&mut card);
@@ -849,6 +875,28 @@ pub fn buy_card(
     inv: &mut ShopInventory,
     index: usize,
 ) -> ShopPurchaseOutcome {
+    buy_card_impl(run_state, inv, index, false)
+}
+
+/// [`buy_card`] with C# `OnTryPurchaseWrapper(ignoreCost: true)`: no
+/// affordability check, no gold debit, `AfterItemPurchased` fires with
+/// `goldSpent == 0`. The deck-add hooks still fire (they live inside
+/// `CardPileCmd.Add`, not the `LoseGold` branch). `LordsParasol`'s
+/// free-buy path (decomp `LordsParasol.cs:56-80`).
+pub fn buy_card_free(
+    run_state: &mut crate::runstate::RunState,
+    inv: &mut ShopInventory,
+    index: usize,
+) -> ShopPurchaseOutcome {
+    buy_card_impl(run_state, inv, index, true)
+}
+
+fn buy_card_impl(
+    run_state: &mut crate::runstate::RunState,
+    inv: &mut ShopInventory,
+    index: usize,
+    ignore_cost: bool,
+) -> ShopPurchaseOutcome {
     let character_len = inv.cards.len();
     let total = character_len + inv.colorless_cards.len();
     if index >= total {
@@ -866,7 +914,11 @@ pub fn buy_card(
     // MembershipCard) to the rolled base before both the affordability check
     // and `LoseGold`; the rolled base (`entry.price`) stays undiscounted so
     // re-reads and the sold-out mark are stable.
-    let price = merchant_price_with_modifiers(&run_state.active_relics(), entry.price);
+    let price = if ignore_cost {
+        0
+    } else {
+        merchant_price_with_modifiers(&run_state.active_relics(), entry.price)
+    };
     if run_state.gold < price {
         return ShopPurchaseOutcome::CannotAfford;
     }
@@ -879,7 +931,9 @@ pub fn buy_card(
     // `PlayerCmd.LoseGold(Cost)`. Keep that order so `LuckyFysh`'s +15g lands
     // before the price debit (net-identical, but faithful).
     push_shop_card_to_deck(run_state, card);
-    run_state.gain_gold(-price);
+    if price > 0 {
+        run_state.gain_gold(-price);
+    }
     let entry = if index < character_len {
         &mut inv.cards[index]
     } else {
@@ -912,6 +966,24 @@ pub fn buy_relic(
     inv: &mut ShopInventory,
     index: usize,
 ) -> ShopPurchaseOutcome {
+    buy_relic_impl(run_state, inv, index, false)
+}
+
+/// [`buy_relic`] with `ignoreCost: true` (see [`buy_card_free`]).
+pub fn buy_relic_free(
+    run_state: &mut crate::runstate::RunState,
+    inv: &mut ShopInventory,
+    index: usize,
+) -> ShopPurchaseOutcome {
+    buy_relic_impl(run_state, inv, index, true)
+}
+
+fn buy_relic_impl(
+    run_state: &mut crate::runstate::RunState,
+    inv: &mut ShopInventory,
+    index: usize,
+    ignore_cost: bool,
+) -> ShopPurchaseOutcome {
     if index >= inv.relics.len() {
         return ShopPurchaseOutcome::IndexOutOfBounds;
     }
@@ -919,14 +991,20 @@ pub fn buy_relic(
     if !is_shop_entry_available(entry.price) {
         return ShopPurchaseOutcome::SoldOut;
     }
-    let price = merchant_price_with_modifiers(&run_state.active_relics(), entry.price);
+    let price = if ignore_cost {
+        0
+    } else {
+        merchant_price_with_modifiers(&run_state.active_relics(), entry.price)
+    };
     if run_state.gold < price {
         return ShopPurchaseOutcome::CannotAfford;
     }
     let Some(relic_id) = entry.relic_id else {
         return ShopPurchaseOutcome::SlotEmpty;
     };
-    run_state.gain_gold(-price);
+    if price > 0 {
+        run_state.gain_gold(-price);
+    }
     run_state.relics.push(relic_id);
     run_state.last_obtained_relic = Some(relic_id);
     let _ = crate::run_effects::dispatch_after_obtained(run_state);
@@ -956,6 +1034,28 @@ pub fn buy_potion(
     inv: &mut ShopInventory,
     index: usize,
 ) -> ShopPurchaseOutcome {
+    buy_potion_impl(run_state, inv, index, false)
+}
+
+/// [`buy_potion`] with `ignoreCost: true` (see [`buy_card_free`]). The
+/// belt-capacity / procure-veto refusal still applies: C#
+/// `MerchantPotionEntry.OnTryPurchase` runs `PotionCmd.TryToProcure` before
+/// the (skipped) `LoseGold`, so a full belt leaves the slot stocked
+/// (`MerchantPotionEntry.cs:79-84`).
+pub fn buy_potion_free(
+    run_state: &mut crate::runstate::RunState,
+    inv: &mut ShopInventory,
+    index: usize,
+) -> ShopPurchaseOutcome {
+    buy_potion_impl(run_state, inv, index, true)
+}
+
+fn buy_potion_impl(
+    run_state: &mut crate::runstate::RunState,
+    inv: &mut ShopInventory,
+    index: usize,
+    ignore_cost: bool,
+) -> ShopPurchaseOutcome {
     if index >= inv.potions.len() {
         return ShopPurchaseOutcome::IndexOutOfBounds;
     }
@@ -963,7 +1063,11 @@ pub fn buy_potion(
     if !is_shop_entry_available(entry.price) {
         return ShopPurchaseOutcome::SoldOut;
     }
-    let price = merchant_price_with_modifiers(&run_state.active_relics(), entry.price);
+    let price = if ignore_cost {
+        0
+    } else {
+        merchant_price_with_modifiers(&run_state.active_relics(), entry.price)
+    };
     if run_state.gold < price {
         return ShopPurchaseOutcome::CannotAfford;
     }
@@ -980,7 +1084,7 @@ pub fn buy_potion(
     // queues onto `pending_rewards` (the belt-cap drop happens later at
     // drain), so the capacity gate must be checked explicitly here, up
     // front, mirroring `add_potion_to_belt`'s ceiling.
-    let cap = (run_state.max_potion_slots.max(0) as usize).min(crate::potions::MAX_POTIONS);
+    let cap = run_state.potion_belt_cap();
     if run_state.potions.len() >= cap {
         return ShopPurchaseOutcome::PotionBeltFull;
     }
@@ -988,114 +1092,12 @@ pub fn buy_potion(
         // `should_procure_potion` veto (Sozu) — C# FailureForbidden, no gold.
         return ShopPurchaseOutcome::PotionBeltFull;
     }
-    run_state.gain_gold(-price);
+    if price > 0 {
+        run_state.gain_gold(-price);
+    }
     inv.potions[index].price = SHOP_ENTRY_SOLD_OUT_PRICE;
     let _ = crate::run_effects::dispatch_on_item_purchased(run_state, price);
     ShopPurchaseOutcome::Bought
-}
-
-// ── Free auto-purchase (bead `sts2-rs-apy0a`) ────────────────────────
-
-/// Walk every available entry in `inv` and apply its effect for free —
-/// no gold deduction, no affordability check.
-///
-/// Mirrors Python `RunManager._auto_purchase_shop_inventory`
-/// (`sts2-rl-agent@01c094d:sts2_env/run/run_manager.py:697-737`),
-/// which the `LordsParasol` Ancient relic invokes from its
-/// `after_room_entered` listener whenever the player enters a merchant
-/// room (`relics/shop_event.py:2343-2355`).
-///
-/// Side-effects per row (Python order; the card/relic/potion effect
-/// hooks below advance no `Shops`/`Rewards` RNG — this stays a
-/// deterministic post-roll walk):
-///
-/// 1. **Card row** (character + colorless): for each entry with
-///    `price < SHOP_ENTRY_SOLD_OUT_PRICE`, add its
-///    [`crate::cards::Card`] to [`crate::runstate::RunState::master_deck`]
-///    via [`push_shop_card_to_deck`] (C# `OnTryPurchaseWrapper(ignoreCost:
-///    true)` → `CardPileCmd.Add(Deck)`, firing the egg-upgrade + `LuckyFysh`
-///    deck-add hooks) and mark the slot sold-out. Empty `card` slots are
-///    skipped silently (matches Python's no-op on missing `entry.card`).
-///    NOTE: the `TheCourier` `RestockAfterPurchase` re-roll is NOT applied
-///    here — a Courier+LordsParasol owner won't re-stock auto-bought slots
-///    (a doubly-niche relic combo, and restock would perturb the `Shops`/
-///    `Rewards` streams); the interactive [`buy_card`] path does restock.
-/// 2. **Relic row**: push `relic_id` onto
-///    [`crate::runstate::RunState::relics`], fire the `after_obtained`
-///    channel (same listener surface as [`buy_relic`] and
-///    [`crate::runstate::RunState::accept_relic_reward`]), and mark
-///    the slot sold-out. Python wraps each relic in a
-///    `_deferred_followup_rewards()` context manager to batch the
-///    follow-up reward fan-out; the Rust port doesn't have that
-///    pending-rewards driver yet (run-loop layer), so per-relic
-///    dispatch matches `buy_relic`'s shape exactly. Empty `relic_id`
-///    slots are skipped.
-/// 3. **Potion row**: route each available potion through
-///    [`crate::runstate::RunState::procure_potion`] so the
-///    `should_procure_potion` veto channel (Sozu et al.) still applies
-///    and the potion lands as a [`crate::runstate::Reward::Potion`]
-///    push on `pending_rewards`. Mark the slot sold-out regardless of
-///    the veto's outcome (matches Python's `gold_spent=0` branch — the
-///    inventory slot is consumed even when the veto refuses).
-///
-/// The free remove-card branch (`_finalize_shop_card_removal` —
-/// Python lines 722-737) is **not** invoked here: it depends on the
-/// interactive `RemoveCardReward` choice primitive + the ascension
-/// gate (`_should_allow_merchant_card_removal`), both of which live in
-/// the run-loop driver layer. A follow-up bead will add it once that
-/// layer materializes.
-///
-/// No `on_item_purchased` / `refill_shop_entry` post-hooks fire (matches
-/// [`buy_card`] / [`buy_relic`] / [`buy_potion`] — the
-/// `_handle_post_shop_purchase` walk is deferred crate-wide).
-pub fn auto_purchase_shop_inventory(
-    run_state: &mut crate::runstate::RunState,
-    inv: &mut ShopInventory,
-) {
-    // C# `LordsParasol.PurchaseEverything` buys each stocked card via
-    // `OnTryPurchaseWrapper(ignoreCost: true)` → `CardPileCmd.Add(Deck)`, which
-    // fires the SAME two deck-add hooks as an interactive buy: egg upgrade pre-add
-    // and `LuckyFysh`'s +15g post-add. The gold gain fires even though `ignoreCost`
-    // skips the price debit (the hooks live inside `Add`, not the `LoseGold` branch).
-    for i in 0..inv.cards.len() {
-        if !is_shop_entry_available(inv.cards[i].price) {
-            continue;
-        }
-        if let Some(card) = inv.cards[i].card {
-            push_shop_card_to_deck(run_state, card);
-        }
-        inv.cards[i].price = SHOP_ENTRY_SOLD_OUT_PRICE;
-    }
-    for i in 0..inv.colorless_cards.len() {
-        if !is_shop_entry_available(inv.colorless_cards[i].price) {
-            continue;
-        }
-        if let Some(card) = inv.colorless_cards[i].card {
-            push_shop_card_to_deck(run_state, card);
-        }
-        inv.colorless_cards[i].price = SHOP_ENTRY_SOLD_OUT_PRICE;
-    }
-    for i in 0..inv.relics.len() {
-        if !is_shop_entry_available(inv.relics[i].price) {
-            continue;
-        }
-        if let Some(relic_id) = inv.relics[i].relic_id {
-            run_state.relics.push(relic_id);
-            run_state.last_obtained_relic = Some(relic_id);
-            let _ = crate::run_effects::dispatch_after_obtained(run_state);
-            run_state.last_obtained_relic = None;
-        }
-        inv.relics[i].price = SHOP_ENTRY_SOLD_OUT_PRICE;
-    }
-    for i in 0..inv.potions.len() {
-        if !is_shop_entry_available(inv.potions[i].price) {
-            continue;
-        }
-        if let Some(potion_kind) = inv.potions[i].potion_kind {
-            let _ = run_state.procure_potion(crate::runstate::PotionReward::with_kind(potion_kind));
-        }
-        inv.potions[i].price = SHOP_ENTRY_SOLD_OUT_PRICE;
-    }
 }
 
 #[cfg(test)]
@@ -1349,6 +1351,26 @@ mod tests {
             let p = potion_price(ShopPotionRarity::Rare, &mut rng);
             // Base 100, variance 0.95-1.05 → 95..105.
             assert!((94..=106).contains(&p), "potion rare price {p}");
+        }
+    }
+
+    #[test]
+    fn merchant_potion_price_is_one_read_in_band() {
+        for rarity in [
+            ShopPotionRarity::Common,
+            ShopPotionRarity::Uncommon,
+            ShopPotionRarity::Rare,
+        ] {
+            let base = potion_base_cost(rarity);
+            let mut rng = Rng::new(7);
+            for _ in 0..500 {
+                let before = rng.counter();
+                let p = merchant_potion_price(rarity, &mut rng);
+                assert_eq!(rng.counter(), before + 1, "exactly one Shops read");
+                let lo = (base * 95).div_euclid(100);
+                let hi = (base * 105).div_euclid(100) + 1;
+                assert!((lo..=hi).contains(&p), "{rarity:?} price {p}");
+            }
         }
     }
 
@@ -1963,7 +1985,7 @@ mod tests {
         let mut rs = crate::RunState::default();
         rs.gold = 200;
         // Fill the belt to its ceiling (default max_potion_slots = 3).
-        let cap = (rs.max_potion_slots.max(0) as usize).min(crate::potions::MAX_POTIONS);
+        let cap = rs.potion_belt_cap();
         for _ in 0..cap {
             assert!(rs.add_potion_to_belt(crate::potions::PotionKind::BlockPotion));
         }
@@ -1980,6 +2002,28 @@ mod tests {
             "nothing queued — the potion was never procured"
         );
         assert_eq!(inv.potions[0].price, 50, "slot stays stocked, not sold-out");
+    }
+
+    /// `Player.MaxPotionCount => _potionSlots.Count` (Player.cs:42-43, both
+    /// builds) has no ceiling of its own: PotionBelt + PhialHolster +
+    /// AlchemicalCoffer stack past five slots, and every slot holds a potion.
+    #[test]
+    fn potion_belt_holds_and_buys_past_five_slots() {
+        let mut rs = crate::RunState::default();
+        rs.gold = 200;
+        rs.max_potion_slots = 7;
+        for _ in 0..6 {
+            assert!(rs.add_potion_to_belt(crate::potions::PotionKind::BlockPotion));
+        }
+        let mut inv = inv_with_one_potion(50);
+        assert_eq!(
+            buy_potion(&mut rs, &mut inv, 0),
+            ShopPurchaseOutcome::Bought
+        );
+        assert_eq!(rs.gold, 150);
+        assert!(rs.add_potion_to_belt(crate::potions::PotionKind::BlockPotion));
+        assert_eq!(rs.potions.len(), 7);
+        assert!(!rs.add_potion_to_belt(crate::potions::PotionKind::BlockPotion));
     }
 
     #[test]
@@ -2059,166 +2103,5 @@ mod tests {
 
         assert_eq!(inv.cards[0].price, 50);
         assert_eq!(inv.colorless_cards[0].price, SHOP_ENTRY_SOLD_OUT_PRICE);
-    }
-
-    // ── auto_purchase_shop_inventory (bead `sts2-rs-apy0a`) ──────────
-
-    /// `auto_purchase_shop_inventory` does NOT deduct gold — even when
-    /// every row carries a positive price the player's purse is
-    /// untouched. Mirrors Python's `gold_spent=0` argument to
-    /// `_handle_post_shop_purchase` in `_auto_purchase_shop_inventory`.
-    #[test]
-    fn auto_purchase_does_not_deduct_gold() {
-        let mut rs = crate::RunState::default();
-        rs.gold = 0;
-        let mut inv = inv_with_one_card(150);
-        inv.relics.push(ShopRelicEntry {
-            relic_rarity: ShopRelicRarity::Common,
-            relic_id: Some(crate::relics::RelicId::Anchor),
-            price: 150,
-        });
-        inv.potions.push(ShopPotionEntry {
-            potion_rarity: ShopPotionRarity::Common,
-            potion_kind: Some(crate::potions::PotionKind::BlockPotion),
-            price: 50,
-        });
-
-        auto_purchase_shop_inventory(&mut rs, &mut inv);
-
-        assert_eq!(rs.gold, 0);
-    }
-
-    /// Every available card / colorless / relic / potion entry lands
-    /// on the player and the slot flips to sold-out.
-    #[test]
-    fn auto_purchase_consumes_every_available_entry() {
-        let mut rs = crate::RunState::default();
-        let starting_deck = rs.master_deck.len();
-        let starting_relics = rs.relics.len();
-        let mut inv = inv_with_one_card(150);
-        inv.colorless_cards.push(ShopCardEntry {
-            rarity: RewardRarity::Uncommon,
-            card_type: crate::cards::CardType::Status,
-            card: Some(card(crate::cards::CardId::Bloodletting)),
-            is_colorless: true,
-            on_sale: false,
-            price: 100,
-        });
-        inv.relics.push(ShopRelicEntry {
-            relic_rarity: ShopRelicRarity::Common,
-            relic_id: Some(crate::relics::RelicId::Anchor),
-            price: 150,
-        });
-        inv.potions.push(ShopPotionEntry {
-            potion_rarity: ShopPotionRarity::Common,
-            potion_kind: Some(crate::potions::PotionKind::BlockPotion),
-            price: 50,
-        });
-
-        auto_purchase_shop_inventory(&mut rs, &mut inv);
-
-        assert_eq!(rs.master_deck.len(), starting_deck + 2);
-        assert_eq!(rs.relics.len(), starting_relics + 1);
-        assert!(rs.relics.contains(&crate::relics::RelicId::Anchor));
-        assert_eq!(inv.cards[0].price, SHOP_ENTRY_SOLD_OUT_PRICE);
-        assert_eq!(inv.colorless_cards[0].price, SHOP_ENTRY_SOLD_OUT_PRICE);
-        assert_eq!(inv.relics[0].price, SHOP_ENTRY_SOLD_OUT_PRICE);
-        assert_eq!(inv.potions[0].price, SHOP_ENTRY_SOLD_OUT_PRICE);
-    }
-
-    /// `LordsParasol` auto-buys also fire the deck-add hooks — C#
-    /// `PurchaseEverything` buys each card via `OnTryPurchaseWrapper` →
-    /// `CardPileCmd.Add(Deck)`, so egg upgrades + `LuckyFysh` gold fire per
-    /// card even though the buy is free (`ignoreCost: true`). A stub listener
-    /// standing in for LuckyFysh must fire once per card added (here: one
-    /// character card + one colorless = 2), with `source == ShopPurchase`.
-    #[test]
-    #[serial_test::serial(global_registry)]
-    fn auto_purchase_fires_deck_add_hooks_per_card() {
-        use crate::run_effects::{register_on_card_added_to_deck, OnCardAddedToDeckRunFn};
-        use std::sync::atomic::Ordering;
-        ADD_FIRED.store(0, Ordering::SeqCst);
-        ADD_SRC_SHOP.store(false, Ordering::SeqCst);
-        register_on_card_added_to_deck(
-            crate::relics::RelicId::LuckyFysh,
-            stub_on_card_added as OnCardAddedToDeckRunFn,
-        );
-
-        let mut rs = crate::RunState::default();
-        rs.gold = 0;
-        let mut inv = inv_with_one_card(150);
-        inv.colorless_cards.push(ShopCardEntry {
-            rarity: RewardRarity::Uncommon,
-            card_type: crate::cards::CardType::Status,
-            card: Some(card(crate::cards::CardId::Bloodletting)),
-            is_colorless: true,
-            on_sale: false,
-            price: 100,
-        });
-
-        auto_purchase_shop_inventory(&mut rs, &mut inv);
-
-        assert_eq!(
-            ADD_FIRED.load(Ordering::SeqCst),
-            2,
-            "deck-add hook fired once per auto-bought card (character + colorless)",
-        );
-        assert!(
-            ADD_SRC_SHOP.load(Ordering::SeqCst),
-            "auto-buy deck-add carried source == ShopPurchase",
-        );
-        // Free buy (ignoreCost): no price debit, but LuckyFysh-style +15/card fires.
-        assert_eq!(
-            rs.gold, 30,
-            "LuckyFysh-style deck-add gold on both free cards"
-        );
-    }
-
-    /// Sold-out slots are left untouched — the auto-purchase walk
-    /// matches Python's `is_shop_entry_available` guard exactly: a
-    /// slot whose price is already at the sentinel doesn't double-
-    /// grant on a second visit.
-    #[test]
-    fn auto_purchase_skips_sold_out_entries() {
-        let mut rs = crate::RunState::default();
-        let starting_deck = rs.master_deck.len();
-        let starting_relics = rs.relics.len();
-        let mut inv = inv_with_one_card(SHOP_ENTRY_SOLD_OUT_PRICE);
-        inv.relics.push(ShopRelicEntry {
-            relic_rarity: ShopRelicRarity::Common,
-            relic_id: Some(crate::relics::RelicId::Anchor),
-            price: SHOP_ENTRY_SOLD_OUT_PRICE,
-        });
-
-        auto_purchase_shop_inventory(&mut rs, &mut inv);
-
-        assert_eq!(rs.master_deck.len(), starting_deck);
-        assert_eq!(rs.relics.len(), starting_relics);
-    }
-
-    /// Half-rolled inventory (a slot whose concrete payload is
-    /// `None`) flips to sold-out without granting anything — matches
-    /// `buy_card` / `buy_relic` / `buy_potion`'s `SlotEmpty` branch.
-    /// The Python no-ops on the missing payload silently; the Rust
-    /// port keeps the no-op but still consumes the slot so a stuck
-    /// slot can't be auto-purchased a second time.
-    #[test]
-    fn auto_purchase_consumes_empty_slot_without_granting() {
-        let mut rs = crate::RunState::default();
-        let starting_deck = rs.master_deck.len();
-        let mut inv = ShopInventory::empty();
-        inv.cards.push(ShopCardEntry {
-            rarity: RewardRarity::Rare,
-            card_type: crate::cards::CardType::Attack,
-            card: None,
-            is_colorless: false,
-            on_sale: false,
-            price: 150,
-        });
-
-        auto_purchase_shop_inventory(&mut rs, &mut inv);
-
-        assert_eq!(rs.master_deck.len(), starting_deck);
-        assert_eq!(inv.cards[0].price, SHOP_ENTRY_SOLD_OUT_PRICE);
     }
 }

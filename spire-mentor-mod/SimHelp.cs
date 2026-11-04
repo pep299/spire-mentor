@@ -6,7 +6,7 @@
 // unmodded and has no way to find out otherwise (reported 2026-08-08 by the
 // first outside tester). Two surfaces fix that:
 //
-//   * ShowBootHint() -- one dim line at the bottom of the main menu for a few
+//   * ShowBootHint() -- a first-launch tip at the bottom of the main menu for a few
 //     seconds, saying the mod is loaded and that F1 explains it. It also
 //     carries the LOUD case: if autopilot is armed, the player is told that
 //     the AI is about to play and which key takes it back.
@@ -92,23 +92,22 @@ internal static class SimHelp
     }
 
     /// <summary>
-    /// One-shot "the mod is here" line. Dismisses itself; F1 is the durable
-    /// surface.
+    /// First-launch greeting, persisted across sessions. The armed-autopilot
+    /// warning still appears each launch; F1 remains available for help.
     /// </summary>
     public static void ShowBootHint()
     {
-        if (_bootHintShown)
+        bool armed = SimRuntime.Mode == SimMode.Autopilot;
+        if (_bootHintShown || (!armed && SpireMentorModConfig.StartupTipShown))
         {
             return;
         }
-        _bootHintShown = true;
         Guarded(() =>
         {
             if (!EnsureBuilt())
             {
                 return;
             }
-            bool armed = SimRuntime.Mode == SimMode.Autopilot;
             var label = _hint!.GetNode<RichTextLabel>("HintText");
             label.Text = armed
                 // Never let the AI take a run without saying so. This is the
@@ -138,6 +137,12 @@ internal static class SimHelp
             var timer = _hint.GetNode<Godot.Timer>("HintTimer");
             timer.WaitTime = armed ? 40.0 : 20.0;
             timer.Start();
+            _bootHintShown = true;
+            if (!armed)
+            {
+                SpireMentorModConfig.StartupTipShown = true;
+                SpireMentorModConfig.SaveSoon();
+            }
         });
     }
 
@@ -165,11 +170,13 @@ internal static class SimHelp
         Row(sb, "F6", "let the AI take just this one decision");
         Row(sb, "F7", "let the AI keep playing until you stop it (press again to stop)");
         Row(sb, "F4", "show / hide the HUD");
-        Row(sb, "F3", "action log — what was played, and what was advised at the time");
+        Row(sb, "Ctrl+L", "action log — what was played, and what was advised at the time");
+        Row(sb, "Ctrl+H", "hide everything but the toolbar pill for a quick look; again (or click the pill) to show it");
         Row(sb, "F9 / F10", $"game speed down / up 0.1x  (now {SimSpeed.Desired:0.0}x)");
         Row(sb, "Ctrl+Z", "undo to the start of this combat turn");
         Row(sb, "Ctrl+Shift+Z", "rewind to the start of this room");
         Row(sb, "Ctrl+Shift+C", "copy this position — paste it into the workbench to explore it");
+        Row(sb, "Ctrl+Shift+B", "report a bug — sends this position and the logs, with your note");
         Row(sb, "F1", "this panel");
 
         sb.Append("\n[b]Toolbar[/b]\n");
@@ -177,7 +184,7 @@ internal static class SimHelp
           .Append("with the mouse — click the pill to expand or collapse it. The live controls ")
           .Append("(coach, AI once / auto, speed) are flat; the rest sit in three menus: ")
           .Append("[b]Rewind ▾[/b] (turn / room / one room back), [b]Panels ▾[/b] (log, HUD, help, ")
-          .Append("Settings — that one works mid-run) and [b]Workbench ▾[/b], whose [b]Open workbench[/b] ")
+          .Append("Settings — that one works mid-run — and Report a bug) and [b]Workbench ▾[/b], whose [b]Open workbench[/b] ")
           .Append("opens the browser view (logs, search tree, run tree) and [b]Copy state[/b] puts this ")
           .Append("exact position on the clipboard — paste it into the workbench's [b]Import state[/b] ")
           .Append("to replay it, try other lines, or sweep it in SimLab.[/color]\n");

@@ -354,6 +354,14 @@ export interface Score {
   q_saturated: boolean;
   low_confidence: boolean;
   target_index: number | null;
+  /** The engine cannot tell this move from its pick: it lies inside the tie
+   *  band the pick rule decided in (GH #1022). Absent on rows the engine did
+   *  not rank (recorded run-agent steps). */
+  in_band?: boolean;
+  /** The engine's preference order, 0 = its pick. */
+  pick_rank?: number | null;
+  /** Why the engine took this move, on its own pick's row only. */
+  pick_reason?: string | null;
 }
 /** Compact recorded-advice row (live-game logs): the advisor's pick, its
  *  one-line note, and the policy-ranked options for decisions the MCTS never
@@ -988,6 +996,9 @@ export interface BugReportDump {
   state: Record<string, unknown>;
   ui: { screen: string | null; overlay: string | null };
   note: string | null;
+  /** Mod reports only (`meta.source === "mod"`): log tails and settings. */
+  logs?: { mod?: string[] | null; game?: string | null; advisor?: string | null } | null;
+  settings?: Record<string, unknown> | null;
 }
 
 /** One point on the run's axis-score trend (a deck change). */
@@ -1800,12 +1811,6 @@ export const api = {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ config }),
       }).then(json<CoachTurnRecord & { searches?: number }>),
-    lastMoveRegret: (config: Record<string, unknown>) =>
-      apiFetch("/api/live/last-move-regret", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ config }),
-      }).then(json<DecisionRegret>),
     // Full-run regret review over the live active line: diff every combat move
     // made so far against the MCTS line and surface the costliest plays. The
     // live twin of the replay `regretReview`.

@@ -4,9 +4,9 @@ use super::prelude::*;
 /// Beacon Of Hope. Cost 1, Self. Apply BeaconOfHope(1) to the player.
 /// Mirrors `sts2_env/cards/colorless.py::beacon_of_hope` at pin
 /// `01c094d` (`apply_power_to(_owner, PowerId.BEACON_OF_HOPE, 1)`).
-/// The end-of-turn proc (gain block per attack played this turn) is
-/// the BeaconOfHope power's combat-loop hook, not this body. Bead
-/// `sts2-rs-6ynt.8` wave (BeaconOfHope).
+/// The power gives every other living player half the block its owner
+/// gains (C# `BeaconOfHopePower.AfterBlockGained`, a co-op hook in
+/// `sts2_core::coop::beacon_of_hope`). Bead `sts2-rs-6ynt.8` wave.
 pub(crate) fn play_beacon_of_hope(
     state: &mut CombatState,
     _t: Option<CreatureUid>,

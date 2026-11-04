@@ -65,7 +65,7 @@ const MAX_GREEDY_STEPS: usize = 256;
 /// The card an action plays at `state` (`None` for a non-card action).
 fn played_card(state: &CombatState, action: &Action) -> Option<Card> {
     match action {
-        Action::PlayCard { hand_index, .. } => state
+        Action::PlayCard { hand_index, .. } | Action::PlayCardAtAlly { hand_index, .. } => state
             .player
             .hand
             .get(usize::from(*hand_index))
@@ -96,7 +96,10 @@ fn replay(pre: &CombatState, plan: &TurnPlan) -> Replay {
     let mut potions = 0;
     for (i, action) in plan.actions.iter().enumerate() {
         cards.push(played_card(&post, action));
-        potions += u32::from(matches!(action, Action::DrinkPotion { .. }));
+        potions += u32::from(matches!(
+            action,
+            Action::DrinkPotion { .. } | Action::DrinkPotionAtAlly { .. }
+        ));
         if i < n_apply {
             let _ = apply(&mut post, action.clone());
         }
@@ -175,7 +178,7 @@ pub fn plan_features(pre: &CombatState, plan: &TurnPlan) -> [f32; PLAN_DIM] {
     let mut f = [0.0f32; PLAN_DIM];
     f[0] = (post.player.block - pre.player.block) as f32;
     f[1] = (pre.player.current_hp - post.player.current_hp) as f32;
-    f[2] = f32::from(post.player.energy);
+    f[2] = post.player.energy as f32;
     f[3] = hp_removed as f32;
     f[4] = killed as f32;
     f[5] = min_frac;
@@ -258,7 +261,7 @@ pub fn deck_context(state: &CombatState) -> DeckContext {
     let ctx = [
         f32::from(state.round),
         p.current_hp.max(0) as f32 / max_hp,
-        f32::from(p.energy),
+        p.energy as f32,
         f32::from(p.max_energy),
         base_incoming(state) as f32 / max_hp,
         enemies(state).filter(|c| is_alive(c)).count() as f32,

@@ -18,7 +18,7 @@
    "bg_col": 2,
    "bg_row": 1,
    "bg_seed": 1772253313,
-   "floor": 1,
+   "floor": 2,
    "step_no": 0,
    "turn": null
   },
@@ -75,7 +75,7 @@
     }
    ],
    "decision": "card_reward",
-   "floor": 1,
+   "floor": 2,
    "options": [
     {
      "action": "select_card_reward",

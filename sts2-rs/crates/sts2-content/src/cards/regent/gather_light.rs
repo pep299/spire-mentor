@@ -2,7 +2,6 @@
 use super::prelude::*;
 
 /// Gather Light — block + 1 Star. Python pin: `regent.py:L176-L179`.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L176
 pub(crate) fn play_gather_light(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     gain_block_player(state, current_block(state));
     gain_stars(state, 1);

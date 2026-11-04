@@ -1,6 +1,7 @@
 """Tests for all 5 characters."""
 
 import pytest
+import sts2_client
 from sts2_client import Game
 
 CHARACTERS = ["Ironclad", "Silent", "Defect", "Regent", "Necrobinder"]
@@ -42,8 +43,13 @@ class TestSeedCanonicalization:
         assert got == base
 
 
+#: A Necrobinder seed whose Neow offers Scroll Boxes, per game build: v0.111.0
+#: rehashed every seed (XxHash64), so ECHO rolls a different Neow there.
+SCROLL_BOXES_SEED = {"v0.107.1": "ECHO", "v0.111.0": "ECHO1"}
+
+
 class TestScrollBoxes:
-    """The Scroll Boxes Neow relic (Necrobinder, seed ECHO) presents a
+    """The Scroll Boxes Neow relic (Necrobinder, `SCROLL_BOXES_SEED`) presents a
     bundle_select and, on pick, adds the whole chosen pack to the deck.
     Regression for the headless not draining the `ScrollBoxes.AfterObtained`
     deck-Adds (cards ended up in the RunState but in no pile, so the deck never
@@ -51,12 +57,14 @@ class TestScrollBoxes:
     gold (pre-v0.107.1 it drained all of it)."""
 
     def test_picking_a_pack_adds_three_cards_to_deck(self, game):
-        state = game.start(character="Necrobinder", seed="ECHO")
+        state = game.start(
+            character="Necrobinder", seed=SCROLL_BOXES_SEED[sts2_client.GAME_VERSION]
+        )
         opts = state.get("options") or state.get("event_options") or []
         sb = [
             i for i, o in enumerate(opts) if "Scroll Box" in (o.get("name") or o.get("title") or "")
         ]
-        assert sb, "ECHO/Necrobinder Neow should offer Scroll Boxes"
+        assert sb, "the Necrobinder Neow should offer Scroll Boxes on this seed"
         deck_before = (state.get("player") or {}).get("deck_size") or 0
         gold_before = (state.get("player") or {}).get("gold")
 

@@ -297,6 +297,12 @@ pub struct ParsedState {
     /// `$.coop_seat_index`: our place in the run's player order
     /// (`sts2_core::coop::CoopState::seat_index`); 0 when absent.
     pub coop_seat_index: u8,
+    /// `$.act_index`: the act the fight is in, 1-based; 1 when absent.
+    /// Co-op enemy scaling (a spawn's HP), the persistent-gain horizon and
+    /// act-gated relics read it (GH #989).
+    pub act_index: u8,
+    /// `$.is_boss`: a boss room; false when absent.
+    pub is_boss: bool,
 }
 
 /// One co-op teammate on the wire (`$.allies[i]`).
@@ -324,6 +330,19 @@ pub struct ParsedAlly {
     pub stars: i32,
     /// Their potion belt, as `$.player.potions`: null for an empty slot.
     pub potions: Vec<Option<PotionKind>>,
+    /// `$.player.hp_lost_this_turn` for this teammate.
+    pub hp_lost_this_turn: bool,
+    /// `$.player`'s combat-history counters for this teammate.
+    pub history: SeatHistory,
+    /// `$.player.cards_played_this_turn` for this teammate.
+    pub cards_played_this_turn: Option<[u32; 5]>,
+    /// Their orb belt, as `$.player.orbs` / `orb_slots` (GH #989: a
+    /// teammate's Frost orbs block at their turn end).
+    pub orbs: Option<Vec<ParsedOrb>>,
+    pub orb_slots: Option<u32>,
+    /// Their Osty, as `$.player.osty` (GH #1017): a Necrobinder teammate's
+    /// pet soaks their hits and deals their Osty attacks.
+    pub osty: Option<ParsedOsty>,
     /// They pressed end turn already: nothing of theirs is left to simulate.
     pub ended_turn: bool,
 }
@@ -377,6 +396,138 @@ pub struct ParsedPlayer {
     /// Bound card was already played this turn, so further Bound plays
     /// are vetoed until turn end. Optional wire field; absent → false.
     pub bound_card_played_this_turn: bool,
+    /// C# `Spite.LostHpThisTurn`: the player took unblocked damage this turn.
+    /// A History scan a rebuilt state cannot redo. Optional; absent, false.
+    pub hp_lost_this_turn: bool,
+    /// Combat-history counters a rebuilt board cannot recount.
+    pub history: SeatHistory,
+}
+
+/// `{path}.cards_played_this_turn`: a seat's card plays started this turn, one
+/// bucket per `CardType` in its `index` order, or `None` when absent.
+fn parse_play_buckets<V: WireValue>(d: &V, path: &str) -> WireResult<Option<[u32; 5]>> {
+    let Some(v) = extract_optional(d, "cards_played_this_turn") else {
+        return Ok(None);
+    };
+    let cp = format!("{path}.cards_played_this_turn");
+    let list = as_list(&v, &cp)?;
+    if list.len() != 5 {
+        return Err(schema_err(&cp, "must be a list of 5 counters"));
+    }
+    let mut buckets = [0u32; 5];
+    for (i, item) in list.iter().enumerate() {
+        buckets[i] = item
+            .as_i64()
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or_else(|| schema_err(format!("{cp}[{i}]"), "must be a u32"))?;
+    }
+    Ok(Some(buckets))
+}
+
+/// The Attack bucket of `buckets`, as an engine counter: C# reads it from
+/// History where the engine keeps a counter (Juggling, Ripple Basin).
+fn attacks_this_turn(buckets: Option<[u32; 5]>) -> i32 {
+    buckets.map_or(0, |b| {
+        i32::try_from(b[sts2_core::cards::CardType::Attack.index()]).unwrap_or(i32::MAX)
+    })
+}
+
+/// A seat's combat-history counters (C# `CombatManager.History` scans a
+/// rebuilt board cannot redo), optional on `$.player` and `$.allies[i]`
+/// (GH #989):
+///
+/// * `unblocked_hits_this_combat`: hits that took the player's HP this
+///   combat (Tear Asunder's extra hits);
+/// * `powered_hits_this_turn`: `[{"enemy": i, "hits": n}]`, the player's own
+///   powered hits on `$.encounter[i]` this turn (a teammate's Gang Up);
+/// * `cards_exhausted_this_combat`: the cards the player exhausted this
+///   combat (a Midnight entering combat starts cheaper by everyone's);
+/// * `cards_exhausted_this_turn`: the cards the player exhausted this turn
+///   (Evil Eye's second block, Forgotten Ritual's energy);
+/// * `card_block_gains_this_turn`: the block gains from the player's
+///   FINISHED card plays this turn (C# `UnmovablePower.ModifyBlockMultiplicative`
+///   doubles a card's block only while there are fewer than its `Amount`). A
+///   play still resolving is left out by both producers and by the emitter,
+///   so every seeded gain is an earlier play's ([`EARLIER_PLAY_TAG`]).
+/// * `extra_turns_taken_this_combat`: extra player turns taken this combat
+///   (PaelsEye, v0.111.0 Ambergris). C# `PlayerCombatState.TurnNumber` runs
+///   one ahead of `RoundNumber` per extra turn, and the turn-number gates
+///   (BagOfPreparation, Lantern, the turn-1 Innate floor, …) read the turn
+///   number, so a board rebuilt right after an extra turn must not fall back
+///   to turn = round (GH #812).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SeatHistory {
+    pub unblocked_hits_this_combat: u32,
+    pub powered_hits_this_turn: Vec<(usize, u32)>,
+    pub cards_exhausted_this_combat: u32,
+    pub cards_exhausted_this_turn: u32,
+    pub card_block_gains_this_turn: u32,
+    pub extra_turns_taken_this_combat: u16,
+}
+
+/// The play tag a board's earlier card block gains carry in
+/// `TurnEvents::unmovable_card_block_plays`: a play of a rebuilt board's own
+/// past, never the one resolving (whose tag is a play count).
+pub const EARLIER_PLAY_TAG: u32 = u32::MAX;
+
+fn parse_seat_history<V: WireValue>(d: &V, path: &str) -> WireResult<SeatHistory> {
+    let unblocked_hits_this_combat = match extract_optional(d, "unblocked_hits_this_combat") {
+        Some(_) => extract_u32(d, path, "unblocked_hits_this_combat")?,
+        None => 0,
+    };
+    let cards_exhausted_this_combat = match extract_optional(d, "cards_exhausted_this_combat") {
+        Some(_) => extract_u32(d, path, "cards_exhausted_this_combat")?,
+        None => 0,
+    };
+    let cards_exhausted_this_turn = match extract_optional(d, "cards_exhausted_this_turn") {
+        Some(_) => extract_u32(d, path, "cards_exhausted_this_turn")?,
+        None => 0,
+    };
+    let card_block_gains_this_turn = match extract_optional(d, "card_block_gains_this_turn") {
+        Some(_) => extract_u32(d, path, "card_block_gains_this_turn")?,
+        None => 0,
+    };
+    let extra_turns_taken_this_combat = match extract_optional(d, "extra_turns_taken_this_combat") {
+        Some(_) => {
+            u16::try_from(extract_u32(d, path, "extra_turns_taken_this_combat")?).map_err(|_| {
+                schema_err(
+                    format!("{path}.extra_turns_taken_this_combat"),
+                    "out of range",
+                )
+            })?
+        }
+        None => 0,
+    };
+    let mut powered_hits_this_turn = Vec::new();
+    if let Some(v) = extract_optional(d, "powered_hits_this_turn") {
+        let list_path = format!("{path}.powered_hits_this_turn");
+        for (i, item) in as_list(&v, &list_path)?.iter().enumerate() {
+            let item_path = format!("{list_path}[{i}]");
+            let item = as_dict(item, &item_path)?;
+            let enemy = usize::try_from(extract_u32(&item, &item_path, "enemy")?)
+                .map_err(|_| schema_err(&item_path, "`enemy` out of range"))?;
+            powered_hits_this_turn.push((enemy, extract_u32(&item, &item_path, "hits")?));
+        }
+    }
+    Ok(SeatHistory {
+        unblocked_hits_this_combat,
+        powered_hits_this_turn,
+        cards_exhausted_this_combat,
+        cards_exhausted_this_turn,
+        card_block_gains_this_turn,
+        extra_turns_taken_this_combat,
+    })
+}
+
+/// A seat's turn so far, from its `SeatHistory`: the cards it exhausted and
+/// its card block gains, each as one earlier play (GH #989).
+fn seed_turn_history(log: &mut sts2_core::TurnEvents, h: &SeatHistory) {
+    log.cards_exhausted_this_turn = h.cards_exhausted_this_turn;
+    if !log.public_block_history {
+        log.unmovable_card_block_plays = (0..h.card_block_gains_this_turn)
+            .map(|_| EARLIER_PLAY_TAG)
+            .collect();
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -422,6 +573,12 @@ pub struct ParsedPower {
     /// `None` for the C# / adapter dialects, which have no notion of it —
     /// they fall back to the per-kind inference from `display`.
     pub counter: Option<i32>,
+    /// `applier_seat`: the player who applied the power, as a co-op seat id
+    /// (0 us, `i + 1` for `$.allies[i]`), when one did. Recorded in
+    /// [`sts2_core::coop::CoopState::power_seat`], which a teammate's
+    /// Flanking, Knockdown and Tag Team need (GH #1004). `None`: no player
+    /// applied it, or the producer predates the field (read as ours).
+    pub applier_seat: Option<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -532,6 +689,26 @@ pub struct ParsedCard {
     pub played_cost: Option<i32>,
     pub stable_cost: Option<i32>,
     pub local_cost: Option<sts2_core::cards::LocalEnergyCost>,
+    /// The instance's current STAR cost, local modifiers applied (C#
+    /// `CardModel.CurrentStarCost`), for a card that has one.
+    ///
+    /// The engine keeps no per-instance star cost: it reads the printed one
+    /// off the card id and zeroes it through the free riders. A card made
+    /// free this turn (`SetToFreeThisTurn` — Splash, Discovery, Infernal
+    /// Blade, the generative potions) is free in STARS as well as energy, and
+    /// without this field a rebuild knew only the energy half: a Silent's
+    /// Splash-generated Falling Star came back costing 0 energy and 2 stars it
+    /// could never pay, so the search listed it unplayable and ended the turn
+    /// over a free attack. Only `0` is acted on — in v0.107.1 every temporary
+    /// star cost the game ever sets is 0. `None` from the engine's own
+    /// `state_to_dict`, whose `combat_vars` already carry the riders.
+    pub star_cost: Option<i32>,
+    /// What [`Self::star_cost`] becomes once this turn's temporary star costs
+    /// wear off (C# `CardModel.GetStarCostThisCombat()`). `0` here means the
+    /// card is star-free for the rest of the COMBAT (`SetToFreeThisCombat` —
+    /// Touch of Insanity); `star_cost == 0` with a positive value
+    /// here is the this-turn rider.
+    pub persistent_star_cost: Option<i32>,
     pub flags: Vec<String>,
     pub enchantment: Option<String>,
     /// Stack size of [`Self::enchantment`] (C# `EnchantmentModel.Amount`).
@@ -546,6 +723,10 @@ pub struct ParsedCard {
     /// `SneckoCostDeltaThisTurn`), alongside Rampage/Claw/GeneticAlgorithm
     /// scaling. Empty for producers that don't carry it.
     pub combat_vars: Vec<(VarKey, i32)>,
+    /// Extra plays the instance has gained this combat (C#
+    /// `CardModel.BaseReplayCount`: Soldier's Stew, Hidden Gem, Transfigure).
+    /// Absent, 0. Dropped, a rebuilt Stewed Strike played once.
+    pub base_replay_count: i32,
     /// Optional per-card affliction (C# `CardModel.Affliction`), by wire
     /// name (`"Bound"`, `"Devoured"`, …). Dropping this on the wire made
     /// reconstructed states plan through ChainsOfBinding as if every
@@ -881,6 +1062,17 @@ pub fn parse_state_dict<V: WireValue>(d: &V) -> WireResult<ParsedState> {
             .map_err(|_| schema_err("$", "`coop_seat_index` must fit in u8"))?,
         None => 0,
     };
+    let act_index = match extract_optional(d, "act_index") {
+        Some(_) => u8::try_from(extract_i64(d, "$", "act_index")?)
+            .ok()
+            .filter(|&a| a >= 1)
+            .ok_or_else(|| schema_err("$.act_index", "must be a 1-based u8"))?,
+        None => 1,
+    };
+    let is_boss = match extract_optional(d, "is_boss") {
+        Some(_) => extract_bool(d, "$", "is_boss")?,
+        None => false,
+    };
 
     let enc_val = get_item(d, "$", "encounter")?;
     let enc_list = as_list(&enc_val, "$.encounter")?;
@@ -922,7 +1114,125 @@ pub fn parse_state_dict<V: WireValue>(d: &V) -> WireResult<ParsedState> {
         allies,
         coop_full,
         coop_seat_index,
+        act_index,
+        is_boss,
     })
+}
+
+/// Each seat's [`SeatHistory`] onto the built fight: ours on the player and
+/// the turn log, a whole teammate seat's on their seat and stashed log. An
+/// `enemy` index is a position in `$.encounter`; an escaped enemy has no
+/// creature, so a count on one is dropped.
+fn apply_seat_histories(state: &mut CoreCombatState, parsed: &ParsedState) {
+    let mut uids = state.enemy_uids.iter();
+    let uid_of: Vec<Option<CreatureUid>> = parsed
+        .encounter
+        .iter()
+        .map(|e| {
+            if e.is_escaped {
+                None
+            } else {
+                uids.next().copied()
+            }
+        })
+        .collect();
+    let tally = |h: &SeatHistory| -> SmallVec<[(CreatureUid, u32); 4]> {
+        h.powered_hits_this_turn
+            .iter()
+            .filter_map(|&(i, n)| uid_of.get(i).copied().flatten().map(|uid| (uid, n)))
+            .collect()
+    };
+    let h = &parsed.player.history;
+    state.combat_log.unblocked_damage_received_this_combat = h.unblocked_hits_this_combat;
+    state.combat_log.cards_exhausted_this_combat = h.cards_exhausted_this_combat;
+    state.combat_log.extra_turns_taken_this_combat = h.extra_turns_taken_this_combat;
+    seed_turn_history(&mut state.combat_log, h);
+    state.player.powered_hits_by_target_this_turn = tally(h);
+    for (i, a) in parsed.allies.iter().enumerate() {
+        if let (Some(seat), Some(stash)) = (state.allies.get_mut(i), state.coop.stash.get_mut(i)) {
+            seat.powered_hits_by_target_this_turn = tally(&a.history);
+            stash.combat_log.unblocked_damage_received_this_combat =
+                a.history.unblocked_hits_this_combat;
+            stash.combat_log.cards_exhausted_this_combat = a.history.cards_exhausted_this_combat;
+            stash.combat_log.extra_turns_taken_this_combat =
+                a.history.extra_turns_taken_this_combat;
+            seed_turn_history(&mut stash.combat_log, &a.history);
+        }
+    }
+    // A Midnight on the board already costs what every exhaust so far made
+    // it; a copy of it must not be shaved for them again.
+    let exhausted =
+        i32::try_from(sts2_core::coop::cards_exhausted_this_combat(state)).unwrap_or(i32::MAX);
+    if exhausted > 0 {
+        for c in &mut state.cards {
+            if c.card_id == sts2_core::cards::CardId::Midnight {
+                let counted = c.combat_var(VarKey::MidnightExhaustsCounted);
+                c.set_combat_var(VarKey::MidnightExhaustsCounted, counted.max(exhausted));
+            }
+        }
+    }
+}
+
+/// A seat's engine orb belt from the wire: `orbs` in channel order, padded
+/// with empty slots to `slots` (the capacity; the orb count when absent).
+/// `focus` is the seat's Focus, which the wire's Glass passive includes.
+fn build_orb_belt(orbs: &[ParsedOrb], slots: Option<u32>, focus: i32) -> sts2_core::OrbSlots {
+    let capacity = slots.unwrap_or(orbs.len() as u32).min(u32::from(u8::MAX)) as u8;
+    let mut belt = sts2_core::OrbSlots {
+        slots: SmallVec::new(),
+        capacity,
+        // An explicit `orb_slots` (the live game's `OrbQueue.Capacity`) is a
+        // real size, 0 included: a Defect Bulk Up emptied must not get the
+        // lazy 3-slot base back. A wire with no `orb_slots` and no orbs
+        // stays unsized, as before.
+        sized: slots.is_some() || capacity > 0,
+    };
+    for po in orbs.iter().take(usize::from(capacity)) {
+        belt.slots.push(match po.kind {
+            OrbKind::Empty => Orb::Empty,
+            OrbKind::Lightning => Orb::Lightning,
+            OrbKind::Frost => Orb::Frost,
+            // The wire's `evoke` is the C# `DarkOrb.EvokeVal`, which starts
+            // at 6 and is grown by the passive (`DarkOrb.cs:17,25,39`).
+            // `Orb::Dark`'s `stored` holds only the accumulated growth, so
+            // the base has to come back off. Storing `evoke` verbatim made
+            // every reconstructed Dark orb evoke for 6 too much — doubled
+            // under Dualcast, ×4 under Quadcast — so MCTS planned lethals
+            // the game would not land. Measured on a live wire: the
+            // reconstruction dealt 48 where C# deals 36.
+            OrbKind::Dark => Orb::Dark {
+                stored: (po.evoke - DARK_ORB_BASE_EVOKE).max(0),
+            },
+            OrbKind::Plasma => Orb::Plasma,
+            // Invert the emit leg's `focus_scaled(current_passive, focus)`.
+            // Exact whenever the scaled passive stayed positive. Under
+            // enough NEGATIVE Focus the emit clamped to 0 and the raw is
+            // unrecoverable — the wire says only `raw <= -focus` — so this
+            // returns that upper bound. The orb is inert either way while
+            // Focus is that negative (`GlassOrb.Passive` skips damage AND
+            // decay on a non-positive `PassiveVal`, and so does the
+            // engine's arm); taking the lower bound instead would delete
+            // the orb's remaining life for good once Focus recovers.
+            OrbKind::Glass => Orb::Glass {
+                current_passive: (po.passive - focus).max(0),
+            },
+        });
+    }
+    // Pad back out to `capacity` with empty slots. The engine's belt
+    // invariant is `slots.len() == capacity` (see `OrbSlots::with_capacity`
+    // / `add_slots`) and `channel` fills the first `is_empty()` slot,
+    // falling back to EVICTING the oldest orb when it finds none. A
+    // compact belt therefore made every channel on a non-full belt evict
+    // instead of fill — the reconstructed Defect's orb count could never
+    // grow past whatever it was rebuilt with (found by the Phase-1 mirror
+    // oracle: LightningRod channeled at end of turn and the belt stayed
+    // at one orb while the native engine reached two). The emitter drops
+    // empty slots, so interior gaps compact to the front; that is the
+    // channel order anyway.
+    while belt.slots.len() < usize::from(capacity) {
+        belt.slots.push(Orb::Empty);
+    }
+    belt
 }
 
 /// A relic list (`$.player.relics`, `$.allies[i].relics`).
@@ -1035,6 +1345,13 @@ fn parse_allies<V: WireValue>(d: &V) -> WireResult<Vec<ParsedAlly>> {
             Some(v) => parse_potion_list(&v, &format!("{path}.potions"))?,
             None => Vec::new(),
         };
+        let hp_lost_this_turn = match extract_optional(&a, "hp_lost_this_turn") {
+            Some(v) => v
+                .as_bool()
+                .ok_or_else(|| schema_err(format!("{path}.hp_lost_this_turn"), "must be bool"))?,
+            None => false,
+        };
+        let (orbs, orb_slots) = parse_orb_belt(&a, &path)?;
         let ally = ParsedAlly {
             hp: extract_i32(&a, &path, "hp")?,
             max_hp: extract_i32(&a, &path, "max_hp")?,
@@ -1051,6 +1368,12 @@ fn parse_allies<V: WireValue>(d: &V) -> WireResult<Vec<ParsedAlly>> {
             relics,
             stars: opt_i32("stars")?,
             potions,
+            hp_lost_this_turn,
+            history: parse_seat_history(&a, &path)?,
+            cards_played_this_turn: parse_play_buckets(&a, &path)?,
+            orbs,
+            orb_slots,
+            osty: parse_osty(&a, &path)?,
             ended_turn,
         };
         if ally.energy < 0 || ally.max_energy < 0 {
@@ -1062,6 +1385,28 @@ fn parse_allies<V: WireValue>(d: &V) -> WireResult<Vec<ParsedAlly>> {
         allies.push(ally);
     }
     Ok(allies)
+}
+
+/// A seat's Osty (`$.player.osty`, `$.allies[i].osty`), when it has one.
+fn parse_osty<V: WireValue>(d: &V, seat_path: &str) -> WireResult<Option<ParsedOsty>> {
+    let Some(v) = extract_optional(d, "osty") else {
+        return Ok(None);
+    };
+    let path = format!("{seat_path}.osty");
+    let od = as_dict(&v, &path)?;
+    let alive = extract_bool(&od, &path, "alive")?;
+    let hp = extract_i32(&od, &path, "hp")?;
+    let max_hp = extract_i32(&od, &path, "max_hp")?;
+    let block = extract_i32(&od, &path, "block")?;
+    if hp > max_hp {
+        return Err(schema_err(&path, &format!("hp ({hp}) > max_hp ({max_hp})")));
+    }
+    Ok(Some(ParsedOsty {
+        alive,
+        hp,
+        max_hp,
+        block,
+    }))
 }
 
 fn parse_player<V: WireValue>(d: &V) -> WireResult<ParsedPlayer> {
@@ -1124,36 +1469,7 @@ fn parse_player<V: WireValue>(d: &V) -> WireResult<ParsedPlayer> {
     };
 
     // Optional: orbs / orb_slots / stars / osty
-    let (orbs, orb_slots) = match extract_optional(d, "orbs") {
-        Some(ov) => {
-            let ol = as_list(&ov, "$.player.orbs")?;
-            let mut parsed = Vec::with_capacity(ol.len());
-            for (i, o) in ol.iter().enumerate() {
-                let op = format!("$.player.orbs[{i}]");
-                let od = as_dict(o, &op)?;
-                let ty = extract_str(&od, &op, "type")?;
-                let kind =
-                    orb_kind_from_python_name(&ty).ok_or_else(|| unsupported(op.clone(), &ty))?;
-                let passive = extract_i32(&od, &op, "passive")?;
-                let evoke = extract_i32(&od, &op, "evoke")?;
-                parsed.push(ParsedOrb {
-                    kind,
-                    passive,
-                    evoke,
-                });
-            }
-            let slots = match extract_optional(d, "orb_slots") {
-                Some(v) => Some(
-                    v.as_i64()
-                        .and_then(|n| u32::try_from(n).ok())
-                        .ok_or_else(|| schema_err("$.player.orb_slots", "must be u32"))?,
-                ),
-                None => None,
-            };
-            (Some(parsed), slots)
-        }
-        None => (None, None),
-    };
+    let (orbs, orb_slots) = parse_orb_belt(d, "$.player")?;
 
     let stars = match extract_optional(d, "stars") {
         Some(v) => Some(
@@ -1164,28 +1480,7 @@ fn parse_player<V: WireValue>(d: &V) -> WireResult<ParsedPlayer> {
         None => None,
     };
 
-    let osty = match extract_optional(d, "osty") {
-        Some(v) => {
-            let od = as_dict(&v, "$.player.osty")?;
-            let alive = extract_bool(&od, "$.player.osty", "alive")?;
-            let hp = extract_i32(&od, "$.player.osty", "hp")?;
-            let max_hp = extract_i32(&od, "$.player.osty", "max_hp")?;
-            let block = extract_i32(&od, "$.player.osty", "block")?;
-            if hp > max_hp {
-                return Err(schema_err(
-                    "$.player.osty",
-                    &format!("hp ({hp}) > max_hp ({max_hp})"),
-                ));
-            }
-            Some(ParsedOsty {
-                alive,
-                hp,
-                max_hp,
-                block,
-            })
-        }
-        None => None,
-    };
+    let osty = parse_osty(d, "$.player")?;
 
     // Optional per-turn play counters (one bucket per CardType, canonical
     // index order). Mid-turn ShouldPlay gates (Ringing's one-card-per-turn,
@@ -1194,24 +1489,7 @@ fn parse_player<V: WireValue>(d: &V) -> WireResult<ParsedPlayer> {
     // legal-action surface offers plays the source engine silently rejects
     // (rung-3 stall vs Ceremonial Beast, 2026-07-12). Absent → zeros, so
     // wire producers that don't track it (bridge) stay valid.
-    let cards_played_this_turn = match extract_optional(d, "cards_played_this_turn") {
-        Some(v) => {
-            let cp = "$.player.cards_played_this_turn";
-            let list = as_list(&v, cp)?;
-            if list.len() != 5 {
-                return Err(schema_err(cp, "must be a list of 5 counters"));
-            }
-            let mut buckets = [0u32; 5];
-            for (i, item) in list.iter().enumerate() {
-                buckets[i] = item
-                    .as_i64()
-                    .and_then(|n| u32::try_from(n).ok())
-                    .ok_or_else(|| schema_err(format!("{cp}[{i}]"), "must be a u32"))?;
-            }
-            Some(buckets)
-        }
-        None => None,
-    };
+    let cards_played_this_turn = parse_play_buckets(d, "$.player")?;
 
     let cards_started_this_turn = optional_u32_list(d, "cards_started_this_turn")?
         .map(|v| {
@@ -1237,6 +1515,12 @@ fn parse_player<V: WireValue>(d: &V) -> WireResult<ParsedPlayer> {
                 "must be bool or null",
             )
         })?,
+        None => false,
+    };
+    let hp_lost_this_turn = match extract_optional(d, "hp_lost_this_turn") {
+        Some(v) => v
+            .as_bool()
+            .ok_or_else(|| schema_err(format!("{path}.hp_lost_this_turn"), "must be bool"))?,
         None => false,
     };
 
@@ -1277,6 +1561,8 @@ fn parse_player<V: WireValue>(d: &V) -> WireResult<ParsedPlayer> {
         vambrace_triggering_card,
         gold,
         bound_card_played_this_turn,
+        hp_lost_this_turn,
+        history: parse_seat_history(d, path)?,
     })
 }
 
@@ -1330,6 +1616,41 @@ fn optional_card_location<V: WireValue>(d: &V, key: &str) -> WireResult<Option<(
         .transpose()
 }
 
+/// A seat's orb belt (`orbs` + `orb_slots`, on `$.player` and on a whole
+/// teammate seat in `$.allies[i]`): the channelled orbs and the capacity.
+fn parse_orb_belt<V: WireValue>(
+    d: &V,
+    path: &str,
+) -> WireResult<(Option<Vec<ParsedOrb>>, Option<u32>)> {
+    let Some(ov) = extract_optional(d, "orbs") else {
+        return Ok((None, None));
+    };
+    let ol = as_list(&ov, &format!("{path}.orbs"))?;
+    let mut parsed = Vec::with_capacity(ol.len());
+    for (i, o) in ol.iter().enumerate() {
+        let op = format!("{path}.orbs[{i}]");
+        let od = as_dict(o, &op)?;
+        let ty = extract_str(&od, &op, "type")?;
+        let kind = orb_kind_from_python_name(&ty).ok_or_else(|| unsupported(op.clone(), &ty))?;
+        let passive = extract_i32(&od, &op, "passive")?;
+        let evoke = extract_i32(&od, &op, "evoke")?;
+        parsed.push(ParsedOrb {
+            kind,
+            passive,
+            evoke,
+        });
+    }
+    let slots = match extract_optional(d, "orb_slots") {
+        Some(v) => Some(
+            v.as_i64()
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or_else(|| schema_err(format!("{path}.orb_slots"), "must be u32"))?,
+        ),
+        None => None,
+    };
+    Ok((Some(parsed), slots))
+}
+
 fn parse_powers<V: WireValue>(value: &V, path: &str) -> WireResult<Vec<ParsedPower>> {
     if value.is_null() {
         return Ok(Vec::new());
@@ -1368,12 +1689,21 @@ fn parse_powers<V: WireValue>(value: &V, path: &str) -> WireResult<Vec<ParsedPow
             ),
             None => None,
         };
+        let applier_seat = match extract_optional(&pd, "applier_seat") {
+            Some(v) => Some(
+                v.as_i64()
+                    .and_then(|n| u8::try_from(n).ok())
+                    .ok_or_else(|| schema_err(&pp, "`applier_seat` must fit in u8"))?,
+            ),
+            None => None,
+        };
         out.push(ParsedPower {
             kind,
             amount,
             has_extra,
             display,
             counter,
+            applier_seat,
         });
     }
     Ok(out)
@@ -1703,6 +2033,11 @@ fn parse_card<V: WireValue>(d: &V, path: &str) -> WireResult<ParsedCard> {
     let local_cost = extract_optional(d, "local_cost")
         .map(|v| parse_local_energy_cost(&v, &format!("{path}.local_cost")))
         .transpose()?;
+    let star_cost = opt_i32("star_cost", "`star_cost` must be int or null")?;
+    let persistent_star_cost = opt_i32(
+        "persistent_star_cost",
+        "`persistent_star_cost` must be int or null",
+    )?;
     // Two banks require the third number. `rebank_wire_cost_after_edge`
     // recomputes the surviving bank against `stable_cost`, which it reads back
     // out of a combat var that DEFAULTS TO 0 — so with BOTH banks live and no
@@ -1741,6 +2076,11 @@ fn parse_card<V: WireValue>(d: &V, path: &str) -> WireResult<ParsedCard> {
             combat_vars.push((key, amount));
         }
     }
+
+    let base_replay_count = match extract_optional(d, "base_replay_count") {
+        Some(_) => extract_i32(d, path, "base_replay_count")?,
+        None => 0,
+    };
 
     let affliction = match extract_optional(d, "affliction") {
         Some(v) => {
@@ -1804,10 +2144,13 @@ fn parse_card<V: WireValue>(d: &V, path: &str) -> WireResult<ParsedCard> {
         played_cost,
         stable_cost,
         local_cost,
+        star_cost,
+        persistent_star_cost,
         flags,
         enchantment,
         enchantment_amount,
         combat_vars,
+        base_replay_count,
         affliction,
         affliction_stacks,
         affliction_applied_exhaust,
@@ -2304,7 +2647,18 @@ pub fn registry_names_for(kind: &str) -> Result<Vec<String>, String> {
             }
         }
         "power" => {
+            // The v0.107.1 universe only: its sorted position is an embedding
+            // row (`ppo.combat_ctx.tokens`), so it must not grow.
             for k in PowerKind::all() {
+                set.insert(k.python_name());
+            }
+        }
+        "power_all" => {
+            // Every build's powers, for checking a carried id: the adapters
+            // dropped a power missing from "power" off the board (v0.111.0's
+            // OneForAll went, and every 0-cost Attack it buffs hit for less
+            // than the game's).
+            for k in PowerKind::all().iter().chain(&PowerKind::V0111_ONLY) {
                 set.insert(k.python_name());
             }
         }
@@ -2315,7 +2669,7 @@ pub fn registry_names_for(kind: &str) -> Result<Vec<String>, String> {
         }
         other => {
             return Err(format!(
-                "unknown registry kind `{other}` (expected one of: relic, relic_id, card, monster, power, potion, orb, event, boss, enchantment)"
+                "unknown registry kind `{other}` (expected one of: relic, relic_id, card, monster, power, power_all, potion, orb, event, boss, enchantment)"
             ));
         }
     }
@@ -2507,7 +2861,7 @@ fn build_card(parsed: &ParsedCard, uid: CardUid, path: &str) -> WireResult<Card>
         // FastenPower's Defend-sourced block bonus never applied.
         tags: sts2_content::cards::status::tags_for_card_id(card_id),
         energy_spent: 0,
-        base_replay_count: 0,
+        base_replay_count: parsed.base_replay_count,
         keyword_override: None,
         affliction: None,
     };
@@ -2552,11 +2906,14 @@ fn build_card(parsed: &ParsedCard, uid: CardUid, path: &str) -> WireResult<Card>
     // discarded at end of turn what the world exhausted (27 of the v28wr
     // card-flow records, 1:1 with the flag). `ethereal` maps to the same
     // per-instance var the engine's own GhostSeed arm stamps; the free flags
-    // map to their cost riders; `unplayable`/`innate` fold into the keyword
-    // override on top of the effective base set. `retain` is a persistent
-    // keyword; the separate `retain_turn`/`sly_turn` flags are seeded into the
-    // per-turn uid lists at the pile walk and expire on schedule. `sly` is
-    // handled by that walk's combat-scoped granted-keyword list.
+    // map to their cost riders; `unplayable`/`innate`/`retain` fold into the
+    // keyword override on top of the effective base set. `retain` is the
+    // keyword alone (C# `Keywords.Contains(Retain)`), a card's own or one
+    // `CardCmd.ApplyKeyword` gave it for the fight (Choices Paradox, GH #989).
+    // The this-turn grant has its own flag (GH #370 added the `retain_turn` /
+    // `sly_turn` / `sly` flags), seeded into the per-turn uid lists at the
+    // pile walk instead, where it expires on schedule. `sly` is likewise
+    // handled there, not here.
     if !parsed.flags.is_empty() {
         let fold = |card: &mut Card, bit: sts2_core::cards::KeywordOverride| {
             let base = card
@@ -2695,6 +3052,30 @@ fn build_card(parsed: &ParsedCard, uid: CardUid, path: &str) -> WireResult<Card>
         }
     }
 
+    // The STAR half of a free card. The energy half rides `base_cost` and the
+    // banks above; the engine has no per-instance star cost to put a 0 into,
+    // only the printed one (`effective_star_cost`) and the riders that zero
+    // it. Map the producer's two numbers onto those riders by lifetime:
+    //   persistent 0  -> `SetToFreeThisCombat` (Touch of Insanity) -> combat rider
+    //   current 0     -> `SetToFreeThisTurn` (Splash, Discovery, Infernal
+    //                    Blade, the generative potions) -> this-turn rider,
+    //                    which the engine already clears on play and at turn
+    //                    end exactly as C# `ThisTurn` costs do.
+    // Without it every such card rebuilt at its printed star cost: a Silent's
+    // Splash'd Falling Star at 0 energy + 2 stars it can never pay, i.e.
+    // unplayable in the search, which then ended the turn over a free attack.
+    // A non-zero wire value is not adopted: v0.107.1 never sets a temporary
+    // star cost other than 0, nor upgrades one, so the printed cost is exact.
+    // A card some rider already zeroes (an engine-dialect `combat_vars`, the
+    // `free_turn` flag) reads 0 here and is left alone.
+    if sts2_core::effective_star_cost(&card) > 0 {
+        if parsed.persistent_star_cost == Some(0) {
+            card.set_combat_var(VarKey::StarCostFreeThisCombat, 1);
+        } else if parsed.star_cost == Some(0) {
+            card.set_combat_var(VarKey::StarCostFreeThisTurn, 1);
+        }
+    }
+
     // Restore a Wither's FakeUpgrade level from the wire's base damage.
     // C# `Wither.cs` grows its `DamageVar` +3 per `FakeUpgrade()`; the level
     // itself is never on the wire, and the Rust turn-end arm computes damage
@@ -2808,8 +3189,11 @@ const WIRE_MOVE_STATE_ALIASES: &[(MonsterKind, &str, &str)] = &[
     (MonsterKind::TwigSlimeS, "TACKLE_MOVE", "BUTT"),
 ];
 
-/// Look up a [`WIRE_MOVE_STATE_ALIASES`] entry for this monster + wire id.
-fn wire_move_state_alias(kind: MonsterKind, wire_id: &str) -> Option<&'static str> {
+/// Look up a [`WIRE_MOVE_STATE_ALIASES`] entry for this monster + wire id
+/// (the game's `MoveState` id → the engine's state id, where the relaxed
+/// matcher can't find it).
+#[must_use]
+pub fn wire_move_state_alias(kind: MonsterKind, wire_id: &str) -> Option<&'static str> {
     WIRE_MOVE_STATE_ALIASES
         .iter()
         .find(|(k, w, _)| *k == kind && *w == wire_id)
@@ -2904,12 +3288,33 @@ fn reconstructed_base_damage(ai: Option<&MonsterAi>, wire: Intent) -> Option<i32
 /// `engine_base` is [`reconstructed_base_damage`] for this enemy — preferred
 /// over the arithmetic inverse whenever it is CONSISTENT with the wire (see
 /// the tie-break comment at the bottom of the body).
+#[cfg(test)]
 fn unbake_wire_intent(
     intent: Option<Intent>,
     enemy_powers: &[ParsedPower],
     player_powers: &[ParsedPower],
     back_attack_boost: bool,
     engine_base: Option<i32>,
+) -> Option<Intent> {
+    unbake_wire_intent_at(
+        intent,
+        enemy_powers,
+        player_powers,
+        back_attack_boost,
+        engine_base,
+        sts2_core::GameVersion::default(),
+    )
+}
+
+/// [`unbake_wire_intent`] for the game build `version`, whose player-side
+/// multipliers differ (Tank's).
+fn unbake_wire_intent_at(
+    intent: Option<Intent>,
+    enemy_powers: &[ParsedPower],
+    player_powers: &[ParsedPower],
+    back_attack_boost: bool,
+    engine_base: Option<i32>,
+    version: sts2_core::GameVersion,
 ) -> Option<Intent> {
     let intent = intent?;
     // `DeathBlow` belongs in here with the plain attacks, not in the pass-through
@@ -3027,6 +3432,42 @@ fn unbake_wire_intent(
     {
         mul = mul.compose(DamageMul::HALF);
     }
+    // The co-op powers on the player that scale the hits they take (GH #989):
+    // Guarded ×0.5, Tank ×1.5 (×2 before v0.111.0), Intercept ×2 and
+    // Diamond Diadem ×0.5 (v0.107.1 only), each gated as in `hooks.rs`'s
+    // forward arm. Missed, a Guarded player's halved telegraph was stored as
+    // the base and halved again, and the teammate tanking for them took half
+    // the real hit. Covered zeroes the telegraph, which no inverse recovers:
+    // the reconstructed AI's base stands in for it below.
+    let has = |kind: PowerKind| player_powers.iter().any(|p| p.kind == kind);
+    if has(PowerKind::Guarded) {
+        mul = mul.compose(DamageMul::HALF);
+    }
+    if has(PowerKind::Tank) {
+        mul = mul.compose(if version >= sts2_core::GameVersion::V0_111_0 {
+            DamageMul::VULNERABLE
+        } else {
+            DamageMul::DOUBLE
+        });
+    }
+    if has(PowerKind::Intercept) {
+        mul = mul.compose(DamageMul::DOUBLE);
+    }
+    if player_powers
+        .iter()
+        .any(|p| p.kind == PowerKind::DiamondDiadem && p.amount > 0)
+        && PowerKind::DiamondDiadem.exists_in(version)
+    {
+        mul = mul.compose(DamageMul::HALF);
+    }
+    if has(PowerKind::Covered) {
+        let base = engine_base.unwrap_or(damage);
+        return Some(match shape {
+            AttackShape::Single => Intent::Attack { damage: base },
+            AttackShape::Multi(hits) => Intent::MultiAttack { damage: base, hits },
+            AttackShape::DeathBlow => Intent::DeathBlow { damage: base },
+        });
+    }
     // Surrounded back-attack (KaiserCrab duo): the wire telegraph bakes the
     // 1.5× for the arm behind the player. Without inverting it the searched
     // first enemy turn double-applied the multiplier (wire 18 stored as base
@@ -3101,12 +3542,13 @@ fn ingest_intent(
             .any(|p| p.kind == PowerKind::BackAttackRight),
         _ => false,
     };
-    unbake_wire_intent(
+    unbake_wire_intent_at(
         m.intent,
         &m.powers,
         &parsed.player.powers,
         back_attack_boost,
         m.intent.and_then(|i| reconstructed_base_damage(ai, i)),
+        parsed.game_version,
     )
 }
 
@@ -3350,6 +3792,8 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
         ascension: parsed.ascension,
         game_version: parsed.game_version,
         is_elite: parsed.is_elite,
+        act_index: parsed.act_index,
+        is_boss: parsed.is_boss,
         allies: parsed
             .allies
             .iter()
@@ -3503,6 +3947,13 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
             // own drifting counter straight back over this derivation and the
             // arm is dead code.
             PowerKind::Orbit => (4 - pp.display.unwrap_or(4)).rem_euclid(4),
+            // C# `JugglingPower` counts this turn's Attacks in private data
+            // and copies the 3rd into the hand. Its `AfterApplied` seeds the
+            // count from History's Attack plays started this turn, which is
+            // the wire's Attack bucket. Rebuilt at 0, a board after two
+            // Attacks never made the copy (GH #989). Joined `derived` in
+            // `combat_mirror` with this arm, as ORBIT did.
+            PowerKind::Juggling => attacks_this_turn(parsed.player.cards_played_this_turn),
             _ => 0,
         });
         state.powers.push(Power {
@@ -3514,13 +3965,16 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
             skip_next_tick: false,
         });
         player_powers.push(PowerUid(id));
+        if let Some(seat) = pp.applier_seat {
+            state.coop.power_seat.push((id, seat));
+        }
     }
 
     // --- player scalars ---
     state.player.current_hp = parsed.player.hp;
     state.player.max_hp = parsed.player.max_hp;
     state.player.block = parsed.player.block;
-    state.player.energy = i8::try_from(parsed.player.energy).unwrap_or(i8::MAX);
+    state.player.energy = parsed.player.energy;
     state.player.max_energy = i8::try_from(parsed.player.max_energy).unwrap_or(i8::MAX);
     state.player.character = character_id_from_class(&parsed.player.class);
     state.player.powers.clone_from(&player_powers);
@@ -3566,6 +4020,7 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
         .flatten()
         .copied()
         .chain(parsed.player.current_card_play)
+        .filter(|&tag| tag != EARLIER_PLAY_TAG)
         .max();
     let minimum_next = largest_tag.map_or(0, |n| n.saturating_add(1));
     if parsed
@@ -3580,6 +4035,7 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
     }
     state.combat_log.next_card_play = parsed.player.next_card_play.unwrap_or(minimum_next);
     state.combat_log.chains_bound_card_played_this_turn = parsed.player.bound_card_played_this_turn;
+    state.combat_log.hp_lost_this_turn = u32::from(parsed.player.hp_lost_this_turn);
     // Run gold gates in-combat relic hooks (SealOfGold: spend 5 gold, +1
     // energy at every player turn start). The constructors hardcode 0 for
     // states not built through the run loop, so a wire that carries it must
@@ -3614,61 +4070,7 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
     if let Some(orbs) = &parsed.player.orbs {
         // Powers are populated above, so the player's Focus is readable here.
         let focus = sts2_core::orbs::focus_bonus(&state);
-        let capacity = parsed
-            .player
-            .orb_slots
-            .unwrap_or(orbs.len() as u32)
-            .min(u32::from(u8::MAX)) as u8;
-        let mut belt = sts2_core::OrbSlots {
-            slots: SmallVec::new(),
-            capacity,
-        };
-        for po in orbs.iter().take(usize::from(capacity)) {
-            belt.slots.push(match po.kind {
-                OrbKind::Empty => Orb::Empty,
-                OrbKind::Lightning => Orb::Lightning,
-                OrbKind::Frost => Orb::Frost,
-                // The wire's `evoke` is the C# `DarkOrb.EvokeVal`, which starts
-                // at 6 and is grown by the passive (`DarkOrb.cs:17,25,39`).
-                // `Orb::Dark`'s `stored` holds only the accumulated growth, so
-                // the base has to come back off. Storing `evoke` verbatim made
-                // every reconstructed Dark orb evoke for 6 too much — doubled
-                // under Dualcast, ×4 under Quadcast — so MCTS planned lethals
-                // the game would not land. Measured on a live wire: the
-                // reconstruction dealt 48 where C# deals 36.
-                OrbKind::Dark => Orb::Dark {
-                    stored: (po.evoke - DARK_ORB_BASE_EVOKE).max(0),
-                },
-                OrbKind::Plasma => Orb::Plasma,
-                // Invert the emit leg's `focus_scaled(current_passive, focus)`.
-                // Exact whenever the scaled passive stayed positive. Under
-                // enough NEGATIVE Focus the emit clamped to 0 and the raw is
-                // unrecoverable — the wire says only `raw <= -focus` — so this
-                // returns that upper bound. The orb is inert either way while
-                // Focus is that negative (`GlassOrb.Passive` skips damage AND
-                // decay on a non-positive `PassiveVal`, and so does the
-                // engine's arm); taking the lower bound instead would delete
-                // the orb's remaining life for good once Focus recovers.
-                OrbKind::Glass => Orb::Glass {
-                    current_passive: (po.passive - focus).max(0),
-                },
-            });
-        }
-        // Pad back out to `capacity` with empty slots. The engine's belt
-        // invariant is `slots.len() == capacity` (see `OrbSlots::with_capacity`
-        // / `add_slots`) and `channel` fills the first `is_empty()` slot,
-        // falling back to EVICTING the oldest orb when it finds none. A
-        // compact belt therefore made every channel on a non-full belt evict
-        // instead of fill — the reconstructed Defect's orb count could never
-        // grow past whatever it was rebuilt with (found by the Phase-1 mirror
-        // oracle: LightningRod channeled at end of turn and the belt stayed
-        // at one orb while the native engine reached two). The emitter drops
-        // empty slots, so interior gaps compact to the front; that is the
-        // channel order anyway.
-        while belt.slots.len() < usize::from(capacity) {
-            belt.slots.push(Orb::Empty);
-        }
-        state.player.orbs = belt;
+        state.player.orbs = build_orb_belt(orbs, parsed.player.orb_slots, focus);
     }
     // Necrobinder's Osty pet. `state_to_dict` emits `$.player.osty` and the
     // parser above reads it into `ParsedOsty`, but without this apply step
@@ -3712,6 +4114,12 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
         // v27wr sweep, all mirror exactly +3 with HP under half).
         if r.kind == RelicKind::RedSkull && r.counter.is_none() {
             counter = i32::from(2 * parsed.player.hp <= parsed.player.max_hp);
+        }
+        // C# `RippleBasin` scans History for an Attack its owner played this
+        // turn; the engine counts them on `counter`. Rebuilt at 0, a board
+        // after an Attack gave the turn-end block anyway (GH #989).
+        if r.kind == RelicKind::RippleBasin && r.counter.is_none() {
+            counter = attacks_this_turn(parsed.player.cards_played_this_turn);
         }
         relics.push(Relic {
             id,
@@ -3987,6 +4395,13 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
                 // 135 of the 250 single-field `$.encounter[].hp` records in
                 // v18, the largest class in the corpus.
                 (PowerKind::Slow, Some(display)) => (display / 10).max(0),
+                // C# `HardenedShellPower.DisplayAmount => Amount -
+                // damageReceivedThisTurn`, the HP it still lets through this
+                // turn; the engine's `counter` is the damage taken. Rebuilt at
+                // 0, a shell nearly spent let a whole hit through (GH #989).
+                (PowerKind::HardenedShell, Some(display)) => {
+                    (pp.amount - display).clamp(0, pp.amount.max(0))
+                }
                 _ => 0,
             });
             state.powers.push(Power {
@@ -3998,6 +4413,9 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
                 skip_next_tick: false,
             });
             mpowers.push(PowerUid(pid));
+            if let Some(seat) = pp.applier_seat {
+                state.coop.power_seat.push((pid, seat));
+            }
         }
 
         // Rebuild the enemy AI at its serialized move-state so it keeps
@@ -4352,6 +4770,50 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
         }
     }
 
+    // --- Ovicopter-fight egg slots ---
+    //
+    // `OvicopterNormal.Slots = ["egg1", .., "egg5", "ovicopter"]`: the
+    // Ovicopter holds slot 5 and `LayEggsMove` gives each egg the HIGHEST
+    // slot no living enemy holds (`Slots.LastOrDefault`, Ovicopter.cs), with
+    // `Enemies` kept slot-sorted, so living eggs are listed before the
+    // Ovicopter. `ovicopter_lay_eggs_effect` reads both from `enemy_slot()`:
+    // left unstamped, the Ovicopter sorts as slot-unknown and the next lay
+    // appends its eggs AFTER it, where the game puts them before. The eggs'
+    // exact slots are not on the wire; the k listed living eggs take the top
+    // k egg slots in order (exact unless a lower egg died while a higher one
+    // lived). Same best-effort contract as the Fabricator stamp above.
+    if let Some(ovi_pos) = parsed
+        .encounter
+        .iter()
+        .position(|e| e.kind == MonsterKind::Ovicopter && !e.is_dead && !e.is_escaped)
+    {
+        const OVICOPTER_SLOT: u8 = 5;
+        // (wire index, uid) of every living enemy; `enemy_uids` is parallel
+        // to the non-escaped wire entries.
+        let live: SmallVec<[(usize, CreatureUid); 8]> = parsed
+            .encounter
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| !e.is_escaped)
+            .zip(enemy_uids.iter())
+            .filter(|((_, e), _)| !e.is_dead)
+            .map(|((i, _), uid)| (i, *uid))
+            .collect();
+        let eggs: SmallVec<[CreatureUid; 8]> = live
+            .iter()
+            .filter(|(i, _)| *i < ovi_pos && parsed.encounter[*i].kind == MonsterKind::ToughEgg)
+            .map(|(_, uid)| *uid)
+            .collect();
+        let first =
+            OVICOPTER_SLOT.saturating_sub(u8::try_from(eggs.len()).unwrap_or(OVICOPTER_SLOT));
+        for (k, uid) in eggs.iter().enumerate() {
+            state.set_enemy_slot(*uid, first + u8::try_from(k).unwrap_or(0));
+        }
+        if let Some((_, uid)) = live.iter().find(|(i, _)| *i == ovi_pos) {
+            state.set_enemy_slot(*uid, OVICOPTER_SLOT);
+        }
+    }
+
     // --- C# `Enemies`-order (slot) restoration for reviver rosters ---
     //
     // The adapter wire lists ALIVE enemies in C# `Enemies` order and
@@ -4469,7 +4931,7 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
             continue;
         };
         let seat = &mut state.allies[i];
-        seat.energy = i8::try_from(a.energy).unwrap_or(i8::MAX);
+        seat.energy = a.energy;
         seat.max_energy = i8::try_from(a.max_energy).unwrap_or(i8::MAX);
         seat.character = a.class.as_deref().and_then(character_id_from_class);
         for pp in &a.powers {
@@ -4479,11 +4941,18 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
                 id,
                 kind: pp.kind,
                 amount: pp.amount,
-                counter: pp.counter.unwrap_or(0),
+                // Their Juggling's Attacks this turn, as ours.
+                counter: pp.counter.unwrap_or(match pp.kind {
+                    PowerKind::Juggling => attacks_this_turn(a.cards_played_this_turn),
+                    _ => 0,
+                }),
                 applier: None,
                 skip_next_tick: false,
             });
             state.coop.stash[i].powers.push(PowerUid(id));
+            if let Some(seat) = pp.applier_seat {
+                state.coop.power_seat.push((id, seat));
+            }
         }
         for (j, pc) in hand.iter().enumerate() {
             let path = format!("$.allies[{i}].hand[{j}]");
@@ -4520,6 +4989,20 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
             }
         }
         state.allies[i].stars = i8::try_from(a.stars).unwrap_or(i8::MAX);
+        if let Some(orbs) = &a.orbs {
+            // Their own Focus, off their powers (the seated player's is ours).
+            let focus = a
+                .powers
+                .iter()
+                .filter(|p| p.kind == PowerKind::Focus)
+                .map(|p| p.amount)
+                .sum();
+            state.allies[i].orbs = build_orb_belt(orbs, a.orb_slots, focus);
+        }
+        state.coop.stash[i].combat_log.hp_lost_this_turn = u32::from(a.hp_lost_this_turn);
+        if let Some(buckets) = a.cards_played_this_turn {
+            state.allies[i].cards_played_this_turn = buckets;
+        }
         if !a.potions.is_empty() {
             state.allies[i].potion_slots = u8::try_from(a.potions.len()).unwrap_or(u8::MAX);
         }
@@ -4539,10 +5022,15 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
                 .max()
                 .unwrap_or(0)
                 + 1;
+            // Ripple Basin's Attacks this turn, as ours.
+            let counter = match (r.kind, r.counter) {
+                (RelicKind::RippleBasin, None) => attacks_this_turn(a.cards_played_this_turn),
+                (_, c) => c.unwrap_or(0),
+            };
             relics.push(Relic {
                 id: NonZeroU32::new(raw).expect("non-zero relic id"),
                 kind: r.kind,
-                counter: r.counter.unwrap_or(0),
+                counter,
                 is_wax: r.is_wax,
                 is_melted: r.is_melted,
             });
@@ -4552,8 +5040,16 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
             state.coop.to_play |= 1 << i;
         }
     }
+    // Their Ostys (GH #1017), after every other creature for the reason ours
+    // waits (`restore_osty` takes the next free id), and after their powers.
+    for (i, a) in parsed.allies.iter().enumerate() {
+        if let (Some(osty), true) = (a.osty.as_ref(), a.hand.is_some()) {
+            state.restore_ally_osty(i, osty.hp, osty.max_hp, osty.block);
+        }
+    }
     state.coop.full = parsed.coop_full && !state.coop.stash.is_empty();
     state.coop.seat_index = parsed.coop_seat_index;
+    apply_seat_histories(&mut state, parsed);
 
     Ok(state)
 }
@@ -4598,6 +5094,11 @@ pub const fn var_key_wire_name(k: VarKey) -> &'static str {
         VarKey::Generic => "generic",
         VarKey::SneckoRollLive => "snecko_roll_live",
         VarKey::CostReductionUntilPlayed => "cost_reduction_until_played",
+        VarKey::MidnightExhaustsCounted => "midnight_exhausts_counted",
+        VarKey::EnchantmentUsed => "enchantment_used",
+        VarKey::StarCostFreeThisTurn => "star_cost_free_this_turn",
+        VarKey::MomentumDamage => "momentum_damage",
+        VarKey::BansheesCryEtherealCounted => "banshees_cry_ethereal_counted",
     }
 }
 
@@ -4633,6 +5134,11 @@ pub fn var_key_from_wire(name: &str) -> Option<VarKey> {
         VarKey::CostReductionUntilPlayed,
         VarKey::Generic,
         VarKey::SneckoRollLive,
+        VarKey::MidnightExhaustsCounted,
+        VarKey::EnchantmentUsed,
+        VarKey::StarCostFreeThisTurn,
+        VarKey::MomentumDamage,
+        VarKey::BansheesCryEtherealCounted,
     ];
     ALL.iter().copied().find(|k| var_key_wire_name(*k) == name)
 }
@@ -4686,6 +5192,30 @@ mod tests {
 
     /// Wire intent amounts are UI-effective; ingestion must invert them
     /// to base so the damage pipeline doesn't double-apply modifiers.
+    /// GH #989: The Insatiable's Thrash (8 ×2) telegraphs 4 to a Guarded
+    /// player, 12 to a Tank on v0.111.0; the Covered player sees 0 and keeps
+    /// the move table's 8.
+    #[test]
+    fn unbake_wire_intent_inverts_the_coop_multipliers() {
+        let power = |kind| ParsedPower {
+            kind,
+            amount: 1,
+            has_extra: false,
+            display: None,
+            counter: None,
+            applier_seat: None,
+        };
+        let thrash = |damage| Some(Intent::MultiAttack { damage, hits: 2 });
+        let v111 = sts2_core::GameVersion::V0_111_0;
+        let at = |wire, kind, base| {
+            unbake_wire_intent_at(thrash(wire), &[], &[power(kind)], false, base, v111)
+        };
+        assert_eq!(at(4, PowerKind::Guarded, None), thrash(8));
+        assert_eq!(at(12, PowerKind::Tank, None), thrash(8));
+        assert_eq!(at(16, PowerKind::Intercept, None), thrash(8));
+        assert_eq!(at(0, PowerKind::Covered, Some(8)), thrash(8));
+    }
+
     /// Numbers from the 2026-07-13 rung-3.5 fight-replay audit:
     /// Flyconid SMASH base 11, player Vulnerable → wire 16 (= ⌊11·3/2⌋);
     /// the real game dealt 16, the pre-fix engine dealt 24 (= ⌊16·3/2⌋).
@@ -4697,6 +5227,7 @@ mod tests {
             has_extra: false,
             display: None,
             counter: None,
+            applier_seat: None,
         };
         let strength = |n: i32| ParsedPower {
             kind: PowerKind::Strength,
@@ -4704,6 +5235,7 @@ mod tests {
             has_extra: false,
             display: None,
             counter: None,
+            applier_seat: None,
         };
         // Player Vulnerable: 16 → 11 (and forward: ⌊11·3/2⌋ == 16).
         let got = unbake_wire_intent(
@@ -4748,6 +5280,7 @@ mod tests {
             has_extra: false,
             display: None,
             counter: None,
+            applier_seat: None,
         };
         let debilitate = |n: i32| ParsedPower {
             kind: PowerKind::Debilitate,
@@ -4755,6 +5288,7 @@ mod tests {
             has_extra: false,
             display: None,
             counter: None,
+            applier_seat: None,
         };
         let vigor = |n: i32| ParsedPower {
             kind: PowerKind::Vigor,
@@ -4762,6 +5296,7 @@ mod tests {
             has_extra: false,
             display: None,
             counter: None,
+            applier_seat: None,
         };
         // Dealer Vigor is baked into the telegraph exactly like Strength
         // (`VigorPower.cs:57-77` skips both latch guards at telegraph time).
@@ -4854,6 +5389,7 @@ mod tests {
             has_extra: false,
             display: None,
             counter: None,
+            applier_seat: None,
         };
         let got = unbake_wire_intent(
             Some(Intent::Attack { damage: 17 }),
@@ -4891,6 +5427,7 @@ mod tests {
             has_extra: false,
             display: None,
             counter: None,
+            applier_seat: None,
         };
         let enemy_vuln = ParsedPower {
             kind: PowerKind::Vulnerable,
@@ -4898,6 +5435,7 @@ mod tests {
             has_extra: false,
             display: None,
             counter: None,
+            applier_seat: None,
         };
         let got = unbake_wire_intent(
             Some(Intent::Attack { damage: 8 }),
@@ -4935,6 +5473,7 @@ mod tests {
             has_extra: false,
             display: None,
             counter: None,
+            applier_seat: None,
         };
         // Tunneler BITE_MOVE (move-table base 13) under Weak telegraphs
         // ⌊13·3/4⌋ = 9, whose preimages are {12, 13}.

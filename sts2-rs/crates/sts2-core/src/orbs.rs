@@ -141,6 +141,14 @@ pub struct OrbSlots {
     /// `combat.orb_slots`. Grows via [`Self::add_slots`] when Capacitor
     /// or Signal Boost fires.
     pub capacity: u8,
+    /// `true` once the belt's size is real: set by every sizing
+    /// constructor, by [`Self::add_slots`], by Bulk Up and by a wire import
+    /// that carries `orb_slots`. Only an UNSIZED zero-capacity belt (a
+    /// fixture or an orb-less wire) gets the lazy 3-slot Defect base in
+    /// [`Self::ensure_defect_base`]. A sized belt at 0 is a real belt Bulk Up
+    /// emptied: C# `OrbQueue.TryEnqueue` fails at `Capacity == 0`, so a
+    /// channel there loses the orb, and `OrbCmd.AddSlots` stacks on 0.
+    pub sized: bool,
 }
 
 impl Default for OrbSlots {
@@ -151,6 +159,7 @@ impl Default for OrbSlots {
         Self {
             slots: SmallVec::new(),
             capacity: 0,
+            sized: false,
         }
     }
 }
@@ -174,6 +183,18 @@ impl OrbSlots {
             slots,
             #[allow(clippy::cast_possible_truncation)]
             capacity: cap.min(u8::MAX as usize) as u8,
+            sized: true,
+        }
+    }
+
+    /// Give an UNSIZED zero-capacity belt the canonical Defect base of 3
+    /// slots; leave every other belt alone. A Defect's real belt is sized at
+    /// combat start, so this only fills in for fixtures and orb-less wires.
+    /// A sized belt that Bulk Up took to 0 stays at 0 (C# never re-adds the
+    /// base: `OrbCmd.Channel` auto-grows only when `BaseOrbSlotCount == 0`).
+    pub fn ensure_defect_base(&mut self) {
+        if self.capacity == 0 && !self.sized {
+            *self = Self::with_default_capacity();
         }
     }
 
@@ -192,6 +213,7 @@ impl OrbSlots {
     /// Add `n` extra empty slots. Mirrors `Capacitor`'s "gain N orb
     /// slots" power-on-play effect.
     pub fn add_slots(&mut self, n: usize) {
+        self.sized = true;
         for _ in 0..n {
             self.slots.push(Orb::Empty);
         }
@@ -322,6 +344,18 @@ pub fn focus_scaled(base: i32, focus: i32) -> i32 {
     base.saturating_add(focus).max(0)
 }
 
+/// A Frost orb's block, passive or evoke: the owner's, and with
+/// `HibernatePower` on the owner every other player's too (v0.111.0
+/// `FrostOrb.Passive` / `Evoke`, `FrostOrb.cs:39-49,57-65`).
+fn frost_block(state: &mut CombatState, amount: i32) {
+    gain_block_player_unpowered(state, amount);
+    if state.player_power_amount(PowerKind::Hibernate) > 0 {
+        crate::coop::each_other_player(state, |state| {
+            gain_block_player_unpowered(state, amount);
+        });
+    }
+}
+
 /// Additive bonus applied to a **Lightning** orb's passive/evoke value
 /// when the player owns `InfusedCore` (v0.107.1).
 ///
@@ -376,12 +410,21 @@ pub fn channel_orb(state: &mut CombatState, orb: Orb) {
     // them — dropping the evoke energy C# grants (sweep `player.energy` cs=4
     // rs=0 on METEOR_STRIKE; bead `sts2-rs-dnxjt`). Defect fixtures that skipped
     // deck-build capacity setup still get the canonical 3-slot belt.
+    // A Defect whose real belt Bulk Up emptied stays at 0 and the
+    // `TryEnqueue` below loses the orb (`OrbQueue.cs` `Capacity == 0` →
+    // false); only an unsized fixture belt gets the lazy 3-slot base.
     if state.player.orbs.capacity == 0 {
         if state.player.character == Some(crate::potions::CharacterId::Defect) {
-            state.player.orbs = OrbSlots::with_default_capacity();
+            state.player.orbs.ensure_defect_base();
         } else {
             state.player.orbs.add_slots(1);
         }
+    }
+    // Still 0: C# `EvokeNext` finds no orb, `TryEnqueue` returns false, and
+    // the channel log, Voltaic's count and `AfterOrbChanneled` all sit
+    // inside its `if`, so none of them fire.
+    if state.player.orbs.capacity == 0 {
+        return;
     }
     // C# evokes the front orb when the belt is already full BEFORE enqueueing
     // the new one (`OrbCmd.Channel` → `EvokeNext` with `dequeue:true`, which
@@ -567,6 +610,10 @@ fn evoke_one(state: &mut CombatState, orb: Orb) {
 /// Lightning-gated ThunderPower reactor, so Glass's AoE need not be
 /// enumerated here.
 fn resolve_evoke(state: &mut CombatState, orb: Orb) -> SmallVec<[CreatureUid; 4]> {
+    // An evoke is its own command after the card's attack: a latched
+    // `SkittishPower.AfterAttack` block (SkittishPower.cs:56-69) is already up,
+    // so Shatter's Dark evokes hit it (Defect full seed 4956).
+    crate::hooks::grant_latched_skittish(state);
     let _trace = crate::damage_trace::push_source(orb_trace_label(orb, "evoke"));
     // Event log. C# has no evoke entry — the log shows only the damage — but a
     // Frost or Plasma evoke deals none, so without this row the belt emptying
@@ -608,7 +655,7 @@ fn resolve_evoke(state: &mut CombatState, orb: Orb) -> SmallVec<[CreatureUid; 4]
             }
         }
         Orb::Frost => {
-            gain_block_player_unpowered(state, focus_scaled(5, focus));
+            frost_block(state, focus_scaled(5, focus));
         }
         Orb::Dark { stored } => {
             // C# `DarkOrb._evokeVal` starts at 6 and the passive ADDS
@@ -723,7 +770,7 @@ pub fn trigger_orb_passive_at(state: &mut CombatState, idx: usize) {
             }
         }
         Orb::Frost => {
-            gain_block_player_unpowered(state, focus_scaled(2, focus));
+            frost_block(state, focus_scaled(2, focus));
         }
         Orb::Dark { stored } => {
             let new = stored.saturating_add(focus_scaled(6, focus));
@@ -793,7 +840,7 @@ pub fn trigger_first_orb_passive_n(state: &mut CombatState, times: u32) {
                 }
             }
             Orb::Frost => {
-                gain_block_player_unpowered(state, focus_scaled(2, focus));
+                frost_block(state, focus_scaled(2, focus));
             }
             Orb::Dark { .. } => {
                 // Re-read the live stored value each iteration: with `times > 1`
@@ -885,7 +932,7 @@ pub fn passive_tick(state: &mut CombatState) {
                 }
             }
             Orb::Frost => {
-                gain_block_player_unpowered(state, focus_scaled(2, focus));
+                frost_block(state, focus_scaled(2, focus));
             }
             Orb::Dark { stored } => {
                 let new = stored.saturating_add(focus_scaled(6, focus));

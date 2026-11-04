@@ -39,6 +39,19 @@ describe("EventLog", () => {
     expect(detail?.textContent).toBe("Cultist HP 50→44 (−6)");
   });
 
+  it("does not scrub when the click ends a text selection in the row", () => {
+    const picks: number[] = [];
+    const entries = [entry({ idx: 0, label: "Play Strike" }), entry({ idx: 1, label: "Play Bash" })];
+    render(<EventLog entries={entries} current={0} onPick={(i) => picks.push(i)} />);
+    const label = screen.getByText("Play Bash");
+    getSelection()!.selectAllChildren(label);
+    fireEvent.click(label);
+    expect(picks).toEqual([]);
+    getSelection()!.removeAllRanges();
+    fireEvent.click(label);
+    expect(picks).toEqual([1]);
+  });
+
   it("renders no detail lines when details is empty", () => {
     const entries = [entry({ idx: 0, label: "End turn", details: [] })];
     const { container } = render(<EventLog entries={entries} current={0} onPick={() => {}} />);

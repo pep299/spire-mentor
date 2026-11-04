@@ -73,7 +73,7 @@ fn root_q(wb: &mut Workbench, seed: u64, pruning: bool) -> (f64, f64) {
 #[test]
 fn vulnerable_first_outranks_strike_first() {
     let mut wb = Workbench::new(Config::default());
-    wb.restore_save(&save())
+    wb.restore_save(&save(), sts2_workbench::runlog::DEFAULT_NOW_ISO)
         .unwrap_or_else(|e| panic!("restore: {} {}", e.status, e.detail));
     for seed in [1, 2] {
         let (beam, strike) = root_q(&mut wb, seed, true);

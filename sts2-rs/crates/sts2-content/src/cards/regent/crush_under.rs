@@ -12,8 +12,13 @@ use super::prelude::*;
 /// `crates/sts2-core/src/powers/regent.rs::crush_under_*`; its
 /// `after_turn_end` listener restores the lost Strength on the
 /// owner's side.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L169
 pub(crate) fn play_crush_under(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
+    // C# `CrushUnder.OnPlay` captures `enemies = CombatState.HittableEnemies`
+    // (a `ToList()` copy) BEFORE `DamageCmd.Attack` and applies
+    // CrushUnderPower to that snapshot only, so an enemy spawned during the
+    // attack (StockPower.AfterDeath's replacement Axebot) is not debuffed
+    // (Regent-3001 act3: Rust gave the new Axebot CRUSH_UNDER + -Strength).
+    let targets = hittable_enemy_snapshot(state);
     deal_damage_all_enemies(state, current_damage(state));
     // C# `CrushUnder.cs`:
     //   CanonicalVars = [DamageVar(7m), DynamicVar("StrengthLoss", 1m)];
@@ -24,10 +29,12 @@ pub(crate) fn play_crush_under(state: &mut CombatState, _t: Option<CreatureUid>)
     // +1-StrengthLoss upgrade rider was dropped in the original port.
     // Bead `sts2-rs-3ub3d`.
     let strength_loss = if current_card_upgraded(state) { 2 } else { 1 };
-    // Apply CrushUnder to every still-alive enemy (snapshot first so
-    // the death-recheck inside the signed-helper sees post-damage HP).
-    let uids: Vec<CreatureUid> = state.enemy_uids.iter().copied().collect();
-    for uid in uids {
+    // Apply CrushUnder to the pre-attack snapshot, skipping any enemy that
+    // has since left combat.
+    for uid in targets {
+        if !state.enemy_uids.contains(&uid) {
+            continue;
+        }
         // sts2-rs-na2z4: CrushUnderPower : TemporaryStrengthPower
         // (IsPositive=false) folds -strength_loss Strength on apply;
         // hooks.rs after_turn_end CrushUnder arm reverts at enemy turn.

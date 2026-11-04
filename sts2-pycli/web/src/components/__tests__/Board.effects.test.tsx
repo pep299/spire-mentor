@@ -15,7 +15,7 @@ import { deathBurstRadiusFor, dissolveSecondsFor } from "../../effects/dissolve"
 import { RIG_BOUNDS } from "../../rigBounds";
 import { SCENE_W } from "../../scene";
 import * as bindingsModule from "../../effects/bindings";
-import { DEFAULT_DYING_FADE_SECONDS } from "../Combatant";
+import { DEFAULT_DYING_FADE_SECONDS } from "../combatantMetrics";
 
 /** Everything the overlay was asked to play, recorded at the moment it was
  *  asked — see the `VfxLayer` mock below. */

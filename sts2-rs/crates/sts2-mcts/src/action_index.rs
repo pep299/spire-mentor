@@ -86,7 +86,7 @@ pub const CANONICAL_ACTION_DIM: usize = 640;
 #[must_use]
 pub fn action_to_slot(state: &CombatState, action: &Action) -> Option<usize> {
     match action {
-        Action::PlayCard { hand_index, .. } => {
+        Action::PlayCard { hand_index, .. } | Action::PlayCardAtAlly { hand_index, .. } => {
             let uid = *state.player.hand.get(usize::from(*hand_index))?;
             let card = state.cards.iter().find(|c| c.uid == uid)?;
             let card_id = card.card_id;
@@ -97,7 +97,9 @@ pub fn action_to_slot(state: &CombatState, action: &Action) -> Option<usize> {
             CardId::all().iter().position(|c| *c == card_id)
         }
         Action::EndTurn => Some(SLOT_END_TURN),
-        Action::UsePotion { .. } | Action::DrinkPotion { .. } => Some(SLOT_POTION),
+        Action::UsePotion { .. }
+        | Action::DrinkPotion { .. }
+        | Action::DrinkPotionAtAlly { .. } => Some(SLOT_POTION),
         _ => Some(SLOT_OTHER),
     }
 }
@@ -139,8 +141,9 @@ pub enum ActionTarget {
     /// keeps the key trivially derivable from `Action` without a
     /// fresh state walk.
     Enemy(u8),
-    /// Player-targeted (multiplayer-future; player_index is always 0
-    /// at the current pin).
+    /// Player-targeted: a co-op `AnyAlly` card aimed at teammate
+    /// `allies[u8]` (`Action::PlayCardAtAlly`), or a potion thrown at them
+    /// (`Action::DrinkPotionAtAlly`).
     Player(u8),
 }
 
@@ -192,8 +195,8 @@ fn target_from_option(t: Option<u8>) -> ActionTarget {
 /// |---|---|
 /// | 0 | `ActionTarget::None` (untargeted) |
 /// | 1..=5 | `ActionTarget::Enemy(i)` where `i = code - 1`, clamped at 4 |
-/// | 6 | `ActionTarget::Player(_)` |
-/// | 7 | reserved (future expansion / unmapped) |
+/// | 6 | `ActionTarget::Player(0)` (co-op: the first teammate) |
+/// | 7 | `ActionTarget::Player(i)`, `i >= 1`, clamped at 1 |
 ///
 /// Five-enemy ceiling matches `crate::corpus::ENEMY_SLOT_MAX`; any
 /// engine state that ever spawns >5 hostile creatures simultaneously
@@ -225,7 +228,13 @@ pub fn target_class(target: ActionTarget) -> usize {
     match target {
         ActionTarget::None => 0,
         ActionTarget::Enemy(i) => 1 + (i.min(4) as usize),
-        ActionTarget::Player(_) => 6,
+        // Co-op `PlayCardAtAlly` (GH #1017). Classes 6 and 7 were never
+        // emitted before (no action produced a player target), so this moves
+        // no slot a trained policy indexes. Two classes for up to three
+        // teammates: with four players the second and third teammates
+        // share 7, as enemies past the fifth share `Enemy(4)`.
+        ActionTarget::Player(0) => 6,
+        ActionTarget::Player(_) => 7,
     }
 }
 
@@ -281,12 +290,25 @@ pub fn action_to_key(state: &CombatState, action: &Action) -> Option<ActionKey> 
                 target: target_from_option(*target),
             })
         }
+        Action::PlayCardAtAlly { hand_index, ally } => {
+            let uid = *state.player.hand.get(usize::from(*hand_index))?;
+            let card = state.cards.iter().find(|c| c.uid == uid)?;
+            Some(ActionKey::PlayCard {
+                card_id: card.card_id,
+                target: ActionTarget::Player(*ally),
+            })
+        }
         Action::EndTurn => Some(ActionKey::EndTurn),
         Action::UsePotion { target, .. } | Action::DrinkPotion { target, .. } => {
             Some(ActionKey::Potion {
                 target: target_from_option(*target),
             })
         }
+        // Thrown at a teammate (GH #1017): the player target classes, which
+        // no potion emitted before either.
+        Action::DrinkPotionAtAlly { ally, .. } => Some(ActionKey::Potion {
+            target: ActionTarget::Player(*ally),
+        }),
         _ => Some(ActionKey::Other),
     }
 }
@@ -456,6 +478,29 @@ mod tests {
         // corpus::ENEMY_SLOT_MAX).
         assert_eq!(target_class(ActionTarget::Enemy(7)), 5);
         assert_eq!(target_class(ActionTarget::Player(0)), 6);
+        // GH #1017: a second teammate is its own class (the third shares it).
+        assert_eq!(target_class(ActionTarget::Player(1)), 7);
+        assert_eq!(target_class(ActionTarget::Player(2)), 7);
+    }
+
+    /// GH #1017: Lift at the first and at the second teammate are two keyed
+    /// slots, and neither is a slot an enemy-targeted or untargeted play of
+    /// the same card uses.
+    #[test]
+    fn keyed_slot_separates_teammate_targets() {
+        let card_id = CardId::all()[0];
+        let slot = |target| action_key_to_slot(ActionKey::PlayCard { card_id, target });
+        let at0 = slot(ActionTarget::Player(0));
+        let at1 = slot(ActionTarget::Player(1));
+        assert_ne!(at0, at1);
+        for other in [
+            ActionTarget::None,
+            ActionTarget::Enemy(0),
+            ActionTarget::Enemy(4),
+        ] {
+            assert_ne!(slot(other), at0);
+            assert_ne!(slot(other), at1);
+        }
     }
 
     #[test]

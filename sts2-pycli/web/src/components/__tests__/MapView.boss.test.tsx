@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import MapView, { bossArt } from "../MapView";
+import MapView from "../MapView";
+import { bossArt } from "../mapArt";
 import { HintsFixture } from "../../hints/HintsContext";
 import type { FullMap, MapGraph } from "../../api";
 

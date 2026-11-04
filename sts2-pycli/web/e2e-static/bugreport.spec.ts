@@ -20,7 +20,7 @@ const ID = "wb-e2e0000000000001";
 test.use({ serviceWorkers: "block" });
 
 function historyRows(page: Page) {
-  return page.locator('button[title="rewind the run to this step"], button[title="current position"]');
+  return page.locator('[role="button"][title="rewind the run to this step"], [role="button"][title="current position"]');
 }
 
 async function startRun(page: Page, seed: string): Promise<void> {

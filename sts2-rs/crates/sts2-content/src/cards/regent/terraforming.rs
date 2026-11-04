@@ -2,7 +2,6 @@
 use super::prelude::*;
 
 /// Terraforming — apply 6 Vigor to self.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L583
 pub(crate) fn play_terraforming(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     // C# Terraforming.cs: VigorPower 6, +2 on upgrade → 8. Bead `sts2-rs-rjnca`.
     // v0.111.0: Vigor 6 -> 7, upgrade +2 -> +3 (decomp Terraforming.cs:14,30).

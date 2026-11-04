@@ -19,12 +19,16 @@ pub(crate) fn play_glimpse_beyond(
     state: &mut CombatState,
     target: Option<CreatureUid>,
 ) -> EffectResult {
-    let _ = target; // AllAllies → self in single-player; no explicit target needed.
+    let _ = target;
     let count = if current_card_upgraded(state) { 4 } else { 3 };
-    for _ in 0..count {
-        let soul = card_from_spec(&status_specs::soul());
-        spawn_card_into_draw_pile_random_position(state, soul);
-    }
+    // C# `GlimpseBeyond.cs`: Souls into the draw pile of every living player
+    // on the side.
+    sts2_core::coop::every_player(state, |state| {
+        for _ in 0..count {
+            let soul = card_from_spec(&status_specs::soul());
+            spawn_card_into_draw_pile_random_position(state, soul);
+        }
+    });
     EffectResult::Resolved
 }
 

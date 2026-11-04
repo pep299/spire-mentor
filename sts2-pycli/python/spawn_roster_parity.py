@@ -61,6 +61,10 @@ RNG_BRANCHED_ALLOWLIST: frozenset[str] = frozenset(
         # vs C#'s rolled Nectar(35). RNG-branched, not an engine bug.
         "BOWLBUGS_NORMAL",
         "BOWLBUGS_WEAK",  # same base.Rng.NextItem worker draw (BowlbugsWeak.cs:27-34)
+        # RubyRaidersNormal.cs:38-49 draws 3 of 5 raiders via base.Rng.NextItem
+        # without replacement; randomize_ruby_raiders_normal ports it 1:1 (same
+        # in v0.111.0). The synthetic builder can't replay the encounter stream.
+        "RUBY_RAIDERS_NORMAL",
     }
 )
 

@@ -1,4 +1,3 @@
-// port-pin-skip — module aggregator; per-relic files carry the port pins.
 //! Relic content: static data definitions for every relic in the pool.
 //!
 //! Each character / pool module ports the matching file from

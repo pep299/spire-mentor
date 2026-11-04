@@ -24,6 +24,9 @@ Leaf Slime (S), opening hand Strike/Defend/Defend/Strike/Strike) exactly --
 see ``logs/realgame_parity/20260711T033316Z_seed12345/real.jsonl``.
 """
 
+import pytest
+import sts2_client
+
 
 class TestPlayedSaveDefault:
     def test_default_still_opens_on_neow(self, game):
@@ -47,6 +50,14 @@ class TestPlayedSaveOptIn:
         assert player["deck_size"] == 10
         assert [r["id"] for r in player["relics"]] == ["BURNING_BLOOD"]
 
+    @pytest.mark.skipif(
+        sts2_client.GAME_VERSION != "v0.107.1",
+        reason=(
+            "pinned to a v0.107.1 real-game recording; v0.111.0 rehashes seeds "
+            "(XxHash64), so seed 12345 walks another map, and no v0.111.0 "
+            "real-game trail has been recorded"
+        ),
+    )
     def test_matches_recorded_real_trail_for_seed_12345(self, game):
         """Regression pin against the exact seed-12345 real-game reference
         trail (logs/realgame_parity/20260711T033316Z_seed12345/real.jsonl):

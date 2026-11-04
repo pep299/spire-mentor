@@ -166,7 +166,7 @@ pub fn surface_index(s: &str) -> usize {
 /// loading at once. An appended slot costs nothing instead: both consumers
 /// read the `cat` width off the graph they loaded, exactly as they do for
 /// `emb_boss`.
-pub const DECK_OPS: [&str; 10] = [
+pub const DECK_OPS: [&str; 11] = [
     "none",
     "reward",
     "smith",
@@ -177,14 +177,18 @@ pub const DECK_OPS: [&str; 10] = [
     "grant",
     "shop_buy",
     "shop_remove",
+    // A Scroll Boxes pack (GH #978, `card_bundles`). Took the spare row.
+    "bundle",
 ];
 
-/// The PAD index for `cat[10]`, mirroring `vocab.py::N_DECK_OP`.
+/// The PAD index for `cat[10]`, mirroring `vocab.py::N_DECK_OP`, pinned at 11.
 ///
-/// `len() + 1`, NOT `len()`: this table is defined with one SPARE row so the
-/// next deck op is a free append. `N_FIXED` lost exactly that slack and
-/// became a change that would move every champion's `cat[6]` pad (GH #545).
-pub const N_DECK_OP: usize = DECK_OPS.len() + 1;
+/// The table was defined with one SPARE row so the next deck op was a free
+/// append; `"bundle"` (GH #978) took it, so this is now `len()`. The NEXT op
+/// moves the pad and every committed champion's `cat[10]` with it (the
+/// `N_FIXED` trap, GH #545): widen the table and re-export the fleet first.
+pub const N_DECK_OP: usize = 11;
+const _: () = assert!(N_DECK_OP == DECK_OPS.len());
 
 /// Row for a deck-op name; unknown names fall back to `"none"` (row 0).
 #[must_use]

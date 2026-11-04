@@ -113,6 +113,7 @@ pub(crate) use helpers::create_character_cards_into_arena;
 pub(crate) use helpers::create_character_ethereal_cards_into_arena;
 pub use helpers::create_colorless_modifier_cards;
 pub(crate) use helpers::distinct_character_card_ids;
+pub(crate) use helpers::distinct_colorless_combat_ids;
 pub(crate) use helpers::distinct_colorless_modifier_ids;
 pub use helpers::eligible_colorless_modifier_card_ids;
 pub use helpers::fasten;

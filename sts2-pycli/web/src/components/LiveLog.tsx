@@ -1,7 +1,9 @@
 import { useEffect, useRef } from "react";
 import type { LiveNode, LiveTimeline } from "../api";
 import { hasReadableRow } from "../combatlog";
-import { DetailToggle, StepEvents, TurnHeader, turnChips, useDetailMode } from "./turnLedger";
+import { endedSelection } from "../textSelection";
+import { DetailToggle, StepEvents, TurnHeader } from "./turnLedger";
+import { turnChips, useDetailMode } from "./turnLedgerState";
 
 /**
  * The live-run event log, rendered from the server's branch tree.
@@ -38,7 +40,7 @@ export default function LiveLog({
   const [mode, setMode] = useDetailMode();
   // Keep the current step in view as the log grows (e.g. each card played in
   // combat appends a row), so the latest action is always visible.
-  const leafRef = useRef<HTMLButtonElement>(null);
+  const leafRef = useRef<HTMLDivElement>(null);
   const leaf = timeline?.active_leaf ?? null;
   useEffect(() => {
     leafRef.current?.scrollIntoView({ block: "nearest" });
@@ -180,11 +182,21 @@ export default function LiveLog({
             {showTurn && (
               <TurnHeader turn={turn as number} chips={chipsByStart.get(i) ?? []} />
             )}
-            <button
+            {/* A div, not a <button>: browsers will not start a text selection
+                inside a button, so the step labels could not be copied. It
+                keeps the button role, focus and Enter/Space activation, and a
+                drag that selects text does not seek. */}
+            <div
               ref={isLeaf ? leafRef : undefined}
-              type="button"
-              disabled={busy}
-              onClick={() => onSeek(id)}
+              role="button"
+              tabIndex={0}
+              aria-disabled={busy || undefined}
+              onClick={(e) => { if (!busy && !endedSelection(e.currentTarget)) onSeek(id); }}
+              onKeyDown={(e) => {
+                if (busy || (e.key !== "Enter" && e.key !== " ")) return;
+                e.preventDefault();
+                onSeek(id);
+              }}
               aria-current={isLeaf ? "step" : undefined}
               title={isLeaf ? "current position" : isFuture ? "jump forward to this step" : "rewind the run to this step"}
               style={{
@@ -196,12 +208,13 @@ export default function LiveLog({
                 fontWeight: isLeaf ? 650 : 400, opacity: isFuture ? 0.85 : 1,
               }}
             >
-              <span aria-hidden style={{ color: "var(--muted)", fontSize: 10, flexShrink: 0 }}>
+              {/* The glyph and the "now" tag are chrome: keep them out of a copy. */}
+              <span aria-hidden style={{ color: "var(--muted)", fontSize: 10, flexShrink: 0, userSelect: "none" }}>
                 {isLeaf ? "▸" : isFuture ? "▹" : "↺"}
               </span>
               <span style={{ flex: 1 }}>{n.error ? `⚠ ${n.label}` : n.label}</span>
-              {isLeaf && <span style={{ fontSize: 9.5, color: "var(--muted)", flexShrink: 0 }}>now</span>}
-            </button>
+              {isLeaf && <span style={{ fontSize: 9.5, color: "var(--muted)", flexShrink: 0, userSelect: "none" }}>now</span>}
+            </div>
 
             <StepEvents rows={n.combat_log ?? []} details={n.details} mode={mode} dim={isFuture} />
 

@@ -272,7 +272,8 @@ internal sealed class SimCoachPanel
         {
             if (_layer != null && GodotObject.IsInstanceValid(_layer))
             {
-                _layer.Visible = SpireMentorModConfig.ShowHud && SimRuntime.Mode == SimMode.Advisor;
+                _layer.Visible = SpireMentorModConfig.ShowHud && SimRuntime.Mode == SimMode.Advisor &&
+                                 !SimUiHide.Hidden;
             }
         });
     }

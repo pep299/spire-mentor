@@ -71,10 +71,13 @@
     "action": "end turn",
     "hp_n": 0,
     "hp_sd": null,
+    "in_band": false,
     "is_best": true,
     "losses": 0,
     "low_confidence": false,
     "mean_final_hp": null,
+    "pick_rank": null,
+    "pick_reason": null,
     "q": 0.0,
     "q_saturated": false,
     "stable_idx": -1,
@@ -98,7 +101,7 @@
    "bg_col": 1,
    "bg_row": 1,
    "bg_seed": 1,
-   "floor": 1,
+   "floor": 2,
    "step_no": 0,
    "turn": 2
   },
@@ -252,7 +255,7 @@
    "energy_image": "https://assets.test/sprite_fonts/ironclad_energy_icon.png",
    "exhaust_pile": [],
    "exhaust_pile_count": 0,
-   "floor": 1,
+   "floor": 2,
    "hand": [
     {
      "base_cost": 1,

@@ -30,7 +30,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 from realgame_control import ControlPlane  # noqa: E402
 from realgame_livetree import LiveRunTree  # noqa: E402
-from test_realgame_control import FakeClient  # noqa: E402
+from test_realgame_control import FakeClient  # noqa: E402  # ty: ignore[unresolved-import]
 
 
 def plane(allow: list[str]) -> ControlPlane:

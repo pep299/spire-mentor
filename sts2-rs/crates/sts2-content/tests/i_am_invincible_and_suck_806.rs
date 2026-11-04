@@ -142,6 +142,37 @@ fn nostalgia_returned_copy_is_not_replayed() {
     }
 }
 
+/// NostalgiaPower counts the plays STARTED before this one when C# resolves
+/// the result pile, ahead of the replay loop (CardModel.cs:1891), so a card's
+/// own Replay iterations never cost it the redirect. Rust read the live tally
+/// after the replays (Ironclad fuzz seed 5917: a Replay-3 Ultimate Strike
+/// auto-played by Hellraiser went to discard instead of the draw top).
+#[test]
+#[serial_test::serial(global_registry)]
+fn nostalgia_redirects_an_auto_played_card_with_replay() {
+    for version in VERSIONS {
+        let (mut state, iai, _) = turn_end_state(version);
+        state.cards[iai.0.get() as usize - 1].base_replay_count = 1;
+        let player = state.player.creature_uid.expect("player creature");
+        sts2_core::card_effects::apply_power_to_creature(
+            &mut state,
+            player,
+            PowerKind::Nostalgia,
+            1,
+        );
+        let _ = sts2_core::combat_loop::end_player_turn_phase_one(&mut state);
+        assert_eq!(
+            state.player.block, 20,
+            "{version:?}: played twice (Replay 1)"
+        );
+        assert_eq!(
+            state.player.draw.first(),
+            Some(&iai),
+            "{version:?}: Nostalgia still sends it to the draw top"
+        );
+    }
+}
+
 #[test]
 #[serial_test::serial(global_registry)]
 fn stacked_copies_each_play_once() {

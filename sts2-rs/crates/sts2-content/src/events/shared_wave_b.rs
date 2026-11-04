@@ -1,8 +1,5 @@
 //! Shared-pool events wave B (R–Z). Bead `sts2-rs-6ynt.4.5`.
 //!
-//! Port pin: `sts2-rl-agent@01c094d:sts2_env/events/shared.py:1323`+
-//! (`Reflections` through `ZenWeaver`).
-//!
 //! Each event below carries an `EventSpec` matching the Python
 //! `EventModel` subclass. Effect bodies port the *single-page* outcome
 //! shape verbatim where the surface exists; complex deferred surfaces
@@ -116,11 +113,13 @@ const REFLECTIONS_STREAM: &str = "REFLECTIONS";
 /// `CardInstance.clone(new_id)`.
 fn reflections_shatter(state: &mut RunState) -> EventOutcome {
     let original_len = state.master_deck.len();
-    let mut clones = Vec::with_capacity(original_len);
-    for i in 0..original_len {
-        let seed = state.rng.rewards.next_int_exclusive(0, i32::MAX) as u64;
-        clones.push(state.master_deck[i].clone_with_seed(seed));
-    }
+    // `RunState.CloneCard` draws no RNG (`Reflections.cs:63-71`, same in
+    // v0.111.0). The port drew a Rewards int per card to seed the clone's
+    // uid, putting the Rewards stream ~deck-size reads ahead of C# (act23
+    // probe: Necrobinder 1011 / Ironclad 1004, 1011 / Regent 1004 — the next
+    // gold and card rewards rolled off a shifted stream). A plain copy, as
+    // the other deck duplicators (Dolly's Mirror, Bing Bong) make.
+    let clones: Vec<_> = state.master_deck[..original_len].to_vec();
     // C# Shatter adds each clone with its own `CardPileCmd.Add(card, Deck)`
     // (`Reflections.cs:67-71`), so each runs the deck-add hooks (GH #806).
     for clone in clones {
@@ -319,6 +318,7 @@ fn sapphire_seed_eat(state: &mut RunState) -> EventOutcome {
 fn sown_can_enchant(c: &sts2_core::cards::Card) -> bool {
     use sts2_core::cards::CardType;
     !matches!(c.card_type, CardType::Status | CardType::Curse)
+        && !c.is_quest()
         && c.enchantments.is_empty()
         && (c.cost >= 0 || c.is_x_cost())
 }
@@ -342,6 +342,7 @@ fn sapphire_seed_plant(state: &mut RunState) -> EventOutcome {
                 amount: 1,
                 type_restriction: None,
                 secondary_type: None,
+                optional: false,
             });
         EventOutcome::finished("Pick a card to enchant with Sown.")
     } else {
@@ -402,11 +403,14 @@ fn self_help_card_eligible(
     c: &sts2_core::cards::Card,
     card_type: sts2_core::cards::CardType,
     enchantment: sts2_core::cards::EnchantmentId,
+    version: sts2_core::GameVersion,
 ) -> bool {
     c.card_type == card_type
         && c.enchantments.is_empty()
         && (c.cost >= 0 || c.is_x_cost())
-        && (enchantment != sts2_core::cards::EnchantmentId::Nimble || c.base_block > 0)
+        && !c.is_quest()
+        // `Nimble.CanEnchant` → `CardModel.GainsBlock` (GH #1021).
+        && (enchantment != sts2_core::cards::EnchantmentId::Nimble || c.gains_block_for(version))
 }
 
 /// C# `PlayerHasCardsAvailable<T>(owner, type)`.
@@ -418,7 +422,7 @@ fn self_help_has_eligible(
     state
         .master_deck
         .iter()
-        .any(|c| self_help_card_eligible(c, card_type, enchantment))
+        .any(|c| self_help_card_eligible(c, card_type, enchantment, state.game_version))
 }
 
 /// C# `SelectAndEnchant<T>(2, typeRestriction, …)`:
@@ -434,10 +438,11 @@ fn self_help_select_and_enchant(
     card_type: sts2_core::cards::CardType,
     finished: &str,
 ) -> EventOutcome {
+    let version = state.game_version;
     let eligible = state
         .master_deck
         .iter()
-        .filter(|c| self_help_card_eligible(c, card_type, enchantment))
+        .filter(|c| self_help_card_eligible(c, card_type, enchantment, version))
         .count();
     if state.interactive_card_transform && eligible > 1 {
         state
@@ -447,11 +452,12 @@ fn self_help_select_and_enchant(
                 amount: SELF_HELP_BOOK_ENCHANT_AMOUNT,
                 type_restriction: Some(card_type),
                 secondary_type: None,
+                optional: false,
             });
     } else if let Some(card) = state
         .master_deck
         .iter_mut()
-        .find(|c| self_help_card_eligible(c, card_type, enchantment))
+        .find(|c| self_help_card_eligible(c, card_type, enchantment, version))
     {
         // Auto mode (parity-fuzz / headless) takes the first eligible
         // card; the 1-eligible interactive case is C#'s grid auto-take.
@@ -1948,63 +1954,307 @@ pub const TINKER_TIME: EventSpec = EventSpec {
 };
 
 // ── Trial ────────────────────────────────────────────────────────────
+//
+// C# `Trial.cs` (identical in v0.107.1 and v0.111.0 bar decompiler noise) is a
+// three-page event, tracked in `event_state.page`:
+//   page 0 — INITIAL: Accept / Reject.
+//   page 1 — the defendant, `base.Rng.NextInt(3)` (`Trial.cs:73`), stored in
+//            `event_state.scratch[0]`: Merchant / Noble / Nondescript, each with
+//            a Guilty / Innocent verdict that finishes the event.
+//   page 2 — REJECT: Accept (the same `Accept` body) / Double Down.
+// `Trial.CalculateVars` rolls `Rng.Chaotic` (entrant number, cosmetic), never
+// `base.Rng`, so the defendant roll is read #1 of the event's own stream and
+// NondescriptInnocent's two `TransformToRandom(item, base.Rng)` are reads #2/#3.
 
-fn trial_accept(_state: &mut RunState) -> EventOutcome {
-    // Python: rolls merchant/noble/nondescript and presents a guilty/
-    // innocent choice that branches into curse-add + relic / heal /
-    // upgrade / transform. Multi-page collapses to flavor-only;
-    // 6ynt.4.multi-page lands the branches.
-    //
-    // v0.107.1 RNG-stream migration (bead `…wb8lk.12`): C# `Trial.cs`
-    // moved its `CardCmd.TransformToRandom` draw (NondescriptInnocent) from
-    // `RunState.Rng.Niche` to the event-local `base.Rng`, and the trial-type
-    // pick already uses `base.Rng.NextInt(3)`. NO-OP here: the entire
-    // multi-page judgment body (the `NextInt(3)` pick + the transform draws)
-    // is unimplemented, so there is no niche draw to migrate. When the
-    // multi-page progression lands it must seed off the "TRIAL" event stream
-    // (see `roll_transform_replacement_event_stream`), not `rng.niche`.
-    EventOutcome::finished(
-        "Accepted the trial — multi-page judgment progression deferred to 6ynt.4.multi-page.",
-    )
+/// `Trial`'s `Id.Entry` — names its own (non-shared) event RNG stream.
+const TRIAL_STREAM: &str = "TRIAL";
+/// Page holding the defendant's Guilty / Innocent verdict.
+const TRIAL_PAGE_VERDICT: u8 = 1;
+/// Page shown after Reject (`Trial.cs:116-126`).
+const TRIAL_PAGE_REJECT: u8 = 2;
+/// `NobleGuilty` heal (`CreatureCmd.Heal(10)`, `Trial.cs:167`).
+pub const TRIAL_NOBLE_GUILTY_HEAL: i32 = 10;
+/// `NobleInnocent` gold (`PlayerCmd.GainGold(300)`, `Trial.cs:174`).
+pub const TRIAL_NOBLE_INNOCENT_GOLD: i32 = 300;
+/// Cards upgraded (MerchantInnocent), transformed (NondescriptInnocent),
+/// relics pulled (MerchantGuilty) and card rewards offered
+/// (NondescriptGuilty): every Trial verdict that grants something grants 2.
+const TRIAL_COUNT: usize = 2;
+/// Cards per NondescriptGuilty `CardReward` (`Trial.cs:184`).
+const TRIAL_REWARD_CARDS: usize = 3;
+
+/// The `Trial.Accept` defendant: `base.Rng.NextInt(3)` (`Trial.cs:73`) —
+/// 0 Merchant, 1 Noble, 2 Nondescript. Read #1 of the event stream.
+fn trial_defendant(state: &RunState) -> i16 {
+    let mut rng = state.rng.named(TRIAL_STREAM);
+    rng.next_int_exclusive(0, 3) as i16
 }
 
-fn trial_reject(_state: &mut RunState) -> EventOutcome {
-    // Python: presents a `double_down` next-option that calls
-    // `lose_run()`. Multi-page collapses to flavor-only;
-    // 6ynt.4.multi-page lands the run-loss path.
-    EventOutcome::finished(
-        "Rejected the trial — multi-page abandon-run path deferred to 6ynt.4.multi-page.",
-    )
+fn trial_add_curse(state: &mut RunState, curse: CardId) {
+    // `CardPileCmd.AddCurseToDeck<T>` = CreateCard + Add(Deck), so the
+    // deck-add hooks run.
+    if let Some(card) = card_pod_from_id(curse, false) {
+        state.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::EventGain);
+    }
 }
 
+fn trial_accept(state: &mut RunState) -> EventOutcome {
+    // `Trial.Accept` (`Trial.cs:64-114`): roll the defendant, then
+    // `SetEventState` with its two verdicts — the event does NOT finish.
+    state.event_state.scratch = vec![trial_defendant(state)];
+    state.event_state.page = TRIAL_PAGE_VERDICT;
+    EventOutcome {
+        finished: false,
+        description: "The trial begins. Choose a verdict.".to_string(),
+        effects: Vec::new(),
+    }
+}
+
+fn trial_reject(state: &mut RunState) -> EventOutcome {
+    // `Trial.Reject` (`Trial.cs:116-126`): a second page offering Accept or
+    // Double Down — the event does NOT finish.
+    state.event_state.page = TRIAL_PAGE_REJECT;
+    EventOutcome {
+        finished: false,
+        description: "Reconsider, or double down.".to_string(),
+        effects: Vec::new(),
+    }
+}
+
+fn trial_double_down(_state: &mut RunState) -> EventOutcome {
+    // `Trial.DoubleDown` (`Trial.cs:128-132`) only opens the abandon-run
+    // CONFIRM popup — no run state changes. Live, confirming abandons the run
+    // and cancelling leaves the player on this page. The engine has no
+    // abandon path, and staying put would let a fixed policy loop forever, so
+    // this finishes the event with no effect — the same outcome the C#
+    // headless oracle produces (it no-ops the popup, sees the event did not
+    // advance, and force-finishes to the map).
+    EventOutcome::finished("Doubled down; the trial is abandoned.")
+}
+
+fn trial_merchant_guilty(state: &mut RunState) -> EventOutcome {
+    // `MerchantGuilty` (`Trial.cs:145-153`): Regret, then two
+    // `RelicFactory.PullNextRelicFromFront(Owner)` obtains.
+    trial_add_curse(state, CardId::Regret);
+    for _ in 0..TRIAL_COUNT {
+        super::act2_hive::ranwid_grant_front_relic(state);
+    }
+    EventOutcome::finished("Guilty: gained Regret and two relics.")
+}
+
+fn trial_merchant_innocent(state: &mut RunState) -> EventOutcome {
+    // `MerchantInnocent` (`Trial.cs:155-163`): Shame, then
+    // `CardSelectCmd.FromDeckForUpgrade(2)` → Upgrade. `upgrade_random_cards`
+    // queues the player pick in interactive mode (same surface as
+    // AromaOfChaos / SpiritGrafter).
+    trial_add_curse(state, CardId::Shame);
+    let _ = state.upgrade_random_cards(TRIAL_COUNT);
+    EventOutcome::finished("Innocent: gained Shame, upgrade 2 cards.")
+}
+
+fn trial_noble_guilty(state: &mut RunState) -> EventOutcome {
+    // `NobleGuilty` (`Trial.cs:165-169`): heal 10.
+    let healed = state.heal(TRIAL_NOBLE_GUILTY_HEAL);
+    EventOutcome::finished(format!("Guilty: healed {healed}."))
+}
+
+fn trial_noble_innocent(state: &mut RunState) -> EventOutcome {
+    // `NobleInnocent` (`Trial.cs:171-176`): Regret, then 300 gold.
+    trial_add_curse(state, CardId::Regret);
+    state.gain_gold(TRIAL_NOBLE_INNOCENT_GOLD);
+    EventOutcome::finished(format!(
+        "Innocent: gained Regret and {TRIAL_NOBLE_INNOCENT_GOLD} gold."
+    ))
+}
+
+fn trial_nondescript_guilty(state: &mut RunState) -> EventOutcome {
+    // `NondescriptGuilty` (`Trial.cs:178-188`): Doubt, then
+    // `RewardsCmd.OfferCustom` with two 3-card `CardReward`s over the
+    // character pool, `ForNonCombatWithDefaultOdds` (base odds, no pity, no
+    // upgrade roll). OfferCustom populates them in list order on
+    // `PlayerRng.Rewards`, so roll both here; each is a real `CardReward`
+    // (`IsCardReward`), so the card-reward hooks see the slate.
+    trial_add_curse(state, CardId::Doubt);
+    for _ in 0..TRIAL_COUNT {
+        let ids = crate::cards::spec_index::roll_character_reward_options_no_upgrade(
+            state,
+            TRIAL_REWARD_CARDS,
+        );
+        let cards: Vec<sts2_core::Card> = ids
+            .into_iter()
+            .filter_map(|id| card_pod_from_id(id, false))
+            .collect();
+        let cards = state.offer_card_slate(cards, true);
+        state
+            .pending_rewards
+            .push(Reward::Card(CardReward::from_cards(&cards)));
+    }
+    EventOutcome::finished("Guilty: gained Doubt and two card rewards.")
+}
+
+fn trial_nondescript_innocent(state: &mut RunState) -> EventOutcome {
+    // `NondescriptInnocent` (`Trial.cs:190-199`): Doubt, then
+    // `FromDeckForTransformation(2)` → `TransformToRandom(item, base.Rng)` per
+    // pick — event-stream reads #2 and #3 (the defendant roll was #1).
+    // Interactive hosts queue the picks (rolled only once each resolves);
+    // otherwise transform the first two deck cards off the same reads, the
+    // MorphicGrove shape.
+    trial_add_curse(state, CardId::Doubt);
+    if state.interactive_card_transform {
+        for k in 0..TRIAL_COUNT {
+            state
+                .pending_deck_transforms
+                .push(sts2_core::PendingDeckTransform {
+                    event_stream_roll: Some((TRIAL_STREAM, 1 + k as u32)),
+                    ..Default::default()
+                });
+        }
+        return EventOutcome::finished("Innocent: gained Doubt, pick 2 cards to transform.");
+    }
+    for k in 0..TRIAL_COUNT {
+        let Some(original) = state.master_deck.first().map(|c| c.card_id) else {
+            break;
+        };
+        let Some(new_id) = crate::cards::spec_index::roll_transform_replacement_event_stream(
+            state,
+            state.character_id,
+            original,
+            TRIAL_STREAM,
+            1 + k as u32,
+        ) else {
+            break;
+        };
+        if let Some(card) = card_pod_from_id(new_id, false) {
+            state.master_deck.remove(0);
+            state.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::EventGain);
+        }
+    }
+    EventOutcome::finished("Innocent: gained Doubt, transformed 2 cards.")
+}
+
+/// Option ids shown on each page, in C# order.
+fn trial_page_option_ids(state: &RunState) -> &'static [&'static str] {
+    match state.event_state.page {
+        TRIAL_PAGE_VERDICT => match state.event_state.scratch.first() {
+            Some(0) => &["merchant_guilty", "merchant_innocent"],
+            Some(1) => &["noble_guilty", "noble_innocent"],
+            _ => &["nondescript_guilty", "nondescript_innocent"],
+        },
+        TRIAL_PAGE_REJECT => &["reject_accept", "double_down"],
+        _ => &["accept", "reject"],
+    }
+}
+
+fn trial_generate_options(state: &RunState, spec: &EventSpec) -> Vec<EventOptionInfo> {
+    let ids = trial_page_option_ids(state);
+    super::default_option_info_from_spec(state, spec)
+        .into_iter()
+        .filter(|o| ids.contains(&o.option_id))
+        .collect()
+}
+
+const fn trial_option(
+    option_id: &'static str,
+    loc_key: &'static str,
+    default_label: &'static str,
+    default_description: &'static str,
+    handler: fn(&mut RunState) -> EventOutcome,
+) -> EventOptionSpec {
+    EventOptionSpec {
+        option_id,
+        loc_key,
+        default_label,
+        default_description,
+        default_vars: &[],
+        vars_fn: None,
+        title_vars_fn: None,
+        handler,
+    }
+}
+
+// Each page's options are contiguous and in C# order, so filtering this list
+// by page keeps the presented order.
 const TRIAL_OPTIONS: &[EventOptionSpec] = &[
-    EventOptionSpec {
-        option_id: "accept",
-        loc_key: "TRIAL.pages.INITIAL.options.ACCEPT",
-        default_label: "Accept the Trial",
-        default_description: "Judge a defendant.",
-        default_vars: &[],
-        vars_fn: None,
-        title_vars_fn: None,
-        handler: trial_accept,
-    },
-    EventOptionSpec {
-        option_id: "reject",
-        loc_key: "TRIAL.pages.INITIAL.options.REJECT",
-        default_label: "Reject",
-        default_description: "Reconsider (or abandon run).",
-        default_vars: &[],
-        vars_fn: None,
-        title_vars_fn: None,
-        handler: trial_reject,
-    },
+    // ── page 0: INITIAL ──
+    trial_option(
+        "accept",
+        "TRIAL.pages.INITIAL.options.ACCEPT",
+        "Accept the Trial",
+        "Judge a defendant.",
+        trial_accept,
+    ),
+    trial_option(
+        "reject",
+        "TRIAL.pages.INITIAL.options.REJECT",
+        "Reject",
+        "Reconsider (or abandon run).",
+        trial_reject,
+    ),
+    // ── page 1: the defendant's verdicts ──
+    trial_option(
+        "merchant_guilty",
+        "TRIAL.pages.MERCHANT.options.GUILTY",
+        "Guilty",
+        "Gain Regret. Obtain 2 relics.",
+        trial_merchant_guilty,
+    ),
+    trial_option(
+        "merchant_innocent",
+        "TRIAL.pages.MERCHANT.options.INNOCENT",
+        "Innocent",
+        "Gain Shame. Upgrade 2 cards.",
+        trial_merchant_innocent,
+    ),
+    trial_option(
+        "noble_guilty",
+        "TRIAL.pages.NOBLE.options.GUILTY",
+        "Guilty",
+        "Heal 10 HP.",
+        trial_noble_guilty,
+    ),
+    trial_option(
+        "noble_innocent",
+        "TRIAL.pages.NOBLE.options.INNOCENT",
+        "Innocent",
+        "Gain Regret. Gain 300 gold.",
+        trial_noble_innocent,
+    ),
+    trial_option(
+        "nondescript_guilty",
+        "TRIAL.pages.NONDESCRIPT.options.GUILTY",
+        "Guilty",
+        "Gain Doubt. 2 card rewards.",
+        trial_nondescript_guilty,
+    ),
+    trial_option(
+        "nondescript_innocent",
+        "TRIAL.pages.NONDESCRIPT.options.INNOCENT",
+        "Innocent",
+        "Gain Doubt. Transform 2 cards.",
+        trial_nondescript_innocent,
+    ),
+    // ── page 2: REJECT ──
+    trial_option(
+        "reject_accept",
+        "TRIAL.pages.REJECT.options.ACCEPT",
+        "Accept the Trial",
+        "Judge a defendant.",
+        trial_accept,
+    ),
+    trial_option(
+        "double_down",
+        "TRIAL.pages.REJECT.options.DOUBLE_DOWN",
+        "Double Down",
+        "Abandon the run.",
+        trial_double_down,
+    ),
 ];
 
 pub const TRIAL: EventSpec = EventSpec {
     id: EventId::Trial,
     python_name: "Trial",
     is_allowed: always_allowed,
-    generate_options: default_option_info_from_spec,
+    generate_options: trial_generate_options,
     options: TRIAL_OPTIONS,
 };
 
@@ -2291,6 +2541,7 @@ fn wood_carvings_snake(state: &mut RunState) -> EventOutcome {
                 amount: 1,
                 type_restriction: None,
                 secondary_type: None,
+                optional: false,
             });
     } else {
         // Auto mode: enchant the first eligible card (mirror of
@@ -2483,11 +2734,34 @@ const ZEN_WEAVER_OPTIONS: &[EventOptionSpec] = &[
     },
 ];
 
+/// `ZenWeaver.GenerateInitialOptions` (ZenWeaver.cs:41-42, both builds): a
+/// removal option whose cost exceeds the player's gold is replaced by the
+/// null-handler LOCKED option, in the same slot.
+fn zen_weaver_generate_options(state: &RunState, spec: &EventSpec) -> Vec<EventOptionInfo> {
+    let mut opts = default_option_info_from_spec(state, spec);
+    for opt in &mut opts {
+        let cost = match opt.option_id {
+            "emotional" => ZEN_WEAVER_EMOTIONAL_COST,
+            "acupuncture" => ZEN_WEAVER_ACUPUNCTURE_COST,
+            _ => continue,
+        };
+        if state.gold < cost {
+            opt.enabled = false;
+            opt.loc_key = "ZEN_WEAVER.pages.INITIAL.options.LOCKED";
+            opt.label = "Locked".to_string();
+            opt.description = "Not enough gold.".to_string();
+            opt.vars = Vec::new();
+            opt.title_vars = Vec::new();
+        }
+    }
+    opts
+}
+
 pub const ZEN_WEAVER: EventSpec = EventSpec {
     id: EventId::ZenWeaver,
     python_name: "ZenWeaver",
     is_allowed: zen_weaver_allowed,
-    generate_options: default_option_info_from_spec,
+    generate_options: zen_weaver_generate_options,
     options: ZEN_WEAVER_OPTIONS,
 };
 
@@ -2497,6 +2771,34 @@ mod tests {
 
     fn fresh_state() -> RunState {
         RunState::new()
+    }
+
+    /// `ZenWeaver.GenerateInitialOptions` swaps a removal the player cannot
+    /// pay for for the null-handler LOCKED option (ZenWeaver.cs:41-42, both
+    /// builds). Breathing Techniques is never locked.
+    #[test]
+    fn zen_weaver_locks_unaffordable_removals() {
+        for version in [
+            sts2_core::GameVersion::V0_107_1,
+            sts2_core::GameVersion::V0_111_0,
+        ] {
+            let mut rs = fresh_state();
+            rs.game_version = version;
+            let enabled = |rs: &RunState| -> Vec<bool> {
+                (ZEN_WEAVER.generate_options)(rs, &ZEN_WEAVER)
+                    .iter()
+                    .map(|o| o.enabled)
+                    .collect()
+            };
+            rs.gold = 124;
+            assert_eq!(enabled(&rs), [true, false, false], "{version:?}");
+            rs.gold = 249;
+            assert_eq!(enabled(&rs), [true, true, false], "{version:?}");
+            let opts = (ZEN_WEAVER.generate_options)(&rs, &ZEN_WEAVER);
+            assert_eq!(opts[2].loc_key, "ZEN_WEAVER.pages.INITIAL.options.LOCKED");
+            rs.gold = 250;
+            assert_eq!(enabled(&rs), [true, true, true], "{version:?}");
+        }
     }
 
     /// `Nimble.CanEnchant` requires `card.GainsBlock` (`Nimble.cs:7-14`):
@@ -2515,12 +2817,14 @@ mod tests {
         assert!(self_help_card_eligible(
             &defend,
             CardType::Skill,
-            EnchantmentId::Nimble
+            EnchantmentId::Nimble,
+            sts2_core::GameVersion::V0_107_1
         ));
         assert!(!self_help_card_eligible(
             &trance,
             CardType::Skill,
-            EnchantmentId::Nimble
+            EnchantmentId::Nimble,
+            sts2_core::GameVersion::V0_107_1
         ));
     }
 
@@ -2848,9 +3152,14 @@ mod tests {
         assert!(outcome.finished);
         // 5 originals + 5 clones + 1 BadLuck curse.
         assert_eq!(rs.master_deck.len(), 11);
+        // No Rewards read (C# `CloneCard` is RNG-free).
+        assert_eq!(
+            rs.rng.rewards.counter(),
+            fresh_state().rng.rewards.counter()
+        );
         assert_eq!(rs.master_deck.last().unwrap().card_id, CardId::BadLuck);
-        // Clones carry distinct instance UIDs from their sources.
-        assert_ne!(rs.master_deck[0].uid, rs.master_deck[5].uid);
+        // Each clone copies its source card.
+        assert_eq!(rs.master_deck[0].card_id, rs.master_deck[5].card_id);
     }
 
     #[test]
@@ -3510,8 +3819,6 @@ mod tests {
             REFLECTIONS.options[1].handler,
             SAPPHIRE_SEED.options[1].handler,
             SELF_HELP_BOOK.options[3].handler,
-            TRIAL.options[0].handler,
-            TRIAL.options[1].handler,
             WELLSPRING.options[1].handler,
             WOOD_CARVINGS.options[0].handler,
             WOOD_CARVINGS.options[1].handler,
@@ -3900,6 +4207,100 @@ mod tests {
             rs.gold, 0,
             "exact-cost gold is spent (< guard, not == / <=)"
         );
+    }
+
+    fn trial_option_ids(rs: &RunState) -> Vec<&'static str> {
+        (TRIAL.generate_options)(rs, &TRIAL)
+            .iter()
+            .map(|o| o.option_id)
+            .collect()
+    }
+
+    /// `Trial.Accept` (`Trial.cs:64`) rolls the defendant off the event's own
+    /// `TRIAL` stream (read #1) and opens its verdict page; it does not finish
+    /// the event (the old stub did, skipping the whole trial).
+    #[test]
+    fn trial_accept_opens_the_rolled_defendants_verdict_page() {
+        for seed in 0..24 {
+            let mut rs = RunState::new();
+            rs.rng = sts2_core::run_rng_set::RunRngSet::new_for(rs.game_version, seed);
+            assert_eq!(trial_option_ids(&rs), ["accept", "reject"]);
+            let expected = rs.rng.named("TRIAL").next_int_exclusive(0, 3);
+            let out = trial_accept(&mut rs);
+            assert!(!out.finished, "seed {seed}");
+            let want: [&str; 2] = match expected {
+                0 => ["merchant_guilty", "merchant_innocent"],
+                1 => ["noble_guilty", "noble_innocent"],
+                _ => ["nondescript_guilty", "nondescript_innocent"],
+            };
+            assert_eq!(trial_option_ids(&rs), want, "seed {seed}");
+        }
+    }
+
+    /// `Trial.Reject` (`Trial.cs:116`) opens a second page (Accept / Double
+    /// Down) instead of finishing; its Accept runs the same defendant roll.
+    #[test]
+    fn trial_reject_opens_accept_or_double_down_page() {
+        let mut rs = RunState::new();
+        let out = trial_reject(&mut rs);
+        assert!(!out.finished);
+        assert_eq!(trial_option_ids(&rs), ["reject_accept", "double_down"]);
+        let out = trial_accept(&mut rs);
+        assert!(!out.finished);
+        assert_eq!(rs.event_state.page, TRIAL_PAGE_VERDICT);
+    }
+
+    #[test]
+    fn trial_verdicts_apply_their_c_sharp_effects() {
+        crate::cards::dispatch::ensure_installed();
+        let count =
+            |rs: &RunState, id: CardId| rs.master_deck.iter().filter(|c| c.card_id == id).count();
+
+        let mut rs = RunState::new();
+        rs.current_hp = 40;
+        let out = trial_noble_guilty(&mut rs);
+        assert!(out.finished);
+        assert_eq!(rs.current_hp, 50, "NobleGuilty heals 10");
+
+        let mut rs = RunState::new();
+        let gold = rs.gold;
+        assert!(trial_noble_innocent(&mut rs).finished);
+        assert_eq!(rs.gold, gold + TRIAL_NOBLE_INNOCENT_GOLD);
+        assert_eq!(count(&rs, CardId::Regret), 1);
+
+        let mut rs = RunState::new();
+        assert!(trial_nondescript_guilty(&mut rs).finished);
+        assert_eq!(count(&rs, CardId::Doubt), 1);
+        let card_rewards: Vec<_> = rs
+            .pending_rewards
+            .iter()
+            .filter_map(|r| match r {
+                Reward::Card(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(card_rewards.len(), 2, "two card rewards");
+
+        let mut rs = RunState::new();
+        rs.interactive_card_transform = true;
+        assert!(trial_nondescript_innocent(&mut rs).finished);
+        assert_eq!(count(&rs, CardId::Doubt), 1);
+        let rolls: Vec<_> = rs
+            .pending_deck_transforms
+            .iter()
+            .map(|t| t.event_stream_roll)
+            .collect();
+        assert_eq!(rolls, [Some(("TRIAL", 1)), Some(("TRIAL", 2))]);
+
+        let mut rs = RunState::new();
+        rs.interactive_card_upgrade = true;
+        rs.master_deck
+            .push(card_pod_from_id(CardId::StrikeIronclad, false).unwrap());
+        rs.master_deck
+            .push(card_pod_from_id(CardId::StrikeIronclad, false).unwrap());
+        assert!(trial_merchant_innocent(&mut rs).finished);
+        assert_eq!(count(&rs, CardId::Shame), 1);
+        assert_eq!(rs.pending_deck_upgrades, 2, "pick 2 to upgrade");
     }
 
     #[test]

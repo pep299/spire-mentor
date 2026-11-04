@@ -1,4 +1,3 @@
-// port-pin-skip — module aggregator; per-event files carry the port pins.
 //! Events content: static templates + handler-function dispatch for
 //! the run-side event surface — bead `sts2-rs-6ynt.4.1` (P7 events
 //! framework).
@@ -185,20 +184,71 @@ pub fn deck_has_basic_card(state: &RunState) -> bool {
     }
 }
 
-/// Generic enchant-pool gate (`GraveOfTheForgotten` /
-/// `FieldOfManSizedHoles` / `SpiralingWhirlpool`): any deck card the C#
-/// base `EnchantmentModel.CanEnchant` accepts — not Status/Curse-typed,
-/// no existing enchantment, concrete cost (`cost >= 0` folds Unplayable
-/// and X-cost). Per-enchantment extras (PerfectFit / Spiral) are
-/// approximated by the base filter.
+/// Generic enchant-pool gate (`FieldOfManSizedHoles` /
+/// `SpiralingWhirlpool`): any deck card the C# base
+/// `EnchantmentModel.CanEnchant` accepts — not Status/Curse-typed, no
+/// existing enchantment, concrete cost (`cost >= 0` folds Unplayable and
+/// X-cost). PerfectFit has no override; Spiral's Basic Strike/Defend extra
+/// is approximated by the base filter. `GraveOfTheForgotten` has its own
+/// gate ([`grave_of_the_forgotten_allowed`]).
 #[must_use]
 pub fn any_enchantable_deck_card(state: &RunState) -> bool {
     use sts2_core::cards::CardType;
     state.master_deck.iter().any(|c| {
         !matches!(c.card_type, CardType::Status | CardType::Curse)
+            && !c.is_quest()
             && c.enchantments.is_empty()
             && c.cost >= 0
     })
+}
+
+/// `GraveOfTheForgotten`: C# `IsAllowed => Players.All(HasEnchantableCards)`
+/// with `HasEnchantableCards => deck.Any(SoulsPower.CanEnchant)`
+/// (`GraveOfTheForgotten.cs:36-39,73-77`). `SoulsPower.CanEnchant` is the
+/// base filter AND `GetKeywordsWithSources(Local).Contains(Exhaust)`
+/// (`SoulsPower.cs:12-23`), so a deck with no Exhaust-keyword card skips
+/// Grave (Havoc / Brand / EvilEye only mention Exhaust in hover tips).
+/// GH #1054 item 7 (Ironclad 1014: C# served BattlewornDummy, Rust Grave).
+#[must_use]
+pub fn grave_of_the_forgotten_allowed(state: &RunState) -> bool {
+    state
+        .master_deck
+        .iter()
+        .any(|c| souls_power_can_enchant(c, state.game_version))
+}
+
+/// Per-card `SoulsPower.CanEnchant`. Base `EnchantmentModel.CanEnchant`
+/// (`EnchantmentModel.cs:273-294`): not Status/Curse, not Unplayable, no
+/// other enchantment (a SoulsPower'd card has already lost Exhaust, so any
+/// enchantment rejects). Keywords are the instance's: an upgrade that drops
+/// Exhaust (BurningPact+) stamps `keyword_override`, otherwise the
+/// build-aware spec keywords apply. Unknown ids ⇒ not enchantable.
+pub(crate) fn souls_power_can_enchant(
+    c: &sts2_core::cards::Card,
+    version: sts2_core::GameVersion,
+) -> bool {
+    use crate::cards::CardKeywords;
+    use sts2_core::cards::{CardType, KeywordOverride};
+    if matches!(c.card_type, CardType::Status | CardType::Curse) || !c.enchantments.is_empty() {
+        return false;
+    }
+    let (exhaust, unplayable) = match c.keyword_override {
+        Some(k) => (
+            k.contains(KeywordOverride::EXHAUST),
+            k.contains(KeywordOverride::UNPLAYABLE),
+        ),
+        None => match crate::cards::spec_index::spec_for_card_id(c.card_id) {
+            Some(spec) => {
+                let kw = crate::cards::v0111::spec_for(spec, version).keywords;
+                (
+                    kw.contains(CardKeywords::EXHAUST),
+                    kw.contains(CardKeywords::UNPLAYABLE),
+                )
+            }
+            None => return false,
+        },
+    };
+    exhaust && !unplayable
 }
 
 /// `Amalgamator`: C# requires ≥2 Strike-tagged AND ≥2 Defend-tagged
@@ -208,31 +258,34 @@ pub fn any_enchantable_deck_card(state: &RunState) -> bool {
 pub fn amalgamator_allowed(state: &RunState) -> bool {
     use sts2_core::cards::CardTag;
     let rank = sts2_core::lookup_card_rarity_rank();
+    let removable = sts2_core::lookup_card_removable();
     let version = state.game_version;
-    let is_basic = |c: &sts2_core::cards::Card| rank.is_none_or(|f| f(c.card_id, version) == 1);
+    // `IsValid` (`Amalgamator.cs:69-79`): tag + Basic + `IsRemovable`. The
+    // instance predicate sees TezcatarasEmber's added Eternal (NutritiousSoup
+    // Strikes), matching the removal path `amalgamator_remove_basic_tagged`.
+    let valid = |c: &sts2_core::cards::Card, tag: CardTag| {
+        c.has_tag(tag)
+            && rank.is_none_or(|f| f(c.card_id, version) == 1)
+            && removable.is_none_or(|f| f(c))
+    };
     let strikes = state
         .master_deck
         .iter()
-        .filter(|c| c.has_tag(CardTag::Strike) && is_basic(c))
+        .filter(|c| valid(c, CardTag::Strike))
         .count();
     let defends = state
         .master_deck
         .iter()
-        .filter(|c| c.has_tag(CardTag::Defend) && is_basic(c))
+        .filter(|c| valid(c, CardTag::Defend))
         .count();
     strikes >= 2 && defends >= 2
 }
 
-/// `ByrdonisNest`: C# `!HasEventPet()` — no pet-adding relic and no
-/// `ByrdonisEgg` in the deck. The relic half is approximated by the deck
-/// check (no pet-relic predicate on the POD; the egg IS the act-1 pet
-/// source this event guards against).
+/// `ByrdonisNest`: C# `!HasEventPet()` — no pet-adding relic (Byrdpip,
+/// PaelsLegion) and no `ByrdonisEgg` in the deck (`Player.cs:250-256`).
 #[must_use]
 pub fn byrdonis_nest_allowed(state: &RunState) -> bool {
-    !state
-        .master_deck
-        .iter()
-        .any(|c| c.card_id == sts2_core::cards::CardId::ByrdonisEgg)
+    !state.has_event_pet()
 }
 
 /// `RoundTeaParty`: C# `CurrentHp >= 12`.
@@ -312,7 +365,7 @@ pub fn ranwid_the_elder_allowed(state: &RunState) -> bool {
         && state
             .relics
             .iter()
-            .any(|&id| crate::relics::tradable::relic_is_tradable(id))
+            .any(|&id| crate::relics::tradable::relic_is_tradable_in(state, id))
         && state.gold >= 100
         && !state.potions.is_empty()
 }
@@ -332,7 +385,7 @@ pub fn relic_trader_allowed(state: &RunState) -> bool {
         && state
             .relics
             .iter()
-            .filter(|&&id| crate::relics::tradable::relic_is_tradable(id))
+            .filter(|&&id| crate::relics::tradable::relic_is_tradable_in(state, id))
             .count()
             >= 5
 }
@@ -744,6 +797,56 @@ mod tests {
         assert!(any_enchantable_deck_card(&rs));
     }
 
+    /// GH #1054 item 7 (Ironclad 1014): `GraveOfTheForgotten` needs a deck
+    /// card `SoulsPower.CanEnchant` accepts, i.e. one with the Exhaust
+    /// keyword. Havoc / Brand / EvilEye only show Exhaust in hover tips.
+    #[test]
+    fn grave_of_the_forgotten_needs_an_exhaust_keyword_card() {
+        use crate::cards::spec_index::card_pod_from_id;
+        crate::cards::dispatch::install_default_registry();
+        let pod = |id, up| card_pod_from_id(id, up).expect("card pod");
+        let mut rs = RunState::new();
+        for id in [
+            CardId::StrikeIronclad,
+            CardId::DefendIronclad,
+            CardId::Bash,
+            CardId::Havoc,
+            CardId::Brand,
+            CardId::EvilEye,
+        ] {
+            rs.master_deck.push(pod(id, false));
+        }
+        assert!(any_enchantable_deck_card(&rs)); // the old, too-loose gate
+        assert!(!grave_of_the_forgotten_allowed(&rs));
+
+        // A real Exhaust-keyword card opens the gate.
+        rs.master_deck.push(pod(CardId::Offering, false));
+        assert!(grave_of_the_forgotten_allowed(&rs));
+
+        // ...unless it already carries an enchantment.
+        rs.master_deck
+            .last_mut()
+            .unwrap()
+            .enchantments
+            .push((sts2_core::cards::EnchantmentId::SoulsPower, 1));
+        assert!(!grave_of_the_forgotten_allowed(&rs));
+        rs.master_deck.pop();
+
+        // An upgrade that drops Exhaust (Graveblast+ → keywords NONE) closes it.
+        rs.master_deck.push(pod(CardId::Graveblast, false));
+        assert!(grave_of_the_forgotten_allowed(&rs));
+        rs.master_deck.pop();
+        rs.master_deck.push(pod(CardId::Graveblast, true));
+        assert!(!grave_of_the_forgotten_allowed(&rs));
+
+        // Status / Curse cards never qualify, whatever their keywords.
+        rs.master_deck.pop();
+        let mut curse = pod(CardId::Offering, false);
+        curse.card_type = CardType::Curse;
+        rs.master_deck.push(curse);
+        assert!(!grave_of_the_forgotten_allowed(&rs));
+    }
+
     #[test]
     fn amalgamator_needs_two_strikes_and_two_defends() {
         crate::cards::dispatch::install_default_registry();
@@ -786,8 +889,47 @@ mod tests {
         assert!(!amalgamator_allowed(&rs));
     }
 
+    /// `Amalgamator.IsValid` requires `IsRemovable` (`Amalgamator.cs:69-79`);
+    /// TezcatarasEmber adds Eternal (`TezcatarasEmber.cs:18`), so
+    /// NutritiousSoup's Ember'd Strikes do not count and the event is skipped
+    /// by `EnsureNextEventIsValid` (Ironclad:4134).
     #[test]
-    fn byrdonis_nest_blocked_only_by_the_egg() {
+    fn amalgamator_ignores_eternal_embered_strikes() {
+        use sts2_core::cards::EnchantmentId;
+        crate::cards::dispatch::install_default_registry();
+        let strike = |embered: bool| {
+            let mut c = deck_card(
+                CardId::StrikeIronclad,
+                CardType::Attack,
+                sts2_core::cards::CardTags::one(CardTag::Strike),
+            );
+            if embered {
+                c.set_enchantment(EnchantmentId::TezcatarasEmber, 1);
+            }
+            c
+        };
+        let defend = || {
+            deck_card(
+                CardId::DefendIronclad,
+                CardType::Skill,
+                sts2_core::cards::CardTags::one(CardTag::Defend),
+            )
+        };
+        let mut rs = RunState::new();
+        rs.master_deck = vec![strike(true), strike(true), defend(), defend()];
+        assert!(!amalgamator_allowed(&rs));
+        rs.master_deck = vec![
+            strike(true),
+            strike(false),
+            strike(false),
+            defend(),
+            defend(),
+        ];
+        assert!(amalgamator_allowed(&rs));
+    }
+
+    #[test]
+    fn byrdonis_nest_blocked_by_the_egg() {
         let mut rs = RunState::new();
         assert!(byrdonis_nest_allowed(&rs)); // empty deck → allowed (kills `->bool false`)
         rs.master_deck.push(deck_card(
@@ -802,6 +944,17 @@ mod tests {
             sts2_core::cards::CardTags::NONE,
         ));
         assert!(!byrdonis_nest_allowed(&rs)); // egg present (kills `delete !`, `==`→`!=`, `->bool true`)
+    }
+
+    /// The relic half of C# `HasEventPet()` (`Player.cs:250-256`): Byrdpip
+    /// (`Byrdpip.cs:20`) and PaelsLegion (`PaelsLegion.cs:32`) set `AddsPet`.
+    #[test]
+    fn byrdonis_nest_blocked_by_a_pet_relic() {
+        let mut rs = RunState::new();
+        rs.relics.push(sts2_core::relics::RelicId::Byrdpip);
+        assert!(!byrdonis_nest_allowed(&rs));
+        rs.relics = vec![sts2_core::relics::RelicId::PaelsLegion];
+        assert!(!byrdonis_nest_allowed(&rs));
     }
 
     // --- HP / floor / gold scalar gates ---

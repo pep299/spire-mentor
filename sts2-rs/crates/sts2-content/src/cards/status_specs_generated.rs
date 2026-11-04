@@ -353,10 +353,12 @@ pub const fn folly() -> CardSpec {
         // it was missing here, so `card_is_removable_csharp` called this
         // curse removable and `removal_offer_order` offered it. Live
         // `remove:ENTHRALLED` shop picks named a card no
-        // `FromDeckForRemoval` screen can show (2026-08-26).
+        // `FromDeckForRemoval` screen can show (2026-08-26). `Ethereal` was
+        // missing too, so the end-of-turn expel discarded it (GH #1054).
         keywords: CardKeywords::UNPLAYABLE
             .with(CardKeywords::INNATE)
-            .with(CardKeywords::ETERNAL),
+            .with(CardKeywords::ETERNAL)
+            .with(CardKeywords::ETHEREAL),
         ..CardSpec::base()
     }
 }

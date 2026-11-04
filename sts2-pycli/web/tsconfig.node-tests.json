@@ -17,6 +17,9 @@
     "types": ["node"]
   },
   "include": [
+    // Reads api.ts and sts2-rs's api.rs to check that every POST /api/live
+    // route is classified for the Claude link's refresh-after-mutation.
+    "src/claude/__tests__/routeTable.test.ts",
     "src/sound/__tests__/sfxMapCoverage.test.ts",
     "src/skins/__tests__/shopMerchantAnchor.test.ts",
     "src/components/__tests__/arenaForegroundZIndex.test.ts",

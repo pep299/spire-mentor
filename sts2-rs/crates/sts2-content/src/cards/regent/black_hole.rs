@@ -5,7 +5,6 @@ use super::prelude::*;
 /// listener body lives in `crates/sts2-core/src/powers/regent.rs`
 /// (jxz tier); this handler installs the power so the dispatcher
 /// (deferred under `sts2-rs-jxz`) will see a real stack to react to.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L281
 pub(crate) fn play_black_hole(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     // C# BlackHole.cs OnUpgrade bumps BlackHolePower 3->4. Bead `sts2-rs-qb2jc`.
     let amt = if current_card_upgraded(state) { 4 } else { 3 };

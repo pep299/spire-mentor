@@ -68,7 +68,7 @@ fn play_ready(
     character: CharacterId,
     hand: &[CardId],
     watched: CardId,
-    energy: i8,
+    energy: i32,
 ) -> (CombatState, CardUid) {
     let mut state = bare_state(character, 4242);
     state.player.energy = energy;

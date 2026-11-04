@@ -3,7 +3,6 @@ use super::prelude::*;
 
 /// Know Thy Place — apply 1 Weak + 1 Vulnerable (no damage).
 /// Python pin: `regent.py:L212-L218`.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L212
 pub(crate) fn play_know_thy_place(
     state: &mut CombatState,
     target: Option<CreatureUid>,

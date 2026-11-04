@@ -11,13 +11,17 @@
 // Defaults (chosen from keys the game leaves unbound):
 //   F1  help panel -- mode, every key, where the files are
 //   F4  toggle HUD visibility
-//   F3  toggle the action-log panel
+//   Ctrl+H hide / show every mod panel (SimUiHide) for a quick look
+//   Ctrl+L toggle the action-log panel (was F3 until 0.8.1; another
+//       popular mod binds F3)
 //   F5  Coach style: peek at the AI's pick for the next decision only
 //   F6  AI takes this decision (advisor mode, combat)
 //   F7  AI plays until I stop (toggle)
 //   F8  AI on / off in the current style (from Autopilot: stop the AI and take over)
 //   F9  game speed down 0.1x
 //   F10 game speed up 0.1x
+//   Ctrl+Shift+B report a bug (SimBugReport): B is unbound in the game's
+//       keyboard map (NInputManager: E S D X A M, digits, arrows, space).
 //
 // Key survey (v0.107.1 decomp), so these don't fight the game:
 //   F2  is TAKEN and ungated -- NFeedbackScreenOpener.cs:72 opens the
@@ -32,9 +36,11 @@
 //       DebugHotkey.hideRestSite) was re-checked for the help panel, 0.2.1.
 
 using System;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Godot;
+using HarmonyLib;
 using MegaCrit.Sts2.Core.AutoSlay.Helpers;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
@@ -46,6 +52,7 @@ public static class SimHotkeys
     private const string ActionHelp = "spirementor_help";
     private const string ActionToggleHud = "spirementor_toggle_hud";
     private const string ActionToggleLog = "spirementor_toggle_log";
+    private const string ActionHideAll = "spirementor_hide_all";
     private const string ActionPeek = "spirementor_peek";
     private const string ActionAiOnce = "spirementor_ai_once";
     private const string ActionAiAuto = "spirementor_ai_auto";
@@ -55,6 +62,7 @@ public static class SimHotkeys
     private const string ActionUndoTurn = "spirementor_undo_turn";
     private const string ActionRestartRoom = "spirementor_restart_room";
     private const string ActionCopyState = "spirementor_copy_state";
+    private const string ActionReportBug = "spirementor_report_bug";
 
     private static bool _installed;
 
@@ -85,7 +93,8 @@ public static class SimHotkeys
 
             RegisterAction(ActionHelp, Key.F1);
             RegisterAction(ActionToggleHud, Key.F4);
-            RegisterAction(ActionToggleLog, Key.F3);
+            RegisterAction(ActionToggleLog, Key.L, ctrl: true);
+            RegisterAction(ActionHideAll, Key.H, ctrl: true);
             RegisterAction(ActionPeek, Key.F5);
             RegisterAction(ActionAiOnce, Key.F6);
             RegisterAction(ActionAiAuto, Key.F7);
@@ -100,27 +109,53 @@ public static class SimHotkeys
             // text field expects, and stealing it from the settings panel's
             // fields would be a worse trade than a two-modifier chord.
             RegisterAction(ActionCopyState, Key.C, ctrl: true, shift: true);
+            RegisterAction(ActionReportBug, Key.B, ctrl: true, shift: true);
 
-            manager.PushHotkeyPressedBinding(ActionHelp, SimActions.ToggleHelp);
-            manager.PushHotkeyPressedBinding(ActionToggleHud, SimActions.ToggleHud);
-            manager.PushHotkeyPressedBinding(ActionToggleLog, SimActions.ToggleLog);
-            manager.PushHotkeyPressedBinding(ActionPeek, SimActions.Peek);
-            manager.PushHotkeyPressedBinding(ActionAiOnce, () => SimActions.AiOnce("F6 (AI takes this decision)"));
-            manager.PushHotkeyPressedBinding(ActionAiAuto, () => SimActions.ToggleAutoplay("F7 (AI plays until you stop)"));
-            manager.PushHotkeyPressedBinding(ActionToggleAdvisor, SimActions.ToggleAdvisor);
-            manager.PushHotkeyPressedBinding(ActionSpeedDown, () => SimActions.NudgeSpeed(-0.1));
-            manager.PushHotkeyPressedBinding(ActionSpeedUp, () => SimActions.NudgeSpeed(0.1));
-            manager.PushHotkeyPressedBinding(ActionUndoTurn, SimActions.UndoTurn);
-            manager.PushHotkeyPressedBinding(ActionRestartRoom, SimActions.RestartRoom);
-            manager.PushHotkeyPressedBinding(ActionCopyState, SimActions.CopyState);
+            BindActions(manager);
 
             _installed = true;
-            GD.Print("[SpireMentor] Hotkeys installed: F1=help, F4=HUD, F3=log, F5=peek (Coach), F6=AI once, F7=AI auto, F8=AI on/off, F9/F10=speed -/+, Ctrl+Z=undo turn, Ctrl+Shift+Z=restart room, Ctrl+Shift+C=copy state");
+            GD.Print("[SpireMentor] Hotkeys installed: F1=help, F4=HUD, Ctrl+L=log, Ctrl+H=hide all, F5=peek (Coach), F6=AI once, F7=AI auto, F8=AI on/off, F9/F10=speed -/+, Ctrl+Z=undo turn, Ctrl+Shift+Z=restart room, Ctrl+Shift+C=copy state, Ctrl+Shift+B=report a bug");
         }
         catch (Exception ex)
         {
             GD.PrintErr($"[SpireMentor] Hotkey install failed: {ex.Message}");
         }
+    }
+
+    internal static void RestoreAfterClear(NHotkeyManager manager)
+    {
+        // ClearHotkeys can run before our initial InputMap registration.
+        if (!_installed)
+        {
+            return;
+        }
+        try
+        {
+            BindActions(manager);
+            GD.Print("[SpireMentor] Hotkeys restored after ClearHotkeys.");
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"[SpireMentor] Hotkey restore failed: {ex}");
+        }
+    }
+
+    private static void BindActions(NHotkeyManager manager)
+    {
+        manager.PushHotkeyPressedBinding(ActionHelp, SimActions.ToggleHelp);
+        manager.PushHotkeyPressedBinding(ActionToggleHud, SimActions.ToggleHud);
+        manager.PushHotkeyPressedBinding(ActionToggleLog, SimActions.ToggleLog);
+        manager.PushHotkeyPressedBinding(ActionHideAll, SimActions.ToggleHideAll);
+        manager.PushHotkeyPressedBinding(ActionPeek, SimActions.Peek);
+        manager.PushHotkeyPressedBinding(ActionAiOnce, () => SimActions.AiOnce("F6 (AI takes this decision)"));
+        manager.PushHotkeyPressedBinding(ActionAiAuto, () => SimActions.ToggleAutoplay("F7 (AI plays until you stop)"));
+        manager.PushHotkeyPressedBinding(ActionToggleAdvisor, SimActions.ToggleAdvisor);
+        manager.PushHotkeyPressedBinding(ActionSpeedDown, () => SimActions.NudgeSpeed(-0.1));
+        manager.PushHotkeyPressedBinding(ActionSpeedUp, () => SimActions.NudgeSpeed(0.1));
+        manager.PushHotkeyPressedBinding(ActionUndoTurn, SimActions.UndoTurn);
+        manager.PushHotkeyPressedBinding(ActionRestartRoom, SimActions.RestartRoom);
+        manager.PushHotkeyPressedBinding(ActionCopyState, SimActions.CopyState);
+        manager.PushHotkeyPressedBinding(ActionReportBug, SimActions.ReportBug);
     }
 
     private static void RegisterAction(string name, Key key, bool ctrl = false, bool shift = false)
@@ -135,4 +170,21 @@ public static class SimHotkeys
         InputMap.ActionAddEvent(actionName, ev);
     }
 
+}
+
+// v0.111.0 only: v0.107.1 has no ClearHotkeys and never drops the bindings, so
+// the patch looks the method up by name and sits out when it is absent. One DLL
+// serves both builds, so a compile-time reference would not build on v0.107.1.
+[HarmonyPatch]
+internal static class HotkeyResetPatch
+{
+    private static MethodBase? Target =>
+        AccessTools.Method(typeof(NHotkeyManager), "ClearHotkeys");
+
+    private static bool Prepare() => Target != null;
+
+    private static MethodBase? TargetMethod() => Target;
+
+    private static void Postfix(NHotkeyManager __instance) =>
+        SimHotkeys.RestoreAfterClear(__instance);
 }

@@ -61,7 +61,7 @@ impl std::fmt::Debug for PpoNet {
 
 /// The ONNX initializer serving each categorical column, in [`Cat`] /
 /// [`empty_cat`] order: `[card, upg, relic, potion, room, event, fixed,
-/// optidx, surface, boss, deck_op, enchant]`.
+/// optidx, surface, boss, deck_op, enchant, card_type, card_rarity]`.
 ///
 /// [`Cat`]: super::encoder::Cat
 const CAT_EMBEDDING_NODES: [&str; N_CAT] = [
@@ -77,6 +77,8 @@ const CAT_EMBEDDING_NODES: [&str; N_CAT] = [
     "net.emb_boss.weight",
     "net.emb_deckop.weight",
     "net.emb_ench.weight",
+    "net.emb_ctype.weight",
+    "net.emb_rarity.weight",
 ];
 
 /// Reject a graph whose categorical embedding tables are the wrong height
@@ -469,7 +471,7 @@ fn champion_entry(character: CharacterId) -> (&'static str, &'static str) {
         // GENERATED FROM sts2-pycli/data/ppo/champions.toml -- DO NOT EDIT
         CharacterId::Defect => ("ppo_fullrun_defect_deckmut_it150_v0111vocab.onnx", ""),
         CharacterId::Ironclad => (
-            "ppo_fullrun_ironclad_cardmods_it850.onnx",
+            "ppo_fullrun_ironclad_cont300_it1150.onnx",
             "card_mods,reward_upgrade",
         ),
         CharacterId::Necrobinder => ("ppo_fullrun_necrobinder_deckmut_it150_v0111vocab.onnx", ""),

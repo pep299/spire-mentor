@@ -1,13 +1,15 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { assetUrl, type Card, type CombatLogRow, type Enemy, type MctsConfig, type Score, type Step } from "../api";
-import Combatant, { DEFAULT_DYING_FADE_SECONDS, spriteBodyH } from "./Combatant";
+import Combatant from "./Combatant";
+import { DEFAULT_DYING_FADE_SECONDS, spriteBodyH } from "./combatantMetrics";
 import KaiserCrabGroup, { type CrabArm } from "./KaiserCrabGroup";
-import DecimillipedeGroup, { SEGMENT_SCALE, decimillipedeSpan } from "./DecimillipedeGroup";
+import DecimillipedeGroup, { SEGMENT_SCALE } from "./DecimillipedeGroup";
+import { decimillipedeSpan } from "./decimillipedeLayout";
 import MctsControls from "./MctsControls";
 import Hand from "./Hand";
 import PileViewer from "./PileViewer";
 import PotionTray from "./PotionTray";
-import { isTextInput } from "../keys";
+import { isBrowserChord, isTextInput } from "../keys";
 import { enemyLabeller } from "../enemyLabels";
 import { stageFraming, stageZoom } from "../stageZoom";
 import { rigBox } from "../rigBounds";
@@ -17,8 +19,8 @@ import {
   renderedSize, roomCanvasScale, sceneFramingFor, type Camera, type Slot,
 } from "../scene";
 import { deathBurstRadiusFor, dissolveSecondsFor } from "../effects/dissolve";
-import { useHints } from "../hints/HintsContext";
-import { useEffectsMode } from "../effects/EffectsContext";
+import { useHints } from "../hints/useHints";
+import { useEffectsMode } from "../effects/useEffectsMode";
 import { combatDiff } from "../effects/combatDiff";
 import { attackingEnemies } from "../effects/enemyTurn";
 import { actionStream } from "../effects/actionStream";
@@ -33,7 +35,7 @@ import { nullSink, type EffectSink } from "../effects/sink";
 import { crabRigEventVfx } from "../effects/crabRigEvents";
 import type { EffectEvent, TargetRef } from "../effects/types";
 import VfxLayer from "./VfxLayer";
-import { useSound } from "../sound/SoundContext";
+import { useSound } from "../sound/useSound";
 import { loadSfxMap } from "../sound/sfxMap";
 import { declaredGameVersion } from "../gameVersion";
 import { powerValenceLookup, type PowerValence } from "../sound/powerValence";
@@ -46,7 +48,8 @@ import {
 } from "../effects/screenShake";
 import { cuesForCombat } from "../sound/triggers";
 import { cueForUi } from "../sound/runCues";
-import TargetingArrow, { DESIGN_HEIGHT, type Point } from "./TargetingArrow";
+import TargetingArrow from "./TargetingArrow";
+import { DESIGN_HEIGHT, type Point } from "./arrowGeometry";
 import { artSlugs, atmosphereVars, pickScene, resolveScene, sceneAtmosphere,
   sceneScale } from "./roomScenes";
 import { matchEncounter, nextSpawnSlot, slotNamed } from "./encounterSlots";
@@ -308,7 +311,9 @@ export default function Board({
   const [pendingCard, setPendingCard] = useState<number | null>(null);
   const [hoverEnemy, setHoverEnemy] = useState<number | null>(null);
   const [pile, setPile] = useState<PileKind | null>(null);
-  const enemies = s.enemies ?? [];
+  // Memoized so a state without enemies doesn't hand the callbacks below a
+  // fresh [] (and a fresh identity) every render.
+  const enemies = useMemo(() => s.enemies ?? [], [s.enemies]);
 
   // ---- the room this fight is painted in ------------------------------------
   //
@@ -1168,7 +1173,7 @@ export default function Board({
   useEffect(() => {
     if (!onPlayCard) return; // interactive (live) combat only
     function onKey(e: KeyboardEvent) {
-      if (isTextInput(e.target)) return;
+      if (isTextInput(e.target) || isBrowserChord(e)) return;
       if (e.key === "Escape") { setPendingCard(null); return; }
       if (e.key === "e" || e.key === "E") { e.preventDefault(); onEndTurn?.(); return; }
       // H / G / S mirror the buttons below, which are press-first and so are

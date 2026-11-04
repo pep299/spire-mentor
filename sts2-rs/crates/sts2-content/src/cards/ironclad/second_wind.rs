@@ -48,9 +48,8 @@ pub(crate) fn play_second_wind(state: &mut CombatState, _t: Option<CreatureUid>)
     for uid in to_exhaust {
         // Per C#: Exhaust THEN GainBlock, once per card.
         // `exhaust_hand_card` moves Hand→Exhaust AND fires
-        // `after_card_exhausted` on both the relic-effects bus
-        // (CharonsAshes, ForgottenSoul) and the hooks bus (FeelNoPain,
-        // DarkEmbrace).
+        // `after_card_exhausted` on the hooks bus (FeelNoPain, DarkEmbrace)
+        // and then the relic-effects bus (CharonsAshes, ForgottenSoul).
         exhaust_hand_card(state, uid);
         // One GainBlock call per card so the modify_block / after_block_gained
         // chain fires N times (matching C#), not once on a lump sum.

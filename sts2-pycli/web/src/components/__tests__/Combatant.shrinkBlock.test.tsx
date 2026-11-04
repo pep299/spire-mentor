@@ -1,6 +1,7 @@
 import { render } from "@testing-library/react";
 import { describe, it, expect } from "vitest";
-import Combatant, { bodyScale } from "../Combatant";
+import Combatant from "../Combatant";
+import { bodyScale } from "../combatantMetrics";
 
 /**
  * Two pieces of creature chrome the game draws and we didn't:

@@ -38,12 +38,8 @@ pub(crate) fn on_modify_hp_lost_the_boot(
     // → no floor. The relic owner is the player, so the dealer must be
     // either the player's mirror creature OR the player's Osty pet.
     let dealer_is_player = ctx.dealer == state.player.creature_uid;
-    let dealer_is_osty = ctx.dealer.is_some_and(|d| {
-        state
-            .creatures
-            .iter()
-            .any(|c| c.id == d.0 && c.species == Some(crate::MonsterKind::Osty))
-    });
+    // `Owner.Osty`: the seated player's own pet, not a teammate's (GH #1017).
+    let dealer_is_osty = ctx.dealer.is_some() && ctx.dealer == state.player.pet_uid;
     if !dealer_is_player && !dealer_is_osty {
         return current_amount;
     }

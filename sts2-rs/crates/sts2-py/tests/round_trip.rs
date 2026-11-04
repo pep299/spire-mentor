@@ -958,6 +958,7 @@ fn round_trip_pads_the_orb_belt_to_capacity() {
                 sts2_core::Orb::Empty
             ],
             capacity: 3,
+            sized: true,
         };
 
         let dict = state_to_dict(py, &s).expect("to_dict must succeed");
@@ -1426,6 +1427,142 @@ fn two_cost_banks_without_the_stable_cost_are_refused() {
 
         // The pre-v16 dialect — one bank, no `stable_cost` — still rebuilds.
         state_from_dict(&doctor(None)).expect("`persistent_cost` alone stays valid");
+    });
+}
+
+/// Rebuild the seed-3 fixture with its first hand card replaced by
+/// `card_id`, after `doctor` has edited that card dict; return the state and
+/// the rebuilt card's arena index. The player has no stars on this fixture, so
+/// a star card is playable exactly when its star cost reads 0.
+fn rebuild_with_first_hand_card(
+    py: Python<'_>,
+    card_id: &str,
+    doctor: impl FnOnce(&Bound<'_, PyDict>),
+) -> (CoreCombatState, usize) {
+    let dict = make_seeded_fixture(py, 3, 0).expect("seed=3 fixture");
+    let card = dict
+        .get_item("deck")
+        .unwrap()
+        .unwrap()
+        .downcast::<PyDict>()
+        .unwrap()
+        .get_item("hand")
+        .unwrap()
+        .unwrap()
+        .downcast::<PyList>()
+        .unwrap()
+        .get_item(0)
+        .unwrap();
+    let card = card.downcast::<PyDict>().unwrap();
+    card.set_item("id", card_id).unwrap();
+    for key in ["base_damage", "base_block", "combat_vars"] {
+        let _ = card.del_item(key);
+    }
+    doctor(card);
+    let state = state_from_dict(&dict).expect("rebuild must succeed");
+    let uid = state.player.hand[0];
+    let idx = state.cards.iter().position(|c| c.uid == uid).unwrap();
+    (state, idx)
+}
+
+fn first_hand_card_is_playable(state: &CoreCombatState) -> bool {
+    sts2_core::legal_actions(state)
+        .iter()
+        .any(|a| matches!(a, sts2_core::Action::PlayCard { hand_index: 0, .. }))
+}
+
+/// A card made free THIS TURN is free in stars too, and the rebuild must know.
+///
+/// C# `SetToFreeThisTurn` is `EnergyCost.SetThisTurnOrUntilPlayed(0)` PLUS
+/// `SetStarCostThisTurn(0)` (`CardModel.cs:1267-1271`). Splash on a Silent
+/// offers Regent attacks, so its pick is often a star card: free in the game,
+/// but rebuilt from the energy fields alone at its printed star cost — Falling
+/// Star at 0 energy + 2 stars the Silent cannot pay. The search then listed the
+/// free attack unplayable and ended the turn over it.
+#[test]
+fn a_wire_star_free_this_turn_card_is_playable_and_expires_on_schedule() {
+    use sts2_core::cards::VarKey;
+    Python::with_gil(|py| {
+        // Before: energy fields only, as every C# producer shipped it.
+        let (state, _) = rebuild_with_first_hand_card(py, "FALLING_STAR", |c| {
+            c.set_item("base_cost", 0).unwrap();
+            c.set_item("cost_override", 0).unwrap();
+        });
+        assert!(
+            !first_hand_card_is_playable(&state),
+            "the printed star cost gates a star-less player — the bug this field fixes"
+        );
+
+        let (mut state, idx) = rebuild_with_first_hand_card(py, "FALLING_STAR", |c| {
+            c.set_item("base_cost", 0).unwrap();
+            c.set_item("cost_override", 0).unwrap();
+            c.set_item("star_cost", 0).unwrap();
+            c.set_item("persistent_star_cost", 2).unwrap();
+        });
+        assert_eq!(sts2_core::effective_star_cost(&state.cards[idx]), 0);
+        assert_eq!(state.cards[idx].combat_var(VarKey::StarCostFreeThisTurn), 1);
+        assert_eq!(
+            state.cards[idx].combat_var(VarKey::StarCostFreeThisCombat),
+            0
+        );
+        assert!(
+            first_hand_card_is_playable(&state),
+            "a free card is playable"
+        );
+
+        // … and `ThisTurn` star costs clear at turn end (CardModel.cs:1620).
+        let _ = sts2_core::apply(&mut state, sts2_core::Action::EndTurn);
+        assert_eq!(
+            sts2_core::effective_star_cost(&state.cards[idx]),
+            2,
+            "the printed star cost is back next turn"
+        );
+    });
+}
+
+/// `SetToFreeThisCombat` (Touch of Insanity) outlives the turn: the producer
+/// says so with a zero `persistent_star_cost`, and the rebuild keeps it free
+/// across the boundary.
+#[test]
+fn a_wire_star_free_this_combat_card_survives_the_turn() {
+    use sts2_core::cards::VarKey;
+    Python::with_gil(|py| {
+        let (mut state, idx) = rebuild_with_first_hand_card(py, "GAMMA_BLAST", |c| {
+            c.set_item("star_cost", 0).unwrap();
+            c.set_item("persistent_star_cost", 0).unwrap();
+        });
+        assert_eq!(
+            state.cards[idx].combat_var(VarKey::StarCostFreeThisCombat),
+            1
+        );
+        assert_eq!(state.cards[idx].combat_var(VarKey::StarCostFreeThisTurn), 0);
+        let _ = sts2_core::apply(&mut state, sts2_core::Action::EndTurn);
+        assert_eq!(sts2_core::effective_star_cost(&state.cards[idx]), 0);
+    });
+}
+
+/// The fields change nothing they should not: a star card at its printed cost
+/// stays gated, and a card with no star cost never grows a rider.
+#[test]
+fn a_wire_star_cost_at_its_printed_value_or_on_a_starless_card_is_inert() {
+    use sts2_core::cards::VarKey;
+    Python::with_gil(|py| {
+        let (state, idx) = rebuild_with_first_hand_card(py, "FALLING_STAR", |c| {
+            c.set_item("star_cost", 2).unwrap();
+            c.set_item("persistent_star_cost", 2).unwrap();
+        });
+        assert_eq!(sts2_core::effective_star_cost(&state.cards[idx]), 2);
+        assert!(!first_hand_card_is_playable(&state));
+
+        let (state, idx) = rebuild_with_first_hand_card(py, "STRIKE_IRONCLAD", |c| {
+            c.set_item("star_cost", 0).unwrap();
+            c.set_item("persistent_star_cost", 0).unwrap();
+        });
+        assert_eq!(state.cards[idx].combat_var(VarKey::StarCostFreeThisTurn), 0);
+        assert_eq!(
+            state.cards[idx].combat_var(VarKey::StarCostFreeThisCombat),
+            0
+        );
     });
 }
 

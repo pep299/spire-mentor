@@ -64,21 +64,24 @@ import {
 } from "./gameVersion";
 import { bestAction, toggleHintsLatch } from "./hint";
 import { createActionGate } from "./actionGate";
-import { HintsProvider, useHints } from "./hints/HintsContext";
+import { HintsProvider } from "./hints/HintsContext";
+import { useHints } from "./hints/useHints";
 import { isStaticMode, onRestoreProgress } from "./transport";
 import { bugReportEndpointAvailable } from "./bugreport";
 import OfflineButton from "./components/OfflineButton";
 import { BenchButton } from "./components/BenchButton";
 import TopBar from "./topbar/TopBar";
 import { buildCommands } from "./topbar/commands";
-import { usePaletteChord } from "./topbar/CommandPalette";
+import { usePaletteChord } from "./topbar/paletteEntries";
 import TreasureReveal from "./components/TreasureReveal";
 import { debugSettingsLine, debugStepLine } from "./debugLog";
 import { shouldRerunRegret } from "./regretCache";
 import { panelVisible, reasoningView, type LastSearch } from "./searchPanel";
 import { liveSeekTargetForDecision } from "./liveSeek";
-import { EffectsProvider, useEffectsMode } from "./effects/EffectsContext";
-import { SoundProvider, useSound, type SoundValue } from "./sound/SoundContext";
+import { EffectsProvider } from "./effects/EffectsContext";
+import { useEffectsMode } from "./effects/useEffectsMode";
+import { SoundProvider } from "./sound/SoundContext";
+import { useSound, type SoundValue } from "./sound/useSound";
 import SoundBridge from "./sound/SoundBridge";
 import { cueForUi, type UiCueKind } from "./sound/runCues";
 import { actionCues, cardPlayCues } from "./sound/appSoundCues";
@@ -87,6 +90,8 @@ import RunLauncher from "./components/RunLauncher";
 import { generateSeed } from "./seed";
 import { computeRunEnd, shouldShowViewToggle, type EndedRun } from "./runControl";
 import { parseFollowParams, resolveRunPath, seekIndex } from "./followUrl";
+import ClaudeDock, { ClaudeLinkToggle } from "./claude/ClaudeDock";
+import { useClaudeLink } from "./claude/useClaudeLink";
 
 // Live moves whose parent is a combat decision — the ones the regret coach can
 // judge against the MCTS line.
@@ -123,6 +128,15 @@ function fmtDuration(seconds: number): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
 }
+
+/** Claude-link routes that put a different run on screen (see `afterMutation`). */
+const CLAUDE_NEW_RUN_ROUTES = new Set([
+  "/api/live/start",
+  "/api/live/start-faithful",
+  "/api/live/from_replay",
+  "/api/live/import-state",
+  "/api/saves/load",
+]);
 
 /** The hints switch must sit ABOVE everything that reads it, so `App` is a thin
  *  provider shell and the real component is `AppBody`. */
@@ -722,7 +736,6 @@ function AppBody() {
       .catch(() => {}) // no active run → stay on the play view's Start screen
       .finally(() => { offProgress(); if (!cancelled) setRestoreProgress(null); });
     return () => { cancelled = true; offProgress(); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   // Tick the play-to-end step timer while a run is active. The loop can't update
   // state mid-await, so the current step's elapsed seconds come from an interval
@@ -1905,6 +1918,77 @@ function AppBody() {
     return `${act}${src.floor != null ? ` · floor ${src.floor}` : ""}` || null;
   })();
 
+  // The Claude link (src/claude/): a terminal Claude Code session reads what
+  // is on screen and calls routes through this page. Read at request time, so
+  // the closures always see this render's state.
+  const claudeLink = useClaudeLink({
+    context: () => ({
+      mode,
+      url: window.location.href,
+      static: isStaticMode(),
+      ...(mode === "play"
+        ? { live: live ? { step: live, ended: endedRun != null, error: liveError } : null }
+        : {}),
+      ...(mode === "replay" ? { replay: { path: loadedPath, idx, count, step } } : {}),
+    }),
+    // Mirrors the page's own controls (`endRun`, `startLive`,
+    // `applyLiveAction`, `loadSaved`): Claude's call has already happened, so
+    // only their bookkeeping runs here — a quit lands on the RunEnded
+    // summary, a new run drops the old run's analyses, any move drops the
+    // hints / grades / peek that described the position it left.
+    afterMutation: async (route, result, request) => {
+      const path = route.split("?")[0];
+      if (path === "/api/live/quit") {
+        const body = "body" in result ? (result.body as { log_path?: string | null } | null) : null;
+        const ended = live ? await computeRunEnd(live, async () => ({ log_path: body?.log_path ?? null })) : null;
+        setLive(null);
+        setAutoPaused(false);
+        setLiveTimeline(null);
+        setLiveError(null);
+        setTreeOpen(false);
+        setEndedRun(ended);
+        setMode("play");
+        await refreshRunList();
+        return;
+      }
+      autoHintedRef.current = false;
+      coachGenRef.current++;
+      setHintShown(false);
+      setTurnGrade(null);
+      setChoiceGrade(null);
+      setPeek(null);
+      setLastSearch(null);
+      const newRun = CLAUDE_NEW_RUN_ROUTES.has(path);
+      if (newRun) {
+        setEndedRun(null);
+        setCoachRecords([]);
+        peekedRef.current = false;
+        setAutoPaused(false);
+        setAppliedBudget(null);
+        setRegret(null);
+        regretLiveRef.current = null;
+        setImportNotes([]);
+        if (path === "/api/live/start" || path === "/api/live/start-faithful") resetReplayView();
+      } else if (path === "/api/live/action") {
+        // As in applyLiveAction: a combat turn's peek lasts to its End turn.
+        const verb = (request as { action?: unknown } | null)?.action;
+        const fromCombat = !!live && (live.decision === "combat_play" || isCombatChoiceStep(live));
+        if (verb === "end_turn" || !fromCombat) peekedRef.current = false;
+      } else {
+        peekedRef.current = false;
+      }
+      try {
+        const s = await api.live.state();
+        if (newRun) setMode("play");
+        setLive(s);
+        setLiveError(null);
+      } catch (e) {
+        setLiveError(`could not re-read the run after Claude's ${path}: ${e}`);
+      }
+      await refreshTimeline();
+    },
+  }, mode);
+
   const reportId = new URLSearchParams(window.location.search).get("report");
   if (reportId) return <BugReportView id={reportId} />;
 
@@ -1971,6 +2055,7 @@ function AppBody() {
               ) : null,
               <BenchButton key="bench" inCombat={mode === "play" && live?.decision === "combat_play"} />,
               isStaticMode() ? <OfflineButton key="offline" /> : null,
+              <ClaudeLinkToggle key="claude" link={claudeLink} />,
               <EffectsToggle key="fx" />,
               <SoundToggle key="sound" />,
             ],
@@ -2537,6 +2622,7 @@ function AppBody() {
         )}
       </div>
       <HelpOverlay open={helpOpen} onClose={() => setHelpOpen(false)} />
+      <ClaudeDock link={claudeLink} />
       {/* Outside the Tools menu on purpose: the menu unmounts its rows when it
           closes, which took the captured report's link with it. */}
       <BugReportToast result={bugResult} error={bugError}

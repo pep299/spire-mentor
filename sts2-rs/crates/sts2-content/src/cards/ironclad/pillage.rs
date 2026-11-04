@@ -9,66 +9,11 @@ use super::prelude::*;
 pub(crate) fn play_pillage(state: &mut CombatState, target: Option<CreatureUid>) -> EffectResult {
     let t = target.expect("Pillage: Enemy-targeted");
     let _ = deal_damage_player_to_enemy(state, t, current_damage(state));
-    // C# do/while (`Pillage.cs:28-33`): draw 1, then continue while
-    // `drawn != null && drawn.Type == Attack && hand.Count < 10`. The loop
-    // keys on the RETURNED drawn card, NOT the hand size — so it keeps
-    // drawing even when the drawn card was auto-played back out of the hand
-    // by a `HellraiserPower.AfterCardDrawnEarly` rider (a drawn Strike is
-    // auto-played for free). Rust's draw primitives report the drawn card via
-    // `state.last_drawn_card`, mirroring `CardPileCmd.Draw`'s return value;
-    // inferring "did I draw?" from a hand-length delta broke one card early
-    // under Hellraiser (bead `sts2-rs-pillage-hellraiser`). The `hand.Count`
-    // guard reads the CURRENT (post-auto-play) hand so an auto-play-emptied
-    // hand correctly keeps the loop going.
-    //
-    // This do/while is faithfully un-bounded, and — exactly like C# — it does
-    // not self-terminate when an auto-play-on-draw power (HellraiserPower auto-
-    // plays drawn Strikes back to the discard) recycles an all-Attack
-    // draw+discard pool: the hand never fills, a non-Attack is never drawn, and
-    // `CardPileCmd.Draw`'s mid-action reshuffle keeps the pool non-empty. That
-    // is in-game behaviour, not a bug — and crucially a *winning* recycle (each
-    // auto-played Attack chips the enemies down) self-terminates the moment the
-    // enemies die and the pool empties. So the simulation must only stop the
-    // loops that go NOWHERE: if a full draw-cycle's worth of draws passes with
-    // no enemy hp+block lost, the loop is making no progress and we break. A
-    // progressing (eventually-winning) loop never trips this and runs to its
-    // natural end. Bead `sts2-rs-65mbx`.
-    let enemy_hp_block_total = |s: &CombatState| -> i64 {
-        s.enemy_uids
-            .iter()
-            .filter_map(|u| s.creatures.iter().find(|c| c.id == u.0))
-            .map(|c| i64::from(c.current_hp) + i64::from(c.block))
-            .sum()
-    };
-    // One full recycle of the player's cards bounds a no-progress window: if
-    // that many draws deal nothing, the pool can only be cycling fruitlessly.
-    let stuck_limit = state.cards.len() + 16;
-    let mut prev_enemy_total = enemy_hp_block_total(state);
-    let mut stuck = 0usize;
-    loop {
-        let _ = sts2_core::cards::draw_via_state(state, 1);
-        let Some(drawn_uid) = state.last_drawn_card else {
-            break; // nothing drawn (both piles empty / NoDraw / hand full)
-        };
-        let drawn_idx = drawn_uid.0.get() as usize - 1;
-        let is_attack = state.cards[drawn_idx].card_type == CardType::Attack;
-        if !is_attack {
-            break;
-        }
-        if state.player.hand.len() >= 10 {
-            break;
-        }
-        let now_enemy_total = enemy_hp_block_total(state);
-        if now_enemy_total < prev_enemy_total {
-            prev_enemy_total = now_enemy_total; // progress → keep going (may be a winning loop)
-            stuck = 0;
-        } else {
-            stuck += 1;
-            if stuck >= stuck_limit {
-                break; // no-progress soft-lock (recycled all-Attack pool dealing nothing)
-            }
-        }
-    }
+    // The do/while (`Pillage.cs:28-33`) lives in core so a draw that suspends
+    // on a select can re-enter it from the resume; see
+    // `CombatState::pillage_draw_loop` (Hellraiser auto-plays, the
+    // no-progress soft-lock guard, bead `sts2-rs-65mbx`).
+    state.pillage_draw_loop(false);
     EffectResult::Resolved
 }
 

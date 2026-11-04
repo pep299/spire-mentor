@@ -1,4 +1,3 @@
-// port-pin-skip — shared types extracted from `cards/mod.rs` (bead sts2-rs-pmf).
 //! Shared card-spec types (extracted from `cards/mod.rs` to keep the latter a
 //! thin module aggregator).
 //!

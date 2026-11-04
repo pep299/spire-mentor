@@ -345,3 +345,72 @@ fn v0111_two_player_block_drops_the_act_factor() {
         assert_eq!(block, want, "{version:?}");
     }
 }
+
+/// A power's block grant is `ValueProp.Unpowered` (Curl Up, Plating,
+/// Skittish …): the player-count scaling, which covers only powered and
+/// move block, leaves it alone. A two-player Curl Up 33 gave 66.
+#[test]
+fn a_powers_unpowered_block_grant_is_not_scaled() {
+    let mut state = board(1);
+    let uid = state.spawn_enemy(MonsterKind::Nibbit);
+    sts2_core::hooks::apply_effect(
+        &mut state,
+        sts2_core::hooks::Effect::GainBlockCreatureUnpowered {
+            target: CreatureRef::Enemy(uid),
+            amount: 33,
+        },
+    );
+    let block = state
+        .creatures
+        .iter()
+        .find(|c| c.id == uid.0)
+        .expect("enemy")
+        .block;
+    assert_eq!(block, 33);
+}
+
+/// v0.111.0 Hibernate: a Frost orb's block goes to every other player too
+/// while its owner has `HibernatePower` (`FrostOrb.cs:39-49`).
+#[test]
+fn a_hibernating_frost_orb_blocks_every_player() {
+    let mut state = board(1);
+    state.game_version = sts2_core::GameVersion::V0_111_0;
+    let _ = state.spawn_enemy(MonsterKind::Nibbit);
+    state.player.orbs.slots.push(sts2_core::orbs::Orb::Frost);
+    sts2_core::orbs::passive_tick(&mut state);
+    assert_eq!(state.player.block, 2, "Frost's passive");
+    assert_eq!(state.allies[0].block, 0, "not without Hibernate");
+
+    state.player.block = 0;
+    let me = state.player.creature_uid.expect("our creature row");
+    sts2_core::card_effects::apply_power_to_creature(&mut state, me, PowerKind::Hibernate, 1);
+    sts2_core::orbs::passive_tick(&mut state);
+    assert_eq!(state.player.block, 2);
+    assert_eq!(state.allies[0].block, 2, "the teammate's share");
+}
+
+/// An enemy's Plating loses `Decrement` a round, and C# sets `Decrement` to
+/// `Players.Count` when it lands on an enemy (`PlatingPower.cs:29-36`,
+/// `:72-77`). Its turn-end block (`:61-67`) comes after that decrement, so a
+/// two-player Lagavulin Matriarch with Plating 36 blocks 34 on round 2, not
+/// 35, and keeps Plating 34 (GH #989, floor 16 of the 2026-10-28 run).
+#[test]
+fn an_enemys_plating_sheds_one_a_round_per_player() {
+    use sts2_core::hooks::{TurnSelfCtx, TurnSideCtx};
+    use sts2_core::Side;
+    let mut state = board(1);
+    let uid = state.spawn_enemy(MonsterKind::Nibbit);
+    sts2_core::card_effects::apply_power_to_creature(&mut state, uid, PowerKind::Plating, 12);
+    assert_eq!(power(&state, uid, PowerKind::Plating), 36, "(2·1 + 1) × 12");
+    state.round = 2;
+    sts2_core::hooks::dispatch_before_turn_end(&mut state, &TurnSideCtx { side: Side::Enemy });
+    let block = state
+        .creatures
+        .iter()
+        .find(|c| c.id == uid.0)
+        .expect("enemy")
+        .block;
+    assert_eq!(block, 34, "36 less the round's decrement of 2");
+    sts2_core::hooks::dispatch_on_turn_end_enemy_side(&mut state, &TurnSelfCtx::default());
+    assert_eq!(power(&state, uid, PowerKind::Plating), 34);
+}

@@ -133,6 +133,7 @@ fn make_combat(
         pending_enemy_exec_resume: None,
         combat_log: TurnEvents::default(),
         swipe_stolen: Vec::new(),
+        deck_link: None,
         escaped_creatures: 0,
         coop: sts2_core::coop::CoopState::default(),
         heist_recovered_gold: 0,
@@ -231,10 +232,10 @@ fn run_combat_with_invariants(state: &mut CombatState, label: &str, seed: u64) {
                      (EndTurn-only playout should never produce a choice)"
                 );
             }
-            StepResult::InvalidTarget => {
+            StepResult::InvalidTarget | StepResult::IllegalPlay => {
                 panic!(
-                    "{label} seed={seed} turn={turns}: unexpected InvalidTarget \
-                     (EndTurn cannot produce a target-validation error)"
+                    "{label} seed={seed} turn={turns}: unexpected {result:?} \
+                     (EndTurn cannot produce a play-rejection)"
                 );
             }
         }

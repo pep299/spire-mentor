@@ -41,12 +41,6 @@ pub(crate) fn play_seeker_strike(
 ) -> EffectResult {
     let t = target.expect("SeekerStrike: Enemy-targeted");
     let _ = deal_damage_player_to_enemy(state, t, current_damage(state));
-    // A lethal SeekerStrike ends combat before the draw-pile select: C#
-    // `CardSelectCmd.FromSimpleGrid` returns empty when `IsEnding`
-    // (CardSelectCmd.cs:222-224), so suppress the select here too.
-    if sts2_core::combat_loop::combat_is_ending(state) {
-        return EffectResult::Resolved;
-    }
     if state.player.draw.is_empty() {
         return EffectResult::Resolved;
     }
@@ -70,6 +64,16 @@ pub(crate) fn play_seeker_strike(
         .run_rng
         .combat_card_selection
         .stable_shuffle_by(shuffled.as_mut_slice(), &cmp);
+    // A lethal SeekerStrike ends combat before the draw-pile select: C#
+    // `CardSelectCmd.FromCombatPile` returns empty when `IsEnding`
+    // (CardSelectCmd.cs:383), so suppress the select here too. But the
+    // `StableShuffle` that picks the offered cards runs BEFORE that call
+    // (SeekerStrike.cs OnPlay), so its CombatCardSelection reads land even
+    // on the killing blow (Regent act23 seed 1001: the stream ran 5 reads
+    // behind C# into the next fight).
+    if sts2_core::combat_loop::combat_is_ending(state) {
+        return EffectResult::Resolved;
+    }
     // The StableShuffle above selects WHICH ≤3 cards are offered (the
     // `cardOptions` set). C# `CardSelectCmd.FromCombatPile` then builds the
     // surfaced list from `pile.Cards.Where(c => cardOptions.Contains(c))`
@@ -108,6 +112,22 @@ pub(crate) fn play_seeker_strike(
                     .cmp(&crate::cards::spec_index::card_csharp_entry(cb.card_id))
             })
     });
+    // C# `FromCombatPile` skips the prompt when the offered count is
+    // `<= prefs.MinSelect` (CardSelectCmd.cs:397-400, same in v0.111.0) and
+    // takes the lone card: a 1-card draw pile adds it to hand with no choice.
+    // Surfacing a select here let the run driver skip it (Defect QX182).
+    // `CardPileCmd.Add(card, Hand)` (SeekerStrike.cs:40) sends the card to
+    // the discard pile instead when the hand already holds 10 cards
+    // (CardPileCmd.cs:485-489), which an auto-play from the draw pile reaches.
+    if let [uid] = subset.as_slice() {
+        let uid = *uid;
+        if let Some(pos) = state.player.draw.iter().position(|&u| u == uid) {
+            let card = state.player.draw.remove(pos);
+            sts2_core::cards::unpin(&mut state.player, card);
+            let _ = sts2_core::cards::try_add_to_hand(&mut state.player, card);
+        }
+        return EffectResult::Resolved;
+    }
     let options: Vec<sts2_core::ChoiceOption> = subset
         .iter()
         .map(|uid| {

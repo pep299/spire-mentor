@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 
 import pytest
+import sts2_client
 
 pytest.importorskip("sts2_rs", reason="the run import needs the sts2_rs extension")
 
@@ -33,7 +34,11 @@ def live_run():
     """A real RunManager at SEED, to borrow a genuine map + RNG cursor from."""
     import sts2_rs
 
-    return sts2_rs.RunManager(string_seed=SEED, character="Ironclad", act1="roll")
+    # At the selected build (`--game-version`), like the `RustGame()` it is
+    # grafted onto: a v0.111.0 seed rolls a different act-1 map.
+    return sts2_client.rs_engine_call(
+        sts2_rs.RunManager, string_seed=SEED, character="Ironclad", act1="roll"
+    )
 
 
 def _map_block(rm) -> dict:
@@ -195,7 +200,14 @@ def test_seek_rebuilds_an_imported_run(live_run, tmp_path):
     from workbench.branching import BranchingLiveSession
 
     imported = _imported(live_run)
-    sess = BranchingLiveSession(logs_dir=str(tmp_path / "logs"), backend="rust", loc={})
+    # A session's build is explicit (``None`` is v0.107.1, not the process
+    # default), so pin it to the build `live_run` was rolled at.
+    sess = BranchingLiveSession(
+        logs_dir=str(tmp_path / "logs"),
+        backend="rust",
+        loc={},
+        game_version=sts2_client.GAME_VERSION,
+    )
     root = sess.start_imported(imported.run)
     assert root["decision"] == "map_select"
 

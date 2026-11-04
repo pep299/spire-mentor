@@ -2,6 +2,11 @@
 
 using SpireMentor;
 
+if (args.Length is 2 or 3 && args[0] == "--advisor-child")
+{
+    return WindowsChildProcessTests.RunChild(args[1], args.Length == 3 ? int.Parse(args[2]) : null);
+}
+
 int failures = 0;
 int checks = 0;
 
@@ -364,6 +369,306 @@ Check("tags: mixed, ranked within each name", TagList("Louse", "Cultist", "Louse
 Check("tags: a dead enemy (null) is not counted", TagList("Rat", null, "Rat"), "#1,-,#2");
 Check("tags: one live rat beside a dead one stays bare", TagList("Rat", null), "-,-");
 Check("tags: empty", TagList(), "");
+
+// RefusalWatch: a move that opens a pick is not a refused move (2026-10-28).
+string Judge(int markThen, int markNow, bool screenUp, int screensThen, int screensNow) =>
+    RefusalWatch.Judge(markThen, markNow, screenUp, screensThen, screensNow).ToString();
+Check("refusal: board moved", Judge(5, 6, false, 0, 0), "Accepted");
+Check("refusal: board moved beats an open screen", Judge(5, 6, true, 0, 1), "Accepted");
+Check("refusal: potion pick still open", Judge(5, 5, true, 0, 1), "WaitForPick");
+Check("refusal: pick answered, card not landed yet", Judge(5, 5, false, 0, 1), "WaitForPick");
+Check("refusal: nothing moved, nothing pending", Judge(5, 5, false, 3, 3), "Refused");
+
+// TravelGuard: nothing is described mid-travel; a stuck flag gives up once
+// per move (GH #987).
+var travel = new TravelGuard();
+const ulong stuck = TravelGuard.StuckAfterMs;
+Check("travel: not traveling", travel.Suppress(false, 3, 0).ToString(), "False");
+Check("travel: a move starts", travel.Suppress(true, 3, 1_000).ToString(), "True");
+Check("travel: still within the limit", travel.Suppress(true, 3, 1_000 + stuck - 1).ToString(), "True");
+Check("travel: past the limit gives up", travel.Suppress(true, 3, 1_000 + stuck).ToString(), "False");
+Check("travel: giving up is reported once", travel.JustGaveUp.ToString(), "True");
+Check("travel: stays given up for that move", travel.Suppress(true, 3, 1_000 + 2 * stuck).ToString(), "False");
+Check("travel: ... without reporting again", travel.JustGaveUp.ToString(), "False");
+Check("travel: the next move re-arms with the flag never dropped",
+    travel.Suppress(true, 4, 1_000 + 2 * stuck).ToString(), "True");
+Check("travel: arrival clears", travel.Suppress(false, 4, 1_000 + 2 * stuck + 5).ToString(), "False");
+Check("travel: a later move on the same count starts a fresh clock",
+    travel.Suppress(true, 4, 10 * stuck).ToString(), "True");
+
+// TeammateTargetPick: an AnyAlly play's teammate (GH #1017). The players in
+// run order; us second of four. allyIndex counts the others, as allies[] does.
+var table = new List<(bool IsMe, bool IsAlive)> { (false, true), (true, true), (false, true), (false, true) };
+Check("ally 0 is the first other player", TeammateTargetPick.Pick(table, 0).ToString(), "0");
+Check("ally 1 skips us", TeammateTargetPick.Pick(table, 1).ToString(), "2");
+Check("ally 2", TeammateTargetPick.Pick(table, 2).ToString(), "3");
+Check("ally out of range", TeammateTargetPick.Pick(table, 3).ToString(), "-1");
+Check("no index: first living teammate", TeammateTargetPick.Pick(table, -1).ToString(), "0");
+var firstDead = new List<(bool IsMe, bool IsAlive)> { (false, false), (true, true), (false, true), (false, true) };
+Check("a named dead teammate is nobody", TeammateTargetPick.Pick(firstDead, 0).ToString(), "-1");
+Check("no index skips the dead", TeammateTargetPick.Pick(firstDead, -1).ToString(), "2");
+var oneLeft = new List<(bool IsMe, bool IsAlive)> { (false, false), (true, true), (false, true) };
+Check("one living teammate takes any index", TeammateTargetPick.Pick(oneLeft, 0).ToString(), "2");
+Check("one living teammate takes an out-of-range index", TeammateTargetPick.Pick(oneLeft, 7).ToString(), "2");
+var twoPlayer = new List<(bool IsMe, bool IsAlive)> { (true, true), (false, true) };
+Check("two players: any index lands on the teammate", TeammateTargetPick.Pick(twoPlayer, 3).ToString(), "1");
+Check("solo: nobody", TeammateTargetPick.Pick(new List<(bool IsMe, bool IsAlive)> { (true, true) }, -1).ToString(), "-1");
+// AllyIndex: the reverse, for a human's AnyAlly play. Us second of four.
+var seats = new List<bool> { false, true, false, false };
+Check("player 0 is ally 0", TeammateTargetPick.AllyIndex(seats, 0).ToString(), "0");
+Check("player 2 is ally 1", TeammateTargetPick.AllyIndex(seats, 2).ToString(), "1");
+Check("player 3 is ally 2", TeammateTargetPick.AllyIndex(seats, 3).ToString(), "2");
+Check("we are no ally", TeammateTargetPick.AllyIndex(seats, 1).ToString(), "-1");
+Check("out of range is no ally", TeammateTargetPick.AllyIndex(seats, 4).ToString(), "-1");
+var allAlive = seats.Select(me => (IsMe: me, IsAlive: true)).ToList();
+foreach (int p in new[] { 0, 2, 3 })
+{
+    Check($"Pick undoes AllyIndex for player {p}",
+        TeammateTargetPick.Pick(allAlive, TeammateTargetPick.AllyIndex(seats, p)).ToString(), p.ToString());
+}
+
+// TieBandText: the HUD's "about equal" lines from the engine's band (GH #1022).
+string Tie(List<string> band, string? reason, double? gapHp) =>
+    string.Join(" | ", TieBandText.Lines(band, reason, gapHp));
+Check("band of one says nothing", Tie(new() { "Bash" }, "the highest value", null), "");
+Check("band of two",
+    Tie(new() { "Inflame+", "Strike" }, "the most searched of the equal moves", 1.2),
+    "about equal: Inflame+ ≈ Strike (~1 HP) | → Inflame+: the most searched of the equal moves");
+Check("an HP gap under half a point is not shown",
+    Tie(new() { "Defend", "end turn" }, "block before ending the turn into damage", -0.3),
+    "about equal: Defend ≈ end turn | → Defend: block before ending the turn into damage");
+Check("a long band is counted, not listed",
+    Tie(new() { "A", "B", "C", "D", "E" }, null, null),
+    "about equal: A ≈ B ≈ C (+2)");
+
+// BugReportSite.Resolve: where the mod's bug reports go.
+Check("site: setting wins", BugReportSite.Resolve(" https://a.example/ ", "https://b.example"), "https://a.example");
+Check("site: baked when no setting", BugReportSite.Resolve("", "https://b.example"), "https://b.example");
+Check("site: none", BugReportSite.Resolve(null, null), null);
+Check("site: blank baked", BugReportSite.Resolve("  ", "  "), null);
+Check("site: keeps a path and port", BugReportSite.Resolve("http://127.0.0.1:8787/wb/", null), "http://127.0.0.1:8787/wb");
+// A bad explicit setting does not fall back to the baked site: the player
+// typed it to send reports elsewhere, so nothing goes anywhere they did not say.
+Check("site: bad setting is no site", BugReportSite.Resolve("not a url", "https://b.example"), null);
+Check("site: ftp refused", BugReportSite.Resolve("ftp://x.example", null), null);
+Check("site: a query is refused", BugReportSite.Resolve("https://x.example/?a=1", null), null);
+Check("site: endpoint is the intake", BugReportSite.Endpoint("https://a.example"), "https://a.example/intake/bugreport");
+Check("redirect: names the sign-in host",
+    BugReportDump.RedirectDetail(302, "https://team.cloudflareaccess.com/cdn-cgi/access/login/x?redirect_url=%2F"),
+    "HTTP 302: the report store sent us to team.cloudflareaccess.com (a sign-in page?) -- its /intake/bugreport is not exempt from the site's sign-in");
+Check("redirect: no location", BugReportDump.RedirectDetail(307, null), "HTTP 307: the report store redirected instead of answering");
+
+// BugReportDump: tails, scrubbing, the upload reply.
+Check("tail: fits unchanged", BugReportDump.TailChars("a\nb\n", 10), "a\nb\n");
+Check("tail: starts at a whole line", BugReportDump.TailChars("first line\nsecond\nthird\n", 10), "third\n");
+Check("tail: one long line is cut raw", BugReportDump.TailChars("abcdefghij", 4), "ghij");
+Check("scrub: windows path", BugReportDump.Scrub(@"C:\Users\Alice\AppData\Local", "alice"), @"C:\Users\<user>\AppData\Local");
+Check("scrub: forward slashes", BugReportDump.Scrub("C:/Users/alice/x and /home/alice", "alice"), "C:/Users/<user>/x and /home/<user>");
+Check("scrub: only path segments", BugReportDump.Scrub(@"steam started; C:\Users\steam\x", "steam"), @"steam started; C:\Users\<user>\x");
+Check("scrub: a longer name is not a match", BugReportDump.Scrub(@"C:\Users\alicea\x", "alice"), @"C:\Users\alicea\x");
+Check("scrub: no user name", BugReportDump.Scrub(@"C:\Users\alice", null), @"C:\Users\alice");
+Check("note: blank is null", BugReportDump.CleanNote("  \n "), null);
+Check("note: trimmed", BugReportDump.CleanNote("  card did nothing \n"), "card did nothing");
+Check("note: capped", BugReportDump.CleanNote(new string('x', 5000))?.Length.ToString(), BugReportDump.MaxNoteChars.ToString());
+Check("reply: id + url", BugReportDump.ParseUploadReply("{\"id\":\"wb-0123456789abcdef\",\"url\":\"https://h/?report=wb-0123456789abcdef\"}")?.Id, "wb-0123456789abcdef");
+Check("reply: html is no reply", BugReportDump.ParseUploadReply("<html>oops</html>")?.Id, null);
+Check("reply: missing url", BugReportDump.ParseUploadReply("{\"id\":\"wb-1\"}")?.Id, null);
+Check("failure: store detail", BugReportDump.FailureDetail(413, "{\"detail\":\"report too large\"}"), "HTTP 413: report too large");
+Check("failure: empty body", BugReportDump.FailureDetail(502, ""), "HTTP 502");
+Check("local file name", BugReportDump.LocalFileName(new DateTimeOffset(2026, 10, 31, 9, 5, 7, TimeSpan.FromHours(1))), "bugreport-20261031-090507.json");
+Check("user agent", BugReportDump.UserAgent("0.8.2"), "SpireMentor/0.8.2 (Slay the Spire 2 mod)");
+
+// BugReportDump.Build: the dump the store validates (schema 1, four objects).
+var bugState = new Dictionary<string, object>
+{
+    ["type"] = "advice_request",
+    ["advice_for"] = "combat_action",
+    ["seed"] = "ABC123",
+    ["act"] = 2,
+    ["floor"] = 19,
+    ["run_state"] = new Dictionary<string, object?> { ["character"] = "Silent", ["ascension"] = 3 },
+};
+var bugDump = BugReportDump.Build(new BugReportParts
+{
+    Note = " Footwork did not add dexterity ",
+    ModVersion = "0.8.2",
+    GameVersion = "v0.111.0",
+    Os = "Windows",
+    CoachMode = "Advisor",
+    CoachStyle = "Coach",
+    AdvisorConnected = true,
+    CapturedAt = new DateTimeOffset(2026, 10, 31, 9, 5, 7, TimeSpan.FromHours(1)),
+    State = bugState,
+    RunSaveMeta = new Dictionary<string, object?> { ["id"] = "123-4", ["floor"] = 19 },
+    RunSaveJson = "{\"schema_version\":9}",
+    RunLogName = "run.jsonl",
+    RunLog = "{\"a\":1}\n",
+    ModLog = Enumerable.Range(0, 450).Select(i => $"line {i} C:\\Users\\bob\\x").ToList(),
+    GameLog = "boot\nC:/Users/bob/AppData\n",
+    UserName = "bob",
+});
+string bugJson = System.Text.Json.JsonSerializer.Serialize(bugDump);
+using (var doc = System.Text.Json.JsonDocument.Parse(bugJson))
+{
+    var root = doc.RootElement;
+    string Str(params string[] path)
+    {
+        var e = root;
+        foreach (string k in path)
+        {
+            if (e.ValueKind != System.Text.Json.JsonValueKind.Object || !e.TryGetProperty(k, out e))
+            {
+                return "<missing>";
+            }
+        }
+        return e.ValueKind == System.Text.Json.JsonValueKind.String ? e.GetString()! : e.GetRawText();
+    }
+    Check("dump: schema", Str("schema_version"), "1");
+    foreach (string k in new[] { "meta", "repro", "state", "ui" })
+    {
+        Check($"dump: {k} is an object", root.GetProperty(k).ValueKind.ToString(), "Object");
+    }
+    Check("dump: source", Str("meta", "source"), "mod");
+    Check("dump: engine build is the game's", Str("meta", "engine_build"), "v0.111.0");
+    Check("dump: character from run_state", Str("meta", "character"), "Silent");
+    Check("dump: ascension", Str("meta", "ascension"), "3");
+    Check("dump: seed", Str("meta", "seed"), "ABC123");
+    Check("dump: floor", Str("meta", "floor"), "19");
+    Check("dump: advisor connected", Str("meta", "coach", "advisor_connected"), "true");
+    Check("dump: captured local", Str("meta", "captured_local"), "2026-10-31T09:05:07+01:00");
+    Check("dump: screen from advice_for", Str("ui", "screen"), "combat_action");
+    Check("dump: state payload kept", Str("state", "game_state", "advice_for"), "combat_action");
+    Check("dump: run save parsed, not a string", Str("repro", "run_save", "save", "schema_version"), "9");
+    Check("dump: run save snapshot id", Str("repro", "run_save", "snapshot", "id"), "123-4");
+    Check("dump: run log", Str("repro", "run_log"), "{\"a\":1}\n");
+    Check("dump: run file", Str("repro", "run_file"), "run.jsonl");
+    Check("dump: note trimmed", Str("note"), "Footwork did not add dexterity");
+    Check("dump: mod log capped", root.GetProperty("logs").GetProperty("mod").GetArrayLength().ToString(), BugReportDump.MaxModLogLines.ToString());
+    Check("dump: mod log keeps the newest", root.GetProperty("logs").GetProperty("mod")[0].GetString(), @"line 50 C:\Users\<user>\x");
+    Check("dump: game log scrubbed", Str("logs", "game"), "boot\nC:/Users/<user>/AppData\n");
+    Check("dump: no advisor log is null", Str("logs", "advisor"), "null");
+}
+var bareDump = BugReportDump.Build(new BugReportParts { ModVersion = "0.8.2", RunLogName = "big.jsonl", RunLogOmitted = "9000000 bytes" });
+string bareJson = System.Text.Json.JsonSerializer.Serialize(bareDump);
+using (var doc = System.Text.Json.JsonDocument.Parse(bareJson))
+{
+    var root = doc.RootElement;
+    Check("bare dump: no state is null", root.GetProperty("state").GetProperty("game_state").ValueKind.ToString(), "Null");
+    Check("bare dump: no screen", root.GetProperty("ui").GetProperty("screen").ValueKind.ToString(), "Null");
+    Check("bare dump: no note", root.GetProperty("note").ValueKind.ToString(), "Null");
+    Check("bare dump: omitted run log says so", root.GetProperty("repro").GetProperty("run_log_omitted").GetString(), "9000000 bytes");
+    Check("bare dump: no run log text", root.GetProperty("repro").TryGetProperty("run_log", out _).ToString(), "False");
+    Check("bare dump: no run save", root.GetProperty("repro").TryGetProperty("run_save", out _).ToString(), "False");
+}
+string tailFile = Path.Combine(Path.GetTempPath(), $"sm-tail-{Guid.NewGuid():N}.log");
+File.WriteAllText(tailFile, "one\ntwo\nthree\n");
+Check("file tail: whole file", BugReportDump.ReadFileTail(tailFile, 1000), "one\ntwo\nthree\n");
+Check("file tail: from a line start", BugReportDump.ReadFileTail(tailFile, 8), "three\n");
+using (new FileStream(tailFile, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite))
+{
+    // godot.log is held open for writing by the game while we read it.
+    Check("file tail: shared with a writer", BugReportDump.ReadFileTail(tailFile, 6), "three\n");
+}
+File.Delete(tailFile);
+Check("file tail: missing file", BugReportDump.ReadFileTail(tailFile, 10), null);
+Check("screen: run snapshot", BugReportDump.ScreenOf(new Dictionary<string, object?> { ["type"] = "run_snapshot" }), "run");
+
+// CrystalSpherePick (GH #872): which hidden cell F7 divines.
+{
+    // A fresh board: the 11x11 grid minus the four Manhattan-radius-2 corner
+    // diamonds the minigame clears up front, in container (x-major) order.
+    var fresh = new List<(int X, int Y)>();
+    for (int x = 0; x < CrystalSpherePick.GridSize; x++)
+    {
+        for (int y = 0; y < CrystalSpherePick.GridSize; y++)
+        {
+            int dx = Math.Min(x, CrystalSpherePick.GridSize - 1 - x);
+            int dy = Math.Min(y, CrystalSpherePick.GridSize - 1 - y);
+            if (dx + dy > 2)
+            {
+                fresh.Add((x, y));
+            }
+        }
+    }
+    string Cell(List<(int X, int Y)> hidden) => hidden[CrystalSpherePick.Pick(hidden)].ToString();
+    Check("sphere: fresh board starts the first column", Cell(fresh), "(3, 2)");
+    Check("sphere: not the first hidden cell", fresh[0].ToString(), "(0, 3)");
+
+    // Play the six centres out: each Big divination clears its 3x3.
+    var board = new List<(int X, int Y)>(fresh);
+    var order = new List<string>();
+    for (int t = 0; t < 6; t++)
+    {
+        (int cx, int cy) = board[CrystalSpherePick.Pick(board)];
+        order.Add($"({cx},{cy})");
+        board.RemoveAll(c => Math.Abs(c.X - cx) <= 1 && Math.Abs(c.Y - cy) <= 1);
+    }
+    Check("sphere: column first, then the column beside it",
+        string.Join(" ", order), "(3,2) (3,5) (3,8) (6,2) (6,5) (6,8)");
+    Check("sphere: the six blocks never overlap", (fresh.Count - board.Count).ToString(), "54");
+
+    // A centre the player already cleared by hand is skipped.
+    var handPlayed = new List<(int X, int Y)>(fresh);
+    handPlayed.RemoveAll(c => Math.Abs(c.X - 3) <= 1 && Math.Abs(c.Y - 2) <= 1);
+    Check("sphere: a cleared centre is skipped", Cell(handPlayed), "(3, 5)");
+
+    // Past the list: most still-hidden cells in the 3x3, nearest the centre.
+    var leftovers = new List<(int X, int Y)> { (0, 5), (9, 9), (9, 10), (10, 9), (10, 10), (5, 0) };
+    Check("sphere: fallback takes the densest block", Cell(leftovers), "(9, 9)");
+    var lone = new List<(int X, int Y)> { (0, 5), (5, 4), (10, 5) };
+    Check("sphere: fallback tie goes nearest the centre", Cell(lone), "(5, 4)");
+    Check("sphere: nothing hidden", CrystalSpherePick.Pick(new List<(int X, int Y)>()).ToString(), "-1");
+}
+
+// AdviceColumn: the advice panel + coach chips follow a dragged toolbar.
+{
+    string At((float X, float Y) p) => $"({p.X:0},{p.Y:0})";
+    // 1280x720, toolbar 40 px tall; block 430 wide.
+    Check("column: under the strip, at its left edge",
+        At(AdviceColumn.BlockTopLeft(300, 200, 40, 430, 150, 1280, 720)), "(300,248)");
+    Check("column: shifted left to stay on screen",
+        At(AdviceColumn.BlockTopLeft(1200, 200, 40, 430, 150, 1280, 720)), "(850,248)");
+    Check("column: strip near the bottom -> above it",
+        At(AdviceColumn.BlockTopLeft(300, 600, 40, 430, 150, 1280, 720)), "(300,442)");
+    Check("column: fits nowhere, more room below -> below",
+        At(AdviceColumn.BlockTopLeft(300, 100, 40, 430, 900, 1280, 720)), "(300,148)");
+    Check("column: fits nowhere, more room above -> top of the screen",
+        At(AdviceColumn.BlockTopLeft(300, 500, 40, 430, 900, 1280, 720)), "(300,0)");
+    Check("column: viewport narrower than the block -> left edge",
+        At(AdviceColumn.BlockTopLeft(300, 100, 40, 430, 150, 400, 720)), "(0,148)");
+    Check("column: panel + chips", AdviceColumn.BlockHeight(150, true, 60).ToString("0"), "218");
+    Check("column: panel hidden -> chips only", AdviceColumn.BlockHeight(150, false, 60).ToString("0"), "60");
+    Check("column: no chips -> panel only", AdviceColumn.BlockHeight(150, true, 0).ToString("0"), "150");
+    Check("column: nothing", AdviceColumn.BlockHeight(150, false, 0).ToString("0"), "0");
+}
+
+// RewardSwapLayout (GH #1069): reward_screen option indices with full-belt potion swaps.
+{
+    string L(List<RewardOptionSlot> slots) => string.Join(" ", slots.Select(s => s.Kind switch
+    {
+        RewardOptionKind.Pick => $"P{s.Button}",
+        RewardOptionKind.SwapDecline => $"D{s.Button}",
+        RewardOptionKind.Swap => $"S{s.Button}:{s.DiscardSlot}",
+        _ => "X",
+    }));
+    Check("rewards: no blocked potion is the old layout",
+        L(RewardSwapLayout.Build(3, new List<int>(), true)), "P0 P1 P2 X");
+    Check("rewards: one blocked potion, 3-slot belt",
+        L(RewardSwapLayout.Build(2, new List<int> { 3 }, true)), "P0 P1 D0 S0:0 S0:1 S0:2 X");
+    Check("rewards: two blocked potions, no proceed button",
+        L(RewardSwapLayout.Build(0, new List<int> { 2, 2 }, false)), "D0 S0:0 S0:1 D1 S1:0 S1:1");
+    Check("rewards: zero-slot belt still offers decline",
+        L(RewardSwapLayout.Build(1, new List<int> { 0 }, true)), "P0 D0 X");
+}
+
+if (OperatingSystem.IsWindows())
+{
+    WindowsChildProcessTests.Run(Check);
+}
+else
+{
+    Console.WriteLine("SKIP Windows advisor handle-inheritance tests (requires Windows).");
+}
 
 Console.WriteLine(failures == 0
     ? $"ModUnitTests: OK ({checks} checks)"

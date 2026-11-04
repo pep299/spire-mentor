@@ -16,8 +16,8 @@
 use serde_json::{json, Map, Value};
 use sts2_core::{apply, legal_actions, Action, CombatState};
 use sts2_mcts::{
-    dpw_outcome_cap, hint, par_search_with_policy, EdgeAction, HiddenInfoMode, LeafEval, Mcts,
-    MctsConfig, NodeKind, RolloutPolicyKind, RootOutcome, SharedPolicy,
+    dpw_outcome_cap, hint, par_search_with_policy, root_pick_order, EdgeAction, HiddenInfoMode,
+    LeafEval, Mcts, MctsConfig, NodeKind, RolloutPolicyKind, RootOutcome, RootPick, SharedPolicy,
 };
 
 use super::combat::combat_action_to_value;
@@ -36,6 +36,31 @@ pub const LOW_CONFIDENCE_VISIT_FRACTION: f64 = 0.05;
 /// Hard cap on the number of actions reported in the principal variation
 /// returned by [`recommend_value`]. Matches the spec ("depth ≤ 5").
 pub const PV_MAX_DEPTH: usize = 5;
+
+/// The search's own pick for one result, aligned with the
+/// [`RecommendScore`]s it explains (GH #1022): the rule's [`RootPick`], with
+/// indices into those scores in their search order, and the
+/// [`root_pick_order`] over them.
+#[derive(Clone, Debug)]
+pub struct EnginePick {
+    pub pick: RootPick,
+    pub order: Vec<usize>,
+    /// The band width the rule ran with ([`MctsConfig::tie_eps`]).
+    pub tie_eps: f32,
+}
+
+impl EnginePick {
+    /// Explain a finished single-tree search over `m.root_outcomes()`.
+    fn from_tree<P: sts2_mcts::Policy>(m: &mut Mcts<P>, outs: &[RootOutcome]) -> Option<Self> {
+        let pick = m.explain_root_pick().ok()?;
+        let order = root_pick_order(&m.tree.root_state, &m.config, outs, pick.idx);
+        Some(Self {
+            pick,
+            order,
+            tie_eps: m.config.tie_eps,
+        })
+    }
+}
 
 /// `RecommendConfig` (`sts2_hint/recommender.py`): the knobs of one
 /// recommend / search-tree call, with that class's defaults.
@@ -463,39 +488,59 @@ pub fn action_score_value(
 }
 
 /// Rank `scores` and build the `mcts_recommend` result dict:
-/// `{actions, pv, q_saturated, fair, sims, threads, intent_damage_known}`.
+/// `{actions, pv, pick, q_saturated, fair, sims, threads,
+/// intent_damage_known}`.
 ///
 /// Sort: Q desc, then a decisive WIN, then visits desc (matches
-/// `human.rs` plus the GH#296 terminal-win tie-break). `engine_pick` — the
-/// action the search itself chose ([`sts2_mcts::Mcts::pick_root_action`],
-/// the rule the run agent plays by) — is then moved to the top, so the
-/// `is_best` row is the move the Rust AI would make, not a second rule
-/// that disagrees with it on ties and guards. `None` (the fair mode, which
-/// has no single tree) keeps the plain Q order. The top row is `is_best`;
-/// rows below 5% of the max visits are `low_confidence`; `q_saturated` when
-/// the Q spread across >1 rows is under [`Q_SATURATION_EPSILON`].
+/// `human.rs` plus the GH#296 terminal-win tie-break). `engine` — the
+/// search's own pick ([`sts2_mcts::Mcts::explain_root_pick`], the rule the
+/// run agent plays by) — is then moved to the top, so the `is_best` row is
+/// the move the Rust AI would make, not a second rule that disagrees with
+/// it on ties and guards. `None` (the fair mode, which has no single tree)
+/// keeps the plain Q order. The top row is `is_best`; rows below 5% of the
+/// max visits are `low_confidence`; `q_saturated` when the Q spread across
+/// >1 rows is under [`Q_SATURATION_EPSILON`].
+///
+/// The pick is explained so no consumer has to re-derive it (GH #1022):
+/// each row carries `in_band` (the engine cannot tell it from its pick) and
+/// `pick_rank` (the engine's preference order, 0 = the pick; a consumer
+/// that must drop rows plays the lowest surviving rank), and `pick` is
+/// `{rule, reason, tie_eps, gap_q, gap_z, gap_hp}` — the deciding
+/// [`sts2_mcts::PickRule`] and its words, and the pick's lead over the
+/// runner-up (the best-scored other row) in root Q, in its standard error
+/// and in mean final HP. `pick` is null in the fair mode, whose rows rank by
+/// row order and are never in a band.
 #[must_use]
 pub fn recommend_output_value(
-    mut scores: Vec<RecommendScore>,
+    scores: Vec<RecommendScore>,
     pv: &[Action],
-    engine_pick: Option<&Action>,
+    engine: Option<&EnginePick>,
     fair: bool,
     sims: u32,
     threads: u32,
     intent_damage_known: bool,
 ) -> Value {
-    scores.sort_by(|a, b| {
-        let qa = q_of(a);
-        let qb = q_of(b);
-        qb.partial_cmp(&qa)
+    let n = scores.len();
+    // Row order as indices into `scores`, which keep the search's order so
+    // the engine's indices stay valid.
+    let mut rows: Vec<usize> = (0..n).collect();
+    rows.sort_by(|&a, &b| {
+        let (a, b) = (&scores[a], &scores[b]);
+        q_of(b)
+            .partial_cmp(&q_of(a))
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(b.terminal_win.cmp(&a.terminal_win))
             .then(b.visits.cmp(&a.visits))
     });
-    if let Some(pos) = engine_pick.and_then(|p| scores.iter().position(|s| &s.action == p)) {
-        scores[..=pos].rotate_right(1);
+    let engine = engine.filter(|e| e.pick.idx.is_some_and(|i| i < n) && e.order.len() == n);
+    if let Some(pos) = engine.and_then(|e| rows.iter().position(|&r| Some(r) == e.pick.idx)) {
+        rows[..=pos].rotate_right(1);
     }
-    let q_saturated = if scores.len() > 1 {
+    let mut rank = vec![0_usize; n];
+    for (k, &i) in engine.map_or(&rows, |e| &e.order).iter().enumerate() {
+        rank[i] = k;
+    }
+    let q_saturated = if n > 1 {
         let q_min = scores.iter().map(q_of).fold(f32::INFINITY, f32::min);
         let q_max = scores.iter().map(q_of).fold(f32::NEG_INFINITY, f32::max);
         (q_max - q_min).abs() < Q_SATURATION_EPSILON
@@ -506,11 +551,12 @@ pub fn recommend_output_value(
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let low_visit_threshold =
         ((f64::from(max_visits) * LOW_CONFIDENCE_VISIT_FRACTION).ceil() as u32).max(1);
-    let actions: Vec<Value> = scores
+    let actions: Vec<Value> = rows
         .iter()
         .enumerate()
-        .map(|(idx, s)| {
-            action_score_value(
+        .map(|(pos, &i)| {
+            let s = &scores[i];
+            let mut row = action_score_value(
                 &s.action,
                 s.visits,
                 s.wins,
@@ -522,14 +568,37 @@ pub fn recommend_output_value(
                 s.hp_n,
                 s.visits < low_visit_threshold,
                 q_saturated,
-                idx == 0,
-            )
+                pos == 0,
+            );
+            row["pick_rank"] = json!(rank[i]);
+            row["in_band"] = json!(engine.is_some_and(|e| e.pick.band.contains(&i)));
+            row
         })
         .collect();
+    let mean_hp = |i: usize| {
+        let s = &scores[i];
+        (s.hp_n > 0).then(|| f64::from(s.hp_sum) / f64::from(s.hp_n))
+    };
+    let pick = engine.map(|e| {
+        let p = &e.pick;
+        let gap_hp = p
+            .idx
+            .zip(p.runner_up)
+            .and_then(|(a, b)| Some(mean_hp(a)? - mean_hp(b)?));
+        json!({
+            "rule": p.rule.as_str(),
+            "reason": p.rule.reason(),
+            "tie_eps": e.tie_eps,
+            "gap_q": p.gap_q,
+            "gap_z": p.gap_z,
+            "gap_hp": gap_hp,
+        })
+    });
     let pv: Vec<Value> = pv.iter().map(combat_action_to_value).collect();
     json!({
         "actions": actions,
         "pv": pv,
+        "pick": pick,
         "q_saturated": q_saturated,
         "fair": fair,
         "sims": sims,
@@ -539,13 +608,29 @@ pub fn recommend_output_value(
 }
 
 /// Score ONE action the way one iteration of the fair branch of
-/// [`recommend_value`] does: apply it to a clone, then search the post-state
-/// (an already-terminal post-state is one synthesized outcome).
+/// [`recommend_value`] does.
+///
+/// Under an honest hidden-information mode (anything but `Clairvoyant`) this
+/// is a forced-root search ([`Mcts::search_forced`]) rooted at `state`, the
+/// position the action is chosen FROM: the search's own root conversion
+/// (belief canonicalization / blindfold, seeded from the search seed alone)
+/// runs BEFORE the action, and a drawing or rolling action passes a chance
+/// node that re-deals per simulation. Applying the action to the raw `state`
+/// and searching only what follows — what this did before, and still does
+/// under `Clairvoyant` — prices the realized outcome: a root draw took the
+/// true next card and a root roll the state's real RNG cursors, so a fair row
+/// moved with information the player cannot have (`tests/fair_root.rs`;
+/// reported against the manoj fork, `257fc6817` / `1edb23cf0`). It also
+/// gives an action that ends the combat its whole budget instead of one
+/// synthesized visit.
 fn score_action_raw(
     state: &CombatState,
     params: &RecommendParams,
     action: &Action,
 ) -> RecommendScore {
+    if params.hidden_info != HiddenInfoMode::Clairvoyant {
+        return score_action_forced_raw(state, params, action);
+    }
     let cfg = params.mcts_config();
     let policy = SharedPolicy::uniform();
     let mut post = state.clone();
@@ -604,6 +689,43 @@ fn score_action_raw(
     }
 }
 
+/// The honest fair row for `action`: a single-threaded forced-root search
+/// from `state` (see [`score_action_raw`]). `terminal_win` (GH#296: an
+/// immediate win ranks above an equal-valued continuation) is read from the
+/// search's own view of the root, never from the raw state: every forced
+/// simulation was a win and the action ends the combat on the
+/// seed-determined belief root.
+fn score_action_forced_raw(
+    state: &CombatState,
+    params: &RecommendParams,
+    action: &Action,
+) -> RecommendScore {
+    let mut m = Mcts::with_policy(state.clone(), params.mcts_config(), SharedPolicy::uniform());
+    let Some(o) = m.search_forced(action, params.sims.max(1)) else {
+        return RecommendScore {
+            action: action.clone(),
+            visits: 0,
+            wins: 0,
+            losses: 0,
+            ties: 0,
+            value_sum: 0.0,
+            hp_sum: 0.0,
+            hp_sq_sum: 0.0,
+            hp_n: 0,
+            terminal_win: false,
+        };
+    };
+    let terminal_win = o.visits > 0 && o.wins == o.visits && {
+        let mut post = m.tree.root_state.clone();
+        let _ = apply(&mut post, action.clone());
+        legal_actions(&post).is_empty() && post.player_won
+    };
+    RecommendScore {
+        terminal_win,
+        ..RecommendScore::from(o)
+    }
+}
+
 /// One action dict, same shape as a `recommend_value` `actions[i]` row
 /// (`is_best`, `low_confidence`, `q_saturated` all false), computed by the
 /// exact code the fair branch runs per action.
@@ -658,6 +780,56 @@ pub fn score_action_forced(
     ))
 }
 
+/// The fair branch of [`recommend_value`]: one [`score_action_raw`] row per
+/// legal action, in `legal` order.
+///
+/// An honest mode's forced-root search is single-threaded, so `threads > 1`
+/// spreads the ACTIONS over that many scoped threads instead of splitting
+/// each search root-parallel; every row is computed exactly as with one
+/// thread, so the result does not depend on `threads`. `Clairvoyant` keeps
+/// its root-parallel post-state searches. Callers that cannot spawn threads
+/// (the wasm build) clamp `threads` to 1 first, as for every other path.
+fn fair_scores(
+    state: &CombatState,
+    params: &RecommendParams,
+    legal: &[Action],
+) -> Vec<RecommendScore> {
+    let workers = usize::try_from(params.threads)
+        .unwrap_or(usize::MAX)
+        .min(legal.len());
+    if workers <= 1 || params.hidden_info == HiddenInfoMode::Clairvoyant {
+        return legal
+            .iter()
+            .map(|action| score_action_raw(state, params, action))
+            .collect();
+    }
+    let mut slots: Vec<Option<RecommendScore>> = (0..legal.len()).map(|_| None).collect();
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|w| {
+                scope.spawn(move || {
+                    legal
+                        .iter()
+                        .enumerate()
+                        .skip(w)
+                        .step_by(workers)
+                        .map(|(i, action)| (i, score_action_raw(state, params, action)))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        for h in handles {
+            for (i, row) in h.join().expect("fair-eval worker panicked") {
+                slots[i] = Some(row);
+            }
+        }
+    });
+    slots
+        .into_iter()
+        .map(|r| r.expect("every action scored"))
+        .collect()
+}
+
 /// Run the search `mcts_recommend` runs and return its result dict.
 ///
 /// `fair=false` (default): ONE search from `state`, root child counters per
@@ -679,25 +851,23 @@ pub fn recommend_value(
     let cfg = params.mcts_config();
     let policy = SharedPolicy::uniform();
     let legal = legal_actions(state);
-    let (scores, pv, engine_pick): (Vec<RecommendScore>, Vec<Action>, Option<Action>) =
+    let (scores, pv, engine): (Vec<RecommendScore>, Vec<Action>, Option<EnginePick>) =
         if legal.is_empty() {
             (Vec::new(), Vec::new(), None)
         } else if params.fair {
-            let mut scores: Vec<RecommendScore> = Vec::with_capacity(legal.len());
-            for action in &legal {
-                scores.push(score_action_raw(state, params, action));
-            }
             // No PV for the fair case — each action has its own tree.
-            (scores, Vec::new(), None)
+            (fair_scores(state, params, &legal), Vec::new(), None)
         } else if params.threads <= 1 {
             let mut m = Mcts::with_policy(state.clone(), cfg, policy);
-            let pick = m.search();
+            let played = m.search();
             let outs = m.root_outcomes();
+            let engine = EnginePick::from_tree(&mut m, &outs);
+            debug_assert!(engine.as_ref().is_none_or(|e| e.pick.action == played));
             let pv: Vec<Action> = m.get_pv().into_iter().take(PV_MAX_DEPTH).collect();
             (
                 outs.into_iter().map(RecommendScore::from).collect(),
                 pv,
-                Some(pick),
+                engine,
             )
         } else {
             let r = par_search_with_policy(
@@ -707,14 +877,21 @@ pub fn recommend_value(
                 policy,
                 LeafEval::default(),
             );
+            // The merge picked over the raw root (`par_search_with_policy`),
+            // so the fallback order does too.
+            let engine = EnginePick {
+                order: root_pick_order(state, &cfg, &r.outcomes, r.pick.idx),
+                pick: r.pick,
+                tie_eps: cfg.tie_eps,
+            };
             let scores = r.outcomes.into_iter().map(RecommendScore::from).collect();
             // Merged counters but no shared tree — the PV is just the best action.
-            (scores, vec![r.best_action.clone()], Some(r.best_action))
+            (scores, vec![r.best_action], Some(engine))
         };
     recommend_output_value(
         scores,
         &pv,
-        engine_pick.as_ref(),
+        engine.as_ref(),
         params.fair,
         params.sims,
         params.threads,
@@ -739,11 +916,31 @@ pub fn edge_descr(edge: &EdgeAction) -> (String, String, Option<u8>) {
             let mark = if *upgraded { "+" } else { "" };
             ("play".to_string(), format!("{card_id:?}{mark}"), *target)
         }
+        // A teammate is no enemy slot: name it in the label, not in
+        // `target_index`.
+        EdgeAction::PlayCardAtAlly {
+            card_id,
+            upgraded,
+            ally,
+            ..
+        } => {
+            let mark = if *upgraded { "+" } else { "" };
+            (
+                "play".to_string(),
+                format!("{card_id:?}{mark} → ally {ally}"),
+                None,
+            )
+        }
         EdgeAction::Other(a) => match a {
             Action::EndTurn => ("end_turn".to_string(), "End turn".to_string(), None),
             Action::PlayCard { hand_index, target } => {
                 ("play".to_string(), format!("card[{hand_index}]"), *target)
             }
+            Action::PlayCardAtAlly { hand_index, ally } => (
+                "play".to_string(),
+                format!("card[{hand_index}] → ally {ally}"),
+                None,
+            ),
             Action::UsePotion { slot, target } => {
                 ("potion".to_string(), format!("Potion s{slot}"), *target)
             }
@@ -754,6 +951,11 @@ pub fn edge_descr(edge: &EdgeAction) -> (String, String, Option<u8>) {
                 "drink_potion".to_string(),
                 format!("Potion s{potion_slot}"),
                 *target,
+            ),
+            Action::DrinkPotionAtAlly { potion_slot, ally } => (
+                "drink_potion".to_string(),
+                format!("Potion s{potion_slot} → ally {ally}"),
+                None,
             ),
             Action::Channel { orb, target } => {
                 ("channel".to_string(), format!("Channel {orb:?}"), *target)
@@ -1178,6 +1380,11 @@ mod tests {
         let out = recommend_value(&st, &p, true);
         for row in out["actions"].as_array().unwrap() {
             let mut expect = row.clone();
+            // The engine's ranking of the row among its siblings, which a
+            // lone row cannot carry (GH #1022).
+            for k in ["pick_rank", "in_band"] {
+                expect.as_object_mut().unwrap().remove(k);
+            }
             let a = legal_actions(&st)
                 .into_iter()
                 .find(|a| combat_action_to_value(a) == row["action"])
@@ -1312,24 +1519,88 @@ mod tests {
             hp_n: 0,
             terminal_win: false,
         };
-        let pick = Action::PlayCard {
-            hand_index: 2,
-            target: None,
+        let engine = EnginePick {
+            pick: RootPick {
+                action: Action::PlayCard {
+                    hand_index: 2,
+                    target: None,
+                },
+                idx: Some(2),
+                rule: sts2_mcts::PickRule::BlockGuard,
+                band: [0, 1, 2].into_iter().collect(),
+                runner_up: Some(0),
+                gap_q: -0.015,
+                gap_z: None,
+            },
+            // The fallback after the pick is NOT the Q order.
+            order: vec![2, 1, 0],
+            tie_eps: 0.02,
         };
-        let out = recommend_output_value(
-            vec![s(100, 50.0, 0), s(100, 49.0, 1), s(100, 48.5, 2)],
-            &[],
-            Some(&pick),
-            false,
-            300,
-            1,
-            true,
-        );
+        let mut scores = vec![s(100, 50.0, 0), s(100, 49.0, 1), s(100, 48.5, 2)];
+        scores[0].hp_sum = 300.0;
+        scores[0].hp_n = 10;
+        scores[2].hp_sum = 280.0;
+        scores[2].hp_n = 10;
+        let out = recommend_output_value(scores, &[], Some(&engine), false, 300, 1, true);
         let acts = out["actions"].as_array().unwrap();
         let idx = |i: usize| acts[i]["action"]["card_index"].as_u64().unwrap();
         assert_eq!([idx(0), idx(1), idx(2)], [2, 0, 1]);
         assert_eq!(acts[0]["is_best"], json!(true));
         assert_eq!(acts[1]["is_best"], json!(false));
+        let rank = |i: usize| acts[i]["pick_rank"].as_u64().unwrap();
+        assert_eq!([rank(0), rank(1), rank(2)], [0, 2, 1]);
+        assert!(acts.iter().all(|a| a["in_band"] == json!(true)));
+        let pick = &out["pick"];
+        assert_eq!(pick["rule"], json!("block_guard"));
+        assert_eq!(
+            pick["reason"],
+            json!(sts2_mcts::PickRule::BlockGuard.reason())
+        );
+        // The runner-up (score 0) ended 2 HP above the pick.
+        assert!((pick["gap_hp"].as_f64().unwrap() + 2.0).abs() < 1e-9);
+        assert_eq!(pick["gap_z"], Value::Null);
+    }
+
+    /// A real search explains itself: `pick` names a rule, the `is_best`
+    /// row is rank 0 and in its own band, and the ranks are a permutation.
+    /// The fair mode has no single pick: `pick` is null and rows rank in
+    /// row order, outside any band.
+    #[test]
+    fn recommend_explains_its_pick() {
+        let st = fixture();
+        for (fair, threads) in [(false, 1), (false, 2), (true, 1)] {
+            let out = recommend_value(
+                &st,
+                &RecommendParams {
+                    threads,
+                    ..small_params(fair)
+                },
+                true,
+            );
+            let acts = out["actions"].as_array().unwrap();
+            assert!(acts.len() > 1, "fixture needs a choice");
+            let mut ranks: Vec<u64> = acts
+                .iter()
+                .map(|a| a["pick_rank"].as_u64().unwrap())
+                .collect();
+            if fair {
+                assert_eq!(out["pick"], Value::Null);
+                assert_eq!(ranks, (0..acts.len() as u64).collect::<Vec<_>>());
+                assert!(acts.iter().all(|a| a["in_band"] == json!(false)));
+                continue;
+            }
+            let rule = out["pick"]["rule"].as_str().expect("a rule");
+            assert_eq!(acts[0]["pick_rank"], json!(0));
+            // Only an exact rule decides outside the statistics' band.
+            let exact = ["lost_position", "proven_win", "illegal_fallback"].contains(&rule);
+            assert_eq!(
+                acts[0]["in_band"],
+                json!(!exact),
+                "threads={threads}: {out}"
+            );
+            ranks.sort_unstable();
+            assert_eq!(ranks, (0..acts.len() as u64).collect::<Vec<_>>());
+        }
     }
 
     #[test]

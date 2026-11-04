@@ -1,7 +1,5 @@
 //! .NET-compatible seeded RNG and the run-side `Rng` wrapper.
 //!
-//! Port pin: `sts2-rl-agent@01c094d:sts2_env/core/rng.py`.
-//!
 //! The map generator (and other run-side systems) need byte-for-byte
 //! reproducibility against the Python source-of-truth, which in turn
 //! mirrors the game's C# `System.Random(int)` semantics. Rust's

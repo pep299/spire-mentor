@@ -1,25 +1,27 @@
 //! UCT MCTS engine for sts2-core (Phase 8, bead `sts2-rs-69p`).
 //!
-//! Classic 4-phase UCT loop: Selection → Expansion → Simulation → Backprop.
+//! Classic 4-phase loop: Selection → Expansion → Simulation → Backprop.
 //! Arena-allocated tree (`Vec<MctsNode>` indexed by [`NodeId`]) so children
 //! are referenced as `u32` indices instead of `Box`/`Rc` — keeps a 1000-sim
 //! search in a handful of allocations.
 //!
-//! ## Determinization
+//! ## Chance nodes and hidden information
 //!
-//! STS combat is stochastic (card draws, monster intent rolls). We use
-//! **single-determinization** MCTS as recommended by the porting plan:
-//! each simulation re-seeds the rollout RNG with
-//! `config.seed XOR sim_index`, then clones the state at the rolled-out
-//! node and runs a single trajectory. This is the v0.1.0 baseline;
-//! a future bead can swap in multi-determinization / determinization
-//! caching without changing the public surface.
+//! STS combat is stochastic (card draws, monster intent rolls). The search is
+//! one tree with explicit chance nodes: an edge that advances any combat RNG
+//! stream becomes a chance node whose outcomes are sampled and progressively
+//! widened. Under the deployed [`HiddenInfoMode::BeliefDraw`] the root is a
+//! belief state (unknown draw order canonicalized, RNG cursors reseeded), so
+//! no single determinization is committed. (The v0.1.0 baseline was
+//! single-determinization MCTS; it is long gone.)
 //!
-//! ## Out of scope for v0.1.0
+//! ## Selection and parallelism
 //!
-//! * No PUCT — only the [`Policy`] trait wiring exists. Selection uses
-//!   the classic UCT formula `Q + c_puct·sqrt(ln(N)/n)`.
-//! * No parallelism. Phase 8 is single-threaded perf focus.
+//! * UCT `Q + c_puct·sqrt(ln(N)/n)` by default; PUCT with a learned move
+//!   prior when [`MctsConfig::use_puct_prior`] is set (the Ironclad run
+//!   agent's elite and boss fights).
+//! * Root parallelism via [`par_search`]: independent trees, root statistics
+//!   summed. Every default deployment runs one tree.
 //!
 //! ## Transposition table (bead `sts2-rs-7z97`, W6)
 //!
@@ -512,6 +514,14 @@ pub struct MctsConfig {
     /// guard is NOT gated by this flag — a solver-proven winning
     /// child is exact knowledge, not a heuristic.
     pub root_guards: bool,
+    /// Which in-band rules (rule 5 of [`Mcts::pick_root_action`]) run when
+    /// [`Self::root_guards`] is on. Default [`TieRules::DEFAULT`]: the three
+    /// guards above plus `spend` and `order_block`, which passed the GH #1022
+    /// gate. `tie_rules=block+free+junk` in `STS2_RUNAI_MCTS_OVERRIDES`
+    /// restores the pre-#1022 pick, a narrower set rolls one guard back
+    /// alone (which `root_guards=0` could not), and a new rule joins the
+    /// table default-OFF until it passes a gate.
+    pub tie_rules: TieRules,
     /// Root-level potion opportunity-cost charge (GH #447 follow-up),
     /// indexed by belt slot: [`Mcts::pick_root_action`] subtracts
     /// `charge[potion_slot]` (root-Q units — see
@@ -1258,6 +1268,7 @@ impl Default for MctsConfig {
             persistent_baseline: PersistentBaseline::default(),
             teammate_weight: 1.0,
             root_guards: true,
+            tie_rules: TieRules::DEFAULT,
             potion_charge_q: None,
             root_drink_mask: false,
             fpu_reduction: None,
@@ -1369,7 +1380,7 @@ impl Policy for SharedPolicy {
 /// against the *current* simulation state, by scanning the hand for a
 /// card matching that identity tuple. Every other variant is
 /// hand-index-free and stored verbatim.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum EdgeAction {
     /// Stable card-identity key for a `PlayCard` edge. `cost` here is
     /// the card's `cost` field at the moment the edge was created —
@@ -1407,6 +1418,75 @@ pub enum EdgeAction {
     /// per-simulation state, so the raw [`Action`] is stable across
     /// determinizations.
     Other(Action),
+    /// Co-op: [`Action::PlayCardAtAlly`], an `AnyAlly` card aimed at teammate
+    /// `allies[ally]` (GH #1017), keyed by the same card identity as
+    /// [`Self::PlayCard`]; each teammate is its own child. A variant of its
+    /// own, last, so a [`Self::PlayCard`] edge's shape and `Debug` text, which
+    /// the tree fingerprints pin, are those of every single-player search.
+    PlayCardAtAlly {
+        card_id: sts2_core::cards::CardId,
+        upgraded: bool,
+        cost: i8,
+        local_cost: Option<sts2_core::cards::LocalEnergyCost>,
+        free: bool,
+        affliction: Option<sts2_core::card_afflictions::CardAfflictionKind>,
+        ally: u8,
+    },
+}
+
+impl std::fmt::Debug for EdgeAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (name, card_id, upgraded, cost, local_cost, free, affliction) = match self {
+            Self::PlayCard {
+                card_id,
+                upgraded,
+                cost,
+                local_cost,
+                free,
+                affliction,
+                ..
+            } => (
+                "PlayCard", card_id, upgraded, cost, local_cost, free, affliction,
+            ),
+            Self::PlayCardAtAlly {
+                card_id,
+                upgraded,
+                cost,
+                local_cost,
+                free,
+                affliction,
+                ..
+            } => (
+                "PlayCardAtAlly",
+                card_id,
+                upgraded,
+                cost,
+                local_cost,
+                free,
+                affliction,
+            ),
+            Self::Other(action) => return f.debug_tuple("Other").field(action).finish(),
+        };
+        let mut out = f.debug_struct(name);
+        out.field("card_id", card_id)
+            .field("upgraded", upgraded)
+            .field("cost", cost);
+        // 旧形式の辺は、探索のフィンガープリントが参照する表示形式を維持する。
+        if local_cost.is_some() {
+            out.field("local_cost", local_cost);
+        }
+        out.field("free", free).field("affliction", affliction);
+        match self {
+            Self::PlayCard { target, .. } => {
+                out.field("target", target);
+            }
+            Self::PlayCardAtAlly { ally, .. } => {
+                out.field("ally", ally);
+            }
+            Self::Other(_) => unreachable!(),
+        }
+        out.finish()
+    }
 }
 
 impl EdgeAction {
@@ -1419,17 +1499,32 @@ impl EdgeAction {
     /// indices) falls back to `Other` with the original action so the
     /// edge at least round-trips correctly.
     fn from_action(action: &Action, state: &CombatState) -> Self {
-        if let Action::PlayCard { hand_index, target } = action {
+        if let Some((hand_index, target)) = action.card_play() {
+            let (hand_index, target) = (&hand_index, &target);
             if let Some(card_uid) = state.player.hand.get(*hand_index as usize) {
                 let idx = card_uid.0.get() as usize - 1;
                 if let Some(card) = state.cards.get(idx) {
+                    let (card_id, upgraded, cost) = (card.card_id, card.upgraded, card.cost);
+                    let free = sts2_core::hooks::card_cost_locally_zeroed(state, card);
+                    let affliction = card.affliction.map(|a| a.kind);
+                    if let Some(ally) = action.ally_target() {
+                        return Self::PlayCardAtAlly {
+                            card_id,
+                            upgraded,
+                            cost,
+                            local_cost: card.local_energy_cost,
+                            free,
+                            affliction,
+                            ally,
+                        };
+                    }
                     return Self::PlayCard {
-                        card_id: card.card_id,
-                        upgraded: card.upgraded,
-                        cost: card.cost,
+                        card_id,
+                        upgraded,
+                        cost,
                         local_cost: card.local_energy_cost,
-                        free: sts2_core::hooks::card_cost_locally_zeroed(state, card),
-                        affliction: card.affliction.map(|a| a.kind),
+                        free,
+                        affliction,
                         target: *target,
                     };
                 }
@@ -1457,32 +1552,74 @@ impl EdgeAction {
                 affliction,
                 target,
             } => {
-                // Linear scan over `state.player.hand` (typically ≤10
-                // entries) for the first card matching the identity
-                // tuple. NO HashMap allocation on the hot path — this
-                // runs once per UCT child per descent step.
-                for (slot, card_uid) in state.player.hand.iter().enumerate() {
-                    let idx = card_uid.0.get() as usize - 1;
-                    let Some(card) = state.cards.get(idx) else {
-                        continue;
-                    };
-                    if card.card_id == *card_id
-                        && card.upgraded == *upgraded
-                        && card.cost == *cost
-                        && card.local_energy_cost == *local_cost
-                        && sts2_core::hooks::card_cost_locally_zeroed(state, card) == *free
-                        && card.affliction.map(|a| a.kind) == *affliction
-                    {
-                        #[allow(clippy::cast_possible_truncation)]
-                        return Some(Action::PlayCard {
-                            hand_index: slot as u8,
-                            target: *target,
-                        });
-                    }
-                }
-                None
+                let hand_index = Self::hand_slot(
+                    state,
+                    *card_id,
+                    *upgraded,
+                    *cost,
+                    *local_cost,
+                    *free,
+                    *affliction,
+                )?;
+                Some(Action::PlayCard {
+                    hand_index,
+                    target: *target,
+                })
+            }
+            Self::PlayCardAtAlly {
+                card_id,
+                upgraded,
+                cost,
+                local_cost,
+                free,
+                affliction,
+                ally,
+            } => {
+                let hand_index = Self::hand_slot(
+                    state,
+                    *card_id,
+                    *upgraded,
+                    *cost,
+                    *local_cost,
+                    *free,
+                    *affliction,
+                )?;
+                Some(Action::PlayCardAtAlly {
+                    hand_index,
+                    ally: *ally,
+                })
             }
         }
+    }
+
+    /// The first hand slot holding a card of this identity. Linear scan over
+    /// `state.player.hand` (typically ≤10 entries); NO HashMap allocation on
+    /// the hot path — this runs once per UCT child per descent step.
+    fn hand_slot(
+        state: &CombatState,
+        card_id: sts2_core::cards::CardId,
+        upgraded: bool,
+        cost: i8,
+        local_cost: Option<sts2_core::cards::LocalEnergyCost>,
+        free: bool,
+        affliction: Option<sts2_core::card_afflictions::CardAfflictionKind>,
+    ) -> Option<u8> {
+        for (slot, card_uid) in state.player.hand.iter().enumerate() {
+            let idx = card_uid.0.get() as usize - 1;
+            let Some(card) = state.cards.get(idx) else {
+                continue;
+            };
+            if card.card_id == card_id
+                && card.upgraded == upgraded
+                && card.cost == cost
+                && card.local_energy_cost == local_cost
+                && sts2_core::hooks::card_cost_locally_zeroed(state, card) == free
+                && card.affliction.map(|a| a.kind) == affliction
+            {
+                return u8::try_from(slot).ok();
+            }
+        }
+        None
     }
 }
 
@@ -1769,7 +1906,7 @@ pub struct NodeSnapshot {
     pub player_hp: i32,
     pub player_max_hp: i32,
     pub player_block: i32,
-    pub energy: i8,
+    pub energy: i32,
     pub round: u16,
     pub enemies: SmallVec<[EnemySnapshot; 8]>,
 }
@@ -2028,10 +2165,11 @@ pub struct MctsNode {
     /// MCTS-Solver lite (bead `sts2-rs-wr8f`, Wave-4): this subtree
     /// contains a forced player win. Set on construction when the
     /// state itself is a terminal-win, and propagated to parents
-    /// during backup when any child becomes `proven_win`. Selection
-    /// short-circuits past proven nodes and backup feeds `+1.0`
-    /// without running a rollout — the headline ≥30%-sim-reduction
-    /// lever for forced-lethal positions.
+    /// during backup when any child becomes `proven_win`. A proven leaf
+    /// skips the rollout and backs up its band value. Selection does NOT
+    /// skip proven nodes: the search always spends its full budget, and
+    /// the proof pays off at the root pick (`pick_root_action`'s
+    /// proven-win guard).
     pub proven_win: bool,
     /// MCTS-Solver lite: this subtree is a forced player loss. Set on
     /// construction when the state itself is a terminal-loss, and
@@ -2494,6 +2632,12 @@ impl Mcts<UniformPolicy> {
     }
 }
 
+/// `STS2_COOP_JOINT=1`, read once: the joint co-op search (GH #1046).
+fn coop_joint_search() -> bool {
+    static JOINT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *JOINT.get_or_init(|| std::env::var("STS2_COOP_JOINT").is_ok_and(|v| v == "1"))
+}
+
 /// Turn the caller's state into the state a search roots at, and finish the
 /// config the search runs under. Shared by [`Mcts::with_policy`] and
 /// [`Mcts::reroot_observed`], so a reused tree's root is built exactly as a
@@ -2515,6 +2659,11 @@ fn prepare_search_root(root_state: &mut CombatState, config: &mut MctsConfig) {
     // permutation left to materialize once draws defer their
     // randomness to draw time.
     apply_hidden_info_root(root_state, config.hidden_info, config.seed);
+    // GH #1046: in a whole co-op fight the tree branches on the teammates'
+    // moves too (`CoopState::joint`). Opt-in for now: `STS2_COOP_JOINT=1`.
+    if root_state.coop.full && coop_joint_search() {
+        root_state.coop.joint = true;
+    }
     // Bead `sts2-rs-y4e4z`: bump rollout depth when any enemy on
     // the board recommends a higher horizon (Vantom → 50). See
     // [`effective_rollout_depth`].
@@ -2599,7 +2748,12 @@ fn decision_edges_from(
     // keep the originals there rather than strand the search).
     if drink_mask {
         let unmasked = acts.clone();
-        acts.retain(|a| !matches!(a, Action::DrinkPotion { .. }));
+        acts.retain(|a| {
+            !matches!(
+                a,
+                Action::DrinkPotion { .. } | Action::DrinkPotionAtAlly { .. }
+            )
+        });
         if acts.is_empty() {
             acts = unmasked;
         }
@@ -3145,7 +3299,9 @@ impl<P: Policy> Mcts<P> {
             // EndTurn and PlayCard share a tier (A8 audit — see the
             // tier list above); only potions rank behind.
             let tier: u8 = match &act {
-                Action::DrinkPotion { .. } | Action::UsePotion { .. } => 3,
+                Action::DrinkPotion { .. }
+                | Action::UsePotion { .. }
+                | Action::DrinkPotionAtAlly { .. } => 3,
                 _ => 2,
             };
             const TIE_EPS: f32 = 0.5;
@@ -3629,9 +3785,13 @@ impl<P: Policy> Mcts<P> {
     ///    preferring visits inside that band flips those plies
     ///    correctly (94/94 audited Ironclad plies). `tie_eps = 0`
     ///    restores strict-equality tie-breaking.
-    /// 5. **In-band EndTurn guards** ([`MctsConfig::root_guards`],
-    ///    FINDINGS §5 guards 2–3): when the band winner is `EndTurn`,
-    ///    two ordered refinements may promote a `PlayCard` child whose
+    /// 5. **In-band rules** (the `TIE_RULES` table, each entry gated by
+    ///    [`MctsConfig::root_guards`] and [`MctsConfig::tie_rules`]; GH
+    ///    #1022). Entries run in order on the pick the entries above them
+    ///    left, and an answer outside the band is dropped by the table,
+    ///    not trusted to the entry. Today's entries are the A8 audit's
+    ///    guards (FINDINGS §5 guards 2–3). When the band winner is
+    ///    `EndTurn`, two ordered refinements may promote a `PlayCard` child whose
     ///    score is itself inside the band — never one outside it, so a
     ///    resolved Q gap always stands. (a) *Block guard*: telegraphed
     ///    enemy attack damage exceeds standing player block and an
@@ -3656,17 +3816,48 @@ impl<P: Policy> Mcts<P> {
     /// [`SearchError::TerminalRoot`] when the root has no children
     /// (terminal state / no legal actions).
     pub fn pick_root_action(&mut self) -> Result<Action, SearchError> {
-        if let Some(rescued) = self.lost_position_override() {
-            return Ok(self.legalize_root_action(rescued));
+        self.explain_root_pick().map(|pick| pick.action)
+    }
+
+    /// [`Self::pick_root_action`] with its reason: which rule decided, the
+    /// children inside the `tie_eps` band, and the gap to the runner-up
+    /// (GH #1022). The action is the one `pick_root_action` returns, by
+    /// construction — consumers that show a recommendation read this
+    /// instead of re-ranking [`Self::root_outcomes`] by their own rule.
+    ///
+    /// # Errors
+    /// [`SearchError::TerminalRoot`] when the root has no children
+    /// (terminal state / no legal actions).
+    pub fn explain_root_pick(&mut self) -> Result<RootPick, SearchError> {
+        let outcomes = self.root_outcomes();
+        let pick = if let Some(rescued) = self.lost_position_override() {
+            RootPick::exact(rescued, PickRule::LostPosition, &outcomes)
+        } else if let Some(won) = self.root_proven_win_action() {
+            RootPick::exact(won, PickRule::ProvenWin, &outcomes)
+        } else {
+            pick_root(&self.tree.root_state, &self.config, &outcomes)
+                .ok_or(SearchError::TerminalRoot)?
+        };
+        let legal = self.legalize_root_action(pick.action.clone());
+        if legal == pick.action {
+            return Ok(pick);
         }
-        if let Some(won) = self.root_proven_win_action() {
-            return Ok(self.legalize_root_action(won));
-        }
-        self.refresh_root_stats();
-        let idx = pick_from_root_stats(&self.tree.root_state, &self.config, &self.root_stats)
-            .ok_or(SearchError::TerminalRoot)?;
-        let action = self.root_stats[idx].0.clone();
-        Ok(self.legalize_root_action(action))
+        Ok(RootPick::exact(legal, PickRule::IllegalFallback, &outcomes))
+    }
+
+    /// [`Self::explain_root_pick`] with only the in-band rules `rules`
+    /// switched on, over this same tree: the pick a search under that
+    /// [`MctsConfig::tie_rules`] would have made. Only the pick reads the
+    /// rules, never the search, so this is exact rather than a re-search;
+    /// `tie_rule_probe` compares rule sets with it (GH #1022).
+    ///
+    /// # Errors
+    /// As [`Self::explain_root_pick`].
+    pub fn explain_root_pick_with(&mut self, rules: TieRules) -> Result<RootPick, SearchError> {
+        let deployed = std::mem::replace(&mut self.config.tie_rules, rules);
+        let pick = self.explain_root_pick();
+        self.config.tie_rules = deployed;
+        pick
     }
 
     /// [`Self::pick_root_action`] rule 2: a solver-proven winning root
@@ -4535,11 +4726,17 @@ impl<P: Policy> Mcts<P> {
         // Pre-state observation for no-op `PlayCard` detection: a
         // legal PlayCard should always move a card out of the hand.
         let pre_hand_len = state.player.hand.len();
-        let is_play_card = matches!(action, Action::PlayCard { .. });
+        let is_play_card = action.card_play().is_some();
         let result = core_apply(state, action.clone());
         if result == StepResult::InvalidTarget {
             self.failed_apply += 1;
             self.invalid_target += 1;
+            return false;
+        }
+        if result == StepResult::IllegalPlay {
+            // GH #1122: the engine now names the early-return no-op.
+            self.failed_apply += 1;
+            self.no_op_playcard += 1;
             return false;
         }
         if is_play_card && state.player.hand.len() == pre_hand_len {
@@ -6378,6 +6575,9 @@ fn rollout(
     use_quiescence: bool,
     cfg: &MctsConfig,
 ) -> f32 {
+    // A joint search branches on the teammate's moves in the tree only; a
+    // playout plays them all at once from the teammate policy, as before.
+    state.coop.joint = false;
     let mut depth = 0u32;
     while !is_terminal(state) && depth < max_depth {
         let acts = legal_actions(state);
@@ -6445,6 +6645,12 @@ fn rollout(
 /// depth-cut leaf. Shared with [`playout_return`] so a playout scored
 /// outside the search gets exactly the search's number.
 fn rollout_end_value(state: &CombatState, leaf_eval: &LeafEval, cfg: &MctsConfig) -> f32 {
+    if state.coop.joint_acting.is_some() {
+        // Cut off during a joint search's teammate turn: score from our seat.
+        let mut ours = state.clone();
+        sts2_core::coop::joint_unseat(&mut ours);
+        return rollout_end_value(&ours, leaf_eval, cfg);
+    }
     if is_terminal(state) {
         // sts2-rs-vbzji: the historical Binary mode returns flat -1.0
         // on losses, throwing away the rich state signal (enemy HP
@@ -6605,6 +6811,11 @@ fn end_turn_probing_prefix(
             end_turn_phase(state, phase),
             sts2_core::StepResult::Advanced
         );
+        if state.coop.joint_acting.is_some() {
+            // A joint search seated a teammate: the rest of the end of turn
+            // waits for their `EndTurn`, so there is no prefix to cache.
+            return (0, None);
+        }
         if clean == phase && advanced && state.rng == rng && state.run_rng == run_rng {
             clean = phase + 1;
             if clean >= clone_from {
@@ -6743,23 +6954,516 @@ pub fn boss_win_carry(
     Some((if ascension >= 2 { 0.2 } else { 0.0 }, 1.0))
 }
 
-/// [`Mcts::pick_root_action`] rules 3–5 over plain root statistics
-/// `(action, visits, mean_value)`: the score (draw-window bonus, potion
-/// charge), the `tie_eps` band with its visits tie-break, and the in-band
-/// guards. Split out so the root-parallel merge
-/// ([`par_search_with_policy`]) picks by the same rule as a single tree
-/// instead of a plain argmax. Returns an index into `root_stats`; `None`
-/// when it is empty.
+/// The rule that decided a root pick ([`RootPick::rule`]), in the order
+/// [`Mcts::pick_root_action`] documents them (GH #1022).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PickRule {
+    /// Rule 1, the GH #32 lost-position override.
+    LostPosition,
+    /// Rule 2, a solver-proven winning child.
+    ProvenWin,
+    /// Rules 3–4 with the band holding one child: the score argmax.
+    Argmax,
+    /// Rule 4: several children inside the `tie_eps` band, and the
+    /// most-visited of them won.
+    BandVisits,
+    /// Rule 5a, the in-band block guard ([`TieRules::BLOCK`]).
+    BlockGuard,
+    /// Rule 5b, the in-band free-play guard ([`TieRules::FREE_PLAY`]).
+    FreePlay,
+    /// Rule 5c, the in-band junk-dispose guard ([`TieRules::JUNK_DISPOSE`]).
+    JunkDispose,
+    /// Rule 5b′, the narrowed free-play guard ([`TieRules::FREE_LASTING`]).
+    FreeLasting,
+    /// Rule 5d, order dominance ([`TieRules::ORDER`]).
+    Order,
+    /// Rule 5′, potion conservation ([`TieRules::KEEP_POTION`]).
+    KeepPotion,
+    /// Rule 5b″, spend the turn's leftover energy ([`TieRules::SPEND`]).
+    Spend,
+    /// Rule 5d′, order dominance counting block ([`TieRules::ORDER_BLOCK`]).
+    OrderBlock,
+    /// Rule 5e, the upgraded copy ([`TieRules::UPGRADED`]).
+    Upgraded,
+    /// The rule's pick was illegal at the root and
+    /// `Mcts::legalize_root_action` substituted a plain Q argmax.
+    IllegalFallback,
+}
+
+impl PickRule {
+    /// The wire name (`mcts_recommend()["pick"]["rule"]`).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LostPosition => "lost_position",
+            Self::ProvenWin => "proven_win",
+            Self::Argmax => "argmax",
+            Self::BandVisits => "band_visits",
+            Self::BlockGuard => "block_guard",
+            Self::FreePlay => "free_play",
+            Self::JunkDispose => "junk_dispose",
+            Self::FreeLasting => "free_lasting",
+            Self::Order => "order",
+            Self::KeepPotion => "keep_potion",
+            Self::Spend => "spend",
+            Self::OrderBlock => "order_block",
+            Self::Upgraded => "upgraded",
+            Self::IllegalFallback => "illegal_fallback",
+        }
+    }
+
+    /// Why this rule took the pick, as the HUD and the workbench say it
+    /// after the move's name. Kept next to the rule so a new rule cannot
+    /// ship without its words, and no consumer keeps a copy of its own.
+    #[must_use]
+    pub const fn reason(self) -> &'static str {
+        match self {
+            Self::LostPosition => "the most damage in a fight the search sees as lost",
+            Self::ProvenWin => "a proven win",
+            Self::Argmax => "the highest value",
+            Self::BandVisits => "the most searched of the equal moves",
+            Self::BlockGuard => "block before ending the turn into damage",
+            Self::FreePlay => "play the free card before ending the turn",
+            Self::JunkDispose => "get rid of the curse or status",
+            Self::FreeLasting => "play the free card before ending the turn",
+            Self::Order => "playing it first is never worse",
+            Self::KeepPotion => "keep the potion for a fight that needs it",
+            Self::Spend => "spend the leftover energy before ending the turn",
+            Self::OrderBlock => "playing it first is never worse",
+            Self::Upgraded => "play the upgraded copy",
+            Self::IllegalFallback => "the search's choice is not legal here",
+        }
+    }
+}
+
+/// The in-band refinements of [`Mcts::pick_root_action`] rule 5 that are
+/// switched on, as a bitset ([`MctsConfig::tie_rules`]). Every rule is also
+/// gated by the master switch [`MctsConfig::root_guards`], so
+/// `root_guards = false` still disables them all; this set is what lets a
+/// single rule be rolled back or added on its own (GH #1022).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TieRules(u16);
+
+impl TieRules {
+    /// Rule 5a: block guard.
+    pub const BLOCK: Self = Self(1);
+    /// Rule 5b: free-play guard.
+    pub const FREE_PLAY: Self = Self(1 << 1);
+    /// Rule 5c: junk-dispose guard.
+    pub const JUNK_DISPOSE: Self = Self(1 << 2);
+    /// Rule 5b′: the free-play guard for free plays whose effect outlasts
+    /// the turn. Off by default; a candidate to replace [`Self::FREE_PLAY`],
+    /// which fires first when both are on.
+    pub const FREE_LASTING: Self = Self(1 << 3);
+    /// Rule 5d: order dominance. Off by default.
+    pub const ORDER: Self = Self(1 << 4);
+    /// Rule 5′: potion conservation. Off by default.
+    pub const KEEP_POTION: Self = Self(1 << 5);
+    /// Rule 5b″: at a band-winning EndTurn, any affordable play that
+    /// outlasts the turn, since the energy left is lost anyway. Off by
+    /// default.
+    pub const SPEND: Self = Self(1 << 6);
+    /// Rule 5d′: [`Self::ORDER`] with more player block counted as better.
+    /// Off by default.
+    pub const ORDER_BLOCK: Self = Self(1 << 7);
+    /// Rule 5e: the upgraded copy of the band winner's card. Off by default.
+    pub const UPGRADED: Self = Self(1 << 8);
+    /// No rule.
+    pub const NONE: Self = Self(0);
+    /// The three A8-audit guards: the deployed set before GH #1022.
+    pub const A8_GUARDS: Self = Self(Self::BLOCK.0 | Self::FREE_PLAY.0 | Self::JUNK_DISPOSE.0);
+    /// The deployed set: the A8 guards plus [`Self::SPEND`] and
+    /// [`Self::ORDER_BLOCK`] (GH #1022 phase 5, Ironclad A10 non-inferior;
+    /// `docs/experiments/2026-10-29-tie-rules.md`).
+    pub const DEFAULT: Self = Self(Self::A8_GUARDS.0 | Self::SPEND.0 | Self::ORDER_BLOCK.0);
+    /// `(name, rule)` — the vocabulary [`Self::parse`] reads.
+    pub const NAMES: [(&'static str, Self); 9] = [
+        ("block", Self::BLOCK),
+        ("free", Self::FREE_PLAY),
+        ("junk", Self::JUNK_DISPOSE),
+        ("lasting", Self::FREE_LASTING),
+        ("order", Self::ORDER),
+        ("keep_potion", Self::KEEP_POTION),
+        ("spend", Self::SPEND),
+        ("order_block", Self::ORDER_BLOCK),
+        ("upgraded", Self::UPGRADED),
+    ];
+
+    /// Whether every rule in `other` is in `self`.
+    #[must_use]
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// The union of two sets.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// Parse a `+`-separated rule list (`"block+free+junk"`, the `,` being
+    /// taken by the override bundles that carry it); `"none"` or `""` is the
+    /// empty set.
+    ///
+    /// # Errors
+    /// The first unknown rule name.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let mut set = Self::NONE;
+        for name in s.split('+').map(str::trim).filter(|n| !n.is_empty()) {
+            if name == "none" {
+                continue;
+            }
+            let (_, rule) = Self::NAMES
+                .iter()
+                .find(|(n, _)| *n == name)
+                .ok_or_else(|| {
+                    let known: Vec<&str> = Self::NAMES.iter().map(|(n, _)| *n).collect();
+                    format!("unknown tie rule {name:?} (known: {})", known.join(", "))
+                })?;
+            set = set.union(*rule);
+        }
+        Ok(set)
+    }
+}
+
+impl Default for TieRules {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// A root pick and the reason for it ([`Mcts::explain_root_pick`],
+/// [`pick_root`], [`ParSearchResult::pick`]; GH #1022). Indices point into
+/// the root children the rule ran over, in child-creation order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RootPick {
+    /// The action to play.
+    pub action: Action,
+    /// Its index among the children; `None` only when an override chose an
+    /// action that is not among them.
+    pub idx: Option<usize>,
+    /// The rule that decided.
+    pub rule: PickRule,
+    /// Every child whose score lies within `tie_eps` of the best, in child
+    /// order — the moves the search cannot tell apart. Empty when an exact
+    /// rule ([`PickRule::LostPosition`], [`PickRule::ProvenWin`]) or the
+    /// illegal-action fallback decided.
+    pub band: SmallVec<[usize; 8]>,
+    /// The highest-scored child other than the pick (first on a score tie).
+    pub runner_up: Option<usize>,
+    /// `score(pick) − score(runner_up)` in root-Q units, scores including
+    /// the draw-window bonus and potion charge. Negative when the band
+    /// handed the pick to a lower-scored child; `0.0` with no runner-up.
+    pub gap_q: f32,
+    /// [`Self::gap_q`] over `√(SE_pick² + SE_runner_up²)`, each child's
+    /// standard error from its own return variance
+    /// ([`RootOutcome::mean_stderr`]). `None` without a runner-up or when
+    /// both standard errors are zero.
+    pub gap_z: Option<f32>,
+}
+
+impl RootPick {
+    /// A pick an exact rule (or the illegal-action fallback) made outside
+    /// the statistics: no band, no runner-up.
+    fn exact(action: Action, rule: PickRule, children: &[RootOutcome]) -> Self {
+        let idx = children.iter().position(|c| c.action == action);
+        Self {
+            action,
+            idx,
+            rule,
+            band: SmallVec::new(),
+            runner_up: None,
+            gap_q: 0.0,
+            gap_z: None,
+        }
+    }
+}
+
+/// What one in-band rule sees: the root, the scored children and the
+/// band floor, plus the current pick it may move.
+struct TieCtx<'a> {
+    state: &'a CombatState,
+    config: &'a MctsConfig,
+    /// `(action, visits, score)` per child, scores bonus-adjusted.
+    scored: &'a [(Action, u32, f32)],
+    band_floor: f32,
+    pick: usize,
+}
+
+impl TieCtx<'_> {
+    /// The most-visited in-band child whose action satisfies `ok` (earliest
+    /// on a visit tie, rule 6).
+    fn band_pick(&self, ok: impl Fn(&Action) -> bool) -> Option<usize> {
+        let mut best: Option<(usize, u32)> = None;
+        for (i, (action, visits, score)) in self.scored.iter().enumerate() {
+            if *score >= self.band_floor && ok(action) && best.is_none_or(|(_, v)| *visits > v) {
+                best = Some((i, *visits));
+            }
+        }
+        best.map(|(i, _)| i)
+    }
+
+    /// [`Self::band_pick`] over the children whose hand card satisfies
+    /// `card_ok`.
+    fn band_card_pick(&self, card_ok: impl Fn(&sts2_core::cards::Card) -> bool) -> Option<usize> {
+        self.band_pick(|action| root_hand_card(self.state, action).is_some_and(&card_ok))
+    }
+
+    /// Whether the current pick ends the turn.
+    fn pick_ends_turn(&self) -> bool {
+        matches!(self.scored[self.pick].0, Action::EndTurn)
+    }
+}
+
+/// Whether `card` costs nothing to play right now: cost 0, or free this
+/// turn ([`sts2_core::hooks::card_cost_locally_zeroed`]).
+fn card_is_free(state: &CombatState, card: &sts2_core::cards::Card) -> bool {
+    card.cost == 0 || sts2_core::hooks::card_cost_locally_zeroed(state, card)
+}
+
+/// Rule 5b′ ([`TieRules::FREE_LASTING`]): whether playing `action` at
+/// `state` leaves something that is still there when the turn ends, and costs
+/// no HP. Played on a clone. "Something" is an enemy losing HP or block, the
+/// player gaining block, or the orb belt changing.
+///
+/// A free card whose value is spent later in the same turn (energy, draw, a
+/// this-turn buff) is not a free option at the end of a turn, and neither is
+/// one that costs HP. The phase-3 probe of GH #1022 found the plain
+/// free-play guard playing exactly those: Bloodletting took 54 of its 72
+/// Ironclad flips at −1.5 HP each, and human players end the turn instead
+/// of playing a free Bloodletting, Battle Trance, Turbo or Overclock, while
+/// they do play a free Anger, Claw or Zap.
+fn outlasts_the_turn(state: &CombatState, action: &Action) -> bool {
+    let mut after = state.clone();
+    let _ = sts2_core::apply(&mut after, action.clone());
+    let (hp, block) = dominance::player_hp_block(state);
+    let (hp_after, block_after) = dominance::player_hp_block(&after);
+    if hp_after < hp {
+        return false;
+    }
+    // An enemy that answers the play with Strength (Enrage-style) makes it
+    // a cost, whatever else it leaves.
+    let enemy_strength = |s: &CombatState| -> i32 {
+        dominance::enemies(s)
+            .flat_map(|c| c.powers.iter().filter_map(|p| s.powers.get_by_id(p.0)))
+            .filter(|p| p.kind == sts2_core::PowerKind::Strength)
+            .map(|p| p.amount)
+            .sum()
+    };
+    if enemy_strength(&after) > enemy_strength(state) {
+        return false;
+    }
+    let enemy_total = |s: &CombatState| -> i32 {
+        dominance::enemies(s)
+            .map(|c| c.current_hp.max(0) + c.block)
+            .sum()
+    };
+    enemy_total(&after) < enemy_total(state)
+        || block_after > block
+        || after.player.orbs.slots != state.player.orbs.slots
+}
+
+/// Rule 5b″ ([`TieRules::SPEND`]): whether playing `card` with the energy
+/// a turn leaves is free. The energy is lost at the end of the turn unless
+/// Ice Cream keeps it — the one `ShouldPlayerResetEnergy` override in the
+/// decompiled v0.107.1 content (`Relics/IceCream.cs`), which keeps it from
+/// turn 2 on, so for every turn after this one — and the card goes to the
+/// discard pile either way, unless it exhausts, which takes it out of the
+/// fight (an Ethereal card exhausts unplayed anyway).
+fn spend_is_free(state: &CombatState, card: &sts2_core::cards::Card) -> bool {
+    !state.relics.owns(sts2_core::RelicKind::IceCream)
+        && (!sts2_core::card_effects::card_exhausts_inst(card)
+            || sts2_core::card_effects::card_ethereal_inst(card))
+}
+
+/// Rule 5e ([`TieRules::UPGRADED`]): whether `better` is the upgraded copy
+/// of `base`'s card at no more energy.
+fn upgraded_copy(
+    state: &CombatState,
+    base: &sts2_core::cards::Card,
+    better: &sts2_core::cards::Card,
+) -> bool {
+    better.card_id == base.card_id
+        && better.upgraded
+        && !base.upgraded
+        && (card_is_free(state, better) || better.cost <= base.cost)
+}
+
+/// A potion action, in either of its two spellings.
+const fn is_potion(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::DrinkPotion { .. } | Action::UsePotion { .. }
+    )
+}
+
+/// One entry of [`TIE_RULES`]: `apply` may return a new in-band pick.
+struct TieRule {
+    rule: PickRule,
+    set: TieRules,
+    apply: fn(&TieCtx<'_>) -> Option<usize>,
+}
+
+/// [`Mcts::pick_root_action`] rule 5, in order. Each entry runs on the
+/// pick the entries above it left, and [`pick_root`] — not the entry —
+/// enforces that the result lies inside the band.
+const TIE_RULES: [TieRule; 9] = [
+    // 5′ — potion conservation, off by default: a band-winning drink yields
+    // to the most-visited in-band move that keeps the potion (#447: 34–37%
+    // of drinks were ties with ending the turn). First, so a pick it hands
+    // to EndTurn still meets the block and free-play guards.
+    TieRule {
+        rule: PickRule::KeepPotion,
+        set: TieRules::KEEP_POTION,
+        apply: |ctx| {
+            is_potion(&ctx.scored[ctx.pick].0)
+                .then(|| ctx.band_pick(|a| !is_potion(a)))
+                .flatten()
+        },
+    },
+    // 5a — block guard: EndTurn into telegraphed damage the standing block
+    // does not cover, with a block-granting play in the band (audit: 26
+    // declined blocks into realized damage, 307 HP). `base_block > 0` is
+    // the same block-bearing key the GH #293 rollout ramp uses.
+    TieRule {
+        rule: PickRule::BlockGuard,
+        set: TieRules::BLOCK,
+        apply: |ctx| {
+            let incoming = sum_enemy_telegraphed_damage(
+                ctx.state,
+                enemy_eval::IncomingDamage::from_effective(ctx.config.effective_incoming),
+            );
+            (matches!(ctx.scored[ctx.pick].0, Action::EndTurn) && incoming > ctx.state.player.block)
+                .then(|| ctx.band_card_pick(|card| card.base_block > 0))
+                .flatten()
+        },
+    },
+    // 5b — free-play guard: EndTurn while a 0-cost (or free-this-turn)
+    // play sits in the band (audit: 269 voluntary end-turns left a
+    // playable 0-cost card, one of them a free lethal).
+    TieRule {
+        rule: PickRule::FreePlay,
+        set: TieRules::FREE_PLAY,
+        apply: |ctx| {
+            ctx.pick_ends_turn()
+                .then(|| ctx.band_card_pick(|card| card_is_free(ctx.state, card)))
+                .flatten()
+        },
+    },
+    // 5b′ — the free-play guard narrowed to free plays that leave something
+    // past the turn and cost no HP ([`outlasts_the_turn`]). Off by default;
+    // after 5b, so with both on it never sees an EndTurn pick.
+    TieRule {
+        rule: PickRule::FreeLasting,
+        set: TieRules::FREE_LASTING,
+        apply: |ctx| {
+            ctx.pick_ends_turn()
+                .then(|| {
+                    ctx.band_pick(|a| {
+                        root_hand_card(ctx.state, a).is_some_and(|c| card_is_free(ctx.state, c))
+                            && outlasts_the_turn(ctx.state, a)
+                    })
+                })
+                .flatten()
+        },
+    },
+    // 5b″ — spend the leftover energy, off by default: at a band-winning
+    // EndTurn, any affordable in-band play that outlasts the turn (as 5b′)
+    // and stays in the deck ([`spend_is_free`]). The free-play guards only
+    // see 0-cost cards, but at the end of a turn every energy left is free
+    // ("end turn with 1 energy and a Strike in hand").
+    TieRule {
+        rule: PickRule::Spend,
+        set: TieRules::SPEND,
+        apply: |ctx| {
+            ctx.pick_ends_turn()
+                .then(|| {
+                    ctx.band_pick(|a| {
+                        root_hand_card(ctx.state, a).is_some_and(|c| spend_is_free(ctx.state, c))
+                            && outlasts_the_turn(ctx.state, a)
+                    })
+                })
+                .flatten()
+        },
+    },
+    // 5c — junk-dispose guard.
+    TieRule {
+        rule: PickRule::JunkDispose,
+        set: TieRules::JUNK_DISPOSE,
+        apply: |ctx| junk_dispose_band_pick(ctx.state, ctx.scored, ctx.pick, ctx.band_floor),
+    },
+    // 5d — order dominance, off by default: a card play W yields to an
+    // in-band card X when X-then-W is proven at least as good as W-then-X
+    // by exact, RNG-free replay ([`dominance::played_before`], the proof
+    // behind `dominance_pruning`): Bash before Strike, Beam Cell before an
+    // attack. Last, so it orders whatever play the rules above settled on.
+    TieRule {
+        rule: PickRule::Order,
+        set: TieRules::ORDER,
+        apply: |ctx| {
+            let first = dominance::played_before(ctx.state, &ctx.scored[ctx.pick].0, false);
+            if first.is_empty() {
+                return None;
+            }
+            ctx.band_pick(|a| {
+                matches!(a, Action::PlayCard { .. })
+                    && first.contains(&EdgeAction::from_action(a, ctx.state))
+            })
+        },
+    },
+    // 5d′ — 5d with more player block counted as better (Rage before the
+    // attacks, Feel No Pain before an Exhaust card), off by default.
+    TieRule {
+        rule: PickRule::OrderBlock,
+        set: TieRules::ORDER_BLOCK,
+        apply: |ctx| {
+            let first = dominance::played_before(ctx.state, &ctx.scored[ctx.pick].0, true);
+            if first.is_empty() {
+                return None;
+            }
+            ctx.band_pick(|a| {
+                matches!(a, Action::PlayCard { .. })
+                    && first.contains(&EdgeAction::from_action(a, ctx.state))
+            })
+        },
+    },
+    // 5e — the upgraded copy, off by default: a band-winning card yields to
+    // its upgraded copy in the band, on the same target at no more energy
+    // (Shrug It Off+ before Shrug It Off). Last, so it upgrades whatever
+    // play the rules above settled on.
+    TieRule {
+        rule: PickRule::Upgraded,
+        set: TieRules::UPGRADED,
+        apply: |ctx| {
+            let pick = &ctx.scored[ctx.pick].0;
+            let base = root_hand_card(ctx.state, pick)?;
+            let target = pick.card_play()?.1;
+            ctx.band_pick(|a| {
+                a.card_play().is_some_and(|(_, t)| t == target)
+                    && root_hand_card(ctx.state, a)
+                        .is_some_and(|c| upgraded_copy(ctx.state, base, c))
+            })
+        },
+    },
+];
+
+/// [`Mcts::pick_root_action`] rules 3–6 over root statistics: the score
+/// (draw-window bonus, potion charge), the `tie_eps` band with its visits
+/// tie-break, and the in-band rules of [`TIE_RULES`]. Split out so the
+/// root-parallel merge ([`par_search_with_policy`]) picks by the same rule
+/// as a single tree instead of a plain argmax. `None` when `children` is
+/// empty.
 #[must_use]
-pub fn pick_from_root_stats(
+pub fn pick_root(
     root_state: &CombatState,
     config: &MctsConfig,
-    root_stats: &[(Action, u32, f32)],
-) -> Option<usize> {
+    children: &[RootOutcome],
+) -> Option<RootPick> {
     let draw_window_live = crate::expert::has_live_draw_window(root_state);
-    let scored: Vec<(Action, u32, f32)> = root_stats
+    let scored: Vec<(Action, u32, f32)> = children
         .iter()
-        .map(|(a, v, q)| {
+        .map(|c| {
+            let (a, v, q) = (&c.action, c.visits, &c.mean_value);
             let mut adjusted = if draw_window_live {
                 q + crate::expert::draw_window_root_q_bonus(root_state, a)
             } else {
@@ -6769,83 +7473,129 @@ pub fn pick_from_root_stats(
             // follow-up): applied AFTER the draw-window bonus and
             // BEFORE the tie band + root guards, so a charged drink
             // exits the band and the guards never resurrect it.
-            if let (Some(charges), Action::DrinkPotion { potion_slot, .. }) =
-                (config.potion_charge_q.as_ref(), a)
+            // A throw at a teammate spends the potion too.
+            if let (Some(charges), Some(potion_slot)) =
+                (config.potion_charge_q.as_ref(), a.potion_slot())
             {
-                if usize::from(*potion_slot) < root_state.player.potions.len() {
+                if usize::from(potion_slot) < root_state.player.potions.len() {
                     adjusted -= charges
-                        .get(usize::from(*potion_slot))
+                        .get(usize::from(potion_slot))
                         .copied()
                         .unwrap_or(0.0);
                 }
             }
-            (a.clone(), *v, adjusted)
+            (a.clone(), v, adjusted)
         })
         .collect();
     let best_score = scored
         .iter()
         .map(|&(_, _, s)| s)
         .fold(f32::NEG_INFINITY, f32::max);
-    let eps = config.tie_eps.max(0.0);
+    let band_floor = best_score - config.tie_eps.max(0.0);
+    let band: SmallVec<[usize; 8]> = (0..scored.len())
+        .filter(|&i| scored[i].2 >= band_floor)
+        .collect();
     // Strict `>` on visits keeps the earliest in-band child on a
     // visit tie (first-max semantics, `pick_root_action` rule 6).
     let mut pick: Option<(usize, u32)> = None;
-    for (i, &(_, visits, score)) in scored.iter().enumerate() {
-        if score >= best_score - eps && pick.is_none_or(|(_, best_v)| visits > best_v) {
+    for &i in &band {
+        let visits = scored[i].1;
+        if pick.is_none_or(|(_, best_v)| visits > best_v) {
             pick = Some((i, visits));
         }
     }
     let (mut idx, _) = pick?;
-    // Rule 5: in-band EndTurn guards. Candidates must themselves be
-    // inside the band — a real Q signal outside `tie_eps` is never
-    // overridden. Within a guard, visits then rule 6's first-max.
-    if config.root_guards && matches!(scored[idx].0, Action::EndTurn) {
-        let state = root_state;
-        let band_pick = |satisfies: &dyn Fn(&sts2_core::cards::Card) -> bool| {
-            let mut best: Option<(usize, u32)> = None;
-            for (i, (action, visits, score)) in scored.iter().enumerate() {
-                if *score >= best_score - eps
-                    && root_hand_card(state, action).is_some_and(satisfies)
-                    && best.is_none_or(|(_, v)| *visits > v)
-                {
-                    best = Some((i, *visits));
-                }
-            }
-            best.map(|(i, _)| i)
-        };
-        // 5a — block guard: EndTurn into telegraphed damage the
-        // standing block does not cover, with a block-granting play
-        // in the band (audit: 26 declined blocks into realized
-        // damage, 307 HP). `base_block > 0` is the same
-        // block-bearing key the GH #293 rollout ramp uses.
-        if sum_enemy_telegraphed_damage(
-            state,
-            enemy_eval::IncomingDamage::from_effective(config.effective_incoming),
-        ) > state.player.block
-        {
-            if let Some(i) = band_pick(&|card| card.base_block > 0) {
-                idx = i;
-            }
-        }
-        // 5b — free-play guard: EndTurn while a 0-cost (or
-        // free-this-turn) play sits in the band (audit: 269
-        // voluntary end-turns left a playable 0-cost card, one of
-        // them a free lethal).
-        if matches!(scored[idx].0, Action::EndTurn) {
-            if let Some(i) = band_pick(&|card| {
-                card.cost == 0 || sts2_core::hooks::card_cost_locally_zeroed(state, card)
-            }) {
-                idx = i;
-            }
-        }
-    }
-    // Rule 5c: in-band junk-dispose guard.
+    let mut rule = if band.len() > 1 {
+        PickRule::BandVisits
+    } else {
+        PickRule::Argmax
+    };
+    // Rule 5: the in-band rules. Candidates must themselves be inside the
+    // band — a real Q signal outside `tie_eps` is never overridden.
     if config.root_guards {
-        if let Some(i) = junk_dispose_band_pick(root_state, &scored, idx, best_score - eps) {
-            idx = i;
+        for entry in &TIE_RULES {
+            if !config.tie_rules.contains(entry.set) {
+                continue;
+            }
+            let ctx = TieCtx {
+                state: root_state,
+                config,
+                scored: &scored,
+                band_floor,
+                pick: idx,
+            };
+            let Some(i) = (entry.apply)(&ctx) else {
+                continue;
+            };
+            // The band is the contract, so it is enforced here rather than
+            // trusted to each entry: an out-of-band answer is dropped.
+            if !band.contains(&i) {
+                debug_assert!(false, "tie rule {:?} left the band (child {i})", entry.rule);
+                continue;
+            }
+            if i != idx {
+                idx = i;
+                rule = entry.rule;
+            }
         }
     }
-    Some(idx)
+    let runner_up = (0..scored.len())
+        .filter(|&i| i != idx && !scored[i].2.is_nan())
+        .fold(None, |best: Option<usize>, i| match best {
+            Some(b) if scored[b].2 >= scored[i].2 => Some(b),
+            _ => Some(i),
+        });
+    let gap_q = runner_up.map_or(0.0, |r| scored[idx].2 - scored[r].2);
+    let gap_z = runner_up.and_then(|r| {
+        let se = children[idx].mean_stderr().hypot(children[r].mean_stderr());
+        (se > 0.0).then(|| gap_q / se)
+    });
+    Some(RootPick {
+        action: scored[idx].0.clone(),
+        idx: Some(idx),
+        rule,
+        band,
+        runner_up,
+        gap_q,
+        gap_z,
+    })
+}
+
+/// The engine's preference order over `children`: `first` (the pick it
+/// made, when that is a child), then the [`pick_root`] winner of the rest,
+/// then the winner of what remains, and so on. A permutation of
+/// `0..children.len()`.
+///
+/// A consumer that has to drop moves after the search — the advisor's veto
+/// of a card the live game refuses, a row the world's hand cannot address —
+/// takes the earliest survivor in this order, so its fallback is the
+/// engine's rule on the remaining moves instead of a re-rank of its own
+/// (GH #1022). Exact when the dropped move is the pick itself; with several
+/// dropped it is the elimination order, which removing a lower-ranked move
+/// can in principle reshuffle (a lower band floor admits more children).
+#[must_use]
+pub fn root_pick_order(
+    root_state: &CombatState,
+    config: &MctsConfig,
+    children: &[RootOutcome],
+    first: Option<usize>,
+) -> Vec<usize> {
+    let mut order = Vec::with_capacity(children.len());
+    let mut left: Vec<usize> = (0..children.len()).collect();
+    if let Some(f) = first.filter(|&f| f < children.len()) {
+        order.push(f);
+        left.retain(|&i| i != f);
+    }
+    let mut rest: Vec<RootOutcome> = Vec::with_capacity(left.len());
+    while !left.is_empty() {
+        rest.clear();
+        rest.extend(left.iter().map(|&i| children[i].clone()));
+        let k = pick_root(root_state, config, &rest)
+            .and_then(|p| p.idx)
+            .unwrap_or(0);
+        order.push(left.remove(k));
+    }
+    order
 }
 
 /// How disposable the card behind a single-option `ResolveChoice` root
@@ -6927,10 +7677,8 @@ fn root_hand_card<'a>(
     state: &'a CombatState,
     action: &Action,
 ) -> Option<&'a sts2_core::cards::Card> {
-    let Action::PlayCard { hand_index, .. } = action else {
-        return None;
-    };
-    let card_uid = state.player.hand.get(*hand_index as usize)?;
+    let (hand_index, _) = action.card_play()?;
+    let card_uid = state.player.hand.get(usize::from(hand_index))?;
     state.cards.get(card_uid.0.get() as usize - 1)
 }
 
@@ -7029,7 +7777,7 @@ fn depth_cut_value(state: &CombatState, leaf_eval: &LeafEval, cfg: &MctsConfig) 
 ///
 /// INVARIANT (A8 audit §7b): this key is exactly the
 /// [`EdgeAction::PlayCard`] identity tuple `(card_id, upgraded,
-/// cost, local_cost, free, affliction, target)`, because `EdgeAction` is the identity
+/// cost, free, affliction, target, ally)`, because `EdgeAction` is the identity
 /// the tree actually keys and resolves edges by. A FINER key here
 /// manufactures sibling children that map to the same `EdgeAction`
 /// and resolve to the same concrete hand slot — byte-identical
@@ -7057,28 +7805,26 @@ pub(crate) type PlayIdentity = (
     bool,
     Option<sts2_core::card_afflictions::CardAfflictionKind>,
     Option<u8>,
+    Option<u8>,
 );
 
 /// [`PlayIdentity`] of `a` at `state`; `None` for a non-`PlayCard` action
 /// or a stale hand index.
 pub(crate) fn play_identity(state: &CombatState, a: &Action) -> Option<PlayIdentity> {
-    match a {
-        Action::PlayCard { hand_index, target } => {
-            let card_uid = state.player.hand.get(*hand_index as usize)?;
-            let idx = card_uid.0.get() as usize - 1;
-            let card = state.cards.get(idx)?;
-            Some((
-                card.card_id,
-                card.upgraded,
-                card.cost,
-                card.local_energy_cost,
-                sts2_core::hooks::card_cost_locally_zeroed(state, card),
-                card.affliction.map(|a| a.kind),
-                *target,
-            ))
-        }
-        _ => None,
-    }
+    let (hand_index, target) = a.card_play()?;
+    let card_uid = state.player.hand.get(usize::from(hand_index))?;
+    let idx = card_uid.0.get() as usize - 1;
+    let card = state.cards.get(idx)?;
+    Some((
+        card.card_id,
+        card.upgraded,
+        card.cost,
+        card.local_energy_cost,
+        sts2_core::hooks::card_cost_locally_zeroed(state, card),
+        card.affliction.map(|a| a.kind),
+        target,
+        a.ally_target(),
+    ))
 }
 
 /// W3: canonicalize the legal-action list at expansion time. Mirrors
@@ -7136,7 +7882,7 @@ pub(crate) fn canonicalize_actions(
         out.push(a);
     }
     out.sort_by_key(|a| match a {
-        Action::PlayCard { hand_index, .. } => state
+        Action::PlayCard { hand_index, .. } | Action::PlayCardAtAlly { hand_index, .. } => state
             .player
             .hand
             .get(*hand_index as usize)
@@ -7156,8 +7902,11 @@ pub(crate) fn canonicalize_actions(
 #[derive(Clone, Debug)]
 pub struct ParSearchResult {
     /// The merged pick under [`Mcts::pick_root_action`]'s rule (a worker's
-    /// proven win, else [`pick_from_root_stats`] over the merged children).
+    /// proven win, else [`pick_root`] over the merged children).
     pub best_action: Action,
+    /// [`Self::best_action`] with its reason; indices point into
+    /// [`Self::outcomes`] (GH #1022).
+    pub pick: RootPick,
     /// Merged per-root-child outcomes. Same invariant as
     /// [`Mcts::root_outcomes`]: `wins + losses + ties == visits` per entry.
     /// Child order is the order in which actions were first observed
@@ -7252,9 +8001,17 @@ where
     if workers == 1 {
         let mut m = Mcts::with_policy(root_state, config, policy).with_leaf_eval(leaf_eval);
         let best = m.search();
+        let pick = m
+            .explain_root_pick()
+            .expect("search returned an action, so the root has children");
+        debug_assert_eq!(
+            pick.action, best,
+            "explain_root_pick re-derives the search's pick"
+        );
         let outcomes = m.root_outcomes();
         return ParSearchResult {
             best_action: best,
+            pick,
             outcomes,
         };
     }
@@ -7337,7 +8094,7 @@ where
     // Selection rule mirrors `Mcts::pick_root_action`: the proven-win
     // guard (rule 2), then the SAME statistics rule a single tree uses —
     // score, `tie_eps` band with its visits tie-break, in-band guards —
-    // via [`pick_from_root_stats`] over the merged children. A plain argmax
+    // via [`pick_root`] over the merged children. A plain argmax
     // here made every root-parallel caller (the live-game advisor among
     // them) pick differently from the single-tree run agent. The GH #32
     // lost-position override is NOT carried over: it needs one tree's
@@ -7349,16 +8106,28 @@ where
     // the normal case every merged outcome is already legal, so this is a
     // no-op selection over the same set.
     let legal = legal_actions(&root_state);
-    let legal_stats: Vec<(Action, u32, f32)> = merged
+    let legal_outcomes: Vec<RootOutcome> = merged
         .iter()
         .filter(|o| legal.contains(&o.action))
-        .map(|o| (o.action.clone(), o.visits, o.mean_value))
+        .cloned()
         .collect();
-    let best_action = proven_win
+    // `RootPick` indices point into `outcomes`, which carries every merged
+    // child, not only the legal ones the rule ran over.
+    let reindex = |i: usize| {
+        merged
+            .iter()
+            .position(|m| m.action == legal_outcomes[i].action)
+    };
+    let pick = proven_win
         .filter(|a| legal.contains(a))
+        .map(|won| RootPick::exact(won, PickRule::ProvenWin, &merged))
         .or_else(|| {
-            pick_from_root_stats(&root_state, &config, &legal_stats)
-                .map(|i| legal_stats[i].0.clone())
+            pick_root(&root_state, &config, &legal_outcomes).map(|p| RootPick {
+                idx: p.idx.and_then(reindex),
+                band: p.band.iter().filter_map(|&i| reindex(i)).collect(),
+                runner_up: p.runner_up.and_then(reindex),
+                ..p
+            })
         })
         .or_else(|| {
             debug_assert!(
@@ -7366,11 +8135,15 @@ where
                 "par_search: no legal outcome among {} merged root children",
                 merged.len()
             );
-            legal.first().cloned()
+            legal
+                .first()
+                .cloned()
+                .map(|a| RootPick::exact(a, PickRule::IllegalFallback, &merged))
         })
         .expect("par_search called on terminal root: no legal actions");
     ParSearchResult {
-        best_action,
+        best_action: pick.action.clone(),
+        pick,
         outcomes: merged,
     }
 }
@@ -7974,6 +8747,7 @@ mod tests {
                 pending_enemy_exec_resume: None,
                 combat_log: TurnEvents::default(),
                 swipe_stolen: Vec::new(),
+                deck_link: None,
                 escaped_creatures: 0,
                 coop: sts2_core::coop::CoopState::default(),
                 heist_recovered_gold: 0,
@@ -8257,6 +9031,7 @@ mod tests {
             pending_enemy_exec_resume: None,
             combat_log: TurnEvents::default(),
             swipe_stolen: Vec::new(),
+            deck_link: None,
             escaped_creatures: 0,
             coop: sts2_core::coop::CoopState::default(),
             heist_recovered_gold: 0,
@@ -8616,6 +9391,7 @@ mod tests {
                 pending_enemy_exec_resume: None,
                 combat_log: TurnEvents::default(),
                 swipe_stolen: Vec::new(),
+                deck_link: None,
                 escaped_creatures: 0,
                 coop: sts2_core::coop::CoopState::default(),
                 heist_recovered_gold: 0,
@@ -8812,6 +9588,7 @@ mod tests {
             pending_enemy_exec_resume: None,
             combat_log: TurnEvents::default(),
             swipe_stolen: Vec::new(),
+            deck_link: None,
             escaped_creatures: 0,
             coop: sts2_core::coop::CoopState::default(),
             heist_recovered_gold: 0,
@@ -8988,6 +9765,7 @@ mod tests {
             pending_enemy_exec_resume: None,
             combat_log: TurnEvents::default(),
             swipe_stolen: Vec::new(),
+            deck_link: None,
             escaped_creatures: 0,
             coop: sts2_core::coop::CoopState::default(),
             heist_recovered_gold: 0,
@@ -10598,6 +11376,38 @@ mod tests {
     /// A discard choice over the first three hand cards, the middle one
     /// turned into a `Wither` status. Returns the state and the three
     /// single-option `ResolveChoice` root actions.
+    /// A root child with the given visits and mean (zero variance).
+    fn outcome(action: Action, visits: u32, mean: f32) -> RootOutcome {
+        #[allow(clippy::cast_precision_loss)]
+        let value_sum = mean * visits as f32;
+        RootOutcome {
+            action,
+            visits,
+            wins: 0,
+            losses: 0,
+            ties: 0,
+            value_sum,
+            value_sq_sum: 0.0,
+            hp_sum: 0.0,
+            hp_sq_sum: 0.0,
+            hp_n: 0,
+            mean_value: mean,
+        }
+    }
+
+    /// [`pick_root`] over `(action, visits, mean)` triples, as an index.
+    fn pick_idx(
+        state: &CombatState,
+        config: &MctsConfig,
+        stats: &[(Action, u32, f32)],
+    ) -> Option<usize> {
+        let children: Vec<RootOutcome> = stats
+            .iter()
+            .map(|(a, v, q)| outcome(a.clone(), *v, *q))
+            .collect();
+        pick_root(state, config, &children).and_then(|p| p.idx)
+    }
+
     fn junk_discard_state(kind: sts2_core::ChoiceKind) -> (CombatState, Vec<Action>) {
         use sts2_core::cards::{CardId, CardType};
         use sts2_core::{ChoiceOption, PendingChoice};
@@ -10641,15 +11451,12 @@ mod tests {
             (a[1].clone(), 300, -1.4146),
             (a[2].clone(), 300, -1.4163),
         ];
-        assert_eq!(
-            pick_from_root_stats(&state, &MctsConfig::default(), &stats),
-            Some(1)
-        );
+        assert_eq!(pick_idx(&state, &MctsConfig::default(), &stats), Some(1));
         let off = MctsConfig {
             root_guards: false,
             ..MctsConfig::default()
         };
-        assert_eq!(pick_from_root_stats(&state, &off, &stats), Some(0));
+        assert_eq!(pick_idx(&state, &off, &stats), Some(0));
     }
 
     /// Rule 5c band discipline, and its scope: an out-of-band status
@@ -10662,10 +11469,7 @@ mod tests {
             (a[1].clone(), 300, -1.20),
             (a[2].clone(), 300, -1.30),
         ];
-        assert_eq!(
-            pick_from_root_stats(&state, &MctsConfig::default(), &stats),
-            Some(0)
-        );
+        assert_eq!(pick_idx(&state, &MctsConfig::default(), &stats), Some(0));
 
         let (state, a) = junk_discard_state(sts2_core::ChoiceKind::PutBack);
         let stats = vec![
@@ -10673,9 +11477,322 @@ mod tests {
             (a[1].clone(), 300, -1.4146),
             (a[2].clone(), 300, -1.4163),
         ];
+        assert_eq!(pick_idx(&state, &MctsConfig::default(), &stats), Some(0));
+    }
+
+    /// GH #1022: the pre-table pick rule, verbatim, as the oracle
+    /// [`rule_table_matches_legacy_pick`] pins the table to.
+    fn legacy_pick_from_root_stats(
+        root_state: &CombatState,
+        config: &MctsConfig,
+        root_stats: &[(Action, u32, f32)],
+    ) -> Option<usize> {
+        let draw_window_live = crate::expert::has_live_draw_window(root_state);
+        let scored: Vec<(Action, u32, f32)> = root_stats
+            .iter()
+            .map(|(a, v, q)| {
+                let mut adjusted = if draw_window_live {
+                    q + crate::expert::draw_window_root_q_bonus(root_state, a)
+                } else {
+                    *q
+                };
+                // Root-level potion opportunity-cost charge (GH #447
+                // follow-up): applied AFTER the draw-window bonus and
+                // BEFORE the tie band + root guards, so a charged drink
+                // exits the band and the guards never resurrect it.
+                if let (Some(charges), Action::DrinkPotion { potion_slot, .. }) =
+                    (config.potion_charge_q.as_ref(), a)
+                {
+                    if usize::from(*potion_slot) < root_state.player.potions.len() {
+                        adjusted -= charges
+                            .get(usize::from(*potion_slot))
+                            .copied()
+                            .unwrap_or(0.0);
+                    }
+                }
+                (a.clone(), *v, adjusted)
+            })
+            .collect();
+        let best_score = scored
+            .iter()
+            .map(|&(_, _, s)| s)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let eps = config.tie_eps.max(0.0);
+        // Strict `>` on visits keeps the earliest in-band child on a
+        // visit tie (first-max semantics, `pick_root_action` rule 6).
+        let mut pick: Option<(usize, u32)> = None;
+        for (i, &(_, visits, score)) in scored.iter().enumerate() {
+            if score >= best_score - eps && pick.is_none_or(|(_, best_v)| visits > best_v) {
+                pick = Some((i, visits));
+            }
+        }
+        let (mut idx, _) = pick?;
+        // Rule 5: in-band EndTurn guards. Candidates must themselves be
+        // inside the band — a real Q signal outside `tie_eps` is never
+        // overridden. Within a guard, visits then rule 6's first-max.
+        if config.root_guards && matches!(scored[idx].0, Action::EndTurn) {
+            let state = root_state;
+            let band_pick = |satisfies: &dyn Fn(&sts2_core::cards::Card) -> bool| {
+                let mut best: Option<(usize, u32)> = None;
+                for (i, (action, visits, score)) in scored.iter().enumerate() {
+                    if *score >= best_score - eps
+                        && root_hand_card(state, action).is_some_and(satisfies)
+                        && best.is_none_or(|(_, v)| *visits > v)
+                    {
+                        best = Some((i, *visits));
+                    }
+                }
+                best.map(|(i, _)| i)
+            };
+            // 5a — block guard: EndTurn into telegraphed damage the
+            // standing block does not cover, with a block-granting play
+            // in the band (audit: 26 declined blocks into realized
+            // damage, 307 HP). `base_block > 0` is the same
+            // block-bearing key the GH #293 rollout ramp uses.
+            if sum_enemy_telegraphed_damage(
+                state,
+                enemy_eval::IncomingDamage::from_effective(config.effective_incoming),
+            ) > state.player.block
+            {
+                if let Some(i) = band_pick(&|card| card.base_block > 0) {
+                    idx = i;
+                }
+            }
+            // 5b — free-play guard: EndTurn while a 0-cost (or
+            // free-this-turn) play sits in the band (audit: 269
+            // voluntary end-turns left a playable 0-cost card, one of
+            // them a free lethal).
+            if matches!(scored[idx].0, Action::EndTurn) {
+                if let Some(i) = band_pick(&|card| {
+                    card.cost == 0 || sts2_core::hooks::card_cost_locally_zeroed(state, card)
+                }) {
+                    idx = i;
+                }
+            }
+        }
+        // Rule 5c: in-band junk-dispose guard.
+        if config.root_guards {
+            if let Some(i) = junk_dispose_band_pick(root_state, &scored, idx, best_score - eps) {
+                idx = i;
+            }
+        }
+        Some(idx)
+    }
+
+    /// GH #1022 refactor pin: the rule table picks exactly what the
+    /// hand-written guards picked. Random root tables over states that
+    /// reach every guard (incoming damage against standing block, 0-cost
+    /// and block cards, a junk-dispose choice), random band widths and the
+    /// master switch both ways. The coverage asserts at the end keep the
+    /// pin from passing vacuously.
+    #[test]
+    fn rule_table_matches_legacy_pick() {
+        use rand::Rng;
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(1022);
+        let (junk_state, junk_actions) = junk_discard_state(sts2_core::ChoiceKind::DiscardFromHand);
+        let mut fired: Vec<(PickRule, u32)> = Vec::new();
+        for case in 0..4000_u64 {
+            let (state, actions) = if case % 4 == 3 {
+                (junk_state.clone(), junk_actions.clone())
+            } else {
+                let mut s = make_pick_state(case, false);
+                s.creatures[0].intent = Some(sts2_core::Intent::Attack {
+                    damage: rng.gen_range(0..30),
+                });
+                s.player.block = rng.gen_range(0..15);
+                for slot in 0..s.player.hand.len() {
+                    let uid = s.player.hand[slot];
+                    if rng.gen_bool(0.3) {
+                        s.cards[uid.get() as usize - 1].cost = 0;
+                    }
+                }
+                let actions = legal_actions(&s).to_vec();
+                (s, actions)
+            };
+            let base: f32 = rng.gen_range(-1.2..1.2);
+            let stats: Vec<(Action, u32, f32)> = actions
+                .iter()
+                .map(|a| {
+                    (
+                        a.clone(),
+                        rng.gen_range(1..200),
+                        base + rng.gen_range(-0.04..0.04),
+                    )
+                })
+                .collect();
+            let config = MctsConfig {
+                tie_eps: [0.0, 0.005, 0.02, 0.05][rng.gen_range(0..4)],
+                root_guards: rng.gen_bool(0.8),
+                effective_incoming: rng.gen_bool(0.5),
+                tie_rules: TieRules::A8_GUARDS,
+                ..MctsConfig::default()
+            };
+            let legacy = legacy_pick_from_root_stats(&state, &config, &stats);
+            let children: Vec<RootOutcome> = stats
+                .iter()
+                .map(|(a, v, q)| outcome(a.clone(), *v, *q))
+                .collect();
+            let pick = pick_root(&state, &config, &children).expect("non-empty");
+            assert_eq!(pick.idx, legacy, "case {case}: {stats:?}");
+            assert_eq!(pick.action, stats[pick.idx.expect("indexed")].0);
+            assert!(pick.band.contains(&pick.idx.expect("indexed")));
+            match fired.iter_mut().find(|(r, _)| *r == pick.rule) {
+                Some((_, n)) => *n += 1,
+                None => fired.push((pick.rule, 1)),
+            }
+        }
+        for rule in [
+            PickRule::Argmax,
+            PickRule::BandVisits,
+            PickRule::BlockGuard,
+            PickRule::FreePlay,
+            PickRule::JunkDispose,
+        ] {
+            assert!(
+                fired
+                    .iter()
+                    .find(|(r, _)| *r == rule)
+                    .map_or(0, |(_, n)| *n)
+                    > 20,
+                "{rule:?} decided too few cases to pin it: {fired:?}"
+            );
+        }
+    }
+
+    /// `TieRules` vocabulary: the deployed set is the three A8 guards plus
+    /// `spend` and `order_block`, a narrower set drops one guard alone, and
+    /// a typo is an error.
+    #[test]
+    fn tie_rules_parse_and_gate_single_guard() {
+        assert_eq!(MctsConfig::default().tie_rules, TieRules::DEFAULT);
         assert_eq!(
-            pick_from_root_stats(&state, &MctsConfig::default(), &stats),
-            Some(0)
+            TieRules::parse("block+free+junk+spend+order_block"),
+            Ok(TieRules::DEFAULT)
+        );
+        assert_eq!(TieRules::parse("block+free+junk"), Ok(TieRules::A8_GUARDS));
+        assert_eq!(TieRules::parse("none"), Ok(TieRules::NONE));
+        assert!(TieRules::parse("block+junkk").is_err());
+
+        // The junk-dispose fixture again, with 5c rolled back alone.
+        let (state, a) = junk_discard_state(sts2_core::ChoiceKind::DiscardFromHand);
+        let stats = vec![
+            (a[0].clone(), 400, -1.4145),
+            (a[1].clone(), 300, -1.4146),
+            (a[2].clone(), 300, -1.4163),
+        ];
+        let no_junk = MctsConfig {
+            tie_rules: TieRules::parse("block+free").expect("known rules"),
+            ..MctsConfig::default()
+        };
+        assert_eq!(pick_idx(&state, &MctsConfig::default(), &stats), Some(1));
+        assert_eq!(pick_idx(&state, &no_junk, &stats), Some(0));
+    }
+
+    /// The explanation: band membership, the deciding rule, the runner-up
+    /// and a z-scored gap when the children carry return variance.
+    #[test]
+    fn root_pick_explains_band_rule_and_gap() {
+        let (state, a) = junk_discard_state(sts2_core::ChoiceKind::DiscardFromHand);
+        let mut children: Vec<RootOutcome> = vec![
+            outcome(a[0].clone(), 400, -1.4145),
+            outcome(a[1].clone(), 300, -1.4146),
+            outcome(a[2].clone(), 300, -1.50),
+        ];
+        // Return variance 0.04 per child → SE 0.01 at 400 visits.
+        for c in &mut children {
+            #[allow(clippy::cast_precision_loss)]
+            let n = c.visits as f32;
+            c.value_sq_sum = n * (c.mean_value * c.mean_value + 0.04);
+        }
+        let pick = pick_root(&state, &MctsConfig::default(), &children).expect("non-empty");
+        assert_eq!(pick.idx, Some(1));
+        assert_eq!(pick.rule, PickRule::JunkDispose);
+        assert_eq!(pick.band.as_slice(), &[0, 1]);
+        assert_eq!(pick.runner_up, Some(0));
+        assert!((pick.gap_q - (-0.0001)).abs() < 1e-5, "gap {}", pick.gap_q);
+        let z = pick.gap_z.expect("both children carry variance");
+        assert!(z < 0.0 && z > -0.1, "z {z}");
+
+        // One child alone in the band is a plain argmax.
+        let wide = MctsConfig {
+            tie_eps: 0.0,
+            ..MctsConfig::default()
+        };
+        let pick = pick_root(&state, &wide, &children).expect("non-empty");
+        assert_eq!((pick.idx, pick.rule), (Some(0), PickRule::Argmax));
+        assert_eq!(pick.band.as_slice(), &[0]);
+    }
+
+    /// The fallback order: a permutation led by the pick, whose next entry
+    /// is exactly the rule's pick with the leader dropped — what a consumer
+    /// that vetoes the pick plays instead.
+    #[test]
+    fn root_pick_order_drops_the_leader_into_the_rule() {
+        let (state, a) = junk_discard_state(sts2_core::ChoiceKind::DiscardFromHand);
+        let children = vec![
+            outcome(a[0].clone(), 400, -1.4145),
+            outcome(a[1].clone(), 300, -1.4146),
+            outcome(a[2].clone(), 300, -1.4163),
+        ];
+        let config = MctsConfig::default();
+        let pick = pick_root(&state, &config, &children).expect("non-empty");
+        let order = root_pick_order(&state, &config, &children, pick.idx);
+        // The junk guard took child 1; without it, the most-visited in-band
+        // child 0 leads; then child 2.
+        assert_eq!(order, vec![1, 0, 2]);
+        let without_pick: Vec<RootOutcome> = [0, 2].map(|i| children[i].clone()).to_vec();
+        let next = pick_root(&state, &config, &without_pick).expect("non-empty");
+        assert_eq!(next.action, children[order[1]].action);
+
+        // No leader given: the order starts at the rule's own pick.
+        assert_eq!(root_pick_order(&state, &config, &children, None), order);
+        assert!(root_pick_order(&state, &config, &[], None).is_empty());
+    }
+
+    /// A rule set's pick over the same tree: the block guard's EndTurn →
+    /// Defend flip appears with `block` on and not without it, and the
+    /// tree's own rules are back in place afterwards.
+    #[test]
+    fn explain_root_pick_with_swaps_only_the_rules() {
+        let mut state = make_pick_state(3, false);
+        state.creatures[0].intent = Some(sts2_core::Intent::Attack { damage: 22 });
+        let mut mcts = Mcts::new(state, MctsConfig::default());
+        let _ = mcts.search_n(64);
+        let actions: Vec<Action> = mcts
+            .root_outcomes()
+            .iter()
+            .map(|o| o.action.clone())
+            .collect();
+        let endturn = actions
+            .iter()
+            .position(|a| matches!(a, Action::EndTurn))
+            .expect("EndTurn root child");
+        let block = actions
+            .iter()
+            .position(|a| {
+                root_hand_card(&mcts.tree.root_state, a).is_some_and(|card| card.base_block > 0)
+            })
+            .expect("a Defend root child");
+        let mut stats = vec![(10_u32, -0.9_f32); actions.len()];
+        stats[endturn] = (800, 0.500);
+        stats[block] = (100, 0.495);
+        rig_root_stats(&mut mcts, &stats);
+
+        let none = mcts
+            .explain_root_pick_with(TieRules::NONE)
+            .expect("non-terminal root");
+        assert_eq!((none.idx, none.rule), (Some(endturn), PickRule::BandVisits));
+        let guarded = mcts
+            .explain_root_pick_with(TieRules::BLOCK)
+            .expect("non-terminal root");
+        assert_eq!(
+            (guarded.idx, guarded.rule),
+            (Some(block), PickRule::BlockGuard)
+        );
+        assert_eq!(mcts.config.tie_rules, TieRules::DEFAULT);
+        assert_eq!(
+            mcts.explain_root_pick().expect("non-terminal root"),
+            guarded
         );
     }
 
@@ -12470,6 +13587,7 @@ mod tests {
             pending_enemy_exec_resume: None,
             combat_log: TurnEvents::default(),
             swipe_stolen: Vec::new(),
+            deck_link: None,
             escaped_creatures: 0,
             coop: sts2_core::coop::CoopState::default(),
             heist_recovered_gold: 0,

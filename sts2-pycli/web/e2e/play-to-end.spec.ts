@@ -23,7 +23,7 @@ async function openStartForm(page: Page): Promise<void> {
 /** Count the clickable history rows in the live branch-tree log. */
 function historyRows(page: Page) {
   return page.locator(
-    'button[title="rewind the run to this step"], button[title="current position"]',
+    '[role="button"][title="rewind the run to this step"], [role="button"][title="current position"]',
   );
 }
 

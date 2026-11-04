@@ -2,7 +2,6 @@
 use super::prelude::*;
 
 /// `ForegoneConclusion` — apply 2 `ForegoneConclusion` to self.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L690
 pub(crate) fn play_foregone_conclusion(
     state: &mut CombatState,
     _t: Option<CreatureUid>,

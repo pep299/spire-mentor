@@ -5,7 +5,6 @@ use super::prelude::*;
 /// Block + move resolving card back into hand. Bead `sts2-rs-653b`
 /// closes the grne follow-up — `state.move_card_to_hand(uid)` landed
 /// in grne (`crates/sts2-core/src/lib.rs:2724`).
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L463
 pub(crate) fn play_particle_wall(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     // C# `ParticleWall.OnPlay` (ParticleWall.cs) ONLY gains block. The
     // return-to-hand is a result-pile override (`GetResultPileTypeForCardPlay`:

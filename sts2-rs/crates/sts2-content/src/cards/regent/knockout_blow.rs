@@ -2,7 +2,6 @@
 use super::prelude::*;
 
 /// KnockoutBlow — damage; if it kills, gain 5 Stars.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L396
 pub(crate) fn play_knockout_blow(
     state: &mut CombatState,
     target: Option<CreatureUid>,

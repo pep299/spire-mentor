@@ -1,4 +1,3 @@
-// port-pin-skip — dispatch registry glue (no Python counterpart).
 //! Relic listener-installation entry point — bead `sts2-rs-l7l` (P7-1).
 //!
 //! Mirrors `sts2-content::cards::dispatch` (bead `sts2-rs-ov4` / P6-1).

@@ -9,7 +9,7 @@ use super::prelude::*;
 /// chosen uid from `draw` and pushes it onto `hand`) over the whole
 /// draw pile, ordered by (C# rarity ordinal, Entry string) to mirror the
 /// C# grid order (`orderby c.Rarity, c.Id`, DropletOfPrecognition.cs:22-24).
-/// Single-pick, skippable. Empty draw pile ⇒ no-op. Bead `sts2-rs-19hm7`.
+/// Single-pick, not skippable. Empty draw pile ⇒ no-op. Bead `sts2-rs-19hm7`.
 pub(crate) fn drink_droplet_of_precognition(
     state: &mut CombatState,
     _target: Option<u8>,
@@ -24,15 +24,18 @@ pub(crate) fn drink_droplet_of_precognition(
     // whereas C# heads with the alphabetically-first Entry (e.g. BASH <
     // STRIKE_IRONCLAD). With the deterministic option[0] picker this flips
     // which card moves draw → hand, so the key must mirror C# exactly:
-    // (CardRarity ordinal as PRIMARY, then Entry string). `to_python_name()`
-    // returns the C# `Entry` slug verbatim. Bead `sts2-rs-19hm7`.
+    // (CardRarity ordinal as PRIMARY, then Entry string). `card_model_entry`
+    // is the C# `Entry` slug (`_CARD` suffix dropped). Bead `sts2-rs-19hm7`.
     let mut ordered: Vec<sts2_core::CardUid> = state.player.draw.to_vec();
     ordered.sort_by(|&a, &b| {
         let id_a = state.cards[a.0.get() as usize - 1].card_id;
         let id_b = state.cards[b.0.get() as usize - 1].card_id;
         csharp_rarity_ordinal(id_a, state.game_version)
             .cmp(&csharp_rarity_ordinal(id_b, state.game_version))
-            .then_with(|| id_a.to_python_name().cmp(id_b.to_python_name()))
+            .then_with(|| {
+                sts2_core::cards::card_model_entry(id_a)
+                    .cmp(sts2_core::cards::card_model_entry(id_b))
+            })
     });
     // C# `CardSelectCmd.FromSimpleGrid` auto-resolves inline when
     // `!RequireManualConfirmation && cards.Count <= MinSelect` (CardSelectCmd.cs:232-235).
@@ -40,11 +43,15 @@ pub(crate) fn drink_droplet_of_precognition(
     // draw pile of exactly 1 card is added directly to hand with NO decision point —
     // the real game never presents the prompt. Rust previously only short-circuited
     // on an EMPTY draw pile, surfacing a phantom 1-option `card_select`.
+    // `CardPileCmd.Add(card, Hand)` (DropletOfPrecognition.cs:28 in v0.111.0,
+    // :25 in v0.107.1) sends the card to the discard pile instead when the
+    // hand already holds 10 cards (CardPileCmd.cs:485-489); drinking the
+    // potion needs no hand slot, so that is an ordinary case here.
     if ordered.len() <= 1 {
         for uid in &ordered {
             if let Some(pos) = state.player.draw.iter().position(|u| u == uid) {
                 let card = state.player.draw.remove(pos);
-                state.player.hand.push(card);
+                let _ = sts2_core::cards::try_add_to_hand(&mut state.player, card);
             }
         }
         return EffectResult::Resolved;
@@ -66,7 +73,10 @@ pub(crate) fn drink_droplet_of_precognition(
         options,
         1,
         1,
-        true,
+        // `CardSelectorPrefs(prompt, 1)` (`DropletOfPrecognition.cs:22`)
+        // leaves `Cancelable` at its default false (`CardSelectorPrefs.cs:68-78`):
+        // pick one, no skip.
+        false,
     );
     EffectResult::Resolved
 }

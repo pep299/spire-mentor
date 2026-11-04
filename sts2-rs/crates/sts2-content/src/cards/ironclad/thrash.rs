@@ -89,10 +89,33 @@ pub(crate) fn play_thrash(state: &mut CombatState, target: Option<CreatureUid>) 
         // C# folds the UN-floored `ModifyDamage` decimal; capture it as an exact
         // rational `(term_num, term_den)` so the sub-integer part is preserved
         // across plays instead of being floored away each fold.
-        let (term_num, mut term_den) = card_effects::player_modified_card_damage_frac(
-            state,
-            exhausted_base - vigor + relic_add,
-        );
+        //
+        // `Hook.ModifyDamage` applies the exhausted card's own enchantment
+        // first, additive then multiplicative (v0.111.0 Hook.cs:1643-1652,
+        // same in v0.107.1): `(base + Sharp) x Corrupted`, and only then the
+        // listener additives (Strength, the relic term) and multipliers. The
+        // Vigor cancel and the relic additive therefore sit OUTSIDE the
+        // enchant multiplier (seed 2158: a Corrupted Anger+ folded 8, not 12).
+        let (ench_add, ench_x100) = {
+            let card = &state.cards[exhausted_uid.0.get() as usize - 1];
+            (
+                sts2_core::enchantment_hooks::enchant_damage_additive_for(
+                    card,
+                    true,
+                    state.game_version,
+                ),
+                sts2_core::enchantment_hooks::enchant_damage_multiplicative_x100(card, true),
+            )
+        };
+        let enchanted_x100 =
+            i64::from(exhausted_base.saturating_add(ench_add)).saturating_mul(i64::from(ench_x100));
+        let (term_num, mut term_den) =
+            sts2_core::hooks::player_modified_card_damage_frac_with_source(
+                state,
+                enchanted_x100.saturating_add(i64::from(relic_add - vigor).saturating_mul(100)),
+                100,
+                Some(exhausted_uid),
+            );
         // Gigantification is the other modifier the fold must see after the
         // attack, not during it. Thrash's attack latches it, and its
         // `AfterAttack` decrements it before the fold (GigantificationPower.cs).
@@ -195,15 +218,10 @@ fn exhaust_fold_base_damage(state: &CombatState, uid: sts2_core::CardUid) -> i32
     let card = &state.cards[idx];
     let upgraded = card.upgraded;
     match card.card_id {
-        // CalculationBase 15→18; the `target?.debuffs ?? 0` multiplier is 0
-        // under the null target Thrash passes, so only the base remains.
-        CardId::Rend => {
-            if upgraded {
-                18
-            } else {
-                15
-            }
-        }
+        // CalculationBase 15→18 (v0.111.0: 10→12, Rend.cs:19,40); the
+        // `target?.debuffs ?? 0` multiplier is 0 under the null target Thrash
+        // passes, so only the base remains — `preview_rend` with no target.
+        CardId::Rend => crate::cards::colorless::rend::preview_rend(state, card, None),
         // 0 + 1 × owner block.
         CardId::BodySlam => state.player.block,
         // 0 + 1 × draw-pile size.

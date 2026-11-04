@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, it, expect } from "vitest";
-import Orbs, { orbArc } from "../Orbs";
+import Orbs from "../Orbs";
+import { orbArc } from "../orbArc";
 import Board from "../Board";
 import type { Orb, Step } from "../../api";
 

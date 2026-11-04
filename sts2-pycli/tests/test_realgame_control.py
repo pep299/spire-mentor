@@ -22,7 +22,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
 
-from realgame_control import ControlPlane, StaticSite
+from realgame_control import BugReportForward, ControlPlane, StaticSite
 from realgame_livetree import LiveRunTree
 
 ENV: dict[str, Any] = {
@@ -446,7 +446,8 @@ class TestBundledWorkbench:
     def test_spa_fallback_and_misses(self, site_plane) -> None:
         assert _fetch(site_plane, "/some/route")[2].startswith(b"<!doctype html>")
         assert _fetch(site_plane, "/missing.js")[0] == 404
-        assert _fetch(site_plane, "/api/bugreport")[0] == 404  # keeps the report button hidden
+        # No bug_reports configured: a 404 keeps the page's Report button hidden.
+        assert _fetch(site_plane, "/api/bugreport")[0] == 404
         assert _fetch(site_plane, "/..%2fsecret.txt")[0] == 404
         assert _fetch(site_plane, "/ppo/..%2f..%2fsecret.txt")[0] == 404
 
@@ -549,3 +550,216 @@ class TestLiveLog:
         publish_log_path(control, wlog)
         assert wlog.path != first
         assert json.loads(_fetch(control, "/log?stat=1")[2])["name"] == Path(wlog.path or "").name
+
+
+# -- bug reports (the bundled workbench's 🐞 Report button) -----------------
+
+
+class _FakeStore:
+    """The hosted site behind its sign-in, on a real loopback port: only
+    POST /intake/bugreport answers signed out; everything else redirects to
+    the sign-in page, as Cloudflare Access does."""
+
+    def __init__(self) -> None:
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        store = self
+        self.posts: list[tuple[dict[str, str], dict[str, Any]]] = []
+        self.reports: dict[str, bytes] = {}
+        self.fail_with: int | None = None
+        #: Set: the intake is NOT exempt from the sign-in either.
+        self.gate_intake = False
+        self.login_hits = 0
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *a: Any) -> None:
+                pass
+
+            def _reply(self, code: int, body: bytes) -> None:
+                self.send_response(code)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def _to_login(self) -> None:
+                self.send_response(302)
+                self.send_header("Location", f"{store.site}/cdn-cgi/access/login?team=t")
+                self.send_header("content-length", "0")
+                self.end_headers()
+
+            def do_POST(self) -> None:
+                raw = self.rfile.read(int(self.headers["content-length"]))
+                if self.path != "/intake/bugreport" or store.gate_intake:
+                    self._to_login()
+                    return
+                store.posts.append(
+                    ({k.lower(): v for k, v in self.headers.items()}, json.loads(raw))
+                )
+                if store.fail_with:
+                    self._reply(store.fail_with, b'{"detail": "store says no"}')
+                    return
+                rid = "wb-00000000000000aa"
+                store.reports[rid] = raw
+                self._reply(
+                    201, json.dumps({"id": rid, "url": f"{store.site}/?report={rid}"}).encode()
+                )
+
+            def do_GET(self) -> None:
+                if self.path.startswith("/cdn-cgi/access/login"):
+                    store.login_hits += 1
+                    self._reply(200, b"<html>sign in with Google</html>")
+                else:
+                    self._to_login()
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.site = f"http://127.0.0.1:{self.server.server_address[1]}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def stop(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
+def _dump(**extra: Any) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "meta": {"mode": "replay", "host": "http://127.0.0.1:8079"},
+        "repro": {"run_file": "advisor.jsonl", "line": 3, "run_log": "{}\n"},
+        "state": {"game_state": {"floor": 4}, "map": None},
+        "ui": {"screen": "combat_play", "overlay": None},
+        "note": "intent shows the wrong damage",
+        **extra,
+    }
+
+
+def _post_raw(
+    control: ControlPlane, path: str, body: bytes, headers: dict[str, str]
+) -> tuple[int, dict[str, Any]]:
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{control.port}{path}", data=body, headers=headers, method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status or 0, json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+@pytest.fixture()
+def store():
+    s = _FakeStore()
+    yield s
+    s.stop()
+
+
+@pytest.fixture()
+def report_plane(tmp_path: Path, store: _FakeStore):
+    control = ControlPlane(LiveRunTree())
+    control.start(0, bug_reports=BugReportForward(store.site, tmp_path / "bugreports", timeout=5))
+    assert control.port
+    yield control
+    control.stop()
+
+
+JSON = {"content-type": "application/json"}
+
+
+class TestBugReports:
+    def test_probe_answers_json_so_the_button_shows(self, report_plane, tmp_path: Path) -> None:
+        assert _get(report_plane, "/api/bugreport") == {"ok": True, "store": "forward"}
+        local = BugReportForward(None, tmp_path)
+        assert local.probe() == {"ok": True, "store": "local"}
+
+    def test_forwards_with_the_live_position_and_returns_the_store_reply(
+        self, report_plane, store: _FakeStore
+    ) -> None:
+        report_plane.note_message({"type": "advice_request", "advice_for": "card_reward", **ENV})
+        report_plane.set_log_path("C:/Users/alice/AppData/Local/SpireMentor/logs/a.jsonl")
+        code, reply = _post_raw(report_plane, "/api/bugreport", json.dumps(_dump()).encode(), JSON)
+        assert code == 201
+        assert reply == {
+            "id": "wb-00000000000000aa",
+            "url": f"{store.site}/?report=wb-00000000000000aa",
+        }
+        headers, sent = store.posts[-1]
+        # Not a browser: no Origin, but an agent Cloudflare's bot check accepts.
+        assert "origin" not in headers
+        assert headers["user-agent"].startswith("SpireMentor-advisor/")
+        assert sent["state"]["live_game"]["advice_for"] == "card_reward"
+        assert sent["state"]["game_state"] == {"floor": 4}  # the page's own view, untouched
+        assert sent["meta"]["forwarded_by"] == "advisor"
+        assert sent["meta"]["advisor"]["character"] == "IRONCLAD"
+        assert "log_path" not in sent["meta"]["advisor"]  # it names the player's home
+        assert sent["repro"]["run_log"] == "{}\n"
+
+    def test_a_sent_report_is_read_on_the_site_not_through_here(
+        self, report_plane, store: _FakeStore
+    ) -> None:
+        _, reply = _post_raw(report_plane, "/api/bugreport", json.dumps(_dump()).encode(), JSON)
+        code, _, body = _fetch(report_plane, f"/api/bugreport/{reply['id']}")
+        # Reading needs the site's sign-in, which this server cannot pass.
+        assert code == 404
+        assert f"{store.site}/?report={reply['id']}" in json.loads(body)["detail"]
+        assert store.login_hits == 0
+        assert _fetch(report_plane, "/api/bugreport/..%2f..%2fsecret")[0] == 404
+
+    def test_a_gated_intake_is_reported_as_the_sign_in_not_followed(
+        self, report_plane, store: _FakeStore, tmp_path: Path
+    ) -> None:
+        store.gate_intake = True
+        code, reply = _post_raw(report_plane, "/api/bugreport", json.dumps(_dump()).encode(), JSON)
+        assert code == 201 and Path(reply["path"]).is_file()
+        assert "HTTP 302" in reply["detail"] and "sign-in" in reply["detail"]
+        # The redirect was not followed (a followed POST lands on the login page).
+        assert store.login_hits == 0
+
+    def test_store_failure_saves_locally_and_says_so(
+        self, report_plane, store: _FakeStore, tmp_path: Path
+    ) -> None:
+        store.fail_with = 503
+        code, reply = _post_raw(report_plane, "/api/bugreport", json.dumps(_dump()).encode(), JSON)
+        assert code == 201
+        path = Path(reply["path"])
+        assert path.parent == tmp_path / "bugreports" and path.name == f"{reply['id']}.json"
+        assert "store says no" in reply["detail"] and str(path) in reply["detail"]
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        assert saved["meta"]["id"] == reply["id"]
+        assert saved["meta"]["received_via"] == "advisor-local"
+        # ...and the page can open it from there.
+        assert _get(report_plane, f"/api/bugreport/{reply['id']}")["meta"]["id"] == reply["id"]
+
+    def test_no_site_saves_locally(self, tmp_path: Path) -> None:
+        control = ControlPlane(LiveRunTree())
+        control.start(0, bug_reports=BugReportForward(None, tmp_path / "br"))
+        try:
+            code, reply = _post_raw(control, "/api/bugreport", json.dumps(_dump()).encode(), JSON)
+        finally:
+            control.stop()
+        assert code == 201 and Path(reply["url"]).is_file()
+        assert "no bug-report address" in reply["detail"]
+
+    def test_refuses_foreign_pages_non_json_and_bad_dumps(
+        self, report_plane, store: _FakeStore
+    ) -> None:
+        body = json.dumps(_dump()).encode()
+        own = f"http://127.0.0.1:{report_plane.port}"
+        assert (
+            _post_raw(
+                report_plane, "/api/bugreport", body, {**JSON, "Origin": "https://evil.example"}
+            )[0]
+            == 403
+        )
+        # A cross-site page can send text/plain without a preflight; refuse it.
+        assert (
+            _post_raw(report_plane, "/api/bugreport", body, {"content-type": "text/plain"})[0]
+            == 415
+        )
+        assert _post_raw(report_plane, "/api/bugreport", b"{nope", JSON)[0] == 400
+        code, reply = _post_raw(
+            report_plane, "/api/bugreport", json.dumps({"schema_version": 1}).encode(), JSON
+        )
+        assert (code, reply) == (422, {"detail": "meta must be an object"})
+        assert store.posts == []
+        # The page's own origin is fine.
+        assert _post_raw(report_plane, "/api/bugreport", body, {**JSON, "Origin": own})[0] == 201

@@ -205,3 +205,192 @@ fn a_later_round_does_not_suspend() {
     assert_eq!(state.player.hand.len(), 5, "the natural draw ran");
     assert_eq!(state.relics[0].counter, 0, "the latch never tripped");
 }
+
+/// C# `Hook.BeforeHandDraw` awaits each relic listener in EQUIP order, so a
+/// `BeforeHandDraw` relic equipped AFTER Toolbox acts only once the Toolbox
+/// pick has landed in hand. Here JeweledMask (round 1: move a Power from the
+/// draw pile to hand) must not have moved anything while the Toolbox screen is
+/// open, and its card lands after the Toolbox grant. The port used to run the
+/// whole relic channel before parking, so the Power was already in hand.
+#[test]
+fn a_relic_equipped_after_toolbox_waits_for_the_pick() {
+    let mut state = state_with_toolbox(10);
+    state.relics.push(Relic {
+        id: NonZeroU32::new(2).expect("nz"),
+        kind: RelicKind::JeweledMask,
+        counter: 0,
+        is_wax: false,
+        is_melted: false,
+    });
+    let raw = u32::try_from(state.cards.len() + 1).expect("u32");
+    let power = sts2_core::CardUid::new(raw).expect("nz");
+    state.cards.push(Card {
+        uid: power,
+        card_id: CardId::Inflame,
+        cost: 1,
+        card_type: CardType::Power,
+        target_type: TargetType::Self_,
+        ..Card::pod_defaults()
+    });
+    state.player.draw.push(power);
+
+    assert_eq!(
+        combat_loop::start_player_turn(&mut state),
+        StepResult::PendingChoice
+    );
+    assert!(
+        state.player.hand.is_empty(),
+        "JeweledMask (equipped after Toolbox) must wait for the Toolbox pick"
+    );
+    let _ = sts2_core::apply(
+        &mut state,
+        Action::ResolveChoice {
+            selection: smallvec::smallvec![0],
+        },
+    );
+    assert_eq!(
+        state.player.hand.get(1).copied(),
+        Some(power),
+        "Toolbox grant first, then JeweledMask's Power, then the draw"
+    );
+    assert_eq!(state.relics[0].counter, 1, "Toolbox fired exactly once");
+}
+
+/// C# `StartTurn` awaits `SetupPlayerTurn` only until its first player-choice
+/// pause (`HookPlayerChoiceContext.WaitForPauseOrCompletionWithoutAssigningTask`,
+/// v0.111.0 `CombatManager.cs:779-785`, v0.107.1 `:516-524`), then runs
+/// `Hook.AfterSideTurnStart` while the Toolbox screen is open. The screen
+/// itself only proceeds once `RunAutoPrePlayPhase` assigns its task
+/// (`HookPlayerChoiceContext.SignalPlayerChoiceBegun` awaits
+/// `_taskAssignedCompletionSource`), so Lantern's +1 energy is already granted
+/// when the pick is made, and it is not granted again afterwards.
+#[test]
+fn after_side_turn_start_runs_while_the_toolbox_screen_is_open() {
+    let mut state = state_with_toolbox(10);
+    state.relics.push(Relic {
+        id: NonZeroU32::new(2).expect("nz"),
+        kind: RelicKind::Lantern,
+        counter: 0,
+        is_wax: false,
+        is_melted: false,
+    });
+
+    assert_eq!(
+        combat_loop::start_player_turn(&mut state),
+        StepResult::PendingChoice
+    );
+    assert_eq!(
+        state.player.energy, 4,
+        "Lantern's AfterSideTurnStart +1 lands during the Toolbox pause"
+    );
+    let _ = sts2_core::apply(
+        &mut state,
+        Action::ResolveChoice {
+            selection: smallvec::smallvec![0],
+        },
+    );
+    assert_eq!(state.player.energy, 4, "Lantern fires exactly once");
+    assert_eq!(state.player.hand.len(), 6, "1 Toolbox grant + 5 drawn");
+}
+
+/// The early `AfterSideTurnStart` also runs before `Hook.ModifyHandDraw`: C#
+/// `SetupPlayerTurn` computes the draw AFTER `BeforeHandDraw` returns
+/// (v0.111.0 `CombatManager.cs:905-907`), i.e. after the pause. So
+/// `ClarityPower.AfterSideTurnStart`'s decrement removes a 1-stack Clarity
+/// before its `ModifyHandDraw` +1 is read, and the natural draw is 5, not 6.
+#[test]
+fn a_toolbox_pause_lets_clarity_expire_before_the_draw_count_is_read() {
+    let mut state = state_with_toolbox(10);
+    let player = state.player.creature_uid.expect("player creature");
+    sts2_core::card_effects::apply_power_to_creature(
+        &mut state,
+        player,
+        sts2_core::PowerKind::Clarity,
+        1,
+    );
+
+    assert_eq!(
+        combat_loop::start_player_turn(&mut state),
+        StepResult::PendingChoice
+    );
+    let _ = sts2_core::apply(
+        &mut state,
+        Action::ResolveChoice {
+            selection: smallvec::smallvec![0],
+        },
+    );
+    assert_eq!(
+        state.player.hand.len(),
+        6,
+        "1 Toolbox grant + 5 drawn: Clarity expired during the pause"
+    );
+}
+
+/// v0.111.0 Pendulum through a Toolbox pause. C# `Pendulum.BeforeHandDraw`
+/// ticks `TurnsSeen = (TurnsSeen + 1) % 3` (decomp v0.111.0 Pendulum.cs:76-89)
+/// and `ModifyHandDraw` adds `+1` iff `TurnsSeen == 0` (:91-102), read once
+/// after `Hook.BeforeHandDraw` returns (`CombatManager.cs:905-907`). The pause
+/// makes Rust read the count again after its relic walk, when Pendulum has
+/// already ticked, so that read must see the ticked counter instead of looking
+/// ahead a second time (Ironclad 2054 act 3, step 888: entry counter 1 drew one
+/// card too many).
+fn toolbox_pendulum_hand(pendulum_counter: i32, pendulum_first: bool) -> usize {
+    let mut state = state_with_toolbox(10);
+    state.game_version = sts2_core::GameVersion::V0_111_0;
+    let pendulum = Relic {
+        id: NonZeroU32::new(2).expect("nz"),
+        kind: RelicKind::Pendulum,
+        counter: pendulum_counter,
+        is_wax: false,
+        is_melted: false,
+    };
+    if pendulum_first {
+        state.relics.insert(0, pendulum);
+    } else {
+        state.relics.push(pendulum);
+    }
+    assert_eq!(
+        combat_loop::start_player_turn(&mut state),
+        StepResult::PendingChoice
+    );
+    let _ = sts2_core::apply(
+        &mut state,
+        Action::ResolveChoice {
+            selection: smallvec::smallvec![0],
+        },
+    );
+    let pendulum = state
+        .relics
+        .iter()
+        .find(|r| r.kind == RelicKind::Pendulum)
+        .expect("pendulum");
+    assert_eq!(
+        pendulum.counter,
+        (pendulum_counter + 1) % 3,
+        "Pendulum ticks exactly once"
+    );
+    state.player.hand.len()
+}
+
+#[test]
+fn a_toolbox_pause_does_not_double_tick_pendulum_s_hand_draw() {
+    for pendulum_first in [false, true] {
+        assert_eq!(
+            toolbox_pendulum_hand(1, pendulum_first),
+            6,
+            "counter 1 -> TurnsSeen 2: 1 Toolbox grant + 5 drawn, no Pendulum card \
+             (pendulum_first={pendulum_first})"
+        );
+        assert_eq!(
+            toolbox_pendulum_hand(2, pendulum_first),
+            7,
+            "counter 2 -> TurnsSeen 0: 1 Toolbox grant + 5 + 1 Pendulum \
+             (pendulum_first={pendulum_first})"
+        );
+        assert_eq!(
+            toolbox_pendulum_hand(0, pendulum_first),
+            6,
+            "counter 0 -> TurnsSeen 1: no Pendulum card (pendulum_first={pendulum_first})"
+        );
+    }
+}

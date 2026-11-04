@@ -219,6 +219,29 @@ fn hand_drill_vulnerable_on_attack_block_break_v0111() {
     assert_eq!(hand_drill_after_strike(GameVersion::V0_111_0), 2);
 }
 
+/// Expose (0 cost) on a Nibbit holding 3 Block with HandDrill held; the
+/// enemy's Vulnerable afterwards.
+fn hand_drill_after_expose(version: GameVersion) -> i32 {
+    let mut state = fresh(version, &[RelicKind::HandDrill]);
+    state.creatures[0].block = 3;
+    push_spec_card(&mut state, CardId::Expose);
+    let _ = sts2_core::combat_loop::play_card(&mut state, 0, Some(0));
+    assert_eq!(state.creatures[0].block, 0, "Expose strips the Block");
+    enemy_vulnerable(&state)
+}
+
+/// The case that separates the two arms (GH #812): Expose strips Block
+/// without dealing damage. v0.107.1 HandDrill listens only to
+/// `AfterDamageGiven`, so the enemy keeps just Expose's own Vulnerable 2.
+/// v0.111.0's `CreatureCmd.LoseBlock(…, remover: Owner)` fires
+/// `AfterBlockBroken` with the player as breaker (decomp Expose.cs:39,
+/// CreatureCmd.cs:722), so HandDrill adds 2 more.
+#[test]
+fn hand_drill_vulnerable_on_expose_block_strip_only_v0111() {
+    assert_eq!(hand_drill_after_expose(GameVersion::V0_107_1), 2);
+    assert_eq!(hand_drill_after_expose(GameVersion::V0_111_0), 4);
+}
+
 /// Card counts of successive combat card rewards with LastingCandy held,
 /// dispatching `BeforeCombatRewardOffered` after each set like `RunManager`.
 fn lasting_candy_reward_sizes(version: GameVersion, from_combat: bool) -> Vec<(usize, bool)> {
@@ -232,6 +255,7 @@ fn lasting_candy_reward_sizes(version: GameVersion, from_combat: bool) -> Vec<(u
     let set = CombatRewardsSet {
         room_type: RoomType::Monster,
         rewards: vec![Reward::Card(CardReward::empty())],
+        hook_relics: Vec::new(),
     };
     (0..4)
         .map(|_| {
@@ -290,6 +314,7 @@ fn lasting_candy_fourth_card(seed: i32, extra: &[sts2_core::RelicId]) -> Option<
     let set = CombatRewardsSet {
         room_type: RoomType::Monster,
         rewards: vec![Reward::Card(CardReward::empty())],
+        hook_relics: Vec::new(),
     };
     let mut fourth = None;
     for _ in 0..2 {

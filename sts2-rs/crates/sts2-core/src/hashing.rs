@@ -312,6 +312,11 @@ fn hash_scalars<H: Hasher>(state: &CombatState, h: &mut H) {
     if state.combat_log.extra_turns_taken_this_combat != 0 {
         state.combat_log.extra_turns_taken_this_combat.hash(h);
     }
+    // Read by Rampart's extra-turn guard. Hashed only when set, so states
+    // outside an extra turn hash as before.
+    if state.combat_log.taking_extra_turn {
+        0xE7u8.hash(h);
+    }
     discriminant_side(state.side).hash(h);
     state.is_over.hash(h);
     state.player_won.hash(h);
@@ -353,6 +358,11 @@ fn hash_scalars<H: Hasher>(state: &CombatState, h: &mut H) {
         0x11u8.hash(h);
         continuation.hash(h);
     }
+    // MusicBox's latched Attack, like PenNib's mark, only exists mid-play.
+    if let Some(latched) = state.combat_log.music_box_card_being_played {
+        0x32u8.hash(h);
+        latched.hash(h);
+    }
     // GH #806 per-turn Fetch / GangUp tallies: folded in only when non-empty
     // so every digest of a position without them is unchanged.
     if !state.combat_log.fetch_played_this_turn.is_empty()
@@ -393,6 +403,11 @@ fn hash_scalars<H: Hasher>(state: &CombatState, h: &mut H) {
         0x30u8.hash(h);
         state.coop.to_play.hash(h);
         state.coop.seat_index.hash(h);
+        // A joint search's seated teammate: whose move it is.
+        if let Some(ally) = state.coop.joint_acting {
+            0x31u8.hash(h);
+            ally.hash(h);
+        }
         for seat in &state.coop.stash {
             seat.seat.hash(h);
             (seat.relics.len() as u64).hash(h);
@@ -415,6 +430,15 @@ fn hash_scalars<H: Hasher>(state: &CombatState, h: &mut H) {
         0x2Fu8.hash(h);
         for (id, seat) in &state.coop.power_seat {
             id.hash(h);
+            seat.hash(h);
+        }
+    }
+    // A card held in Play across an open choice still owes its hand-over to
+    // the teammate rolled at play start (The Ball, GH #1017).
+    if !state.coop.result_player.is_empty() {
+        0x31u8.hash(h);
+        for (uid, seat) in &state.coop.result_player {
+            uid.hash(h);
             seat.hash(h);
         }
     }
@@ -947,7 +971,13 @@ fn hash_player_tail<E: HashEncoding, H: Hasher>(
     h: &mut H,
     state: &CombatState,
 ) {
-    p.energy.hash(h);
+    // `energy` widened i8 -> i32 (GH #1054). Fold an in-range value as the
+    // old `i8` so every pinned hash keeps its byte stream; only the
+    // previously unrepresentable >127 pools take the wide encoding.
+    match i8::try_from(p.energy) {
+        Ok(e) => e.hash(h),
+        Err(_) => p.energy.hash(h),
+    }
     p.max_energy.hash(h);
     p.stars.hash(h);
     p.current_hp.hash(h);
@@ -970,6 +1000,12 @@ fn hash_player_tail<E: HashEncoding, H: Hasher>(
     // hash the values directly. (The same bead also hashed `player.stance`;
     // that field was removed wholesale in GH #408 as dead STS1 state.)
     p.orbs.capacity.hash(h);
+    // At capacity 0, `sized` decides whether a Defect's next channel is lost
+    // or lands on a fresh 3-slot base. Hashed only there, so every other
+    // state keeps its hash.
+    if p.orbs.capacity == 0 && p.orbs.sized {
+        true.hash(h);
+    }
     (p.orbs.slots.len() as u64).hash(h);
     for orb in &p.orbs.slots {
         orb.hash(h);
@@ -1342,6 +1378,11 @@ mod legacy_run {
         rs.is_over.hash(&mut h);
         rs.player_won.hash(&mut h);
         rs.pending_deck_removals.hash(&mut h);
+        // Hashed only when set so every pre-existing run hash stays frozen
+        // (the filter is `None` outside an Amalgamator removal batch).
+        if let Some(tag) = rs.pending_removal_basic_tag {
+            tag.hash(&mut h);
+        }
         rs.interactive_card_removal.hash(&mut h);
         rs.pending_deck_upgrades.hash(&mut h);
         rs.interactive_card_upgrade.hash(&mut h);

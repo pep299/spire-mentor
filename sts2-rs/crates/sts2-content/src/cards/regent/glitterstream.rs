@@ -7,7 +7,6 @@ use super::prelude::*;
 /// for Glitterstream in the registered POD is 5 (Card spec
 /// `block_next`-vars do not flow through `Card` yet — use the
 /// canonical Python value).
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L182
 pub(crate) fn play_glitterstream(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     // C# Glitterstream.cs OnUpgrade bumps both Block 11->13 (via spec
     // base_block driven by current_block) AND BlockNextTurn 5->7. The

@@ -20,9 +20,11 @@ class FakeWorkbench implements WorkbenchLike {
     switch (route) {
       case "/api/live/start":
       case "/api/live/start-faithful":
+        this.quitReplaced(JSON.parse(body_json).now);
         this.live = { seed: JSON.parse(body_json).seed, steps: 0, character: JSON.parse(body_json).character ?? "Ironclad" };
         return reply(200, { idx: 0 });
       case "/api/live/from_replay":
+        this.quitReplaced(JSON.parse(body_json).now);
         this.live = { resumed: JSON.parse(body_json).idx, steps: 0 };
         return reply(200, { idx: 0 });
       case "/api/live/run-mode-step":
@@ -41,8 +43,8 @@ class FakeWorkbench implements WorkbenchLike {
         this.live = null;
         const now = JSON.parse(body_json || "{}").now as string | undefined;
         if (had) {
-          const filename = `${(now ?? "2026-01-01T00:00:00Z").replace(/\D/g, "").slice(0, 14)}_Ironclad_S.jsonl`;
-          this.pendingLog = { filename, text: '{"type":"meta"}\n{"type":"state"}\n' };
+          const filename = this.logName(now);
+          this.pendingLogs.push({ filename, text: '{"type":"meta"}\n{"type":"state"}\n' });
           return reply(200, { ok: true, log_path: filename });
         }
         return reply(400, { detail: "no live run" });
@@ -62,8 +64,9 @@ class FakeWorkbench implements WorkbenchLike {
     if (!this.live) return reply(400, { detail: "no live run" });
     return reply(200, { name, saved_at, step_count: this.live.steps, line: [1, 2, 3] });
   }
-  restore_save(payload_json: string): string {
+  restore_save(payload_json: string, now: string): string {
     const p = JSON.parse(payload_json);
+    this.quitReplaced(now);
     this.live = { restored: p.name, steps: p.step_count };
     return reply(200, { step: { idx: p.step_count } });
   }
@@ -150,11 +153,17 @@ class FakeWorkbench implements WorkbenchLike {
     return this.nets.has(character);
   }
   /** Run logs (M4): quit leaves one log behind until collected. */
-  pendingLog: { filename: string; text: string } | null = null;
+  pendingLogs: { filename: string; text: string }[] = [];
+  logName(now: string | undefined): string {
+    return `${(now ?? "2026-01-01T00:00:00Z").replace(/\D/g, "").slice(0, 14)}_Ironclad_S.jsonl`;
+  }
+  /** The engine quits a run a start / resume / restore replaces, leaving its log. */
+  quitReplaced(now: string | undefined): void {
+    if (this.live) this.pendingLogs.push({ filename: this.logName(now), text: '{"type":"meta"}\n' });
+  }
   loadedRun: string | null = null;
   take_run_log(): string {
-    const log = this.pendingLog;
-    this.pendingLog = null;
+    const log = this.pendingLogs.shift();
     return log ? JSON.stringify(log) : "null";
   }
   load_run(path: string, text: string): string {
@@ -211,12 +220,13 @@ describe("engine routes — dispatch", () => {
   });
 
   it("forwards served routes to Workbench.call with the query stripped and the body as JSON", async () => {
-    const { wb, engine } = setup();
+    const { wb, engine } = setup({ now: () => "2026-09-03T04:22:57Z" });
     await engine.handle("get", "/api/capabilities?x=1");
     await engine.handle("POST", "/api/live/start", { seed: "ABC", character: "Ironclad" });
     expect(wb.calls).toEqual([
       "GET /api/capabilities null",
-      'POST /api/live/start {"seed":"ABC","character":"Ironclad"}',
+      // A run-replacing route carries the host's clock for the replaced run's log.
+      'POST /api/live/start {"seed":"ABC","character":"Ironclad","now":"2026-09-03T04:22:57Z"}',
     ]);
   });
 
@@ -475,6 +485,23 @@ describe("engine routes — run logs and the replay viewer (M4)", () => {
       expect(r.body).toEqual({ route });
     }
     expect((await engine.handle("GET", "/api/step/x")).status).toBe(501);
+  });
+
+  it("keeps the log of a run another start replaces, and both of a name clash (320ed156f)", async () => {
+    const now = () => "2026-09-03T04:22:57Z";
+    const { wb, kv, engine } = setup({ now });
+    await engine.handle("POST", "/api/live/start", { seed: "S" });
+    // Starting over quits the live run; the engine got the host's clock.
+    await engine.handle("POST", "/api/live/start", { seed: "S" });
+    expect(wb.calls.filter((c) => c.startsWith("POST /api/live/start ") && c.includes('"now":"2026-09-03T04:22:57Z"')).length).toBe(2);
+    expect(await kv.keys("runs")).toEqual(["20260903042257_Ironclad_S.jsonl"]);
+    // The quit of the second run, in the same second, clashes and is suffixed.
+    const quit = await engine.handle("POST", "/api/live/quit");
+    expect((quit.body as { log_path: string }).log_path).toBe("20260903042257_Ironclad_S_2.jsonl");
+    expect((await kv.keys("runs")).sort()).toEqual([
+      "20260903042257_Ironclad_S.jsonl",
+      "20260903042257_Ironclad_S_2.jsonl",
+    ]);
   });
 
   it("feeds every stored log to the MCTS Runs statics, or answers empty without them", async () => {

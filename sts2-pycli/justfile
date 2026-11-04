@@ -203,10 +203,12 @@ test-stale-wheel:
     @echo "🧪 Running stale-wheel test..."
     bash tests/test_setup_stale_wheel.sh
 
-# Fail-closed `run` guard regression test for wheel-venv.sh (issue #15 Trap 1).
+# wheel-venv.sh regression tests: the fail-closed `run` guard (issue #15
+# Trap 1) and the POSIX/Windows venv-layout probes (GH #506).
 test-wheel-venv:
-    @echo "🧪 Running wheel-venv ambiguity-guard test..."
+    @echo "🧪 Running wheel-venv ambiguity-guard + venv-layout tests..."
     bash tests/test_wheel_venv_ambiguity.sh
+    bash tests/test_wheel_venv_layout.sh
 
 # Content-addressed worktree-venv keying + reachability GC (issue #15 / Phase 2).
 test-venv-hashkey:

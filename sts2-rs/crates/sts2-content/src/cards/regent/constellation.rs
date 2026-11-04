@@ -9,11 +9,16 @@ use super::prelude::*;
 /// `AnyAlly` — unplayable in single-player (`card_effects::card_is_any_ally`);
 /// in co-op the effect lands on the teammate (`any_ally_card_target`).
 pub(crate) fn play_constellation(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
-    // v0.111.0: the TARGET teammate draws 1, gains 1 energy and 9 (upg 12)
-    // Block (decomp Constellation.cs:31-38). Their draw and energy are not
-    // simulated; their block is, so a later Mimic reads it.
+    // v0.111.0: the TARGET teammate draws 1, gains 1 energy, then 9 (upg 12)
+    // Block (decomp Constellation.cs:31-38), the Block through the player's
+    // Dexterity (`gain_block_ally`).
+    let block = current_block(state);
+    sts2_core::coop::with_card_target(state, |state| {
+        let _ = sts2_core::cards::draw_via_state(state, 1);
+        state.gain_energy(1);
+    });
     if let Some(ally) = state.any_ally_card_target() {
-        let _ = sts2_core::card_effects::gain_block_ally(state, ally, current_block(state));
+        let _ = sts2_core::card_effects::gain_block_ally(state, ally, block);
     }
     EffectResult::Resolved
 }

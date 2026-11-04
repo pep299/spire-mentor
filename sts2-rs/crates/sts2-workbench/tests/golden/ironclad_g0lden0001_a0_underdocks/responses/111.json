@@ -14,7 +14,7 @@
    "bg_col": 2,
    "bg_row": 8,
    "bg_seed": 1772253313,
-   "floor": 8,
+   "floor": 9,
    "step_no": 0,
    "turn": null
   },
@@ -145,7 +145,7 @@
     }
    ],
    "decision": "shop",
-   "floor": 8,
+   "floor": 9,
    "options": [
     {
      "action": "buy_card",
@@ -233,7 +233,7 @@
       "potion_index": 0
      },
      "enabled": true,
-     "label": "Buy ENERGY_POTION.title (50g)"
+     "label": "Buy ENERGY_POTION.title (51g)"
     },
     {
      "action": "buy_potion",
@@ -249,7 +249,7 @@
       "potion_index": 2
      },
      "enabled": true,
-     "label": "Buy EXPLOSIVE_AMPOULE.title (50g)"
+     "label": "Buy EXPLOSIVE_AMPOULE.title (48g)"
     },
     {
      "action": "remove_card",
@@ -506,7 +506,7 @@
    },
    "potions": [
     {
-     "cost": 50,
+     "cost": 51,
      "description": "Gain 2 Energy.",
      "id": "ENERGY_POTION",
      "image": "https://assets.test/potion_atlas/energy_potion.png",
@@ -526,7 +526,7 @@
      "name": "Blood Potion"
     },
     {
-     "cost": 50,
+     "cost": 48,
      "description": "Deal 10 damage to ALL enemies.",
      "id": "EXPLOSIVE_AMPOULE",
      "image": "https://assets.test/potion_atlas/explosive_ampoule.png",

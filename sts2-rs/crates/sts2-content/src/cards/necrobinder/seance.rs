@@ -75,7 +75,7 @@ pub(crate) fn play_seance(state: &mut CombatState, _target: Option<CreatureUid>)
                             card.card_id,
                             state.game_version,
                         ),
-                        card.card_id.to_python_name(),
+                        sts2_core::cards::card_model_entry(card.card_id),
                         uid,
                     ))
                 })

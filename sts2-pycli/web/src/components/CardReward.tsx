@@ -15,7 +15,7 @@ import "../skins/cardreward.css";
 import { detectCharacter, synergyFor, type PartnerHint } from "../synergy";
 import { declaredGameVersion } from "../gameVersion";
 import { loadArchetypes, archetypeChipsFor, type ArchetypeChip } from "../archetype";
-import { useHints } from "../hints/HintsContext";
+import { useHints } from "../hints/useHints";
 import { fitRewardCardWidth } from "../rewardFit";
 
 /** Reward-card widths, in px, largest first.

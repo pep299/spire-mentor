@@ -31,7 +31,6 @@ use super::prelude::*;
 /// inline as a faithful auto-apply (`count = min(2, len)`, mirroring the C#
 /// `cards.Count <= MinSelect` fast path, raw order). Same draw-pile transform
 /// family as Seance (TransformDrawCardToSoul, count 1).
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L293
 // C# source: ../sts2-wiki/decompiled/v0.107.1/MegaCrit.Sts2.Core.Models.Cards/Charge.cs
 pub(crate) fn play_charge(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     let upgraded = current_card_upgraded(state);
@@ -73,7 +72,7 @@ pub(crate) fn play_charge(state: &mut CombatState, _t: Option<CreatureUid>) -> E
                     card.card_id,
                     state.game_version,
                 ),
-                card.card_id.to_python_name(),
+                sts2_core::cards::card_model_entry(card.card_id),
                 uid,
             ))
         })

@@ -6,7 +6,6 @@ use super::prelude::*;
 /// `card.effect_vars.get("vulnerable", 2)` and `("weak", 2)`; at this
 /// pin the Regent POD spec registers `MeteorShower` with the default
 /// 2/2 amounts so the inline constants match.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L853
 pub(crate) fn play_meteor_shower(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     deal_damage_all_enemies(state, current_damage(state));
     let uids: Vec<CreatureUid> = state.enemy_uids.iter().copied().collect();

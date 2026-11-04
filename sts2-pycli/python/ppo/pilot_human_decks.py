@@ -19,7 +19,9 @@ cards. This tests the pilot directly on HUMAN decks and HUMAN fights:
                orig     the human's deck;
                abl_tag  every exhaust/self-damage card -> Strike;
                abl_ctl  the same number of random OTHER non-basic cards
-                        -> Strike (the control: what a card is worth at all).
+                        -> Strike (the control: what a card is worth at all);
+               noench   the human's deck with every enchantment removed
+                        (GH #1021; enchanted decks only).
   report   — (1) pilot HP loss minus the human's on the same fight, by how
              many tagged cards the deck holds; (2) per tagged card, the HP the
              pilot saves by having it rather than a Strike, vs the same for
@@ -790,6 +792,9 @@ def _arms(fight: dict[str, Any], tags: set[str], rng: random.Random) -> dict[str
     base = [c.split("+")[0] for c in deck]
     tagged_idx = [i for i, c in enumerate(base) if c in tags]
     arms = {"orig": deck}
+    if any("@" in c for c in deck):
+        # GH #1021: the same deck with every enchantment removed.
+        arms["noench"] = [c.split("@")[0] for c in deck]
     if tagged_idx:
         arms["abl_tag"] = [fill if i in tagged_idx else c for i, c in enumerate(deck)]
         ctl_pool = [i for i, c in enumerate(base) if c not in tags and c not in basic]
@@ -932,6 +937,13 @@ def play(args: argparse.Namespace) -> int:
     t = tagged_cards(args.pool)
     tags = set(args.focus.split(",")) if args.focus else t["exhaust"] | t["selfdmg"]
     fights = [json.loads(line) for line in open(args.fights, encoding="utf-8")]
+    # Counterfactual entry state: the same fight at another HP / without its
+    # potions prices what the previous fight hands forward.
+    for f in fights:
+        if args.hp_frac is not None:
+            f["hp_before"] = max(1, round(args.hp_frac * int(f["max_hp"])))
+        if args.no_potions:
+            f["potions"] = []
     if args.only_tagged:
         fights = [
             f
@@ -1136,6 +1148,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--only-tagged", action="store_true", help="only un-enchanted decks holding one")
     p.add_argument("--sims", type=int, default=1000)
     p.add_argument("--boss-sims", type=int, default=4000)
+    p.add_argument(
+        "--hp-frac", type=float, default=None, help="enter every fight at this fraction of max HP"
+    )
+    p.add_argument("--no-potions", action="store_true", help="enter every fight without potions")
     p.add_argument("--clair", action="store_true", help="clairvoyant search (STS2_RUNAI_HONEST=0)")
     p.add_argument(
         "--arms", default=None, help="comma list of arms to play (default: all the deck has)"

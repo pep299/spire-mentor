@@ -9,6 +9,16 @@ use super::prelude::*;
 /// Bead `sts2-rs-qyag4` re-baselined off C#: the original port
 /// (`sts2-rs-5om` off Python pin) searched the EXHAUST pile and
 /// missed the type filter.
+///
+/// Each card goes through its own `CardPileCmd.Add(item, Hand)`
+/// (`AllForOne.cs:30-33`), so the hand size is checked per card. Once the
+/// hand holds 10 cards, `Add` targets the discard pile instead
+/// (`CardPileCmd.cs:485-489` in v0.111.0), takes the card off its old
+/// pile (`:493`) and appends it (`:507`): the remaining cards move to the
+/// end of the discard pile. [`try_add_to_hand`] after the `remove` does
+/// the same.
+///
+/// [`try_add_to_hand`]: sts2_core::cards::try_add_to_hand
 pub(crate) fn play_all_for_one(
     state: &mut CombatState,
     target: Option<CreatureUid>,
@@ -27,7 +37,7 @@ pub(crate) fn play_all_for_one(
     for uid in candidates {
         if let Some(pos) = state.player.discard.iter().position(|u| *u == uid) {
             state.player.discard.remove(pos);
-            state.player.hand.push(uid);
+            let _ = sts2_core::cards::try_add_to_hand(&mut state.player, uid);
         }
     }
     EffectResult::Resolved

@@ -15,12 +15,15 @@ import time
 
 import parity_audit as pa
 import pytest
+import sts2_client
 
 
 def _mk_oracle_tree(tmp_path, src_newer: bool):
     """Build <root>/src with a built dll and one .cs, controlling which is newer."""
     src = tmp_path / "src"
-    bindir = src / "Sts2Headless" / "bin" / "v0.107.1" / "Debug" / "net9.0"
+    # The tree is built for the selected build: ``assert_oracle_fresh`` checks
+    # ``bin/<GAME_VERSION>/``, which follows ``--game-version``.
+    bindir = src / "Sts2Headless" / "bin" / sts2_client.GAME_VERSION / "Debug" / "net9.0"
     bindir.mkdir(parents=True)
     dll = bindir / "Sts2Headless.dll"
     cs = src / "Sts2Headless" / "RunSimulator.cs"

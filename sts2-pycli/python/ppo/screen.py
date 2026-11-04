@@ -95,6 +95,9 @@ PRESET: dict[str, Any] = {
     "entropy_decay_steps": 30,
     "entropy_coef_final": 0.005,
     "save_every": 20,
+    # Both arms (GH #977): a curse curriculum is a property of the world the
+    # screen trains in, not of one arm. 0 = off, the trainer's default.
+    "curse_inject_p": 0.0,
 }
 
 # Eval panel: disjoint from the trainer's `seed_base` block by construction

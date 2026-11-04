@@ -1,4 +1,3 @@
-// port-pin-skip — module aggregator; per-potion files carry the port pins.
 //! Potion content: static data definitions for all 63 potions.
 //!
 //! Ports `sts2-rl-agent@01c094d:sts2_env/potions/{all,base,effects}.py`.

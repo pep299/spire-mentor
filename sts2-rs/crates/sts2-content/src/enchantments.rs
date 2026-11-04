@@ -36,26 +36,50 @@ use crate::cards::{CardKeywords, CardRarity, CardSpec};
 // Eligibility
 // ---------------------------------------------------------------------------
 
-/// Whether `spec` is a legal target for `enchantment`.
+/// Whether `card` (whose registry entry is `spec`) is a legal target for
+/// `enchantment`: C# `EnchantmentModel.CanEnchant` and its overrides
+/// (v0.107.1 `Models/EnchantmentModel.cs:273-295`, `Models.Enchantments/*`).
 ///
-/// Mirrors `can_enchant_card` in `enchantments.py:40-73`. The card's
-/// pre-existing enchantments are checked against `card.enchantments` —
-/// callers pass the runtime [`Card`] alongside the [`CardSpec`] since
-/// some criteria (`cost`, `base_block`) read instance state.
+/// Base rule: not Status / Curse / Quest, the type passes
+/// `CanEnchantCardType`, not Unplayable, and not already enchanted. No
+/// v0.107.1 enchantment is `IsStackable`, so an enchanted card takes no
+/// second enchantment, not even the same one. Overrides (GH #1021):
+/// - Attack-only: Sharp, Momentum, Corrupted, Vigorous, Instinct (and the
+///   Rust-only Favored); Attack or Skill: RoyallyApproved; Skill-only: Imbued.
+/// - Goopy: a Defend-tagged card. Nimble: [`Card::gains_block_for`] in
+///   game build `version`.
+/// - Spiral: a Basic card tagged Strike or Defend.
+/// - SoulsPower: the card's own keywords include Exhaust.
+/// - Slither: not X-cost.
+/// - Everything else (TezcatarasEmber, Adroit, Swift, Glam, ...): the base
+///   rule only.
 #[must_use]
-pub fn can_enchant_card(spec: &CardSpec, card: &Card, enchantment: EnchantmentId) -> bool {
-    // Unplayable / status / curse / quest can never be enchanted.
-    if matches!(card.card_type, CardType::Status | CardType::Curse) {
+pub fn can_enchant_card(
+    spec: &CardSpec,
+    card: &Card,
+    enchantment: EnchantmentId,
+    version: sts2_core::GameVersion,
+) -> bool {
+    use sts2_core::cards::{CardTag, KeywordOverride};
+    if matches!(card.card_type, CardType::Status | CardType::Curse) || card.is_quest() {
         return false;
     }
     if spec.keywords.contains(CardKeywords::UNPLAYABLE) {
         return false;
     }
-    // Single-enchantment-per-card rule: if the card already has at least
-    // one enchantment, only stacking the same one is permitted.
-    if !card.enchantments.is_empty() && !card.has_enchantment(enchantment) {
+    if !card.enchantments.is_empty() {
         return false;
     }
+    // C# `MadScience.Type => TinkerTimeType`, whose backing field defaults
+    // to `CardType.None` until the TinkerTime event picks a mode: an unmoded
+    // Mad Science passes no type-gated `CanEnchantCardType`.
+    let card_type = if card.card_id == sts2_core::cards::CardId::MadScience
+        && card.combat_var(VarKey::Generic) == 0
+    {
+        None
+    } else {
+        Some(card.card_type)
+    };
 
     match enchantment {
         EnchantmentId::Sharp
@@ -63,21 +87,22 @@ pub fn can_enchant_card(spec: &CardSpec, card: &Card, enchantment: EnchantmentId
         | EnchantmentId::Corrupted
         | EnchantmentId::Favored
         | EnchantmentId::Vigorous
-        | EnchantmentId::Instinct => card.card_type == CardType::Attack,
+        | EnchantmentId::Instinct => card_type == Some(CardType::Attack),
         EnchantmentId::RoyallyApproved => {
-            matches!(card.card_type, CardType::Attack | CardType::Skill)
+            matches!(card_type, Some(CardType::Attack | CardType::Skill))
         }
-        EnchantmentId::Imbued => card.card_type == CardType::Skill,
-        EnchantmentId::Spiral | EnchantmentId::TezcatarasEmber => {
-            // Basic Strike/Defend gate. We use the spec's rarity as a
-            // proxy for Python's `CardTag.STRIKE / DEFEND` tags (tags
-            // aren't modelled yet — flagged for the P7-8 dispatch audit).
+        EnchantmentId::Imbued => card_type == Some(CardType::Skill),
+        EnchantmentId::Spiral => {
             spec.rarity == CardRarity::Basic
+                && (card.tags.contains(CardTag::Strike) || card.tags.contains(CardTag::Defend))
         }
-        // Defend-tagged proxy: any block-bearing card.
-        EnchantmentId::Nimble | EnchantmentId::Goopy => card.base_block > 0,
-        EnchantmentId::SoulsPower => spec.keywords.contains(CardKeywords::EXHAUST),
-        EnchantmentId::Slither => card.cost >= 0, // proxy for "non-X cost"
+        EnchantmentId::Goopy => card.tags.contains(CardTag::Defend),
+        EnchantmentId::Nimble => card.gains_block_for(version),
+        EnchantmentId::SoulsPower => match card.keyword_override {
+            Some(k) => k.contains(KeywordOverride::EXHAUST),
+            None => spec.keywords.contains(CardKeywords::EXHAUST),
+        },
+        EnchantmentId::Slither => !card.is_x_cost(),
         _ => true,
     }
 }
@@ -92,7 +117,9 @@ pub fn can_enchant_card(spec: &CardSpec, card: &Card, enchantment: EnchantmentId
 ///
 /// Mirrors `apply_static_enchantment` in `enchantments.py:19-37`.
 ///
-/// Returns `(added, removed)` keyword flag bundles. Callers typically:
+/// Returns `(added, removed)` keyword flag bundles. Combat does not read
+/// this diff: `card_effects::card_{retain,innate,exhausts}_inst` read the
+/// enchantment off the card (GH #1021). Callers typically:
 /// ```ignore
 /// let (add, rem) = apply_static_enchantment(&mut card, ench, amount);
 /// effective = effective.with(add).without(rem);
@@ -178,7 +205,7 @@ pub fn effective_keywords(spec: &CardSpec, card: &Card) -> CardKeywords {
 // Dynamic damage / block / play-count
 // ---------------------------------------------------------------------------
 
-/// Bookkeeping bit-flags packed onto [`VarKey::Generic`] for enchantment
+/// Bookkeeping bit-flags packed onto [`VarKey::EnchantmentUsed`] for enchantment
 /// per-combat "used" flags. The Python source keys these by string
 /// (`_enchant_used_<name>`); our typed `VarKey` arena would otherwise need
 /// one variant per enchantment, so we collapse to a bit-packed `i32` until
@@ -187,9 +214,9 @@ const VIGOROUS_USED: i32 = 0b01;
 const GLAM_USED: i32 = 0b10;
 /// Bit reserved for the Momentum running-bonus stash — distinct from the
 /// "used" flags because Momentum keeps an *amount*, not a one-shot bit.
-/// We dedicate a separate `VarKey` (`RampageDamage`) for that amount so it
-/// stays separable from the bit-flags; see [`momentum_bonus`].
-const _MOMENTUM_VAR: VarKey = VarKey::RampageDamage;
+/// It has its own `VarKey` (`MomentumDamage`, GH #1021) so it stays separate
+/// from the bit-flags and from Rampage's growth; see [`momentum_bonus`].
+const _MOMENTUM_VAR: VarKey = VarKey::MomentumDamage;
 
 /// Additive damage bonus from enchantments. Mirrors `enchant_damage_additive`
 /// in `enchantments.py:82-90`. `is_powered` is the Python
@@ -289,27 +316,27 @@ pub fn apply_enchantment_on_play(
 /// card resolves). Mirrors `card.combat_vars["_enchant_momentum_bonus"]`.
 #[must_use]
 pub fn momentum_bonus(card: &Card) -> i32 {
-    card.combat_var(VarKey::RampageDamage)
+    card.combat_var(VarKey::MomentumDamage)
 }
 
 /// Add `amount` to the Momentum stash on `card`. Idempotent re: ordering.
 pub fn add_momentum_bonus(card: &mut Card, amount: i32) {
     let v = card
-        .combat_var(VarKey::RampageDamage)
+        .combat_var(VarKey::MomentumDamage)
         .saturating_add(amount);
-    card.set_combat_var(VarKey::RampageDamage, v);
+    card.set_combat_var(VarKey::MomentumDamage, v);
 }
 
 /// Mark Vigorous as having fired this combat. Idempotent.
 pub fn mark_vigorous_used(card: &mut Card) {
-    let v = card.combat_var(VarKey::Generic) | VIGOROUS_USED;
-    card.set_combat_var(VarKey::Generic, v);
+    let v = card.combat_var(VarKey::EnchantmentUsed) | VIGOROUS_USED;
+    card.set_combat_var(VarKey::EnchantmentUsed, v);
 }
 
 /// Mark Glam as having fired this combat. Idempotent.
 pub fn mark_glam_used(card: &mut Card) {
-    let v = card.combat_var(VarKey::Generic) | GLAM_USED;
-    card.set_combat_var(VarKey::Generic, v);
+    let v = card.combat_var(VarKey::EnchantmentUsed) | GLAM_USED;
+    card.set_combat_var(VarKey::EnchantmentUsed, v);
 }
 
 // ---------------------------------------------------------------------------
@@ -322,6 +349,12 @@ mod tests {
 
     use std::num::NonZeroU32;
     use sts2_core::cards::{CardId, TargetType};
+
+    /// [`super::can_enchant_card`] in the default build (v0.107.1); the
+    /// build-dependent Expect a Fight row is pinned in `tests/cards_v0111.rs`.
+    fn can_enchant_card(spec: &CardSpec, card: &Card, enchantment: EnchantmentId) -> bool {
+        super::can_enchant_card(spec, card, enchantment, sts2_core::GameVersion::V0_107_1)
+    }
 
     fn uid(n: u32) -> sts2_core::CardUid {
         sts2_core::CardUid(NonZeroU32::new(n).expect("non-zero"))
@@ -337,6 +370,7 @@ mod tests {
             upgraded: false,
             base_damage: 6,
             base_block: 0,
+            tags: sts2_core::cards::CardTags::NONE.with(sts2_core::cards::CardTag::Strike),
             ..Card::pod_defaults()
         }
     }
@@ -347,6 +381,7 @@ mod tests {
             base_block: 5,
             card_type: CardType::Skill,
             card_id: CardId::DefendIronclad,
+            tags: sts2_core::cards::CardTags::NONE.with(sts2_core::cards::CardTag::Defend),
             ..strike_card()
         }
     }
@@ -491,9 +526,9 @@ mod tests {
         let mut c = strike_card();
         c.set_enchantment(EnchantmentId::Sharp, 1);
         let spec = basic_strike_spec();
-        // Same enchantment stacking is allowed.
-        assert!(can_enchant_card(&spec, &c, EnchantmentId::Sharp));
-        // Different kind is rejected.
+        // No v0.107.1 enchantment is `IsStackable`, so C# `CanEnchant`
+        // rejects the same kind too (GH #1021).
+        assert!(!can_enchant_card(&spec, &c, EnchantmentId::Sharp));
         assert!(!can_enchant_card(&spec, &c, EnchantmentId::Favored));
     }
 
@@ -542,32 +577,83 @@ mod tests {
         ));
     }
 
-    /// `Spiral` / `TezcatarasEmber` gate on `spec.rarity == Basic`. A
-    /// non-Basic (Common) spec must be REJECTED; the generic `_ => true`
-    /// fall-through would accept it. Kills the `delete match arm` (L71)
-    /// and the `== ↔ !=` flip (L75) survivors.
+    /// C# `Spiral.CanEnchant`: a Basic card tagged Strike or Defend.
+    /// `TezcatarasEmber` has no override, so any non-Status/Curse/Quest card
+    /// qualifies (GH #1021: both used to gate on Basic rarity alone).
     #[test]
-    fn spiral_and_tezcataras_require_basic_rarity() {
+    fn spiral_needs_a_basic_strike_or_defend_and_tezcataras_needs_nothing() {
         let basic = basic_strike_spec();
         let mut common = basic_strike_spec();
         common.rarity = CardRarity::Common;
-        let card = strike_card();
+        let strike = strike_card();
+        let untagged = Card {
+            tags: sts2_core::cards::CardTags::NONE,
+            ..strike_card()
+        };
 
-        // Basic rarity: eligible.
-        assert!(can_enchant_card(&basic, &card, EnchantmentId::Spiral));
+        assert!(can_enchant_card(&basic, &strike, EnchantmentId::Spiral));
         assert!(can_enchant_card(
             &basic,
-            &card,
+            &defend_card(),
+            EnchantmentId::Spiral
+        ));
+        assert!(!can_enchant_card(&common, &strike, EnchantmentId::Spiral));
+        assert!(
+            !can_enchant_card(&basic, &untagged, EnchantmentId::Spiral),
+            "a Basic card without the Strike/Defend tag (Bash) is not eligible"
+        );
+        assert!(can_enchant_card(
+            &basic,
+            &strike,
             EnchantmentId::TezcatarasEmber
         ));
-        // Non-Basic rarity: ineligible (distinguishes the arm from `_ => true`
-        // and pins `==` against `!=`).
-        assert!(!can_enchant_card(&common, &card, EnchantmentId::Spiral));
-        assert!(!can_enchant_card(
+        assert!(can_enchant_card(
             &common,
-            &card,
+            &untagged,
             EnchantmentId::TezcatarasEmber
         ));
+    }
+
+    /// C# `Goopy.CanEnchant`: the Defend tag, not "has block".
+    /// `Nimble.CanEnchant`: `CardModel.GainsBlock` ([`Card::gains_block_for`]).
+    #[test]
+    fn goopy_needs_the_defend_tag_and_nimble_needs_gains_block() {
+        let spec = basic_strike_spec();
+        let shrug = Card {
+            card_id: CardId::ShrugItOff,
+            tags: sts2_core::cards::CardTags::NONE,
+            ..defend_card()
+        };
+        assert!(can_enchant_card(
+            &spec,
+            &defend_card(),
+            EnchantmentId::Goopy
+        ));
+        assert!(!can_enchant_card(&spec, &shrug, EnchantmentId::Goopy));
+        assert!(can_enchant_card(&spec, &shrug, EnchantmentId::Nimble));
+        let entrench = Card {
+            card_id: CardId::Entrench,
+            base_block: 0,
+            ..defend_card()
+        };
+        assert!(can_enchant_card(&spec, &entrench, EnchantmentId::Nimble));
+        let shroud = Card {
+            card_id: CardId::Shroud,
+            ..defend_card()
+        };
+        assert!(!can_enchant_card(&spec, &shroud, EnchantmentId::Nimble));
+    }
+
+    /// Quest cards (C# `CardType.Quest`) are never enchantable.
+    #[test]
+    fn quest_cards_are_not_enchantable() {
+        let spec = basic_strike_spec();
+        let egg = Card {
+            card_id: CardId::ByrdonisEgg,
+            card_type: CardType::Skill,
+            ..strike_card()
+        };
+        assert!(!can_enchant_card(&spec, &egg, EnchantmentId::Swift));
     }
 
     /// `SoulsPower` gates on `spec.keywords.contains(EXHAUST)`. A card
@@ -620,10 +706,10 @@ mod tests {
     fn mark_vigorous_used_is_idempotent_when_already_set() {
         let mut c = strike_card();
         mark_vigorous_used(&mut c);
-        let after_first = c.combat_var(VarKey::Generic);
+        let after_first = c.combat_var(VarKey::EnchantmentUsed);
         mark_vigorous_used(&mut c); // OR again: no change; XOR would clear.
         assert_eq!(
-            c.combat_var(VarKey::Generic),
+            c.combat_var(VarKey::EnchantmentUsed),
             after_first,
             "re-marking Vigorous must keep the bit (OR), not toggle it (XOR)"
         );

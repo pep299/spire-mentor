@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveMode } from "../EffectsContext";
+import { resolveMode } from "../useEffectsMode";
 
 describe("resolveMode", () => {
   it("off toggle always wins", () => {

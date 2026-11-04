@@ -12,6 +12,7 @@ record.
 
 from __future__ import annotations
 
+import functools
 import json
 import multiprocessing as mp
 import os
@@ -96,6 +97,7 @@ def play_one(
     max_steps: int | None = None,
     search: dict[str, Any] | None = None,
     act1: str = "overgrowth",
+    curse_inject_p: float = 0.0,
 ) -> dict[str, Any]:
     """Play one full run inside the current process.
 
@@ -135,6 +137,11 @@ def play_one(
     "roll"; see `PpoRunEnv.act1`. The row records the RESOLVED token under
     `"act1"` (never "roll" itself), so a "roll" campaign's mixture can be
     read back from `trainer.behavior_stats`' `act1_frac/*` keys.
+
+    `curse_inject_p` (GH #977) is the training-only curse curriculum; see
+    `PpoRunEnv.curse_inject_p`. The row records the injected curse under
+    `"injected_curse"` and each transition its `curse_rm` flag (see
+    `curse_removal`).
     """
     from ppo.env import Decision, PpoRunEnv, Terminal
 
@@ -149,6 +156,8 @@ def play_one(
         env_kwargs["surrogate_path"] = surrogate_path
     if act1 != "overgrowth":
         env_kwargs["act1"] = act1
+    if curse_inject_p:
+        env_kwargs["curse_inject_p"] = curse_inject_p
     # Expert mode drives every decision with the HeuristicRunAgent; policy
     # modes (random/net/net_greedy) use the combat-only MctsCombatAgent
     # (GH #220). Neither needs a net file or env vars.
@@ -230,6 +239,10 @@ def play_one(
                     "surface": out.surface,
                     "fine_surface": fine_surface(out.actions),
                     "n_actions": len(out.actions),
+                    "curse_rm": curse_removal(out.obs, out.actions, idx),
+                    # GH #978: a Scroll Boxes pick classifies as `card-reward`;
+                    # this is what makes its count visible.
+                    "bundle": bool(out.obs.get("card_reward_bundles")),
                 }
             )
             record(out, idx)
@@ -294,6 +307,7 @@ def play_one(
         "ascension": ascension,
         "character": character,
         "act1": env.rm.act1,
+        "injected_curse": env.injected_curse,
         "outcome": terminal.outcome,
         "won": terminal.won,
         "steps": terminal.steps,
@@ -314,6 +328,50 @@ def play_one(
         **({"search_stats": search_stats} if search_stats is not None else {}),
         **({"forced_stats": forced_stats} if forced_stats is not None else {}),
     }
+
+
+@functools.cache
+def _removable_curses() -> frozenset[str]:
+    import sts2_rs
+
+    return frozenset(_bare_id(c) for c in sts2_rs.removable_curse_cards())
+
+
+def _bare_id(card_id: Any) -> str:
+    # The registry spells curses SCREAMING_SNAKE (`POOR_SLEEP`), the deck
+    # PascalCase (`PoorSleep`): compare with the separators dropped.
+    s = str(card_id or "")
+    return s.removeprefix("CARD.").replace("_", "").upper()
+
+
+def curse_removal(obs: dict[str, Any], actions: list[dict[str, Any]], idx: int) -> int | None:
+    """Did this decision offer to remove a removable curse, and was one taken?
+
+    GH #977's training-time diagnostic: None when no removal option names a
+    removable curse, else 1 if the chosen action removes one and 0 if not.
+    Covers the card-select removal surface (`remove_deck_card`, indexed into
+    `card_removal_options`) and the shop (`shop_remove_card`, indexed into
+    `deck`); in a shop "not taken" includes buying something else or leaving.
+    """
+    curses = _removable_curses()
+    removal = obs.get("card_removal_options") or []
+    deck = obs.get("deck") or []
+    offered = False
+    taken = False
+    for j, a in enumerate(actions):
+        kind = a.get("action")
+        if kind == "remove_deck_card":
+            i, pool = int(a.get("idx", 0)), removal
+        elif kind == "shop_remove_card":
+            i, pool = int(a.get("deck_idx", 0)), deck
+        else:
+            continue
+        ent = pool[i] if 0 <= i < len(pool) else None
+        cid = ent[0] if isinstance(ent, (list, tuple)) else ent
+        if _bare_id(cid) in curses:
+            offered = True
+            taken = taken or j == idx
+    return (1 if taken else 0) if offered else None
 
 
 def _worker(
@@ -338,6 +396,7 @@ def _worker(
         dict | None,
         str,
         int | None,
+        float,
     ],
 ) -> dict[str, Any]:
     (
@@ -354,6 +413,7 @@ def _worker(
         search,
         act1,
         sample_seed,
+        curse_inject_p,
     ) = args
     try:
         return play_one(
@@ -370,6 +430,7 @@ def _worker(
             surrogate_path=surrogate_path,
             search=search,
             act1=act1,
+            curse_inject_p=curse_inject_p,
         )
     except (KeyboardInterrupt, SystemExit):
         raise
@@ -408,6 +469,7 @@ def play_batch(
     mp_context: str = "spawn",
     search: dict[str, Any] | None = None,
     act1: str = "overgrowth",
+    curse_inject_p: float = 0.0,
 ) -> list[dict[str, Any]]:
     """Play `seeds` across a spawn-context process pool; one row per run.
 
@@ -488,6 +550,7 @@ def play_batch(
             search,
             act1,
             ssd,
+            curse_inject_p,
         )
         for s, a, sm, bsm, ssd in zip(seeds, ascensions, sims_seq, boss_sims_seq, sample_seq)
     ]

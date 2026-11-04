@@ -545,6 +545,58 @@ fn veilpiercer_makes_owned_ethereal_card_cost_zero() {
     );
 }
 
+/// C# `VeilpiercerPower.TryModifyEnergyCostInCombatLate`
+/// (v0.111.0 `VeilpiercerPower.cs:18-44`) gates on `card.Keywords`, and
+/// `HexPower.TryModifyKeywordsInCombat` (`HexPower.cs`) adds Ethereal to every
+/// Hexed card. Under Hex + Veilpiercer a non-Ethereal card is therefore free.
+/// The same holds for a card made Ethereal for the combat (`EtherealThisCombat`).
+#[test]
+fn veilpiercer_discounts_cards_made_ethereal_by_hex_or_this_combat() {
+    let mut state = CombatState::default();
+    push_player_power(&mut state, PowerKind::Veilpiercer, 1);
+    let plain_uid = CardUid::new(state.cards.len() as u32 + 1).expect("nonzero");
+    state.cards.push(Card {
+        uid: plain_uid,
+        ..Card::pod_defaults()
+    });
+    let ctx = CardCostCtx {
+        owner: CreatureRef::Player,
+        card_id: Some(CardId::StrikeIronclad),
+        card_uid: Some(plain_uid),
+        card_type: Some(CardType::Attack),
+        card_tags: CardTags::NONE,
+        base_cost: 2,
+    };
+    assert_eq!(hooks::dispatch_modify_card_cost(&state, &ctx), 2);
+
+    // EtherealThisCombat counts (it shows up in C# `card.Keywords`).
+    state
+        .cards
+        .iter_mut()
+        .find(|c| c.uid == plain_uid)
+        .unwrap()
+        .set_combat_var(sts2_core::cards::VarKey::EtherealThisCombat, 1);
+    assert_eq!(
+        hooks::dispatch_modify_card_cost(&state, &ctx),
+        0,
+        "EtherealThisCombat card is free under Veilpiercer"
+    );
+    state
+        .cards
+        .iter_mut()
+        .find(|c| c.uid == plain_uid)
+        .unwrap()
+        .set_combat_var(sts2_core::cards::VarKey::EtherealThisCombat, 0);
+
+    // Hex makes every owned card Ethereal → free.
+    push_player_power(&mut state, PowerKind::Hex, 2);
+    assert_eq!(
+        hooks::dispatch_modify_card_cost(&state, &ctx),
+        0,
+        "Hexed card is Ethereal, so Veilpiercer makes it cost 0"
+    );
+}
+
 /// C# `VeilpiercerPower.BeforeCardPlayed`: each Ethereal play consumes one
 /// charge; the power is removed when it reaches 0.
 #[test]
@@ -594,6 +646,8 @@ fn push_ethereal_into_draw(state: &mut CombatState) -> CardUid {
 #[test]
 fn pagestorm_cascades_ethereal_draws() {
     let mut state = CombatState::default();
+    // A live player: a dead one makes the combat ending, so draws move no card.
+    state.player.current_hp = 80;
     push_player_power(&mut state, PowerKind::Pagestorm, 1);
     // Three Ethereal cards in the draw pile (uids 1..=3, front-drawn).
     for _ in 0..3 {
@@ -615,6 +669,8 @@ fn pagestorm_cascades_ethereal_draws() {
 #[test]
 fn no_pagestorm_means_no_extra_draw() {
     let mut state = CombatState::default();
+    // A live player: a dead one makes the combat ending, so draws move no card.
+    state.player.current_hp = 80;
     for _ in 0..3 {
         push_ethereal_into_draw(&mut state);
     }
@@ -631,6 +687,8 @@ fn no_pagestorm_means_no_extra_draw() {
 #[test]
 fn pagestorm_ignores_non_ethereal_draws() {
     let mut state = CombatState::default();
+    // A live player: a dead one makes the combat ending, so draws move no card.
+    state.player.current_hp = 80;
     push_player_power(&mut state, PowerKind::Pagestorm, 1);
     // Three plain (non-Ethereal) cards in the draw pile.
     for _ in 0..3 {
@@ -681,6 +739,21 @@ fn hang_card_multiplies_its_damage_on_a_hang_afflicted_target() {
         "Hang card damage on a Hang(3) target is ×3"
     );
 
+    // An Unpowered reaction while Hang resolves (SleightOfFlesh on the Hang
+    // apply, Panache's AoE) has no Hang `cardSource`: unscaled (seeds
+    // 2203/3154).
+    let reaction = DamageCtx {
+        card_source: None,
+        dealer: CreatureRef::Player,
+        target: CreatureRef::Enemy(enemy),
+        props: ValueProps::UNPOWERED,
+    };
+    assert_eq!(
+        hooks::modify_damage_multiplicative(&state, ListenerRef::Power(hang_pid), &reaction),
+        DamageMul::ONE,
+        "an Unpowered reaction mid-Hang is not scaled"
+    );
+
     // With a non-Hang card on top of play (e.g. another attack), no multiplier.
     state.player.play.clear();
     let other = CardUid::new(state.cards.len() as u32 + 1).expect("nonzero");
@@ -718,6 +791,39 @@ fn reaper_form_dooms_target_by_total_damage_times_amount() {
         doom_on_creature(&state, enemy),
         20,
         "ReaperForm(2) applies Doom = TotalDamage(10) * 2"
+    );
+}
+
+/// A ReaperForm hit that KILLS its target still records the player's Doom:
+/// C# `AfterDamageGiven` runs before `Kill` (CreatureCmd.cs:390-409) and
+/// `CanReceivePowers` is not an alive check, so the `PowerReceivedEntry`
+/// that arms Death's Door is written (Necrobinder full seed 2430).
+#[test]
+fn reaper_form_killing_blow_still_arms_deaths_door() {
+    let mut state = CombatState::default();
+    state.player.current_hp = 50;
+    state.player.max_hp = 50;
+    let _ = state.init_player_creature();
+    let enemy = state.spawn_enemy(MonsterKind::Nibbit);
+    let _keep_alive = state.spawn_enemy(MonsterKind::Nibbit);
+    push_player_power(&mut state, PowerKind::ReaperForm, 1);
+    state.combat_log.doom_applied_by_player_this_turn = false;
+    if let Some(c) = state.creatures.iter_mut().find(|c| c.id == enemy.0) {
+        c.current_hp = 0;
+    }
+
+    let ctx = DamageCtx {
+        card_source: None,
+        dealer: CreatureRef::Player,
+        target: CreatureRef::Enemy(enemy),
+        props: ValueProps::MOVE,
+    };
+    hooks::dispatch_after_damage_given(&mut state, &ctx, 11, 11, false);
+    assert!(state.combat_log.doom_applied_by_player_this_turn);
+    assert_eq!(
+        doom_on_creature(&state, enemy),
+        0,
+        "the death strip removes the Doom again (seed 959: Illusion corpse)"
     );
 }
 

@@ -14,7 +14,7 @@
    "bg_col": 1,
    "bg_row": 10,
    "bg_seed": 1772253313,
-   "floor": 10,
+   "floor": 11,
    "step_no": 0,
    "turn": null
   },
@@ -424,7 +424,7 @@
    ],
    "context": "upgrade",
    "decision": "card_select",
-   "floor": 10,
+   "floor": 11,
    "max_select": 1,
    "min_select": 1,
    "options": [
@@ -761,7 +761,7 @@
       "upgraded": false
      }
     ],
-    "gold": 92,
+    "gold": 91,
     "hp": 69,
     "max_hp": 80,
     "name": "Ironclad",

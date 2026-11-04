@@ -290,7 +290,7 @@ pub fn detect_lethal(state: &CombatState) -> bool {
         });
     }
 
-    let energy = i32::from(state.player.energy);
+    let energy = state.player.energy;
     if energy <= 0 {
         return false;
     }
@@ -457,7 +457,7 @@ mod tests {
 
         let player = PlayerCombatState {
             hand: hand_uids,
-            energy,
+            energy: i32::from(energy),
             max_energy: energy.max(3),
             current_hp: 50,
             max_hp: 80,

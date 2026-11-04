@@ -33,6 +33,12 @@ def test_loc_id_strips_card_suffix_to_match_loc_key():
     assert loc_id("DEFEND_IRONCLAD") == "DEFEND_IRONCLAD"
 
 
+def test_loc_id_keeps_relic_card_suffix():
+    # The Membership Card relic's loc key IS ``MEMBERSHIP_CARD.title``; the
+    # card-only ``_CARD`` strip must not turn it into ``MEMBERSHIP``.
+    assert loc_id("RELIC.MEMBERSHIP_CARD") == "MEMBERSHIP_CARD"
+
+
 def test_loc_id_strips_status_suffix_to_match_loc_key():
     # The Sloth status card's Rust id is ``SLOTH_STATUS`` (CardId::SlothStatus),
     # but the C# class is plain ``Sloth`` so the loc key / art stem is ``SLOTH``.

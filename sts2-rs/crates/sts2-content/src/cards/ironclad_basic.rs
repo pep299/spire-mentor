@@ -1,9 +1,5 @@
 //! Ironclad starter card data.
 //!
-//! Ported from `sts2-rl-agent@01c094d:sts2_env/cards/ironclad_basic.py`
-//! (factory functions + `create_ironclad_starter_deck`) and
-//! `sts2_env/cards/status.py:160-166` (`make_ascenders_bane`).
-//!
 //! Bead P4-1 (sts2-rs-zcl) ships pure data — no card-play interpreter,
 //! no enchantments, no upgrade machinery. The Phase 6 umbrella bead
 //! (sts2-rs-2un) wires `CardSpec.effect` into a runtime executor.

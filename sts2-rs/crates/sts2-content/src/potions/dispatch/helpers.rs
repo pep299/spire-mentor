@@ -13,6 +13,23 @@ pub(crate) fn apply_power_signed_to_creature(
     kind: PowerKind,
     amount: i32,
 ) {
+    // A landed player drain fires SleightOfFlesh & co. (C#
+    // `Hook.AfterPowerAmountChanged` runs for silent applies too).
+    sts2_core::card_effects::signed_power_apply_with_reactors(
+        state,
+        target_uid,
+        kind,
+        amount,
+        |s| apply_power_signed_to_creature_raw(s, target_uid, kind, amount),
+    );
+}
+
+fn apply_power_signed_to_creature_raw(
+    state: &mut CombatState,
+    target_uid: CreatureUid,
+    kind: PowerKind,
+    amount: i32,
+) {
     if amount == 0 {
         return;
     }

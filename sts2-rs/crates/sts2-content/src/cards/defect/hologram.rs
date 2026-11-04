@@ -25,8 +25,12 @@ pub(crate) fn play_hologram(state: &mut CombatState, _t: Option<CreatureUid>) ->
     match state.player.discard.len() {
         0 => {}
         1 => {
+            // `CardPileCmd.Add(card, Hand)` (Hologram.cs:32) puts the card
+            // back on the discard pile when the hand already holds 10 cards
+            // (CardPileCmd.cs:485-489): a Hologram auto-played from the draw
+            // pile frees no hand slot.
             let uid = state.player.discard.remove(0);
-            state.player.hand.push(uid);
+            let _ = sts2_core::cards::try_add_to_hand(&mut state.player, uid);
         }
         _ => {
             let options: Vec<sts2_core::ChoiceOption> = state

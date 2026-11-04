@@ -9,7 +9,6 @@ use super::prelude::*;
 /// `(draw_pile, discard_pile, exhaust_pile)` and per-match
 /// `move_card_to_creature_hand` semantics (remove from source, push
 /// onto hand with overflow-to-discard at `HAND_LIMIT`).
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L558
 pub(crate) fn play_summon_forth(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     // C# `SummonForth.OnPlay` order is: (1) move every SovereignBlade not in
     // hand → Hand (`CardPileCmd.Add`), THEN (2) Forge (`ForgeCmd.Forge`).

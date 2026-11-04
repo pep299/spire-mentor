@@ -15,8 +15,10 @@
  *     `Workbench.call_stream`; every frame it hands back is forwarded to the
  *     caller's `onFrame` (the worker posts them as `{id, frame}`), and the
  *     reply is a 200 with a null body — the frames ARE the response.
- *   - Run logs (M4): a `POST /api/live/quit` leaves the run's JSONL behind
- *     (`Workbench.take_run_log`); the worker stores it under its filename in
+ *   - Run logs (M4): a `POST /api/live/quit` leaves the run's JSONL behind,
+ *     and so does a start / import / resume / save-load for the live run it
+ *     replaces (`Workbench.take_run_log`); the worker stores each under its
+ *     filename (suffixed `_2`, … on a clash) in
  *     the `runs` store, lists it (`GET /api/runs`, newest first, `GET
  *     /api/runs/stat`), reopens it (`POST /api/load` → `Workbench.load_run`)
  *     and feeds every stored log to the MCTS Runs page
@@ -63,7 +65,8 @@ export interface WorkbenchLike {
   /** Streaming routes: `on_frame` gets each NDJSON frame as a JSON string. */
   call_stream(method: string, route: string, body_json: string, on_frame: (frame: string) => void): string;
   build_save(name: string, saved_at: string): string;
-  restore_save(payload_json: string): string;
+  /** `now` (ISO-8601) stamps the log of the live run the restore replaces. */
+  restore_save(payload_json: string, now: string): string;
   export_persist(): string;
   import_persist(payload_json: string, progress: (done: number, total: number) => void): string;
   has_live_run(): boolean;
@@ -73,6 +76,8 @@ export interface WorkbenchLike {
   has_ppo(character: string): boolean;
   /** Run logs (M4): the log the last quit wrote (`{filename, text}` JSON or
    *  `"null"`), and a stored log's text parsed into the replay store. */
+  /** The oldest run log not yet collected (`{filename, text}` JSON), or
+   *  `"null"` when none is left. */
   take_run_log(): string;
   load_run(path: string, text: string): string;
   /** SimLab sweeps (GH #707): step the oldest running sweep (`{active,
@@ -138,7 +143,6 @@ const WASM_ROUTES = new Set([
   "POST /api/live/search_tree",
   "POST /api/live/choice-ranker",
   "POST /api/live/auto-action",
-  "POST /api/live/last-move-regret",
   "POST /api/live/last-turn-grade",
   "POST /api/live/last-choice-grade",
   "POST /api/live/regret-review",
@@ -246,6 +250,15 @@ function pathOf(body: unknown): string | null {
  *  (they create or restore the run whose nodes get scored), keyed by how
  *  the character is found. */
 const PPO_BEFORE_START = new Set(["POST /api/live/start", "POST /api/live/start-faithful"]);
+/** Routes that replace the live run. The engine quits the run they replace
+ *  the way `/api/live/quit` does, writing its log stamped with the `now` the
+ *  body carries, as the Python server's `LiveRuns.replace` keeps it. */
+const REPLACES_RUN = new Set([
+  "POST /api/live/start",
+  "POST /api/live/start-faithful",
+  "POST /api/live/import-state",
+  "POST /api/live/from_replay",
+]);
 
 function characterOf(body: unknown): string {
   const c = (body as { character?: unknown } | null)?.character;
@@ -355,22 +368,36 @@ export function createEngine(deps: EngineDeps): Engine {
     const payload = await kv.get<unknown>("saves", slugify(name));
     if (payload === undefined) return detail(404, `unknown save: ${name}`);
     await ensurePpo(characterOf(payload));
-    return parseReply(wb.restore_save(JSON.stringify(payload)));
+    const reply = parseReply(wb.restore_save(JSON.stringify(payload), now()));
+    if (reply.status === 200) await storeRunLogs();
+    return reply;
   }
 
   // ── run logs ─────────────────────────────────────────────────────────
 
-  /** After a quit: store the log the engine wrote, if any. */
-  async function storeRunLog(): Promise<void> {
-    const raw = wb.take_run_log();
-    if (raw.trim() === "null" || raw === "") return;
-    const log = JSON.parse(raw) as { filename: string; text: string };
-    const stored: StoredRun = {
-      text: log.text,
-      size: new TextEncoder().encode(log.text).length,
-      mtime: Date.now() / 1000,
-    };
-    await kv.put("runs", log.filename, stored);
+  /** After a route that can end a run (a quit, or one that replaces the
+   *  live run): store every log the engine wrote. A name already taken gets
+   *  `_2`, `_3`, … as the Python server's `game_log.GameLogger` does on disk
+   *  (320ed156f), so two runs of the same seed in the same second keep both
+   *  logs instead of the second overwriting the first. Returns the name the
+   *  last log was stored under, or null when none was written. */
+  async function storeRunLogs(): Promise<string | null> {
+    let last: string | null = null;
+    for (let raw = wb.take_run_log(); raw.trim() !== "null" && raw !== ""; raw = wb.take_run_log()) {
+      const log = JSON.parse(raw) as { filename: string; text: string };
+      const stored: StoredRun = {
+        text: log.text,
+        size: new TextEncoder().encode(log.text).length,
+        mtime: Date.now() / 1000,
+      };
+      const taken = new Set(await kv.keys("runs"));
+      const stem = log.filename.replace(/\.jsonl$/, "");
+      let name = log.filename;
+      for (let n = 2; taken.has(name); n++) name = `${stem}_${n}.jsonl`;
+      await kv.put("runs", name, stored);
+      last = name;
+    }
+    return last;
   }
 
   /** `GET /api/runs`: every stored log, newest first (mtime, then name). */
@@ -538,7 +565,13 @@ export function createEngine(deps: EngineDeps): Engine {
       } else if (key === "POST /api/live/quit") {
         // The engine stamps the log with the host's clock; collect what it wrote.
         reply = parseReply(wb.call(m, path, JSON.stringify({ ...(body as object | null ?? {}), now: now() })));
-        if (reply.status === 200) await storeRunLog();
+        if (reply.status === 200) {
+          // The reply names the log by the name it is stored under, which a
+          // clash suffixed.
+          const stored = await storeRunLogs();
+          const out = reply.body as { log_path?: string | null } | null;
+          if (stored && out?.log_path) out.log_path = stored;
+        }
       } else if (key.startsWith("POST /api/sweeps") || key.startsWith("GET /api/sweeps")) {
         if (!WASM_ROUTES.has(key) && !SWEEP_ROUTE.test(path)) return detail(501, `not available in the browser build: ${key}`);
         await importStoredSweeps();
@@ -557,7 +590,9 @@ export function createEngine(deps: EngineDeps): Engine {
           key === "GET /api/live/state" && !wb.has_live_run()
             ? await resumeIfPersisted(onProgress)
             : null;
-        reply = resumed ?? parseReply(wb.call(m, path, body == null ? "null" : JSON.stringify(body)));
+        const sent = REPLACES_RUN.has(key) ? { ...((body as object | null) ?? {}), now: now() } : body;
+        reply = resumed ?? parseReply(wb.call(m, path, sent == null ? "null" : JSON.stringify(sent)));
+        if (REPLACES_RUN.has(key) && reply.status === 200) await storeRunLogs();
       } else {
         return detail(501, `not available in the browser build: ${key}`);
       }

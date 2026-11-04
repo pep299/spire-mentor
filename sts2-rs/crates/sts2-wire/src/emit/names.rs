@@ -7,6 +7,7 @@
 //! carrying its own copy.
 
 use sts2_core::cards::CardType;
+use sts2_core::events::EventEncounter;
 use sts2_core::map::MapPointType;
 use sts2_core::potions::CharacterId;
 use sts2_core::run_manager::{ActionResult, Phase};
@@ -59,6 +60,8 @@ pub const fn result_str(r: &ActionResult) -> &'static str {
         // returned action dict on the Python side.
         ActionResult::ShopPurchaseFailed(_) => "shop_purchase_failed",
         ActionResult::ShopRemoveCardFailed(_) => "shop_remove_card_failed",
+        ActionResult::InvalidTarget => "invalid_target",
+        ActionResult::IllegalPlay => "illegal_play",
         _ => "unknown",
     }
 }
@@ -193,6 +196,20 @@ pub const fn map_point_type_ui_str(t: MapPointType) -> &'static str {
     }
 }
 
+/// The C# id of an event's fight (`ModelId.Entry`, the slugged class name of
+/// the `EncounterModel` the event passes to `EnterCombatWithoutExitingEvent`),
+/// as `CombatState.encounter_id` reports it during that fight (GH #1097).
+/// The three `BattlewornDummy` settings share one encounter class.
+#[must_use]
+pub const fn event_encounter_id(e: EventEncounter) -> &'static str {
+    match e {
+        EventEncounter::BattlewornDummy(_) => "BATTLEWORN_DUMMY_EVENT_ENCOUNTER",
+        EventEncounter::MysteriousKnight => "MYSTERIOUS_KNIGHT_EVENT_ENCOUNTER",
+        EventEncounter::FakeMerchant => "FAKE_MERCHANT_EVENT_ENCOUNTER",
+        EventEncounter::DenseVegetation => "DENSE_VEGETATION_EVENT_ENCOUNTER",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,5 +244,31 @@ mod tests {
             assert_eq!(character_from_str(&character_str(c).to_lowercase()), Ok(c));
         }
         assert!(character_from_str("Watcher").is_err());
+    }
+
+    /// The ids are the C# encounter class names (`BattlewornDummyEventEncounter`
+    /// and its siblings), slugged the way `ModelId.Entry` slugs every encounter
+    /// (`SlimesWeak` → `SLIMES_WEAK`).
+    #[test]
+    fn event_encounter_ids_are_the_slugged_class_names() {
+        use sts2_core::events::BattlewornDummySetting;
+        assert_eq!(
+            event_encounter_id(EventEncounter::BattlewornDummy(
+                BattlewornDummySetting::Setting2
+            )),
+            "BATTLEWORN_DUMMY_EVENT_ENCOUNTER"
+        );
+        assert_eq!(
+            event_encounter_id(EventEncounter::MysteriousKnight),
+            "MYSTERIOUS_KNIGHT_EVENT_ENCOUNTER"
+        );
+        assert_eq!(
+            event_encounter_id(EventEncounter::FakeMerchant),
+            "FAKE_MERCHANT_EVENT_ENCOUNTER"
+        );
+        assert_eq!(
+            event_encounter_id(EventEncounter::DenseVegetation),
+            "DENSE_VEGETATION_EVENT_ENCOUNTER"
+        );
     }
 }

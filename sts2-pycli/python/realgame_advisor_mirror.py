@@ -389,7 +389,7 @@ class AdvisorMirror:
         card = msg.get("card")
         drink = msg.get("potion")
         if isinstance(drink, dict) and drink.get("id"):
-            self._follow_drink(mirror, drink, msg.get("target_index"))
+            self._follow_drink(mirror, drink, msg.get("target_index"), msg.get("ally_index"))
             return
         if not isinstance(card, dict) or not card.get("id"):
             # Older mod build, or an action with no machine form.
@@ -424,11 +424,15 @@ class AdvisorMirror:
             return
 
         target = msg.get("target_index")
-        action = {
+        action: dict[str, Any] = {
             "action": "play",
             "card_index": idx,
             "target_index": int(target) if isinstance(target, int) else None,
         }
+        if isinstance(msg.get("ally_index"), int):
+            # An AnyAlly card at the teammate the human picked (GH #1017),
+            # not the engine's default first living one.
+            action["ally_index"] = msg["ally_index"]
         try:
             mirror.advance(action)
         except MirrorDivergence as exc:
@@ -441,7 +445,9 @@ class AdvisorMirror:
             return
         self.stats["followed"] += 1
 
-    def _follow_drink(self, mirror: CombatMirror, drink: dict[str, Any], target: Any) -> None:
+    def _follow_drink(
+        self, mirror: CombatMirror, drink: dict[str, Any], target: Any, ally: Any = None
+    ) -> None:
         """Advance the mirror by a potion the world reports the player drank.
 
         Located by potion id in the mirror's own belt, not by the wire's slot
@@ -449,7 +455,7 @@ class AdvisorMirror:
         two sides then never have to agree on belt ORDER, only on contents.
         """
         src = str(drink.get("id") or "").strip().upper()
-        action = self._drink_action(mirror, src, target)
+        action = self._drink_action(mirror, src, target, ally)
         if action is None:
             self.drop(f"{src} not in the mirror's belt to follow")
             self.stats["unfollowable"] += 1
@@ -537,7 +543,9 @@ class AdvisorMirror:
         return True
 
     @staticmethod
-    def _drink_action(mirror: CombatMirror, src: str, target: Any = None) -> dict[str, Any] | None:
+    def _drink_action(
+        mirror: CombatMirror, src: str, target: Any = None, ally: Any = None
+    ) -> dict[str, Any] | None:
         """The engine's own ``drink_potion`` action for ``src``, or ``None``.
 
         Resolved through :meth:`legal_actions` rather than by constructing a
@@ -551,6 +559,9 @@ class AdvisorMirror:
         two copies of a card in hand, a potion carries no upgrade state and no
         uid the outcome could depend on -- so the first is taken without
         disambiguating.
+
+        ``ally``: thrown at that teammate (co-op, GH #1017), the engine's
+        throw of it; otherwise the drink, never a throw.
         """
         import sts2_rs
 
@@ -566,7 +577,9 @@ class AdvisorMirror:
             legal = [
                 a
                 for a in mirror.state.legal_actions()
-                if a.get("action") in ("drink_potion", "potion") and int(a.get("slot", -1)) in slots
+                if a.get("action") in ("drink_potion", "potion")
+                and int(a.get("slot", -1)) in slots
+                and a.get("ally_index") == (int(ally) if isinstance(ally, int) else None)
             ]
         except Exception as exc:
             logger.debug("advisor mirror: cannot enumerate drinks: %s", exc)

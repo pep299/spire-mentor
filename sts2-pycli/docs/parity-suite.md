@@ -362,3 +362,29 @@ Act-2 divergences first. Reproduce a single class with
 
 See agent memory `project_parity_gap_closure_8_tools` and
 `project_ic_random_seed_parity_complete` for the full history.
+
+#### Checkpoints and the survival walk (2026-11)
+
+Two changes make act 2 and act 3 cheap to sample.
+
+- **Checkpoints.** `--checkpoint-dir D --checkpoint-acts 2,3` saves a checkpoint
+  at the first map of each act where both engines still agree: the C# oracle's
+  continue save plus the logged Rust calls. `--from-checkpoints D --branches N`
+  starts N differently seeded walks from each one: every checkpoint in `D`,
+  unless `--character`, `--ascension` or `--checkpoint-act` narrows it. Rust replays its calls (well
+  under a second); C# loads the save (about a second). On v0.111.0 that gave 40
+  act-2 trials in 123 s, against 376 s for 10 runs from Neow.
+  `save_load_identity.py` is the gate that a C# reload is lossless (25/25 act-2
+  and 8/8 act-3 runs identical for 400 steps). A checkpoint goes stale when the
+  Rust engine changes; the run then ends `checkpoint_stale`.
+- **The survival walk.** The Insatiable (act-2 boss) applies Sandpit, which
+  force-kills its target at 0 whatever the HP, so the invincible walk used to
+  die there almost every time and act 3 was never reached. The walk now always
+  plays Frantic Escape and doesn't end a turn early while Sandpit is up
+  (`--uniform-policy` restores the old walk).
+
+One oracle limit applies to checkpoint runs only: a reloaded run can't finish
+a win. `load_save` sets `ShouldSave`, so `WinRun` runs the profile progress
+update, which throws under the oracle's NGame stub. The probe counts that
+case as a win; the oracle fix (clear `ShouldSave` after a load) is a `.cs`
+change to batch with GH #1054.

@@ -2,7 +2,6 @@
 use super::prelude::*;
 
 /// PaleBlueDot — apply 1 PaleBlueDot to self.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L451
 pub(crate) fn play_pale_blue_dot(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     // C# PaleBlueDot.cs OnUpgrade bumps Cards 1->2. Bead `sts2-rs-qb2jc`.
     let amt = if current_card_upgraded(state) { 2 } else { 1 };

@@ -3,7 +3,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 0,
+   "floor": 1,
    "full_map": {
     "boss": {
      "col": 3,
@@ -1032,7 +1032,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 1,
+   "floor": 2,
    "full_map": {
     "boss": {
      "col": 3,
@@ -2040,7 +2040,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 2,
+   "floor": 3,
    "full_map": {
     "boss": {
      "col": 3,
@@ -3044,7 +3044,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 3,
+   "floor": 4,
    "full_map": {
     "boss": {
      "col": 3,
@@ -4054,7 +4054,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 4,
+   "floor": 5,
    "full_map": {
     "boss": {
      "col": 3,
@@ -5050,7 +5050,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 5,
+   "floor": 6,
    "full_map": {
     "boss": {
      "col": 3,
@@ -6042,7 +6042,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 6,
+   "floor": 7,
    "full_map": {
     "boss": {
      "col": 3,
@@ -7030,7 +7030,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 7,
+   "floor": 8,
    "full_map": {
     "boss": {
      "col": 3,
@@ -8024,7 +8024,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 8,
+   "floor": 9,
    "full_map": {
     "boss": {
      "col": 3,
@@ -8044,14 +8044,14 @@
      "best_col": 2,
      "columns": [
       {
-       "baseline_score": 0.5027,
+       "baseline_score": 0.5031,
        "can_skip_elite": true,
        "col": 2,
        "is_pick": true,
        "max_elites": 1,
        "min_elites": 0,
        "n_paths": 2,
-       "score": 0.5027
+       "score": 0.5031
       }
      ],
      "diverged": false,
@@ -9004,7 +9004,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 9,
+   "floor": 10,
    "full_map": {
     "boss": {
      "col": 3,
@@ -9024,14 +9024,14 @@
      "best_col": 1,
      "columns": [
       {
-       "baseline_score": 0.3689,
+       "baseline_score": 0.3691,
        "can_skip_elite": true,
        "col": 1,
        "is_pick": true,
        "max_elites": 1,
        "min_elites": 0,
        "n_paths": 2,
-       "score": 0.3689
+       "score": 0.3691
       }
      ],
      "diverged": false,
@@ -9980,7 +9980,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 10,
+   "floor": 11,
    "full_map": {
     "boss": {
      "col": 3,
@@ -10000,24 +10000,24 @@
      "best_col": 2,
      "columns": [
       {
-       "baseline_score": 0.1594,
+       "baseline_score": 0.1597,
        "can_skip_elite": false,
        "col": 0,
        "is_pick": false,
        "max_elites": 1,
        "min_elites": 1,
        "n_paths": 1,
-       "score": 0.1594
+       "score": 0.1597
       },
       {
-       "baseline_score": 0.1856,
+       "baseline_score": 0.1858,
        "can_skip_elite": false,
        "col": 2,
        "is_pick": true,
        "max_elites": 0,
        "min_elites": 0,
        "n_paths": 1,
-       "score": 0.1856
+       "score": 0.1858
       }
      ],
      "diverged": false,
@@ -10962,7 +10962,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 11,
+   "floor": 12,
    "full_map": {
     "boss": {
      "col": 3,
@@ -10982,14 +10982,14 @@
      "best_col": 1,
      "columns": [
       {
-       "baseline_score": 0.2439,
+       "baseline_score": 0.244,
        "can_skip_elite": false,
        "col": 1,
        "is_pick": true,
        "max_elites": 0,
        "min_elites": 0,
        "n_paths": 1,
-       "score": 0.2439
+       "score": 0.244
       }
      ],
      "diverged": false,
@@ -11930,7 +11930,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 12,
+   "floor": 13,
    "full_map": {
     "boss": {
      "col": 3,
@@ -11950,14 +11950,14 @@
      "best_col": 0,
      "columns": [
       {
-       "baseline_score": 0.3917,
+       "baseline_score": 0.3918,
        "can_skip_elite": false,
        "col": 0,
        "is_pick": true,
        "max_elites": 0,
        "min_elites": 0,
        "n_paths": 1,
-       "score": 0.3917
+       "score": 0.3918
       }
      ],
      "diverged": false,
@@ -12894,7 +12894,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 13,
+   "floor": 14,
    "full_map": {
     "boss": {
      "col": 3,
@@ -13854,7 +13854,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 14,
+   "floor": 15,
    "full_map": {
     "boss": {
      "col": 3,
@@ -14810,7 +14810,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 15,
+   "floor": 16,
    "full_map": {
     "boss": {
      "col": 3,
@@ -15744,7 +15744,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 0,
+   "floor": 1,
    "idx": 2,
    "nodes": [
     {
@@ -15773,7 +15773,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 1,
+   "floor": 2,
    "idx": 12,
    "nodes": [
     {
@@ -15788,7 +15788,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 2,
+   "floor": 3,
    "idx": 25,
    "nodes": [
     {
@@ -15803,7 +15803,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 3,
+   "floor": 4,
    "idx": 27,
    "nodes": [
     {
@@ -15825,7 +15825,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 4,
+   "floor": 5,
    "idx": 44,
    "nodes": [
     {
@@ -15840,7 +15840,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 5,
+   "floor": 6,
    "idx": 46,
    "nodes": [
     {
@@ -15855,7 +15855,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 6,
+   "floor": 7,
    "idx": 71,
    "nodes": [
     {
@@ -15870,7 +15870,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 7,
+   "floor": 8,
    "idx": 73,
    "nodes": [
     {
@@ -15892,7 +15892,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 8,
+   "floor": 9,
    "idx": 79,
    "nodes": [
     {
@@ -15907,7 +15907,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 9,
+   "floor": 10,
    "idx": 80,
    "nodes": [
     {
@@ -15922,7 +15922,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 10,
+   "floor": 11,
    "idx": 83,
    "nodes": [
     {
@@ -15944,7 +15944,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 11,
+   "floor": 12,
    "idx": 107,
    "nodes": [
     {
@@ -15959,7 +15959,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 12,
+   "floor": 13,
    "idx": 131,
    "nodes": [
     {
@@ -15974,7 +15974,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 13,
+   "floor": 14,
    "idx": 146,
    "nodes": [
     {
@@ -15989,7 +15989,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 14,
+   "floor": 15,
    "idx": 169,
    "nodes": [
     {
@@ -16004,7 +16004,7 @@
   {
    "act": 1,
    "act_name": "Overgrowth",
-   "floor": 15,
+   "floor": 16,
    "idx": 171,
    "nodes": [
     {

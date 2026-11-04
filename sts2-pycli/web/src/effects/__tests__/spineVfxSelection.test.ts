@@ -8,7 +8,7 @@ import {
   SPINE_MAX_LIFETIME_MS,
   type LiveParticles,
   type LiveSpine,
-} from "../../components/VfxLayer";
+} from "../../components/vfxLive";
 import type {
   DissolveEffect,
   FlipbookEffect,

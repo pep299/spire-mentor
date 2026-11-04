@@ -5,8 +5,6 @@
 
 //! Act-1 weak monster ports (bead sts2-rs-05f).
 //!
-//! Ported from sts2-rl-agent@01c094d:sts2_env/monsters/act1_weak.py
-//!
 //! Ports the 7 monsters from
 //! `sts2-rl-agent@01c094d:sts2_env/monsters/act1_weak.py` (212 LOC) to
 //! data-driven `MonsterAi` instances using the DSL skeleton from P5-1
@@ -85,10 +83,10 @@ fn nibbit_hiss_effect(state: &mut sts2_core::CombatState, owner: sts2_core::Crea
 /// 1 HP lower than the oracle (surfaced by the first C#-oracle ascension
 /// sweep). Mirrors the sibling `nibbit_hiss_effect`, which already scales.
 fn nibbit_slice_effect(state: &mut sts2_core::CombatState, owner: sts2_core::CreatureUid) {
-    let amount = sts2_core::ascension::get_value_if_ascension(
+    let amount = crate::ascension_scaling::tough_block(
         state.ascension,
-        sts2_core::ascension::AscensionLevel::ToughEnemies,
-        6,
+        sts2_core::MonsterKind::Nibbit,
+        "SLICE",
         5,
     );
     sts2_core::hooks::apply_effects(
@@ -307,7 +305,9 @@ pub fn create_nibbit_ai(is_alone: bool, is_front: bool) -> MonsterAi {
             // 5 block applied in `nibbit_slice_effect` because `perform_intent`
             // dispatches only the primary attack intent (bead `sts2-rs-5i8yj`).
             effect: nibbit_slice_effect,
-            intents: smallvec![Intent::Attack { damage: 6 }],
+            // C# order (`Nibbit.cs:72`): SingleAttack + Defend. The Defend is
+            // telegraph-only here; the block itself is granted by the effect.
+            intents: smallvec![Intent::Attack { damage: 6 }, Intent::Defend { block: 5 }],
             follow_up: Some("HISS"),
             must_perform_once: false,
         }),

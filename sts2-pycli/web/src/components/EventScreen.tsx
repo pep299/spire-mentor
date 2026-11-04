@@ -4,12 +4,8 @@ import type { Step, ChooseHandler, EventOption } from "../api";
 import { assetUrl } from "../api";
 import SpineSprite from "./SpineSprite";
 import RichText from "./RichText";
-import {
-  useDecisionAdvisor,
-  DecisionAnalyzeButton,
-  DecisionAnalyzeStatus,
-  DecisionWinChip,
-} from "./DecisionAdvisor";
+import { DecisionAnalyzeButton, DecisionAnalyzeStatus, DecisionWinChip } from "./DecisionAdvisor";
+import { useDecisionAdvisor } from "./useDecisionAdvisor";
 import "../skins/event.css";
 
 // Title words that carry no subject: never the emphasis noun.

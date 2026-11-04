@@ -1,4 +1,3 @@
-// port-pin-skip — dispatch registry glue (no Python counterpart).
 //! Event-spec lookup + choice resolution. Bead `sts2-rs-6ynt.4.1`
 //! (P7 events framework).
 //!
@@ -280,10 +279,17 @@ fn multiset_added<T: Ord + Copy>(before: &[T], after: &[T]) -> i32 {
 /// preview advances only the clone's RNG, so a later real resolution of
 /// the same option (drawing from the untouched live RNG) yields the same
 /// deltas for RNG-dependent handlers. GH #237.
+///
+/// That exactness is clairvoyance wherever an option's payoff is rolled
+/// only once it is taken. Such options preview only their visible part
+/// ([`preview_visible_part`]); `tests/event_preview_no_peek.rs` checks every
+/// event for a preview that moves with the hidden seed.
 #[must_use]
 pub fn preview_option_effect(state: &RunState, idx: usize) -> Option<OptionEffectDelta> {
     let mut clone = state.clone();
-    resolve_by_index(&mut clone, idx)?;
+    if !preview_visible_part(&mut clone, idx)? {
+        resolve_by_index(&mut clone, idx)?;
+    }
     // "In your hands or on offer": under `direct_event_relic_grant` (what the
     // arena and the PPO env both run) an event relic lands straight in
     // `relics`, but the Python-parity flow queues it as a reward to confirm.
@@ -335,6 +341,18 @@ pub fn preview_option_effect(state: &RunState, idx: usize) -> Option<OptionEffec
         potions_lost: multiset_added(&after_potions, &before_potions),
         cards_gained: multiset_added(&before_cards, &after_cards),
         cards_lost: multiset_added(&after_cards, &before_cards),
+    })
+}
+
+/// Apply only the player-visible part of option `idx` when its payoff is
+/// rolled on pick. `Some(true)` = applied (skip the real resolve),
+/// `Some(false)` = an ordinary option, `None` = no event / bad index.
+fn preview_visible_part(state: &mut RunState, idx: usize) -> Option<bool> {
+    let id = state.current_event?;
+    let option_id = present(state)?.get(idx)?.option_id;
+    Some(match id {
+        EventId::CrystalSphere => super::act2_hive::crystal_sphere_apply_visible(state, option_id),
+        _ => false,
     })
 }
 
@@ -500,7 +518,7 @@ pub fn resolve_event_at_callback(state: &mut RunState, idx: usize) -> bool {
         let Some(event_id) = pick_event(state, None) else {
             return false;
         };
-        state.enter_event_room(event_id);
+        begin_event_in_entered_room(state, event_id);
     }
     resolve_by_index(state, idx).is_some()
 }
@@ -535,8 +553,32 @@ pub fn event_option_enabled_callback(state: &RunState, idx: usize) -> bool {
 pub fn bind_pending_event_callback(state: &mut RunState) {
     if state.current_event.is_none() {
         if let Some(id) = pick_event(state, None) {
-            state.enter_event_room(id);
+            begin_event_in_entered_room(state, id);
         }
+    }
+}
+
+/// Enter `event_id`'s room and run its C# `BeforeEventStarted` side effects
+/// on the shared run state — the work `EventModel.BeginEvent` does before
+/// the first page renders, whatever option is then picked. Only
+/// FakeMerchant draws shared RNG there
+/// ([`super::act2_hive::fake_merchant_before_event_started`]).
+pub fn begin_event(state: &mut RunState, event_id: EventId) {
+    state.enter_event_room(event_id);
+    if event_id == EventId::FakeMerchant {
+        super::act2_hive::fake_merchant_before_event_started(state);
+    }
+}
+
+/// [`begin_event`] for a room the map move already entered: binds the event
+/// and runs its `BeforeEventStarted` side effects without entering the room
+/// again, so `AfterRoomEntered` (MawBank, Planisphere) fires once per event
+/// room, as in C#. The two pending-room binders use it; [`begin_event`]
+/// stays for callers with no prior room entry (`force_event`, fixtures).
+pub fn begin_event_in_entered_room(state: &mut RunState, event_id: EventId) {
+    state.bind_event(event_id);
+    if event_id == EventId::FakeMerchant {
+        super::act2_hive::fake_merchant_before_event_started(state);
     }
 }
 
@@ -598,6 +640,23 @@ mod tests {
         assert_eq!(opts[1].option_id, "grab");
         // current_event remains set until resolve fires.
         assert_eq!(rs.current_event, Some(EventId::TrashHeap));
+    }
+
+    /// A Combat-layout event rolls its creatures' HP off `Rng.Niche` on entry
+    /// (EventRoom.cs:70-72 → EventModel.cs:383-402), fought or not.
+    #[test]
+    fn entering_combat_layout_event_rolls_niche_per_monster() {
+        for (id, reads) in [
+            (EventId::TheLanternKey, 1),
+            (EventId::PunchOff, 2),
+            (EventId::TheArchitect, 1),
+            (EventId::TrashHeap, 0),
+        ] {
+            let mut rs = RunState::new();
+            let before = rs.rng.niche.counter();
+            rs.enter_event_room(id);
+            assert_eq!(rs.rng.niche.counter() - before, reads, "{id:?}");
+        }
     }
 
     #[test]
@@ -880,7 +939,6 @@ mod tests {
 
     /// **heal**: `AbyssalBaths.abstain` heals
     /// [`super::shared::ABYSSAL_BATHS_ABSTAIN_HEAL`] = 10 HP.
-    /// Pin: `sts2-rl-agent@01c094d:sts2_env/events/shared.py::AbyssalBaths`.
     #[test]
     fn dispatch_heal_category_abyssal_baths_abstain_heals_ten_hp() {
         let mut rs = RunState::new();
@@ -947,6 +1005,8 @@ mod tests {
         assert_eq!(rs.pending_rewards.len(), rewards_before);
         assert_eq!(rs.pending_card_selects.len(), 1, "pick-1-of-5 grid queued");
         assert_eq!(rs.pending_card_selects[0].options.len(), 5);
+        // C# `BrainLeech.cs:67-70`: `Cancelable = false`, no skip.
+        assert!(!rs.pending_card_selects[0].can_skip);
         assert!(rs.current_event.is_none());
     }
 

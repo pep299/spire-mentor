@@ -8,7 +8,6 @@ use super::prelude::*;
 /// deferred next-turn draw. The pre-fix port applied
 /// `DrawCardsNextTurn(2)` (a legitimate mechanic for Relax/Predator/Glow,
 /// but wrong here). Bead `sts2-rs-p7hl9`.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L197
 pub(crate) fn play_guiding_star(
     state: &mut CombatState,
     target: Option<CreatureUid>,

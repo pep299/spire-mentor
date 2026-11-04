@@ -158,6 +158,17 @@ pub struct ShopCardObs {
     #[serde(default)]
     pub is_colorless: bool,
     pub available: bool,
+    /// `RunManager.shop_inventory()`'s additive `upgraded` key, present only
+    /// when true: the merchant card hook (the eggs) can upgrade a stocked
+    /// card (MerchantCardEntry.cs:92). Neither encoder reads it; it keeps the
+    /// Rust obs equal to the Python one.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub upgraded: bool,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if passes &T
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// One `shop_inventory()` relic- or potion-row entry — same shape as

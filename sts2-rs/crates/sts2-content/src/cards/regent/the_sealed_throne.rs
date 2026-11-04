@@ -6,7 +6,6 @@ use super::prelude::*;
 /// sealed throne predicate) lives on the power listener body in
 /// `crates/sts2-core/src/powers/regent.rs` (owned by `sts2-rs-jxz.3`);
 /// this handler is just the on-play applier.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L863
 pub(crate) fn play_the_sealed_throne(
     state: &mut CombatState,
     _t: Option<CreatureUid>,

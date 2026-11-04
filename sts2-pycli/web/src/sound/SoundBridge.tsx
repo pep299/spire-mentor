@@ -1,6 +1,6 @@
 import { useEffect, useRef, type MutableRefObject } from "react";
 import type { Step } from "../api";
-import { useSound, type SoundValue } from "./SoundContext";
+import { useSound, type SoundValue } from "./useSound";
 import { arrivalCues, goldGainCue, neowArrivalCue, potionGainCue, relicGainCue, runEndCue } from "./appSoundCues";
 import { cueForTreasure } from "./runCues";
 

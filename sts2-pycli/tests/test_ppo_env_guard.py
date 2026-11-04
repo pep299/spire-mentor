@@ -27,6 +27,7 @@ import os
 import sys
 
 import pytest
+import sts2_client
 
 PY = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "python"))
 
@@ -202,7 +203,16 @@ def test_combat_actions_bypass_the_guard() -> None:
 # test fails loudly — re-derive it by censusing kinds over seeds 0..40 rather
 # than by deleting the assertion: "no removal ever surfaced" is exactly the
 # invisibility bug #399 exists to close.
-_COVER_SEEDS = (3, 5, 8, 15, 17)
+#
+# The cover is per game build: v0.111.0 rehashed every seed (XxHash64), so it
+# was re-derived there by that census (seeds 0..40): removal on 11/12/16,
+# upgrade on 9/16/17/18/36/39, transform on 0/4/10/12/14/15/…, enchant on
+# 1/3/14/22/37 — 14 + 16 cover all four.
+_COVER_SEEDS_BY_VERSION = {
+    "v0.107.1": (3, 5, 8, 15, 17),
+    "v0.111.0": (14, 16),
+}
+_COVER_SEEDS = _COVER_SEEDS_BY_VERSION[sts2_client.GAME_VERSION]
 _DECK_MUTATION_KINDS = frozenset(
     {"remove_deck_card", "upgrade_deck_card", "transform_deck_card", "enchant_deck_card"}
 )

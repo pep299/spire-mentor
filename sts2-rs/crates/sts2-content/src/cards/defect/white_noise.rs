@@ -24,8 +24,7 @@ pub(crate) fn play_white_noise(state: &mut CombatState, _t: Option<CreatureUid>)
     );
     for uid in uids {
         set_card_var(state, uid, VarKey::FreeThisTurn, 1);
-        state.player.generated_cards_this_combat =
-            state.player.generated_cards_this_combat.saturating_add(1);
+        // The Supermassive tally is bumped by `fire_card_generation_listeners`.
         let pile = if state.player.hand.len() < sts2_core::cards::HAND_LIMIT {
             state.player.hand.push(uid);
             PileKind::Hand

@@ -22,10 +22,17 @@ pub(crate) fn play_hidden_daggers(
     state: &mut CombatState,
     _t: Option<CreatureUid>,
 ) -> EffectResult {
+    // C# `HiddenDaggers.cs:OnPlay`: if `IsUpgraded`, the spawned Shivs are
+    // upgraded (`CardCmd.Upgrade(item)` per spawn; Shiv+ deals 6).
+    let shivs = sts2_core::PostChoiceEffect::SpawnInHand {
+        card_id: CardId::Shiv,
+        count: 2,
+        upgraded: current_card_upgraded(state),
+    };
     let original: smallvec::SmallVec<[sts2_core::CardUid; 16]> =
         state.player.hand.iter().copied().collect();
     let discard_count = original.len().min(2);
-    if original.len() <= discard_count {
+    if original.len() <= discard_count || sts2_core::combat_loop::combat_is_ending(state) {
         // No meaningful choice (must discard every hand card, or none):
         // auto-discard, matching the FromHandForDiscard auto-resolve. Route
         // through the Sly-aware discard so a discarded Sly card (Tactician →
@@ -34,13 +41,20 @@ pub(crate) fn play_hidden_daggers(
         // The prior raw `discard_hand_card` loop dropped the Sly trigger
         // (Silent fuzz seed 24: HiddenDaggers discarding Tactician left energy
         // at 0 vs C#'s 1).
-        let to_discard: smallvec::SmallVec<[sts2_core::CardUid; 16]> =
-            original.iter().take(discard_count).copied().collect();
-        let _ = sts2_core::card_effects::discard_hand_cards_with_hooks(state, &to_discard);
+        if !sts2_core::combat_loop::combat_is_ending(state) {
+            let to_discard: smallvec::SmallVec<[sts2_core::CardUid; 16]> =
+                original.iter().take(discard_count).copied().collect();
+            let _ = sts2_core::card_effects::discard_hand_cards_with_hooks(state, &to_discard);
+        }
+        spawn_hidden_dagger_shivs(state, shivs);
     } else {
         // Pick exactly `discard_count` of the hand to discard. The
         // `sts2-rs-enwwr` multi-pick fan-out enumerates the selections;
-        // the `DiscardFromHand` resolver discards each chosen card.
+        // the `DiscardFromHand` resolver discards each chosen card, then
+        // spawns the Shivs from `post_effect`. They must wait for the pick:
+        // a discarded Sly card (Reflex) auto-plays inside C#'s
+        // `CardCmd.Discard`, so its draw lands in hand BEFORE the Shivs
+        // (GH #1054, Silent-1001 act-3 `hand_costs` split).
         let options: Vec<sts2_core::ChoiceOption> = original
             .iter()
             .map(|&uid| {
@@ -54,14 +68,28 @@ pub(crate) fn play_hidden_daggers(
             })
             .collect();
         let n = u8::try_from(discard_count).expect("min(2, _) fits u8");
-        state.request_card_choice(sts2_core::ChoiceKind::DiscardFromHand, options, n, n, false);
+        state.open_hand_choice(sts2_core::PendingChoice {
+            kind: sts2_core::ChoiceKind::DiscardFromHand,
+            options,
+            min_select: n,
+            max_select: n,
+            can_skip: false,
+            post_effect: Some(shivs),
+            picked: smallvec::SmallVec::new(),
+        });
     }
-    // C# `HiddenDaggers.cs:OnPlay`: if `IsUpgraded`, the spawned Shivs
-    // are upgraded (`CardCmd.Upgrade(item)` per spawn). Shiv's
-    // `OnUpgrade` bumps `DamageVar` 4→6, so upgraded HiddenDaggers
-    // yields Shiv+ each dealing 6 damage. Bead `sts2-rs-dw4ha`.
-    let upgraded = current_card_upgraded(state);
-    for _ in 0..2 {
+    EffectResult::Resolved
+}
+
+/// Spawn HiddenDaggers' Shivs inline (no discard choice was opened).
+fn spawn_hidden_dagger_shivs(state: &mut CombatState, shivs: sts2_core::PostChoiceEffect) {
+    let sts2_core::PostChoiceEffect::SpawnInHand {
+        count, upgraded, ..
+    } = shivs
+    else {
+        return;
+    };
+    for _ in 0..count {
         let shiv_uid = spawn_shiv(state, PileKind::Hand);
         if upgraded {
             let idx = shiv_uid.0.get() as usize - 1;
@@ -71,7 +99,6 @@ pub(crate) fn play_hidden_daggers(
             }
         }
     }
-    EffectResult::Resolved
 }
 
 #[must_use]

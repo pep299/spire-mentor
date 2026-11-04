@@ -8,7 +8,7 @@
    "details": [
     "+Relic Lead Paperweight"
    ],
-   "floor": 0,
+   "floor": 1,
    "idx": 0,
    "label": "Choose: Lead Paperweight",
    "turn": null
@@ -19,7 +19,7 @@
    "combat_log": [],
    "decision": "card_select",
    "details": [],
-   "floor": 0,
+   "floor": 1,
    "idx": 1,
    "label": "Select Ultimate Strike",
    "turn": null
@@ -32,7 +32,7 @@
    "details": [
     "Spawned: Fuzzy Wurm Crawler"
    ],
-   "floor": 0,
+   "floor": 1,
    "idx": 2,
    "label": "Map → (2,1)",
    "turn": null
@@ -67,7 +67,7 @@
    "details": [
     "You Block 0→5"
    ],
-   "floor": 1,
+   "floor": 2,
    "idx": 3,
    "label": "Play Defend",
    "turn": 1
@@ -104,7 +104,7 @@
    "details": [
     "Fuzzy Wurm Crawler HP 57→43 (−14)"
    ],
-   "floor": 1,
+   "floor": 2,
    "idx": 4,
    "label": "Play Ultimate Strike → Fuzzy Wurm Crawler",
    "turn": 1
@@ -141,7 +141,7 @@
    "details": [
     "Fuzzy Wurm Crawler HP 43→37 (−6)"
    ],
-   "floor": 1,
+   "floor": 2,
    "idx": 5,
    "label": "Play Strike → Fuzzy Wurm Crawler",
    "turn": 1
@@ -199,7 +199,7 @@
    "details": [
     "You Block 5→0"
    ],
-   "floor": 1,
+   "floor": 2,
    "idx": 6,
    "label": "End turn",
    "turn": 1
@@ -234,7 +234,7 @@
    "details": [
     "You Block 0→8"
    ],
-   "floor": 1,
+   "floor": 2,
    "idx": 7,
    "label": "Play Survivor",
    "turn": 2
@@ -245,7 +245,7 @@
    "combat_log": [],
    "decision": "card_select",
    "details": [],
-   "floor": 1,
+   "floor": 2,
    "idx": 8,
    "label": "Select Strike",
    "turn": null
@@ -282,7 +282,7 @@
    "details": [
     "Fuzzy Wurm Crawler HP 37→31 (−6)"
    ],
-   "floor": 1,
+   "floor": 2,
    "idx": 9,
    "label": "Play Strike → Fuzzy Wurm Crawler",
    "turn": 2
@@ -319,7 +319,7 @@
    "details": [
     "Fuzzy Wurm Crawler HP 31→25 (−6)"
    ],
-   "floor": 1,
+   "floor": 2,
    "idx": 10,
    "label": "Play Strike → Fuzzy Wurm Crawler",
    "turn": 2
@@ -378,7 +378,7 @@
     "Fuzzy Wurm Crawler HP 25→22 (−3)",
     "Fuzzy Wurm Crawler +1 Weak"
    ],
-   "floor": 1,
+   "floor": 2,
    "idx": 11,
    "label": "Play Neutralize → Fuzzy Wurm Crawler",
    "turn": 2
@@ -436,7 +436,7 @@
     "Fuzzy Wurm Crawler +7 Strength",
     "Fuzzy Wurm Crawler −Weak"
    ],
-   "floor": 1,
+   "floor": 2,
    "idx": 12,
    "label": "End turn",
    "turn": 2
@@ -471,7 +471,7 @@
    "details": [
     "You Block 0→8"
    ],
-   "floor": 1,
+   "floor": 2,
    "idx": 13,
    "label": "Play Survivor",
    "turn": 3
@@ -482,7 +482,7 @@
    "combat_log": [],
    "decision": "card_select",
    "details": [],
-   "floor": 1,
+   "floor": 2,
    "idx": 14,
    "label": "Select Defend",
    "turn": null
@@ -517,7 +517,7 @@
    "details": [
     "You Block 8→13"
    ],
-   "floor": 1,
+   "floor": 2,
    "idx": 15,
    "label": "Play Defend",
    "turn": 3
@@ -554,7 +554,7 @@
    "details": [
     "Fuzzy Wurm Crawler HP 22→16 (−6)"
    ],
-   "floor": 1,
+   "floor": 2,
    "idx": 16,
    "label": "Play Strike → Fuzzy Wurm Crawler",
    "turn": 3
@@ -612,7 +612,7 @@
    "details": [
     "You Block 13→0"
    ],
-   "floor": 1,
+   "floor": 2,
    "idx": 17,
    "label": "End turn",
    "turn": 3
@@ -647,7 +647,7 @@
    "details": [
     "You Block 0→5"
    ],
-   "floor": 1,
+   "floor": 2,
    "idx": 18,
    "label": "Play Defend",
    "turn": 4
@@ -682,7 +682,7 @@
    "details": [
     "You Block 5→10"
    ],
-   "floor": 1,
+   "floor": 2,
    "idx": 19,
    "label": "Play Defend",
    "turn": 4
@@ -719,7 +719,7 @@
    "details": [
     "Fuzzy Wurm Crawler HP 16→10 (−6)"
    ],
-   "floor": 1,
+   "floor": 2,
    "idx": 20,
    "label": "Play Strike → Fuzzy Wurm Crawler",
    "turn": 4
@@ -778,7 +778,7 @@
     "You HP 70→69 (−1)",
     "You Block 10→0"
    ],
-   "floor": 1,
+   "floor": 2,
    "idx": 21,
    "label": "End turn",
    "turn": 4
@@ -816,7 +816,7 @@
     "Fuzzy Wurm Crawler HP 10→0  ☠ defeated",
     "Gold 99→110"
    ],
-   "floor": 1,
+   "floor": 2,
    "idx": 22,
    "label": "Play Ultimate Strike → Fuzzy Wurm Crawler",
    "turn": 5
@@ -827,7 +827,7 @@
    "combat_log": [],
    "decision": "card_reward",
    "details": [],
-   "floor": 1,
+   "floor": 2,
    "idx": 23,
    "label": "Take Cloak and Dagger",
    "turn": null
@@ -840,7 +840,7 @@
    "details": [
     "Spawned: Shrinker Beetle"
    ],
-   "floor": 1,
+   "floor": 2,
    "idx": 24,
    "label": "Map → (2,2)",
    "turn": null
@@ -877,7 +877,7 @@
    "details": [
     "Shrinker Beetle HP 40→34 (−6)"
    ],
-   "floor": 2,
+   "floor": 3,
    "idx": 25,
    "label": "Play Strike → Shrinker Beetle",
    "turn": 1
@@ -914,7 +914,7 @@
    "details": [
     "Shrinker Beetle HP 34→28 (−6)"
    ],
-   "floor": 2,
+   "floor": 3,
    "idx": 26,
    "label": "Play Strike → Shrinker Beetle",
    "turn": 1
@@ -949,7 +949,7 @@
    "details": [
     "You Block 0→5"
    ],
-   "floor": 2,
+   "floor": 3,
    "idx": 27,
    "label": "Play Defend",
    "turn": 1
@@ -985,7 +985,7 @@
     "You Block 5→0",
     "You −1 Shrink"
    ],
-   "floor": 2,
+   "floor": 3,
    "idx": 28,
    "label": "End turn",
    "turn": 1
@@ -1020,7 +1020,7 @@
    "details": [
     "You Block 0→5"
    ],
-   "floor": 2,
+   "floor": 3,
    "idx": 29,
    "label": "Play Defend",
    "turn": 2
@@ -1055,7 +1055,7 @@
    "details": [
     "You Block 5→10"
    ],
-   "floor": 2,
+   "floor": 3,
    "idx": 30,
    "label": "Play Defend",
    "turn": 2
@@ -1092,7 +1092,7 @@
    "details": [
     "Shrinker Beetle HP 28→19 (−9)"
    ],
-   "floor": 2,
+   "floor": 3,
    "idx": 31,
    "label": "Play Ultimate Strike → Shrinker Beetle",
    "turn": 2
@@ -1150,7 +1150,7 @@
    "details": [
     "You Block 10→0"
    ],
-   "floor": 2,
+   "floor": 3,
    "idx": 32,
    "label": "End turn",
    "turn": 2
@@ -1187,7 +1187,7 @@
    "details": [
     "Shrinker Beetle HP 19→15 (−4)"
    ],
-   "floor": 2,
+   "floor": 3,
    "idx": 33,
    "label": "Play Strike → Shrinker Beetle",
    "turn": 3
@@ -1224,7 +1224,7 @@
    "details": [
     "Shrinker Beetle HP 15→11 (−4)"
    ],
-   "floor": 2,
+   "floor": 3,
    "idx": 34,
    "label": "Play Strike → Shrinker Beetle",
    "turn": 3
@@ -1261,7 +1261,7 @@
    "details": [
     "Shrinker Beetle HP 11→7 (−4)"
    ],
-   "floor": 2,
+   "floor": 3,
    "idx": 35,
    "label": "Play Strike → Shrinker Beetle",
    "turn": 3
@@ -1320,7 +1320,7 @@
     "Shrinker Beetle HP 7→5 (−2)",
     "Shrinker Beetle +1 Weak"
    ],
-   "floor": 2,
+   "floor": 3,
    "idx": 36,
    "label": "Play Neutralize → Shrinker Beetle",
    "turn": 3
@@ -1379,7 +1379,7 @@
     "You HP 69→60 (−9)",
     "Shrinker Beetle −Weak"
    ],
-   "floor": 2,
+   "floor": 3,
    "idx": 37,
    "label": "End turn",
    "turn": 3
@@ -1418,7 +1418,7 @@
     "You −Shrink",
     "Gold 110→125"
    ],
-   "floor": 2,
+   "floor": 3,
    "idx": 38,
    "label": "Play Ultimate Strike → Shrinker Beetle",
    "turn": 4
@@ -1429,7 +1429,7 @@
    "combat_log": [],
    "decision": "card_reward",
    "details": [],
-   "floor": 2,
+   "floor": 3,
    "idx": 39,
    "label": "Take Sucker Punch",
    "turn": null
@@ -1440,7 +1440,7 @@
    "combat_log": [],
    "decision": "map_select",
    "details": [],
-   "floor": 2,
+   "floor": 3,
    "idx": 40,
    "label": "Map → (2,3)",
    "turn": null
@@ -1454,7 +1454,7 @@
     "You HP 60→52 (−8)",
     "Gold 125→193"
    ],
-   "floor": 3,
+   "floor": 4,
    "idx": 41,
    "label": "Choose: Trudge On",
    "turn": null
@@ -1467,7 +1467,7 @@
    "details": [
     "Spawned: Nibbit"
    ],
-   "floor": 3,
+   "floor": 4,
    "idx": 42,
    "label": "Map → (3,4)",
    "turn": null
@@ -1502,7 +1502,7 @@
    "details": [
     "You Block 0→8"
    ],
-   "floor": 4,
+   "floor": 5,
    "idx": 43,
    "label": "Play Survivor",
    "turn": 1
@@ -1513,7 +1513,7 @@
    "combat_log": [],
    "decision": "card_select",
    "details": [],
-   "floor": 4,
+   "floor": 5,
    "idx": 44,
    "label": "Select Defend",
    "turn": null
@@ -1548,7 +1548,7 @@
    "details": [
     "You Block 8→13"
    ],
-   "floor": 4,
+   "floor": 5,
    "idx": 45,
    "label": "Play Defend",
    "turn": 1
@@ -1585,7 +1585,7 @@
    "details": [
     "Nibbit HP 43→37 (−6)"
    ],
-   "floor": 4,
+   "floor": 5,
    "idx": 46,
    "label": "Play Strike → Nibbit",
    "turn": 1
@@ -1643,7 +1643,7 @@
    "details": [
     "You Block 13→0"
    ],
-   "floor": 4,
+   "floor": 5,
    "idx": 47,
    "label": "End turn",
    "turn": 1
@@ -1678,7 +1678,7 @@
    "details": [
     "You Block 0→5"
    ],
-   "floor": 4,
+   "floor": 5,
    "idx": 48,
    "label": "Play Defend",
    "turn": 2
@@ -1715,7 +1715,7 @@
    "details": [
     "Nibbit HP 37→23 (−14)"
    ],
-   "floor": 4,
+   "floor": 5,
    "idx": 49,
    "label": "Play Ultimate Strike → Nibbit",
    "turn": 2
@@ -1752,7 +1752,7 @@
    "details": [
     "Nibbit HP 23→17 (−6)"
    ],
-   "floor": 4,
+   "floor": 5,
    "idx": 50,
    "label": "Play Strike → Nibbit",
    "turn": 2
@@ -1811,7 +1811,7 @@
     "Nibbit HP 17→14 (−3)",
     "Nibbit +1 Weak"
    ],
-   "floor": 4,
+   "floor": 5,
    "idx": 51,
    "label": "Play Neutralize → Nibbit",
    "turn": 2
@@ -1892,7 +1892,7 @@
     "Nibbit Block 0→5",
     "Nibbit −Weak"
    ],
-   "floor": 4,
+   "floor": 5,
    "idx": 52,
    "label": "End turn",
    "turn": 2
@@ -1948,7 +1948,7 @@
    "details": [
     "You Block 0→6"
    ],
-   "floor": 4,
+   "floor": 5,
    "idx": 53,
    "label": "Play Cloak and Dagger",
    "turn": 3
@@ -2008,7 +2008,7 @@
     "Nibbit Block 5→0",
     "Nibbit +1 Weak"
    ],
-   "floor": 4,
+   "floor": 5,
    "idx": 54,
    "label": "Play Sucker Punch → Nibbit",
    "turn": 3
@@ -2045,7 +2045,7 @@
    "details": [
     "Nibbit HP 11→7 (−4)"
    ],
-   "floor": 4,
+   "floor": 5,
    "idx": 55,
    "label": "Play Shiv → Nibbit",
    "turn": 3
@@ -2080,7 +2080,7 @@
    "details": [
     "You Block 6→11"
    ],
-   "floor": 4,
+   "floor": 5,
    "idx": 56,
    "label": "Play Defend",
    "turn": 3
@@ -2138,7 +2138,7 @@
     "Nibbit +2 Strength",
     "Nibbit −Weak"
    ],
-   "floor": 4,
+   "floor": 5,
    "idx": 57,
    "label": "End turn",
    "turn": 3
@@ -2176,7 +2176,7 @@
     "Nibbit HP 7→0  ☠ defeated",
     "Gold 193→209"
    ],
-   "floor": 4,
+   "floor": 5,
    "idx": 58,
    "label": "Play Ultimate Strike → Nibbit",
    "turn": 4
@@ -2187,7 +2187,7 @@
    "combat_log": [],
    "decision": "card_reward",
    "details": [],
-   "floor": 4,
+   "floor": 5,
    "idx": 59,
    "label": "Take Snakebite",
    "turn": null
@@ -2198,7 +2198,7 @@
    "combat_log": [],
    "decision": "map_select",
    "details": [],
-   "floor": 4,
+   "floor": 5,
    "idx": 60,
    "label": "Map → (3,5)",
    "turn": null
@@ -2209,7 +2209,7 @@
    "combat_log": [],
    "decision": "event_choice",
    "details": [],
-   "floor": 5,
+   "floor": 6,
    "idx": 61,
    "label": "Choose: Nab the Map",
    "turn": null
@@ -2223,7 +2223,7 @@
     "Spawned: Snapping Jaxfruit",
     "Spawned: Flyconid"
    ],
-   "floor": 5,
+   "floor": 6,
    "idx": 62,
    "label": "Map → (3,6)",
    "turn": null
@@ -2258,7 +2258,7 @@
    "details": [
     "You Block 0→8"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 63,
    "label": "Play Survivor",
    "turn": 1
@@ -2269,7 +2269,7 @@
    "combat_log": [],
    "decision": "card_select",
    "details": [],
-   "floor": 6,
+   "floor": 7,
    "idx": 64,
    "label": "Select Strike",
    "turn": null
@@ -2304,7 +2304,7 @@
    "details": [
     "You Block 8→13"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 65,
    "label": "Play Defend",
    "turn": 1
@@ -2341,7 +2341,7 @@
    "details": [
     "Snapping Jaxfruit HP 32→18 (−14)"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 66,
    "label": "Play Ultimate Strike → Snapping Jaxfruit",
    "turn": 1
@@ -2487,7 +2487,7 @@
     "You +2 Frail",
     "Snapping Jaxfruit +2 Strength"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 67,
    "label": "End turn",
    "turn": 1
@@ -2522,7 +2522,7 @@
    "details": [
     "You Block 0→3"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 68,
    "label": "Play Defend",
    "turn": 2
@@ -2581,7 +2581,7 @@
     "Snapping Jaxfruit HP 18→10 (−8)",
     "Snapping Jaxfruit +1 Weak"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 69,
    "label": "Play Sucker Punch → Snapping Jaxfruit",
    "turn": 2
@@ -2618,7 +2618,7 @@
    "details": [
     "Snapping Jaxfruit HP 10→4 (−6)"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 70,
    "label": "Play Strike → Snapping Jaxfruit",
    "turn": 2
@@ -2677,7 +2677,7 @@
     "Snapping Jaxfruit HP 4→1 (−3)",
     "Snapping Jaxfruit Weak 1→2"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 71,
    "label": "Play Neutralize → Snapping Jaxfruit",
    "turn": 2
@@ -2804,7 +2804,7 @@
     "Snapping Jaxfruit Strength 2→4",
     "Snapping Jaxfruit Weak 2→1"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 72,
    "label": "End turn",
    "turn": 2
@@ -2841,7 +2841,7 @@
    "details": [
     "Snapping Jaxfruit HP 1→0  ☠ defeated"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 73,
    "label": "Play Strike → Snapping Jaxfruit",
    "turn": 3
@@ -2897,7 +2897,7 @@
    "details": [
     "You Block 0→4"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 74,
    "label": "Play Cloak and Dagger",
    "turn": 3
@@ -2934,7 +2934,7 @@
    "details": [
     "Flyconid HP 49→45 (−4)"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 75,
    "label": "Play Shiv → Flyconid",
    "turn": 3
@@ -2969,7 +2969,7 @@
    "details": [
     "You Block 4→7"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 76,
    "label": "Play Defend",
    "turn": 3
@@ -3027,7 +3027,7 @@
     "You +2 Vulnerable",
     "You −Frail"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 77,
    "label": "End turn",
    "turn": 3
@@ -3062,7 +3062,7 @@
    "details": [
     "You Block 0→5"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 78,
    "label": "Play Defend",
    "turn": 4
@@ -3097,7 +3097,7 @@
    "details": [
     "You Block 5→10"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 79,
    "label": "Play Defend",
    "turn": 4
@@ -3156,7 +3156,7 @@
     "Flyconid HP 45→37 (−8)",
     "Flyconid +1 Weak"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 80,
    "label": "Play Sucker Punch → Flyconid",
    "turn": 4
@@ -3238,7 +3238,7 @@
     "You +2 Frail",
     "Flyconid −Weak"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 81,
    "label": "End turn",
    "turn": 4
@@ -3294,7 +3294,7 @@
    "details": [
     "You Block 0→4"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 82,
    "label": "Play Cloak and Dagger",
    "turn": 5
@@ -3329,7 +3329,7 @@
    "details": [
     "You Block 4→7"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 83,
    "label": "Play Defend",
    "turn": 5
@@ -3366,7 +3366,7 @@
    "details": [
     "Flyconid HP 37→31 (−6)"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 84,
    "label": "Play Strike → Flyconid",
    "turn": 5
@@ -3403,7 +3403,7 @@
    "details": [
     "Flyconid HP 31→27 (−4)"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 85,
    "label": "Play Shiv → Flyconid",
    "turn": 5
@@ -3462,7 +3462,7 @@
     "Flyconid HP 27→24 (−3)",
     "Flyconid +1 Weak"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 86,
    "label": "Play Neutralize → Flyconid",
    "turn": 5
@@ -3524,7 +3524,7 @@
     "You −Vulnerable",
     "Flyconid −Weak"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 87,
    "label": "End turn",
    "turn": 5
@@ -3559,7 +3559,7 @@
    "details": [
     "You Block 0→6"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 88,
    "label": "Play Survivor",
    "turn": 6
@@ -3570,7 +3570,7 @@
    "combat_log": [],
    "decision": "card_select",
    "details": [],
-   "floor": 6,
+   "floor": 7,
    "idx": 89,
    "label": "Select Snakebite",
    "turn": null
@@ -3607,7 +3607,7 @@
    "details": [
     "Flyconid HP 24→10 (−14)"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 90,
    "label": "Play Ultimate Strike → Flyconid",
    "turn": 6
@@ -3644,7 +3644,7 @@
    "details": [
     "Flyconid HP 10→4 (−6)"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 91,
    "label": "Play Strike → Flyconid",
    "turn": 6
@@ -3702,7 +3702,7 @@
     "You +2 Vulnerable",
     "You −Frail"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 92,
    "label": "End turn",
    "turn": 6
@@ -3741,7 +3741,7 @@
     "You −Vulnerable",
     "Gold 209→221"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 93,
    "label": "Play Strike → Flyconid",
    "turn": 7
@@ -3752,7 +3752,7 @@
    "combat_log": [],
    "decision": "card_reward",
    "details": [],
-   "floor": 6,
+   "floor": 7,
    "idx": 94,
    "label": "Take Leading Strike",
    "turn": null
@@ -3763,7 +3763,7 @@
    "combat_log": [],
    "decision": "map_select",
    "details": [],
-   "floor": 6,
+   "floor": 7,
    "idx": 95,
    "label": "Map → (2,7)",
    "turn": null
@@ -3776,7 +3776,7 @@
    "details": [
     "You HP 36→57 (+21)"
    ],
-   "floor": 7,
+   "floor": 8,
    "idx": 96,
    "label": "Choose: Rest",
    "turn": null
@@ -3787,7 +3787,7 @@
    "combat_log": [],
    "decision": "map_select",
    "details": [],
-   "floor": 7,
+   "floor": 8,
    "idx": 97,
    "label": "Map → (2,8)",
    "turn": null
@@ -3800,7 +3800,7 @@
    "details": [
     "Gold 221→169"
    ],
-   "floor": 8,
+   "floor": 9,
    "idx": 98,
    "label": "Buy Predator",
    "turn": null
@@ -3811,10 +3811,10 @@
    "combat_log": [],
    "decision": "shop",
    "details": [
-    "Gold 169→119",
+    "Gold 169→118",
     "+Potion Energy Potion"
    ],
-   "floor": 8,
+   "floor": 9,
    "idx": 99,
    "label": "Buy Energy Potion",
    "turn": null
@@ -3825,7 +3825,7 @@
    "combat_log": [],
    "decision": "shop",
    "details": [],
-   "floor": 8,
+   "floor": 9,
    "idx": 100,
    "label": "remove_card",
    "turn": null
@@ -3836,9 +3836,9 @@
    "combat_log": [],
    "decision": "card_select",
    "details": [
-    "Gold 119→44"
+    "Gold 118→43"
    ],
-   "floor": 8,
+   "floor": 9,
    "idx": 101,
    "label": "Remove Strike",
    "turn": null
@@ -3849,7 +3849,7 @@
    "combat_log": [],
    "decision": "shop",
    "details": [],
-   "floor": 8,
+   "floor": 9,
    "idx": 102,
    "label": "leave_room",
    "turn": null
@@ -3860,10 +3860,10 @@
    "combat_log": [],
    "decision": "map_select",
    "details": [
-    "Gold 44→92",
+    "Gold 43→91",
     "+Relic Centennial Puzzle"
    ],
-   "floor": 8,
+   "floor": 9,
    "idx": 103,
    "label": "Map → (2,9)",
    "turn": null
@@ -3874,7 +3874,7 @@
    "combat_log": [],
    "decision": "map_select",
    "details": [],
-   "floor": 9,
+   "floor": 10,
    "idx": 104,
    "label": "Map → (1,10)",
    "turn": null
@@ -3885,7 +3885,7 @@
    "combat_log": [],
    "decision": "rest_site",
    "details": [],
-   "floor": 10,
+   "floor": 11,
    "idx": 105,
    "label": "Choose: Smith",
    "turn": null
@@ -3896,7 +3896,7 @@
    "combat_log": [],
    "decision": "card_select",
    "details": [],
-   "floor": 10,
+   "floor": 11,
    "idx": 106,
    "label": "Upgrade Strike",
    "turn": null
@@ -3909,7 +3909,7 @@
    "details": [
     "Spawned: Fogmog"
    ],
-   "floor": 10,
+   "floor": 11,
    "idx": 107,
    "label": "Map → (2,11)",
    "turn": null
@@ -3944,7 +3944,7 @@
    "details": [
     "Used Energy Potion"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 108,
    "label": "Drink Energy Potion → Fogmog",
    "turn": 1
@@ -3981,7 +3981,7 @@
    "details": [
     "Fogmog HP 74→60 (−14)"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 109,
    "label": "Play Ultimate Strike → Fogmog",
    "turn": 1
@@ -4018,7 +4018,7 @@
    "details": [
     "Fogmog HP 60→54 (−6)"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 110,
    "label": "Play Strike → Fogmog",
    "turn": 1
@@ -4053,7 +4053,7 @@
    "details": [
     "You Block 0→5"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 111,
    "label": "Play Defend",
    "turn": 1
@@ -4088,7 +4088,7 @@
    "details": [
     "You Block 5→10"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 112,
    "label": "Play Defend",
    "turn": 1
@@ -4123,7 +4123,7 @@
    "details": [
     "You Block 10→15"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 113,
    "label": "Play Defend",
    "turn": 1
@@ -4204,7 +4204,7 @@
     "Fogmog +1 Minion",
     "Spawned: Fogmog"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 114,
    "label": "End turn",
    "turn": 1
@@ -4241,7 +4241,7 @@
    "details": [
     "Eye with Teeth HP 6→0  ☠ defeated"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 115,
    "label": "Play Strike → Eye with Teeth",
    "turn": 2
@@ -4276,7 +4276,7 @@
    "details": [
     "You Block 0→5"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 116,
    "label": "Play Defend",
    "turn": 2
@@ -4313,7 +4313,7 @@
    "details": [
     "Fogmog HP 54→48 (−6)"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 117,
    "label": "Play Strike → Fogmog",
    "turn": 2
@@ -4372,7 +4372,7 @@
     "Fogmog HP 48→45 (−3)",
     "Fogmog +1 Weak"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 118,
    "label": "Play Neutralize → Fogmog",
    "turn": 2
@@ -4455,7 +4455,7 @@
     "Fogmog −Weak",
     "Spawned: Eye with Teeth"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 119,
    "label": "End turn",
    "turn": 2
@@ -4514,7 +4514,7 @@
     "Eye with Teeth HP 6→0  ☠ defeated",
     "You +2 Draw Cards Next Turn"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 120,
    "label": "Play Predator → Eye with Teeth",
    "turn": 3
@@ -4549,7 +4549,7 @@
    "details": [
     "You Block 0→8"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 121,
    "label": "Play Survivor",
    "turn": 3
@@ -4560,7 +4560,7 @@
    "combat_log": [],
    "decision": "card_select",
    "details": [],
-   "floor": 11,
+   "floor": 12,
    "idx": 122,
    "label": "Select Snakebite",
    "turn": null
@@ -4619,7 +4619,7 @@
     "Fogmog HP 45→42 (−3)",
     "Fogmog +1 Weak"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 123,
    "label": "Play Neutralize → Fogmog",
    "turn": 3
@@ -4681,7 +4681,7 @@
     "Fogmog −Weak",
     "Spawned: Eye with Teeth"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 124,
    "label": "End turn",
    "turn": 3
@@ -4718,7 +4718,7 @@
    "details": [
     "Eye with Teeth HP 6→0  ☠ defeated"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 125,
    "label": "Play Strike → Eye with Teeth",
    "turn": 4
@@ -4753,7 +4753,7 @@
    "details": [
     "You Block 0→5"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 126,
    "label": "Play Defend",
    "turn": 4
@@ -4788,7 +4788,7 @@
    "details": [
     "You Block 5→10"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 127,
    "label": "Play Defend",
    "turn": 4
@@ -4869,7 +4869,7 @@
     "Fogmog Strength 1→2",
     "Spawned: Eye with Teeth"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 128,
    "label": "End turn",
    "turn": 4
@@ -4928,7 +4928,7 @@
     "Eye with Teeth HP 6→0  ☠ defeated",
     "You +2 Draw Cards Next Turn"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 129,
    "label": "Play Predator → Eye with Teeth",
    "turn": 5
@@ -4984,7 +4984,7 @@
    "details": [
     "You Block 0→6"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 130,
    "label": "Play Cloak and Dagger",
    "turn": 5
@@ -5021,7 +5021,7 @@
    "details": [
     "Fogmog HP 42→38 (−4)"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 131,
    "label": "Play Shiv → Fogmog",
    "turn": 5
@@ -5104,7 +5104,7 @@
     "Fogmog Strength 2→3",
     "Spawned: Eye with Teeth"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 132,
    "label": "End turn",
    "turn": 5
@@ -5141,7 +5141,7 @@
    "details": [
     "Eye with Teeth HP 6→0  ☠ defeated"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 133,
    "label": "Play Strike+ → Eye with Teeth",
    "turn": 6
@@ -5176,7 +5176,7 @@
    "details": [
     "You Block 0→5"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 134,
    "label": "Play Defend",
    "turn": 6
@@ -5235,7 +5235,7 @@
     "Fogmog HP 38→30 (−8)",
     "Fogmog +1 Weak"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 135,
    "label": "Play Sucker Punch → Fogmog",
    "turn": 6
@@ -5294,7 +5294,7 @@
     "Fogmog HP 30→27 (−3)",
     "Fogmog Weak 1→2"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 136,
    "label": "Play Neutralize → Fogmog",
    "turn": 6
@@ -5355,7 +5355,7 @@
     "Fogmog Weak 2→1",
     "Spawned: Eye with Teeth"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 137,
    "label": "End turn",
    "turn": 6
@@ -5392,7 +5392,7 @@
    "details": [
     "Eye with Teeth HP 6→0  ☠ defeated"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 138,
    "label": "Play Strike → Eye with Teeth",
    "turn": 7
@@ -5427,7 +5427,7 @@
    "details": [
     "You Block 0→5"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 139,
    "label": "Play Defend",
    "turn": 7
@@ -5462,7 +5462,7 @@
    "details": [
     "You Block 5→10"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 140,
    "label": "Play Defend",
    "turn": 7
@@ -5544,7 +5544,7 @@
     "Fogmog −Weak",
     "Spawned: Eye with Teeth"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 141,
    "label": "End turn",
    "turn": 7
@@ -5581,7 +5581,7 @@
    "details": [
     "Eye with Teeth HP 6→0  ☠ defeated"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 142,
    "label": "Play Strike+ → Eye with Teeth",
    "turn": 8
@@ -5616,7 +5616,7 @@
    "details": [
     "You Block 0→8"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 143,
    "label": "Play Survivor",
    "turn": 8
@@ -5627,7 +5627,7 @@
    "combat_log": [],
    "decision": "card_select",
    "details": [],
-   "floor": 11,
+   "floor": 12,
    "idx": 144,
    "label": "Select Snakebite",
    "turn": null
@@ -5662,7 +5662,7 @@
    "details": [
     "You Block 8→13"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 145,
    "label": "Play Defend",
    "turn": 8
@@ -5743,7 +5743,7 @@
     "Fogmog Strength 4→5",
     "Spawned: Eye with Teeth"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 146,
    "label": "End turn",
    "turn": 8
@@ -5780,7 +5780,7 @@
    "details": [
     "Eye with Teeth HP 6→0  ☠ defeated"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 147,
    "label": "Play Strike → Eye with Teeth",
    "turn": 9
@@ -5815,7 +5815,7 @@
    "details": [
     "You Block 0→5"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 148,
    "label": "Play Defend",
    "turn": 9
@@ -5850,7 +5850,7 @@
    "details": [
     "You Block 5→10"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 149,
    "label": "Play Defend",
    "turn": 9
@@ -5910,7 +5910,7 @@
     "You Block 10→0",
     "Spawned: Eye with Teeth"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 150,
    "label": "End turn",
    "turn": 9
@@ -5969,7 +5969,7 @@
     "Eye with Teeth HP 6→0  ☠ defeated",
     "You +2 Draw Cards Next Turn"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 151,
    "label": "Play Predator → Eye with Teeth",
    "turn": 10
@@ -6025,7 +6025,7 @@
    "details": [
     "You Block 0→6"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 152,
    "label": "Play Cloak and Dagger",
    "turn": 10
@@ -6062,7 +6062,7 @@
    "details": [
     "Fogmog HP 27→23 (−4)"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 153,
    "label": "Play Shiv → Fogmog",
    "turn": 10
@@ -6145,7 +6145,7 @@
     "Fogmog Strength 5→6",
     "Spawned: Eye with Teeth"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 154,
    "label": "End turn",
    "turn": 10
@@ -6182,7 +6182,7 @@
    "details": [
     "Eye with Teeth HP 6→0  ☠ defeated"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 155,
    "label": "Play Strike+ → Eye with Teeth",
    "turn": 11
@@ -6217,7 +6217,7 @@
    "details": [
     "You Block 0→5"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 156,
    "label": "Play Defend",
    "turn": 11
@@ -6252,7 +6252,7 @@
    "details": [
     "You Block 5→10"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 157,
    "label": "Play Defend",
    "turn": 11
@@ -6311,7 +6311,7 @@
     "Fogmog HP 23→20 (−3)",
     "Fogmog +1 Weak"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 158,
    "label": "Play Neutralize → Fogmog",
    "turn": 11
@@ -6393,7 +6393,7 @@
     "Fogmog −Weak",
     "Spawned: Eye with Teeth"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 159,
    "label": "End turn",
    "turn": 11
@@ -6452,7 +6452,7 @@
     "Eye with Teeth HP 6→0  ☠ defeated",
     "You +2 Draw Cards Next Turn"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 160,
    "label": "Play Predator → Eye with Teeth",
    "turn": 12
@@ -6487,7 +6487,7 @@
    "details": [
     "You Block 0→8"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 161,
    "label": "Play Survivor",
    "turn": 12
@@ -6498,7 +6498,7 @@
    "combat_log": [],
    "decision": "card_select",
    "details": [],
-   "floor": 11,
+   "floor": 12,
    "idx": 162,
    "label": "Select Defend",
    "turn": null
@@ -6559,7 +6559,7 @@
     "You −Draw Cards Next Turn",
     "Spawned: Eye with Teeth"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 163,
    "label": "End turn",
    "turn": 12
@@ -6596,7 +6596,7 @@
    "details": [
     "Eye with Teeth HP 6→0  ☠ defeated"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 164,
    "label": "Play Ultimate Strike → Eye with Teeth",
    "turn": 13
@@ -6631,7 +6631,7 @@
    "details": [
     "You Block 0→5"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 165,
    "label": "Play Defend",
    "turn": 13
@@ -6666,7 +6666,7 @@
    "details": [
     "You Block 5→10"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 166,
    "label": "Play Defend",
    "turn": 13
@@ -6748,7 +6748,7 @@
     "Fogmog Strength 7→8",
     "Spawned: Eye with Teeth"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 167,
    "label": "End turn",
    "turn": 13
@@ -6807,7 +6807,7 @@
     "Eye with Teeth HP 6→0  ☠ defeated",
     "You +2 Draw Cards Next Turn"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 168,
    "label": "Play Predator → Eye with Teeth",
    "turn": 14
@@ -6863,7 +6863,7 @@
    "details": [
     "You Block 0→6"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 169,
    "label": "Play Cloak and Dagger",
    "turn": 14
@@ -6900,7 +6900,7 @@
    "details": [
     "Fogmog HP 20→16 (−4)"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 170,
    "label": "Play Shiv → Fogmog",
    "turn": 14
@@ -6961,7 +6961,7 @@
     "Fogmog HP 16→0  ☠ defeated",
     "You −Draw Cards Next Turn"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 171,
    "label": "End turn",
    "turn": 14
@@ -6972,7 +6972,7 @@
    "combat_log": [],
    "decision": "game_over",
    "details": [],
-   "floor": 11,
+   "floor": 12,
    "idx": 172,
    "label": "",
    "turn": null

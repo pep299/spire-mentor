@@ -6,10 +6,14 @@ use super::prelude::*;
 ///
 /// [decompiled C# omitted — see the cited path]
 ///
-/// `GetResultLocationForCardPlay` sends the played card to a random
-/// TEAMMATE's draw pile; with no teammate (single-player) the default result
-/// location stands. The per-play growth mutates this instance's damage base,
-/// which survives a downgrade exactly like C#'s `AfterDowngraded` re-add.
+/// `GetResultLocationForCardPlay` sends the played card to a random living
+/// TEAMMATE (`Rng.CombatTargets`), into their draw pile at a random place when
+/// the result was Discard; with no living teammate the default result location
+/// stands. That half is the engine's, not this handler's: the roll is
+/// `sts2_core::coop::roll_result_player` at play start and the move
+/// `sts2_core::coop::hand_over_played_card` when it leaves Play (GH #1017). The
+/// per-play growth mutates this instance's damage base, which moves with the
+/// card and survives a downgrade exactly like C#'s `AfterDowngraded` re-add.
 pub(crate) fn play_the_ball(state: &mut CombatState, target: Option<CreatureUid>) -> EffectResult {
     let t = target.expect("TheBall: Enemy-targeted");
     let _ = deal_damage_player_to_enemy(state, t, current_damage(state));

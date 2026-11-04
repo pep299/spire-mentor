@@ -2,9 +2,7 @@
 use super::prelude::*;
 
 /// Buffer. Cost 2, Power, Self. Gain Buffer (1 base, 2 upgraded).
-/// Pin: `sts2-rl-agent@01c094d:sts2_env/cards/defect.py:640`. C#
-/// `Buffer.cs:OnUpgrade` bumps `PowerVar<BufferPower>` 1→2; the
-/// Python pin port had only the base. Beads `sts2-rs-l0be` (port),
+/// C# `Buffer.cs:OnUpgrade` bumps `PowerVar<BufferPower>` 1→2. Beads `sts2-rs-l0be` (port),
 /// `sts2-rs-dfjjo` (upgrade-scaling fix vein).
 pub(crate) fn play_buffer(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     let amt = if current_card_upgraded(state) { 2 } else { 1 };

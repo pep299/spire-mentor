@@ -431,7 +431,12 @@ def _registry_power_names() -> frozenset[str]:
         list_names = getattr(sts2_rs, "list_registry_names", None)
         if list_names is None:
             return frozenset()
-        return frozenset(list_names("power"))
+        # Every build's powers ("power" is v0.107.1's alone, an embedding
+        # vocabulary that must not grow); older engines lack the kind.
+        try:
+            return frozenset(list_names("power_all"))
+        except ValueError:
+            return frozenset(list_names("power"))
     except Exception:
         return frozenset()
 
@@ -450,6 +455,16 @@ _POWER_VAR_TO_ENGINE_FIELD = {
     # (The only two powers in the v0.107.1 decompile with a `SelfDamage` var.)
     ("CRIMSON_MANTLE", "SelfDamage"): "counter",
     ("INFERNO", "SelfDamage"): "counter",
+    # SkittishPower's once-per-turn `hasGainedBlockThisTurn`, which the mod
+    # reads off its public getter and sends with the vars (GH #989). The
+    # engine keeps the same latch on `Power.counter`.
+    ("SKITTISH", "HasGainedBlockThisTurn"): "counter",
+    # SurroundedPower's `Facing` (Right 0, Left 1), which the mod reads off
+    # its public getter and sends with the vars (GH #989): the side a player
+    # turned to decides which crab arm's hits take 1.5x. The engine keeps it
+    # on `Power.counter` (`SURROUNDED_FACING_RIGHT` / `_LEFT`, same values).
+    # Ours is inferred from the arms' intents without it; a teammate's is not.
+    ("SURROUNDED", "Facing"): "counter",
     # ToricToughnessPower.SetBlock stashes the block RE-GRANTED at the start
     # of the owner's next turns (the play-time GainBlock result: 5/7 upgraded,
     # Dex/Frail already folded in) in `DynamicVars.Block`; `amount` is only
@@ -541,7 +556,45 @@ def _translate_power(raw: dict[str, Any], path: str) -> dict[str, Any]:
             out["display"] = int(disp)
         except (TypeError, ValueError):
             pass
+    # The player who applied it (GH #1004): the engine's seat id when the
+    # source is an engine board, else the mod's net id, which
+    # `_resolve_power_appliers` turns into one once every seat is known.
+    # Imitation Learning's seat is instead the teammate it copies (C#
+    # `PlayerTarget`, the mod's `player_target`, GH #992). Its `applier` is
+    # its own holder, so without `player_target` (an older mod) the seat is
+    # left to the engine's default: the holder's first teammate (exact with
+    # two players; three or more is #1017).
+    seat = raw.get("applier_seat")
+    if isinstance(seat, int) and not isinstance(seat, bool):
+        out["applier_seat"] = seat
+    elif pid == "IMITATION_LEARNING":
+        if raw.get("player_target") is not None:
+            out["applier"] = str(raw["player_target"])
+    elif raw.get("applier") is not None:
+        out["applier"] = str(raw["applier"])
     return out
+
+
+def _resolve_power_appliers(state: dict[str, Any], out: dict[str, Any]) -> None:
+    """Every power's ``applier`` net id -> ``applier_seat`` (0 us, ``i + 1``
+    for ``$.allies[i]``): a teammate's Flanking, Knockdown and Tag Team help
+    only the players who did not apply them (GH #1004). An applier the board
+    does not name, or any applier solo, is dropped: the engine reads the
+    power as ours, as before."""
+    seats: dict[str, int] = {}
+    if state.get("net_id") is not None:
+        seats[str(state["net_id"])] = 0
+    for i, ally in enumerate(state.get("allies") or []):
+        if ally.get("net_id") is not None:
+            seats[str(ally["net_id"])] = i + 1
+    lists = [(out.get("player") or {}).get("powers")]
+    lists += [e.get("powers") for e in out.get("encounter") or []]
+    lists += [a.get("powers") for a in out.get("allies") or []]
+    for powers in lists:
+        for p in powers or []:
+            net_id = p.pop("applier", None)
+            if net_id is not None and net_id in seats and len(seats) > 1:
+                p["applier_seat"] = seats[net_id]
 
 
 def _translate_intent(raw: dict[str, Any], path: str) -> dict[str, Any]:
@@ -769,6 +822,19 @@ def _translate_card(raw: dict[str, Any], path: str, *, hand: bool = False) -> di
     stable_cost = raw.get("stable_cost")
     if isinstance(stable_cost, int):
         spec["stable_cost"] = stable_cost
+    # The STAR half of the same story. C# ``SetToFreeThisTurn`` zeroes the
+    # star cost as well as the energy cost (``CardModel.cs:1267-1271``), and
+    # the energy fields above cannot say so: a Silent's Splash-generated
+    # Falling Star rebuilt at 0 energy but its printed 2 stars, which a
+    # star-less character can never pay, so the search listed a free attack as
+    # unplayable and ended the turn over it. ``star_cost`` is the current star
+    # cost (``CurrentStarCost``), ``persistent_star_cost`` what it is once this
+    # turn's temporary costs expire (``GetStarCostThisCombat``); the engine maps
+    # a 0 in either onto its this-turn / this-combat star-free rider.
+    for star_key in ("star_cost", "persistent_star_cost"):
+        v = raw.get(star_key)
+        if isinstance(v, int) and not isinstance(v, bool):
+            spec[star_key] = v
 
     # Current base attack / block from the C# `stats` block. These are the
     # card's own base values (post-upgrade, pre-external-modifier — verified
@@ -862,6 +928,11 @@ def _translate_card(raw: dict[str, Any], path: str, *, hand: bool = False) -> di
         }
         if clean:
             spec["combat_vars"] = clean
+    # Extra plays the instance gained this combat (C# `BaseReplayCount`:
+    # Soldier's Stew, Hidden Gem); absent means none.
+    replays = raw.get("base_replay_count")
+    if isinstance(replays, int) and not isinstance(replays, bool) and replays:
+        spec["base_replay_count"] = replays
 
     return spec
 
@@ -1231,6 +1302,10 @@ def translate(
     # headless builds) => engine default false.
     if player_raw.get("bound_card_played_this_turn") is True:
         player["bound_card_played_this_turn"] = True
+    # Spite's "lost HP this turn"; absent => false.
+    if player_raw.get("hp_lost_this_turn") is True:
+        player["hp_lost_this_turn"] = True
+    _copy_seat_history(player_raw, player)
 
     deck: dict[str, Any] = {
         "draw_pile": draw,
@@ -1269,11 +1344,32 @@ def translate(
     game_version = _wire_game_version(state)
     if game_version is not None:
         out["game_version"] = game_version
+    # The act (1-based) and a boss room: co-op enemy scaling, the
+    # persistent-gain horizon and act-gated relics read them (GH #989).
+    # Forwarded only off their defaults (act 1, not a boss), like
+    # `state_to_dict`.
+    act = state.get("act")
+    if isinstance(act, int) and not isinstance(act, bool) and act > 1:
+        out["act_index"] = act
+    if ctx.get("room_type") == "Boss":
+        out["is_boss"] = True
     # Co-op teammates (``$.allies``): omitted when solo, so a single-player
     # board yields the wire it always did.
     allies = state.get("allies")
     if allies:
         out["allies"] = [_translate_ally(a, i) for i, a in enumerate(allies)]
+        # Every teammate came as a whole seat (a current mod): a whole co-op
+        # fight, in which they keep drawing and playing every round. Without
+        # it they play out only this round and then stand idle, so every line
+        # past it is ours alone against enemies scaled for the whole party
+        # (GH #1046). One seat short of whole keeps the one-round board.
+        if all(_is_whole_seat(a) for a in out["allies"]):
+            out["coop_full"] = True
+            # Our place in the run's player order: the teammates ahead of us
+            # set up, draw and end their turn first.
+            if state.get("seat_index"):
+                out["coop_seat_index"] = state["seat_index"]
+    _resolve_power_appliers(state, out)
     return out
 
 
@@ -1322,6 +1418,21 @@ def _translate_ally(ally: dict[str, Any], index: int) -> dict[str, Any]:
         ]
     if isinstance(ally.get("stars"), int):
         out["stars"] = ally["stars"]
+    if ally.get("hp_lost_this_turn") is True:
+        out["hp_lost_this_turn"] = True
+    _copy_seat_history(ally, out)
+    # Their plays this turn, as ours (GH #989: their Ripple Basin).
+    cppt = ally.get("cards_played_this_turn")
+    if isinstance(cppt, list) and len(cppt) == 5:
+        out["cards_played_this_turn"] = [max(0, int(n)) for n in cppt]
+    if isinstance(ally.get("orbs"), list):
+        out["orbs"] = [_translate_orb(o, f"{path}.orbs[{i}]") for i, o in enumerate(ally["orbs"])]
+        if isinstance(ally.get("orb_slots"), int):
+            out["orb_slots"] = ally["orb_slots"]
+    # Their Osty, as ours (GH #1017).
+    osty = _translate_osty(ally.get("osty"), f"{path}.osty")
+    if osty is not None:
+        out["osty"] = osty
     if isinstance(ally.get("potions"), list):
         out["potions"] = [
             _translate_potion(p.get("name"), f"{path}.potions[{i}]")
@@ -1330,6 +1441,52 @@ def _translate_ally(ally: dict[str, Any], index: int) -> dict[str, Any]:
             for i, p in enumerate(ally["potions"])
         ]
     return out
+
+
+def _is_whole_seat(ally: dict[str, Any]) -> bool:
+    """A translated ``$.allies`` entry the engine can play for a whole fight:
+    a hand, the draw and discard piles it draws and reshuffles from, and the
+    relics (an empty list included) that answer its turns."""
+    return all(
+        isinstance(ally.get(k), list) for k in ("hand", "draw_pile", "discard_pile", "relics")
+    )
+
+
+#: A seat's turn counts a rebuilt board cannot redo (GH #989), on the wire
+#: whenever the producer sent them, zero included.
+TURN_HISTORY_KEYS = ("cards_exhausted_this_turn", "card_block_gains_this_turn")
+
+
+def _copy_seat_history(src: dict[str, Any], out: dict[str, Any]) -> None:
+    """A seat's History counts a rebuilt board cannot redo (GH #989), when
+    the producer sent them: the hits that took the seat's HP this combat
+    (Tear Asunder) and its powered hits on each enemy this turn, as
+    ``[{enemy, hits}]`` (a teammate's Gang Up), and the cards it exhausted
+    this combat (Midnight counts everyone's), and this turn's exhausts (Evil
+    Eye) and card block gains (Unmovable), and its extra turns this combat
+    (GH #812: PaelsEye, Ambergris). Zero and empty are omitted, the
+    wire's default -- except the two turn counts, kept at 0 too: their
+    presence says the producer disclosed them, so the live mirror lets
+    reality win on them (``combat_mirror``, GH #989)."""
+    for key in (
+        "unblocked_hits_this_combat",
+        "cards_exhausted_this_combat",
+        "cards_exhausted_this_turn",
+        "card_block_gains_this_turn",
+        "extra_turns_taken_this_combat",
+    ):
+        n = src.get(key)
+        if isinstance(n, int) and not isinstance(n, bool) and (n > 0 or key in TURN_HISTORY_KEYS):
+            out[key] = max(0, n)
+    hits = src.get("powered_hits_this_turn")
+    if isinstance(hits, list):
+        rows = [
+            {"enemy": int(h["enemy"]), "hits": int(h["hits"])}
+            for h in hits
+            if isinstance(h, dict) and h.get("hits")
+        ]
+        if rows:
+            out["powered_hits_this_turn"] = rows
 
 
 def _wire_game_version(state: dict[str, Any]) -> str | None:

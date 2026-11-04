@@ -1,7 +1,7 @@
 {
  "action": "buy_potion",
  "args": {
-  "potion_index": 0
+  "potion_index": 2
  },
  "fallback": true,
  "policy": "ppo"

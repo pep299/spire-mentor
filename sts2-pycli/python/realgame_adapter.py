@@ -268,14 +268,22 @@ def _translate_power(power: dict[str, Any]) -> dict[str, Any]:
     ``_POWER_VAR_TO_ENGINE_FIELD`` table (CrimsonMantle/Inferno ``SelfDamage``).
     Passed through as ``None``-tolerant keys so a mod build that predates the
     bridge emitting them behaves exactly as before rather than claiming zero.
+
+    ``applier`` is the net id of the player who applied it (co-op, GH #1004),
+    which :func:`sts2_hint.adapter._resolve_power_appliers` maps to a seat.
+    ``player_target`` is the teammate an Imitation Learning copies (GH #992).
     """
-    return {
+    out = {
         "id": power.get("id"),
         "name": power.get("name"),
         "amount": power.get("amount", 0),
         "display_amount": power.get("display_amount"),
         "vars": power.get("vars"),
     }
+    for key in ("applier", "player_target"):
+        if power.get(key) is not None:
+            out[key] = power[key]
+    return out
 
 
 def _keywords_for_hand_card(card: dict[str, Any]) -> list[str]:
@@ -339,7 +347,21 @@ def _translate_card(card: dict[str, Any], index: int, *, hand: bool = False) -> 
     # ``isinstance`` guard keeps a pre-field mod build's absent/null values
     # off the wire so absent behaves exactly as before rather than claiming a
     # cost of ``None``.
-    for cost_key in ("base_cost", "persistent_cost", "played_cost", "stable_cost"):
+    #
+    # ``star_cost`` / ``persistent_star_cost`` are the same idea for STARS
+    # (C# ``CurrentStarCost`` / ``GetStarCostThisCombat``). ``SetToFreeThisTurn``
+    # zeroes both currencies, so without them a Splash- or Discovery-generated
+    # Regent star card rebuilt free in energy but at its printed star cost --
+    # unplayable for a star-less Silent, who then ended the turn holding a free
+    # attack.
+    for cost_key in (
+        "base_cost",
+        "persistent_cost",
+        "played_cost",
+        "stable_cost",
+        "star_cost",
+        "persistent_star_cost",
+    ):
         v = card.get(cost_key)
         if isinstance(v, int) and not isinstance(v, bool):
             out[cost_key] = v
@@ -388,6 +410,10 @@ def _translate_card(card: dict[str, Any], index: int, *, hand: bool = False) -> 
     combat_vars = card.get("combat_vars")
     if isinstance(combat_vars, dict) and combat_vars:
         out["combat_vars"] = dict(combat_vars)
+    # Extra plays the instance gained this combat (Soldier's Stew, Hidden Gem).
+    replays = card.get("base_replay_count")
+    if isinstance(replays, int) and not isinstance(replays, bool) and replays:
+        out["base_replay_count"] = replays
     if hand:
         kws = _keywords_for_hand_card(card)
         if kws:
@@ -682,6 +708,24 @@ def to_headless_combat_play(state: dict[str, Any]) -> dict[str, Any]:
             # ChainsOfBinding's once-per-turn Bound gate (Queen fight) --
             # same rationale as the buckets above. Absent on older mods.
             "bound_card_played_this_turn": player.get("bound_card_played_this_turn"),
+            # Spite's "lost HP this turn" (a History scan a rebuilt board
+            # cannot redo). Absent on older mods.
+            "hp_lost_this_turn": player.get("hp_lost_this_turn"),
+            # Tear Asunder's and a teammate's Gang Up's History counts
+            # (GH #989). Absent on older mods.
+            "unblocked_hits_this_combat": player.get("unblocked_hits_this_combat"),
+            "powered_hits_this_turn": player.get("powered_hits_this_turn"),
+            # Our exhausts this combat: Midnight counts every player's.
+            # Absent on older mods.
+            "cards_exhausted_this_combat": player.get("cards_exhausted_this_combat"),
+            # This turn's exhausts (Evil Eye) and card block gains
+            # (Unmovable) (GH #989). Absent on older mods.
+            "cards_exhausted_this_turn": player.get("cards_exhausted_this_turn"),
+            "card_block_gains_this_turn": player.get("card_block_gains_this_turn"),
+            # Extra turns taken this combat (PaelsEye, Ambergris): the
+            # turn-number gates read round + this (GH #812). Absent on older
+            # mods.
+            "extra_turns_taken_this_combat": player.get("extra_turns_taken_this_combat"),
             # Run gold, from the bridge envelope's ``run_state`` -- gates the
             # in-combat gold-spending relic hooks (SealOfGold's 5-gold
             # turn-start energy buy). ``sts2_hint.adapter`` only forwards an
@@ -708,6 +752,11 @@ def to_headless_combat_play(state: dict[str, Any]) -> dict[str, Any]:
     slot_count = run_state.get("potion_slot_count")
     if isinstance(slot_count, int) and not isinstance(slot_count, bool):
         out["player"]["potion_slots"] = slot_count
+    # The act, 1-based (the bridge's top-level ``act``): ``translate``
+    # forwards it as the wire's ``act_index`` (GH #989).
+    act = state.get("act")
+    if isinstance(act, int) and not isinstance(act, bool):
+        out["act"] = act
 
     # Co-op teammates (PROTOCOL.md ``allies``), in the mod's order: an
     # ``AnyAlly`` card lands on the first living one, in the engine and in
@@ -747,6 +796,31 @@ def to_headless_combat_play(state: dict[str, Any]) -> dict[str, Any]:
                 ally["stars"] = a["stars"]
             if isinstance(a.get("potions"), list):
                 ally["potions"] = a["potions"]
+            if a.get("hp_lost_this_turn") is True:
+                ally["hp_lost_this_turn"] = True
+            for key in (
+                "unblocked_hits_this_combat",
+                "powered_hits_this_turn",
+                "cards_played_this_turn",
+                "cards_exhausted_this_combat",
+                "cards_exhausted_this_turn",
+                "card_block_gains_this_turn",
+                "extra_turns_taken_this_combat",
+            ):
+                if a.get(key):
+                    ally[key] = a[key]
+            # Their orb belt (newer mods), as ours: a teammate's Frost orbs
+            # block at their turn end (GH #989).
+            if isinstance(a.get("orbs"), list):
+                ally["orbs"] = [_translate_orb(o) for o in a["orbs"]]
+                ally["orb_slots"] = a.get("orb_capacity", len(a["orbs"]))
+            # Their Osty (newer mods, GH #1017), as ours: a Necrobinder
+            # teammate's pet soaks their hits. Older mods sent no ``pets``;
+            # their teammates stay Osty-less rather than given a guessed one.
+            if isinstance(a.get("pets"), list):
+                ally_osty = _translate_osty(a["pets"], a.get("character"))
+                if ally_osty is not None:
+                    ally["osty"] = ally_osty
         if a.get("net_id") is not None:
             ally["net_id"] = str(a["net_id"])
         allies.append(ally)

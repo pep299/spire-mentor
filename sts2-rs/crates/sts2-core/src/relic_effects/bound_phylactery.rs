@@ -45,12 +45,9 @@ pub(crate) fn on_count_pets_bound_phylactery(state: &CombatState) -> i32 {
     if !player_owns_relic(state, crate::RelicKind::BoundPhylactery) {
         return 0;
     }
-    let n = state
-        .creatures
-        .iter()
-        .filter(|c| c.species == Some(crate::MonsterKind::Osty) && c.current_hp > 0)
-        .count();
-    i32::try_from(n).unwrap_or(i32::MAX)
+    // The holder's own pet only (`state.player.pet_uid`), never a
+    // teammate's Osty (GH #1017).
+    i32::from(state.living_own_osty())
 }
 
 pub(crate) fn install() {

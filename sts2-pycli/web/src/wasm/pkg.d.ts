@@ -33,7 +33,7 @@ declare module "sts2-workbench-wasm" {
       on_frame: (frame: string) => void,
     ): ReplyJson;
     build_save(name: string, saved_at: string): ReplyJson;
-    restore_save(payload_json: string): ReplyJson;
+    restore_save(payload_json: string, now: string): ReplyJson;
     static save_header(payload_json: string): ReplyJson;
     /** Raw JSON value (`null` when no run is live). */
     export_persist(): string;
@@ -46,8 +46,9 @@ declare module "sts2-workbench-wasm" {
      *  (`{status, body: "<file>"}`), the loader over its bytes, why a
      *  load was not possible, whether one is loaded. */
     static ppo_champion_file(character: string): ReplyJson;
-    /** Run logs (M4): the log the last `/api/live/quit` wrote (raw JSON
-     *  `{filename, text}` or `null`), a stored log parsed into the replay
+    /** Run logs (M4): the oldest log not yet collected — a quit's, or the
+     *  one a run-replacing route wrote (raw JSON `{filename, text}` or
+     *  `null` when none is left), a stored log parsed into the replay
      *  store, and the MCTS Runs listings over `[[filename, text], …]`. */
     take_run_log(): string;
     load_run(path: string, text: string): ReplyJson;

@@ -208,6 +208,19 @@ class PPOConfig:
     # evaluated under another is a silent divergence — nothing about the
     # tensor reveals it.
     act1: str = "overgrowth"
+    # GH #977: probability that a collection run starts with one random
+    # removable curse in its deck (`PpoRunEnv.curse_inject_p`). Collection
+    # only; evaluation never injects. Recorded in the cfg so a champion says
+    # which curriculum produced it.
+    curse_inject_p: float = 0.0
+    # GAE lambda for the advantage EMITTED at a deck decision (card reward,
+    # removal, upgrade, transform, enchant, grant, smith, shop; GH #977). A
+    # deck choice's effect is small next to the noise of the rest of the run,
+    # so a lower lambda reads it off the critic (V after vs V before) instead
+    # of the outcome. Only the emitted advantage changes: the recursion
+    # carries `lam` through, so the decisions before it keep their credit.
+    # Negative = off (every step uses `lam`).
+    deck_lam: float = -1.0
     # Torch device for the UPDATE only ("cpu", "cuda", "cuda:1", or "auto").
     # Collection stays CPU-per-process by design (many small forwards across
     # a process pool). At campaign settings the update is ~13% of wall clock;
@@ -443,6 +456,7 @@ def collect_rows(cfg: PPOConfig, it: int, acting_ckpt: str, sampler=None) -> lis
         combat=cfg.combat,
         surrogate_path=(cfg.surrogate_path or None),
         act1=cfg.act1,
+        curse_inject_p=cfg.curse_inject_p,
         **corpus_dump_kwargs(cfg, it),
     )
     if sample_seeds is not None:
@@ -452,6 +466,23 @@ def collect_rows(cfg: PPOConfig, it: int, acting_ckpt: str, sampler=None) -> lis
             if ss is not None:
                 r["plr_replayed"] = True
     return rows
+
+
+#: Fine surfaces `PPOConfig.deck_lam` applies to: every choice that changes
+#: the deck (`encoder._KIND_SURFACE`). The shop is one surface whether the
+#: choice was a card, a relic, a potion, a removal or leaving.
+DECK_SURFACES = frozenset(
+    {
+        "card-reward",
+        "card-smith",
+        "card-remove",
+        "card-upgrade",
+        "card-transform",
+        "card-enchant",
+        "card-grant",
+        "shop",
+    }
+)
 
 
 def gae_from_row(row: dict, cfg: PPOConfig, shaping: ShapingConfig) -> list[Transition]:
@@ -471,15 +502,18 @@ def gae_from_row(row: dict, cfg: PPOConfig, shaping: ShapingConfig) -> list[Tran
     next_v = 0.0  # terminal bootstrap
     for t in reversed(range(len(trans_in))):
         delta = rewards[t] + cfg.gamma * next_v - values[t]
-        adv = delta + cfg.gamma * cfg.lam * adv
+        next_adv = adv
+        emitted = adv = delta + cfg.gamma * cfg.lam * next_adv
+        if cfg.deck_lam >= 0.0 and trans_in[t].get("fine_surface") in DECK_SURFACES:
+            emitted = delta + cfg.gamma * cfg.deck_lam * next_adv
         out.append(
             Transition(
                 feat=trans_in[t]["feat"],
                 action_idx=trans_in[t]["action_idx"],
                 old_logprob=trans_in[t]["old_logprob"],
                 value=values[t],
-                advantage=adv,
-                ret=adv + values[t],
+                advantage=emitted,
+                ret=emitted + values[t],
             )
         )
         next_v = values[t]
@@ -785,6 +819,24 @@ def behavior_stats(rows: list[dict]) -> dict:
     out.update({f"dec_per_run/{k}": round(v / n_runs, 2) for k, v in sorted(coarse.items())})
     acts = collections.Counter(r.get("act1") or "unknown" for r in rows)
     out.update({f"act1_frac/{k}": round(v / n_runs, 3) for k, v in sorted(acts.items())})
+    # GH #977: removal decisions that offered a removable curse, per run, and
+    # the share that took one, split card-select removal vs shop. Emitted
+    # unconditionally (zeros included): an absent key is not a zero.
+    for surf in ("card-remove", "shop"):
+        flags = [
+            t["curse_rm"]
+            for r in rows
+            for t in r.get("transitions") or []
+            if t.get("curse_rm") is not None and (t.get("fine_surface") or t["surface"]) == surf
+        ]
+        out[f"curse_rm/{surf}_offered_per_run"] = round(len(flags) / n_runs, 3)
+        out[f"curse_rm/{surf}_taken_frac"] = round(sum(flags) / len(flags), 4) if flags else 0.0
+    out["dec_per_run/card-bundle"] = round(
+        sum(1 for r in rows for t in r.get("transitions") or [] if t.get("bundle")) / n_runs, 3
+    )
+    out["curse_rm/injected_frac"] = round(
+        sum(1 for r in rows if r.get("injected_curse")) / n_runs, 3
+    )
     return out
 
 

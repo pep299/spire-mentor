@@ -9,6 +9,7 @@ without torch installed, so the numpy-only pieces live here; ``model`` and
 Categorical schema (per token, PAD where N/A), index → meaning:
   0 card · 1 upgrade · 2 relic · 3 potion · 4 room · 5 event · 6 fixed-kind
   7 option-idx · 8 surface · 9 boss · 10 deck-op · 11 enchantment
+  12 card type · 13 card rarity
 
 (10 and 11 are GH #545, and both are APPENDS — the emb_boss property above
 applies unchanged: a 10-categorical champion drops both columns and is
@@ -80,6 +81,26 @@ already has. Gated for the ``reward_upgrade`` reason: the enchantment table
 was only ever trained on the state token and the enchant-pick tokens, so a
 champion handed it on every deck token would read noise.
 
+``card_bundles`` (GH #978) shows a Scroll Boxes pick for what it is. The
+engine surfaces the two packs as a two-option card reward whose options are
+each pack's FIRST card, so without the feature 4 of the 6 cards are invisible
+and a pack is scored by one common. With it, every pack member becomes an obs
+token (SEC_CARD, deck op ``bundle``, ``cat[7]`` = its pack index) and each
+pick-pack action token carries only the deck op and the pack index, so the
+net compares packs by attending to their members. Gated because the deck-op
+row it uses was the never-trained spare.
+
+``card_kind`` (GH #977) stamps every token that names a card (``cat[0]``)
+with the card's spec type and rarity (``cat[12]``, ``cat[13]``). Card ids are
+one embedding row each, so what the policy learns about one card reaches no
+other: a champion learned to remove Decay and Normality, the two curses whose
+cost shows in its returns, and still kept Injury, Clumsy and Writhe at
+P(remove) 0.000. A shared ``CURSE`` row is the path for that lesson to reach
+every curse, and rarity does the same for rarely offered cards. Both tables are
+zero-initialized, so a warm-started net is bit-identical to its parent until
+the first update. Gated because the Rust encoder does not write the columns
+yet: a ``card_kind`` net cannot be served until it does.
+
 Continuous schema (per token, zeros where N/A), index → meaning:
   0 hp_frac · 1 gold_scaled · 2 act_index · 3 deck_size_s · 4 n_upgraded_s
   5 n_relics_s · 6 dx · 7 dy · 8 reachable · 9 min_elites · 10 max_elites
@@ -125,7 +146,9 @@ N_SECTION = 11
 #: Candidate encoder inputs, off by default. See the module docstring.
 REWARD_UPGRADE = "reward_upgrade"
 CARD_MODS = "card_mods"
-KNOWN_FEATURES: frozenset[str] = frozenset({REWARD_UPGRADE, CARD_MODS})
+CARD_BUNDLES = "card_bundles"
+CARD_KIND = "card_kind"
+KNOWN_FEATURES: frozenset[str] = frozenset({REWARD_UPGRADE, CARD_MODS, CARD_BUNDLES, CARD_KIND})
 
 
 def parse_features(spec: str) -> frozenset[str]:
@@ -143,10 +166,12 @@ def parse_features(spec: str) -> frozenset[str]:
 
 ACTIVE_FEATURES = parse_features(os.environ.get("STS2_PPO_FEATURES", ""))
 
-N_CAT = 12
+N_CAT = 14
 CAT_BOSS = 9  # act-boss identity; see the module docstring
 CAT_DECK_OP = 10  # which deck operation a card token belongs to (GH #545)
 CAT_ENCHANT = 11  # which enchantment a pending deck-enchant pick stamps
+CAT_CARD_TYPE = 12  # a card token's spec type (`card_kind`, GH #977)
+CAT_CARD_RARITY = 13  # a card token's spec rarity (`card_kind`, GH #977)
 N_CONT = 26
 GOLD_SCALE = 0.01  # gold * 0.01 keeps it ~O(1)
 ACT_SCALE = 1.0
@@ -202,6 +227,8 @@ def pad_indices() -> dict[str, int]:
         "boss": vocab.bosses().size,
         "deck_op": vocab.N_DECK_OP,
         "enchant": vocab.enchantments().size,
+        "card_type": vocab.N_CARD_TYPE,
+        "card_rarity": vocab.N_CARD_RARITY,
     }
     return p
 
@@ -209,7 +236,7 @@ def pad_indices() -> dict[str, int]:
 def empty_cat() -> list[int]:
     p = pad_indices()
     # order: [card, upg, relic, potion, room, event, fixed, optidx, surface,
-    #         boss, deck_op, enchant]
+    #         boss, deck_op, enchant, card_type, card_rarity]
     return [
         p["card"],
         p["upg"],
@@ -223,6 +250,8 @@ def empty_cat() -> list[int]:
         p["boss"],
         p["deck_op"],
         p["enchant"],
+        p["card_type"],
+        p["card_rarity"],
     ]
 
 

@@ -3,7 +3,7 @@
   {
    "act": 1,
    "deck_size": 11,
-   "floor": 0,
+   "floor": 1,
    "idx": 0,
    "scores": {
     "block": 36.6,
@@ -15,7 +15,7 @@
   {
    "act": 1,
    "deck_size": 12,
-   "floor": 1,
+   "floor": 2,
    "idx": 16,
    "scores": {
     "block": 33.7,
@@ -27,7 +27,7 @@
   {
    "act": 1,
    "deck_size": 13,
-   "floor": 2,
+   "floor": 3,
    "idx": 37,
    "scores": {
     "block": 36.1,
@@ -39,7 +39,7 @@
   {
    "act": 1,
    "deck_size": 13,
-   "floor": 3,
+   "floor": 4,
    "idx": 49,
    "scores": {
     "block": 39.5,
@@ -51,7 +51,7 @@
   {
    "act": 1,
    "deck_size": 14,
-   "floor": 3,
+   "floor": 4,
    "idx": 50,
    "scores": {
     "block": 37.8,
@@ -63,7 +63,7 @@
   {
    "act": 1,
    "deck_size": 15,
-   "floor": 4,
+   "floor": 5,
    "idx": 71,
    "scores": {
     "block": 36.4,
@@ -75,7 +75,7 @@
   {
    "act": 1,
    "deck_size": 16,
-   "floor": 5,
+   "floor": 6,
    "idx": 92,
    "scores": {
     "block": 43.1,

@@ -769,7 +769,7 @@ fn intent_check_only_applies_during_enemy_turn_exec() {
 
 fn play_pre(energy: i8, cost: i8, x_cost: bool, weighted: i8) -> PreStep {
     PreStep {
-        energy,
+        energy: i32::from(energy),
         is_over: false,
         played: Some((CardId::StrikeIronclad, cost, x_cost, weighted)),
     }

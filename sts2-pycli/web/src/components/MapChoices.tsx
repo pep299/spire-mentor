@@ -1,5 +1,7 @@
 import type { Step, ChooseHandler, MapChoiceNode } from "../api";
-import { nodeMeta } from "./MapView";
+import { nodeMeta } from "./mapArt";
+// For the gsm-* classes below.
+import "../skins/map.css";
 
 /**
  * Play-mode map node picker. The live ``map_select`` state exposes only the

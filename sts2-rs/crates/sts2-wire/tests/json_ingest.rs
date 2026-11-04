@@ -272,3 +272,141 @@ fn v0111_only_cards_parse_from_a_v0111_wire() {
         assert_eq!(state.cards[first.0.get() as usize - 1].card_id, id);
     }
 }
+
+/// v0.111.0 Haze lost its intrinsic Sly (`Haze.cs:19`, no
+/// `CanonicalKeywords`), so whether a wire `sly` flag on a Haze is the
+/// card's own keyword or MasterPlanner's combat-long grant depends on the
+/// build. The decoder and the emitter must both ask
+/// `card_sly_in(id, game_version)`: a version-blind decoder dropped the grant
+/// at v0.111.0, and a version-blind emitter wrote `sly` on every v0.111.0
+/// Haze, which the fixed decoder would then read back as a grant.
+#[test]
+fn haze_sly_round_trips_in_both_builds() {
+    for (version, intrinsic) in [("0.107.1", true), ("0.111.0", false)] {
+        for granted in [false, true] {
+            let mut value: serde_json::Value = serde_json::from_str(&fixture()).unwrap();
+            value["game_version"] = serde_json::json!(version);
+            let flags = if granted || intrinsic {
+                serde_json::json!(["sly"])
+            } else {
+                serde_json::json!([])
+            };
+            value["deck"]["hand"] = serde_json::json!([{
+                "id": "HAZE", "stable_idx": 0, "kind": "card", "upgraded": false, "flags": flags
+            }]);
+            let state = state_from_json_str(&value.to_string()).expect("rebuilds");
+            let uid = state.player.hand[0];
+            let label = format!("{version} granted={granted}");
+            assert_eq!(
+                sts2_core::card_effects::card_is_sly(&state, uid),
+                intrinsic || granted,
+                "{label}"
+            );
+            assert_eq!(
+                state.player.sly_this_combat.contains(&uid),
+                granted && !intrinsic,
+                "{label}: only a grant is combat-scoped"
+            );
+            let wire = sts2_wire::emit::combat_state_to_value(&state).expect("emits");
+            let has_sly = wire["deck"]["hand"][0]["flags"]
+                .as_array()
+                .is_some_and(|f| f.iter().any(|x| x == "sly"));
+            assert_eq!(has_sly, intrinsic || granted, "{label}: emitted flag");
+            let back = state_from_json_str(&wire.to_string()).expect("rebuilds again");
+            assert_eq!(
+                sts2_core::card_effects::card_is_sly(&back, back.player.hand[0]),
+                intrinsic || granted,
+                "{label}: round trip"
+            );
+        }
+    }
+}
+
+/// MasterPlanner's `AddKeyword(Sly)` lasts the combat and stays on the card
+/// in every pile (`MasterPlannerPower.cs`), so a `sly` flag on a pile card is
+/// read too, not only in hand: a rebuilt granted-Sly Defend in the draw pile
+/// is still Sly once drawn. Ported from manoj fork 841f558f3 (decoder half).
+#[test]
+fn granted_sly_is_read_from_every_pile() {
+    let mut value: serde_json::Value = serde_json::from_str(&fixture()).unwrap();
+    value["deck"]["draw_pile"][1]["flags"] = serde_json::json!(["sly"]);
+    let state = state_from_json_str(&value.to_string()).expect("rebuilds");
+    let card = state.player.draw[1];
+    assert!(state.player.sly_this_combat.contains(&card));
+    assert!(!state.player.sly_this_combat.contains(&state.player.draw[0]));
+}
+
+/// A small fight: a 100-hp Nibbit, `hand` (card ids) in hand, three Strikes to
+/// draw, 3 energy.
+fn small_fight(hand: &[&str]) -> serde_json::Value {
+    let card = |id: &str, i: usize| serde_json::json!({"id": id, "stable_idx": i, "kind": "card", "upgraded": false});
+    serde_json::json!({
+        "wire_version": 1, "phase": "PlayerPlayPhase", "round": 1, "side": "Player",
+        "is_elite": false, "turn": 1, "combat_id": 0, "rng": {"seed": 1, "ascension": 0},
+        "player": {"class": "ironclad", "hp": 80, "max_hp": 80, "block": 0, "energy": 3,
+                   "max_energy": 3, "energy_regen_per_turn": 3, "gold": 0, "relics": [],
+                   "powers": [], "potions": []},
+        "deck": {"hand": hand.iter().enumerate().map(|(i, id)| card(id, i + 1)).collect::<Vec<_>>(),
+                 "draw_pile": (0..3).map(|i| card("STRIKE_IRONCLAD", 10 + i)).collect::<Vec<_>>(),
+                 "discard_pile": [], "exhaust_pile": []},
+        "encounter": [{"kind": "Nibbit", "uid": 1, "hp": 100, "max_hp": 100, "block": 0,
+                       "powers": [], "intents": [{"kind": "Attack", "amount": 6, "times": 1}],
+                       "intent_history": [], "is_dead": false, "is_escaped": false}],
+    })
+}
+
+/// C# `SoulsPower.OnEnchant` removes the card's Exhaust keyword
+/// (`Models.Enchantments/SoulsPower.cs`; `CanEnchant` requires a local
+/// Exhaust): a Soul's Power Molten Fist goes to the discard pile, a plain one
+/// is exhausted. Ported from manoj fork ef47c32ec.
+#[test]
+fn a_souls_power_card_does_not_exhaust() {
+    sts2_content::cards::dispatch::ensure_installed();
+    for (enchanted, discarded, exhausted) in [(true, 1, 0), (false, 0, 1)] {
+        let mut value = small_fight(&["MOLTEN_FIST"]);
+        if enchanted {
+            value["deck"]["hand"][0]["enchantment"] = serde_json::json!("SOULS_POWER");
+            value["deck"]["hand"][0]["enchantment_amount"] = serde_json::json!(1);
+        }
+        let mut state = state_from_json_str(&value.to_string()).expect("rebuilds");
+        let _ = sts2_core::apply(
+            &mut state,
+            sts2_core::Action::PlayCard {
+                hand_index: 0,
+                target: Some(0),
+            },
+        );
+        assert_eq!(
+            (state.player.discard.len(), state.player.exhaust.len()),
+            (discarded, exhausted),
+            "Soul's Power: {enchanted}"
+        );
+    }
+}
+
+/// `OvicopterNormal.Slots = [egg1..egg5, ovicopter]`: a rebuilt Ovicopter
+/// holds slot 5 and the listed living eggs the top egg slots, so its next
+/// lay puts the new eggs before it, as the game's slot-sorted enemy list
+/// does. Ported from manoj fork ef47c32ec.
+#[test]
+fn an_ovicopter_fight_rebuilds_with_its_egg_slots() {
+    sts2_content::cards::dispatch::ensure_installed();
+    let mut value = small_fight(&["STRIKE_IRONCLAD"]);
+    let enemy = |kind: &str, uid: i32, mv: &str| {
+        serde_json::json!({"kind": kind, "uid": uid, "hp": 20, "max_hp": 20, "block": 0,
+            "powers": [], "intents": [], "intent_history": [], "move_state": mv,
+            "is_dead": false, "is_escaped": false})
+    };
+    value["encounter"] = serde_json::json!([
+        enemy("ToughEgg", 1, "HATCH_MOVE"),
+        enemy("ToughEgg", 2, "HATCH_MOVE"),
+        enemy("Ovicopter", 3, "SMASH_MOVE")
+    ]);
+    let state = state_from_json_str(&value.to_string()).expect("rebuilds");
+    let slots: Vec<Option<u8>> = state
+        .enemy_uids
+        .iter()
+        .map(|uid| state.enemy_slot(*uid))
+        .collect();
+    assert_eq!(slots, [Some(3), Some(4), Some(5)]);
+}

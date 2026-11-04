@@ -49,7 +49,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from choice_grade import grade_choice
-from enemy_labels import enemy_label, enemy_labels
+from enemy_labels import ally_label, enemy_label, enemy_labels
 from workbench.reasoning import rows_from_mcts
 from workbench.regret_review import (
     PLAYED_MIN_VISITS,
@@ -195,12 +195,20 @@ class AdviceCache:
 
 
 def _match_row_index(rows: list[dict[str, Any]], native: dict[str, Any]) -> int | None:
-    """``regret_review._match_row``'s exact-then-``stable_idx``-only rule, as an index."""
+    """``regret_review._match_row``'s exact-then-``stable_idx``-only rule, as an index.
+
+    Exact includes the teammate of an AnyAlly play (``ally_index``): with three
+    or four players one card has a row per teammate (GH #1017)."""
     idx, target = action_stable_key(native, None)
     if idx is None:
         return None
+    ally = native.get("ally_index")
     for i, r in enumerate(rows):
-        if r.get("stable_idx") == idx and r.get("target_index") == target:
+        if (
+            r.get("stable_idx") == idx
+            and r.get("target_index") == target
+            and r.get("ally_index") == ally
+        ):
             return i
     for i, r in enumerate(rows):
         if r.get("stable_idx") == idx:
@@ -243,11 +251,16 @@ def native_from_row(row: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(idx, int):
         return None
     target = row.get("target_index")
+    if idx >= 0 and row.get("ally_index") is not None:
+        return {"action": "play", "card_index": idx, "ally_index": row["ally_index"]}
     if idx >= 0:
         return {"action": "play", "card_index": idx, "target_index": target}
     if idx == _END_TURN:
         return {"action": "end_turn"}
     if _POTION_BASE - 5 < idx <= _POTION_BASE:
+        if row.get("ally_index") is not None:
+            # Thrown at a teammate (GH #1017).
+            return {"action": "potion", "slot": _POTION_BASE - idx, "ally_index": row["ally_index"]}
         return {"action": "potion", "slot": _POTION_BASE - idx, "target_index": target}
     return None
 
@@ -509,16 +522,24 @@ def native_action(msg: dict[str, Any], info: dict[str, Any]) -> dict[str, Any] |
     if action == "end_turn":
         return {"action": "end_turn"}
     card = msg.get("card")
+    ally = msg.get("ally_index")
     if isinstance(card, dict) and card.get("id"):
         want = (_norm(card.get("id")), bool(card.get("upgraded")))
         for i, held in enumerate(info.get("hand") or []):
             if (_norm(held[0]), bool(held[1])) == want:
+                if isinstance(ally, int):
+                    # At the teammate the human picked, in the shape a row's
+                    # AnyAlly move takes (`native_from_row`; GH #1017).
+                    return {"action": "play", "card_index": i, "ally_index": ally}
                 return {"action": "play", "card_index": i, "target_index": target}
         return None
     drink = msg.get("potion")
     if isinstance(drink, dict) and drink.get("id"):
         for slot, pid in enumerate(info.get("potions") or []):
             if pid and _norm(pid) == _norm(drink.get("id")):
+                if isinstance(ally, int):
+                    # Thrown at the teammate the human picked (GH #1017).
+                    return {"action": "potion", "slot": slot, "ally_index": ally}
                 return {"action": "potion", "slot": slot, "target_index": target}
     return None
 
@@ -1430,6 +1451,9 @@ class CoachGrader:
             name = self._names.get(cid) or cid.replace("_", " ").title() or "?"
             if card.get("upgraded"):
                 name += "+"
+            if action.get("ally_index") is not None:
+                ally = ally_label(state.get("allies") or [], action["ally_index"])
+                return name + (f" ({ally})" if ally is not None else "")
             return name + self._target_suffix(action.get("target_index"))
         if kind in ("potion", "drink_potion"):
             belt = (state.get("player") or {}).get("potions") or []

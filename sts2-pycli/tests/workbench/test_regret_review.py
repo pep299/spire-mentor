@@ -436,42 +436,6 @@ def test_regret_review_surfaces_blunder_in_ended_live_run(tmp_path, monkeypatch)
     assert body["blunders"][0]["drop_pct"] == 13
 
 
-# ── live "blunder right after you did one" ───────────────────────────────────
-def test_last_move_regret_flags_just_played_blunder(tmp_path, monkeypatch):
-    from fake_game import FakeGame
-    from workbench import branching, reasoning
-    from workbench.branching import BranchingLiveSession
-
-    monkeypatch.setattr(branching, "Game", FakeGame)
-    # Score the parent combat position: ending the turn (71%) beats the Strike
-    # the player just threw (58%).
-    monkeypatch.setattr(
-        reasoning,
-        "score",
-        lambda state, cfg: {
-            "scores": [
-                _score(0, "Strike", 0.58, is_best=False, target=0),
-                _score(-1, "end turn", 0.71, is_best=True),
-            ],
-            "pv": None,
-            "config": cfg,
-        },
-    )
-
-    sess = BranchingLiveSession(logs_dir=str(tmp_path), backend="csharp")
-    sess.start("Ironclad", "s", 0)
-    sess.apply("select_map_node", {"col": 0, "row": 0})  # -> combat_play
-    sess.apply("play_card", {"card_index": 0, "target_index": 0})  # the blunder
-
-    result = sess.last_move_regret({})
-    assert result is not None
-    assert result.get("error") is None
-    assert result["is_blunder"] is True
-    assert result["played_label"] == "Strike"
-    assert result["best_label"] == "end turn"
-    assert result["drop_pct"] == 13
-
-
 # ── display names: the review must never print raw localization keys ─────────
 def _loc_key_log(path):
     """A 1-combat-decision run saved the way the LIVE session saves one: raw

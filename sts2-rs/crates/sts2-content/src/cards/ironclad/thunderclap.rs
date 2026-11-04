@@ -14,16 +14,11 @@ use super::prelude::*;
 /// then re-evaluate alive enemies for the Vulnerable apply.
 pub(crate) fn play_thunderclap(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     let dmg = current_damage(state);
-    let dmg_uids: Vec<CreatureUid> = state.enemy_uids.iter().copied().collect();
-    for uid in dmg_uids {
-        if state
-            .creatures
-            .iter()
-            .any(|c| c.id == uid.0 && c.current_hp > 0)
-        {
-            let _ = deal_damage_player_to_enemy(state, uid, dmg);
-        }
-    }
+    // One batched `DamageCmd.Attack(..).TargetingAllOpponents`: every
+    // target's `ModifyDamage` resolves before any death is processed, so a
+    // Shrink whose applier dies in this attack (ShrinkPower.cs:88 `AfterDeath`
+    // -> Remove) still shrinks the later targets' hits.
+    deal_damage_all_enemies(state, dmg);
     // Re-snapshot AFTER damage: C# applies Vulnerable to `HittableEnemies`
     // evaluated post-damage, so death-spawned minions are included and dead
     // enemies excluded.

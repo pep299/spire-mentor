@@ -20,6 +20,7 @@ dependencies = [
     "torch>=2.12.1",
     "wandb>=0.28.0",
     "onnxruntime>=1.28.0",
+    "websockets>=16.0",
 ]
 
 [tool.uv]
@@ -233,7 +234,17 @@ DEP004 = ["networkx", "onnx"]
 # repo rename (sts2-cli -> sts2-pycli): `just deptry` failed to spawn, so new
 # modules never got registered here.
 known_first_party = [
+  "act23_state_parity",
+  "build_asset_manifest",
+  "choice_grade",
+  "crystal_sphere_policy",
+  "enemy_labels",
+  "full_state_diff",
+  "realgame_coach",
+  "split_trace",
+  "test_realgame_control",
   "champions",
+  "floors",
   "sync_champions",
   "game_log",
   "ppo",

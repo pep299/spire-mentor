@@ -14,7 +14,7 @@
    "bg_col": 1,
    "bg_row": 4,
    "bg_seed": 1,
-   "floor": 4,
+   "floor": 5,
    "step_no": 0,
    "turn": null
   },
@@ -145,7 +145,7 @@
     }
    ],
    "decision": "shop",
-   "floor": 4,
+   "floor": 5,
    "options": [
     {
      "action": "buy_card",
@@ -201,7 +201,7 @@
       "potion_index": 0
      },
      "enabled": true,
-     "label": "Buy DISTILLED_CHAOS.title (100g)"
+     "label": "Buy DISTILLED_CHAOS.title (97g)"
     },
     {
      "action": "buy_potion",
@@ -209,7 +209,7 @@
       "potion_index": 1
      },
      "enabled": true,
-     "label": "Buy FRUIT_JUICE.title (100g)"
+     "label": "Buy FRUIT_JUICE.title (101g)"
     },
     {
      "action": "buy_potion",
@@ -217,7 +217,7 @@
       "potion_index": 2
      },
      "enabled": true,
-     "label": "Buy VULNERABLE_POTION.title (50g)"
+     "label": "Buy VULNERABLE_POTION.title (48g)"
     },
     {
      "action": "remove_card",
@@ -428,7 +428,7 @@
    },
    "potions": [
     {
-     "cost": 100,
+     "cost": 97,
      "description": "Play the top 3 cards of your Draw Pile.",
      "id": "DISTILLED_CHAOS",
      "image": "https://assets.test/potion_atlas/distilled_chaos.png",
@@ -438,7 +438,7 @@
      "name": "Distilled Chaos"
     },
     {
-     "cost": 100,
+     "cost": 101,
      "description": "Gain 5 Max HP.",
      "id": "FRUIT_JUICE",
      "image": "https://assets.test/potion_atlas/fruit_juice.png",
@@ -448,7 +448,7 @@
      "name": "Fruit Juice"
     },
     {
-     "cost": 50,
+     "cost": 48,
      "description": "Apply 3 Vulnerable.",
      "id": "VULNERABLE_POTION",
      "image": "https://assets.test/potion_atlas/vulnerable_potion.png",

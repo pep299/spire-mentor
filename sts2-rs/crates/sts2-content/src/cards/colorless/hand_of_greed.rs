@@ -5,17 +5,15 @@ use super::prelude::*;
 /// gain 20 gold (C# `HandOfGreed.OnPlay`,
 /// `../sts2-wiki/decompiled/v0.103.2/.../HandOfGreed.cs:46-66`).
 ///
-/// **Gold gain (bead `sts2-rs-39ofc`):** the gold rider is a run-economy
-/// effect that adds gold to `RunState`. The combat engine has no
-/// `&mut RunState` back-edge at this pin, so it routes through the
-/// `card_effects::gain_player_gold` trampoline (symmetric with the
-/// `read`/`spend` accessors from bead `sts2-rs-1e0ae`). The run-loop
-/// driver registers the closure via `register_player_gold_gain`; in a
-/// pure-combat / core-only build with no accessor installed the call is a
-/// no-op, so the damage stays faithful and the gold is credited only when
-/// a run context is present. C# gates the gold on `WasTargetKilled`; the
-/// engine's post-damage `current_hp <= 0` is that kill signal (cf.
-/// `GremlinHorn`, `relic_effects.rs`).
+/// **Gold gain:** credited to the combat-time gold mirror through
+/// [`sts2_core::card_effects::gain_gold_in_combat`] (C# `PlayerCmd.GainGold`
+/// with its gold hooks); `exit_combat` writes the mirror back to the run.
+/// It used to go through the `gain_player_gold` trampoline, which no driver
+/// ever registered, so a fatal Hand of Greed paid nothing (act23 probe:
+/// Silent seed 1007, the act-1 boss killed by Hand of Greed — C# 129 gold,
+/// Rust 109). C# gates the gold on `WasTargetKilled`; the engine's
+/// post-damage `current_hp <= 0` is that kill signal (cf. `GremlinHorn`,
+/// `relic_effects.rs`).
 ///
 /// C# also snapshots `shouldTriggerFatal =
 /// cardPlay.Target.Powers.All(p => p.ShouldOwnerDeathTriggerFatal())`
@@ -42,7 +40,7 @@ pub(crate) fn play_hand_of_greed(
         } else {
             HAND_OF_GREED_GOLD
         };
-        gain_player_gold(gold);
+        let _ = sts2_core::card_effects::gain_gold_in_combat(state, gold);
     }
     EffectResult::Resolved
 }

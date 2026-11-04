@@ -171,6 +171,55 @@ def test_gae_matches_bruteforce():
     assert np.allclose([t.ret for t in trans], [e + v for e, v in zip(expected, values)])
 
 
+def _three_step_row(surfaces: list[str]) -> dict:
+    return {
+        "won": False,
+        "final": _metrics(12, hp=0),
+        "transitions": [
+            {
+                "feat": None,
+                "action_idx": 0,
+                "old_logprob": -1.0,
+                "value": v,
+                "metrics": m,
+                "surface": "card-pick",
+                "fine_surface": s,
+                "n_actions": 2,
+            }
+            for v, m, s in zip([0.3, 0.5, 0.2], [_metrics(1), _metrics(4), _metrics(9)], surfaces)
+        ],
+    }
+
+
+def test_deck_lam_off_is_plain_gae():
+    from ppo.rewards import ShapingConfig
+    from ppo.trainer import PPOConfig, gae_from_row
+
+    row = _three_step_row(["path", "card-remove", "path"])
+    plain = gae_from_row(row, PPOConfig(lam=0.97), ShapingConfig())
+    off = gae_from_row(row, PPOConfig(lam=0.97, deck_lam=-1.0), ShapingConfig())
+    assert [t.advantage for t in plain] == [t.advantage for t in off]
+
+
+def test_deck_lam_moves_only_the_deck_steps_own_advantage():
+    """GH #977: lambda 0 at a deck step leaves its TD error alone, and every
+    other step (including the one before it) keeps its plain-GAE credit."""
+    from ppo.rewards import ShapingConfig
+    from ppo.trainer import PPOConfig, gae_from_row
+
+    row = _three_step_row(["path", "card-remove", "path"])
+    plain = gae_from_row(row, PPOConfig(lam=0.97), ShapingConfig())
+    deck = gae_from_row(row, PPOConfig(lam=0.97, deck_lam=0.0), ShapingConfig())
+    rewards, _ = shaped_rewards(
+        [t["metrics"] for t in row["transitions"]], row["final"], False, ShapingConfig()
+    )
+    delta1 = rewards[1] + 0.2 - 0.5
+    assert deck[1].advantage == pytest.approx(delta1)
+    assert deck[1].ret == pytest.approx(delta1 + 0.5)
+    assert deck[0].advantage == pytest.approx(plain[0].advantage)
+    assert deck[2].advantage == pytest.approx(plain[2].advantage)
+
+
 def test_entropy_schedule_geometric_and_anchored():
     from ppo.trainer import PPOConfig, effective_entropy_coef
 

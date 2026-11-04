@@ -66,10 +66,15 @@ pub(crate) fn play_rattle(state: &mut CombatState, target: Option<CreatureUid>) 
     // Hit count = 1 + (Osty attacks already made this turn). C# computes the
     // count ONCE (`WithHitCount`) from history, so the extra hits this card
     // deals must NOT feed back into their own count — snapshot before looping.
-    // (Each Osty hit increments `osty_attacks_this_turn` via the chokepoint.)
     let hits = resolving_preview(state, preview_rattle, target);
-    for _ in 0..hits {
-        deal_damage_from_osty_to_enemy(state, t, dmg);
+    if osty_dealer_ref(state).is_some() {
+        // All the hits are ONE `AttackCommand`, so they add one entry to the
+        // tally, not one per hit (AttackCommand.cs:672).
+        sts2_core::card_effects::osty_attack_command(state, |state| {
+            for _ in 0..hits {
+                deal_damage_from_osty_to_enemy(state, t, dmg);
+            }
+        });
     }
 
     EffectResult::Resolved
@@ -173,8 +178,26 @@ mod tests {
             "1 + 1 prior Osty attack → two 7-damage hits"
         );
         assert_eq!(
-            state.combat_log.osty_attacks_this_turn, 3,
-            "snapshot=2 hits added to the existing 1 → 3 total this turn"
+            state.combat_log.osty_attacks_this_turn, 2,
+            "two hits are one AttackCommand: one entry added to the existing 1"
         );
+    }
+
+    /// An Osty attack on every enemy (Bone Shards / High Five) is ONE
+    /// `AttackCommand`, so it adds one `CreatureAttackedEntry`, not one per
+    /// target (AttackCommand.cs:672). Necrobinder 1016 (GH #1054): the per-hit
+    /// tally gave a later Rattle 6 hits where C# gave 5.
+    #[test]
+    fn osty_attack_on_all_enemies_counts_once() {
+        let mut state = CombatState::default();
+        state.summon_osty(20).expect("Osty summoned");
+        let a = state.spawn_enemy(sts2_core::MonsterKind::Nibbit);
+        let b = state.spawn_enemy(sts2_core::MonsterKind::Nibbit);
+        let (hp_a, hp_b) = (enemy_hp(&state, a), enemy_hp(&state, b));
+
+        sts2_core::card_effects::deal_damage_from_osty_to_all_alive_enemies(&mut state, 3);
+        assert_eq!(enemy_hp(&state, a), hp_a - 3);
+        assert_eq!(enemy_hp(&state, b), hp_b - 3);
+        assert_eq!(state.combat_log.osty_attacks_this_turn, 1);
     }
 }

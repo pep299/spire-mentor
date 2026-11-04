@@ -161,6 +161,7 @@ fn make_combat(seed: u64, monsters: &[(MonsterKind, MonsterSpawnArgs)]) -> Comba
         pending_enemy_exec_resume: None,
         combat_log: TurnEvents::default(),
         swipe_stolen: Vec::new(),
+        deck_link: None,
         escaped_creatures: 0,
         coop: sts2_core::coop::CoopState::default(),
         heist_recovered_gold: 0,
@@ -208,9 +209,9 @@ fn run_random(state: &mut CombatState, rng: &mut sts2_core::dotnet_rng::Rng, lab
             | StepResult::CombatWon
             | StepResult::CombatLost
             | StepResult::PendingChoice => {}
-            StepResult::InvalidTarget => {
+            StepResult::InvalidTarget | StepResult::IllegalPlay => {
                 panic!(
-                    "InvalidTarget on a legal_actions-derived action in '{label}': \
+                    "{result:?} on a legal_actions-derived action in '{label}': \
                      action={action:?}"
                 );
             }

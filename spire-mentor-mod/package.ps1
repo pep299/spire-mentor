@@ -45,7 +45,13 @@ param(
     # content from that and needs neither the zip nor BaseLib's license text.
     [switch]$NoZip,
     # Ship the workbench with placeholder art and no sound.
-    [switch]$NoArt
+    [switch]$NoArt,
+    # Where in-game "Report a bug" sends: the hosted workbench's origin
+    # (https://..., its /api/bugreport stores reports). Default:
+    # $env:STS2_WORKBENCH_SITE, else the STS2_WORKBENCH_SITE export in
+    # sts2-pycli/deploy/justfile (private; absent from the public tree).
+    # Empty = the packaged mod saves reports to a file only.
+    [string]$BugReportSite = $env:STS2_WORKBENCH_SITE
 )
 $ErrorActionPreference = "Stop"
 $bridge = $PSScriptRoot
@@ -73,8 +79,24 @@ if (-not $haveBaseLibLicense -and -not $NoZip) {
         "https://github.com/Alchyr/BaseLib-StS2 into refs/ and re-run (the MIT notice must ship).")
 }
 
+# --- the bug-report site (baked into the DLL, see SpireMentor.csproj) ---------
+if (-not $BugReportSite) {
+    $deployJustfile = Join-Path $pycli "deploy/justfile"
+    if (Test-Path $deployJustfile) {
+        $m = Select-String -Path $deployJustfile -Pattern '^export STS2_WORKBENCH_SITE\s*:=\s*"([^"]+)"' |
+            Select-Object -First 1
+        if ($m) { $BugReportSite = $m.Matches[0].Groups[1].Value }
+    }
+}
+if ($BugReportSite) {
+    Write-Host "Bug reports from this build go to $BugReportSite/api/bugreport"
+} else {
+    Write-Warning ("No bug-report site (-BugReportSite / STS2_WORKBENCH_SITE): players of this build " +
+        "can only save reports to a file.")
+}
+
 # --- build both halves -------------------------------------------------------
-dotnet build $bridge -c Release -p:SpireMentorSkipDeploy=true
+dotnet build $bridge -c Release -p:SpireMentorSkipDeploy=true "-p:SpireMentorBugReportSite=$BugReportSite"
 if ($LASTEXITCODE -ne 0) { throw "dotnet build failed" }
 $dll = Join-Path $bridge "bin/Release/net9.0/SpireMentor.dll"
 if (-not (Test-Path $dll)) { throw "missing $dll" }

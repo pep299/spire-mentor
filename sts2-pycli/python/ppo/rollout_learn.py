@@ -128,6 +128,7 @@ def record_decisions(
             continue
         index = {_canon(a): i for i, a in enumerate(feats["actions"])}
         visits = [0.0] * len(feats["actions"])
+        qsum = [0.0] * len(feats["actions"])
         wins = total = 0
         for a in search["actions"]:
             i = index.get(_canon(a["action"]))
@@ -135,6 +136,7 @@ def record_decisions(
                 out["unmatched"] += 1
                 continue
             visits[i] += a["visits"]
+            qsum[i] += a["q"] * a["visits"]
             wins += a["wins"]
             total += a["visits"]
         if not total:
@@ -145,6 +147,9 @@ def record_decisions(
             "keys": feats["keys"],
             "x": feats["x"],
             "visits": visits,
+            # Mean backed-up value per action (the search's continuous Q),
+            # NaN where the search never visited it.
+            "q": [qs / v if v else math.nan for qs, v in zip(qsum, visits, strict=True)],
             "chosen": chosen,
             "pwin": wins / total,
             "room": room,
@@ -237,6 +242,9 @@ class ShardWriter:
             "x": np.asarray([x for r in d for x in r["x"]], np.float32),
             "key": np.asarray(ids, np.int32),
             "visits": np.asarray([v for r in d for v in r["visits"]], np.float32),
+            **(
+                {"q": np.asarray([v for r in d for v in r["q"]], np.float32)} if "q" in d[0] else {}
+            ),
             "chosen": np.asarray([r["chosen"] for r in d], np.int16),
             "pwin": np.asarray([r["pwin"] for r in d], np.float32),
             "room": np.asarray([r["room"] for r in d], np.int8),
@@ -580,6 +588,32 @@ def _spread_duplicates(
     return out
 
 
+def _fill_q(data: dict[str, np.ndarray], starts: np.ndarray, n_act: np.ndarray) -> np.ndarray:
+    """Per-action Q with every gap filled: an unvisited copy of a card takes
+    its visited twin's Q (the transposition table keeps one child for
+    copies; they share features, so logits), any other unvisited action the
+    decision's visit-weighted mean Q."""
+    q = data["q"].astype(np.float64).copy()
+    v, key, x = data["visits"], data["key"], data["x"]
+    for s, n in zip(starts, n_act, strict=True):
+        sl = slice(s, s + n)
+        seen = v[sl] > 0
+        if not seen.any():
+            q[sl] = 0.0
+            continue
+        mean = float((q[sl][seen] * v[sl][seen]).sum() / v[sl][seen].sum())
+        groups: dict[bytes, list[int]] = collections.defaultdict(list)
+        for j in range(s, s + n):
+            groups[key[j].tobytes() + x[j].tobytes()].append(j)
+        for members in groups.values():
+            w = v[members]
+            if (w > 0).any() and (w == 0).any():
+                gq = float((q[members][w > 0] * w[w > 0]).sum() / w[w > 0].sum())
+                q[[j for j in members if v[j] == 0]] = gq
+        q[sl] = np.where(np.isnan(q[sl]), mean, q[sl])
+    return q
+
+
 def _playout_net(
     torch: Any, hidden: int, emb_dim: int, n_keys: int, version: int = 1, n_monsters: int = 0
 ) -> Any:
@@ -886,6 +920,38 @@ def train(args: argparse.Namespace) -> int:
             net.lin.weight[0, HEUR_FEATURE] = 1.0
             if net.mon is not None:
                 net.mon.weight.zero_()
+    if args.cq_tau is not None:
+        # The KL-regularised policy improvement of the init prior by the
+        # search's Q: target = softmax(z_init / T + (q - max q) / tau) over the
+        # legal actions, computed once (the init policy is fixed). `net` is the
+        # init net exactly here (new keys start at zero), before any step.
+        if init is None:
+            raise SystemExit("--cq-tau needs --init (the prior it tilts)")
+        if "q" not in data or len(data["q"]) != len(data["key"]):
+            raise SystemExit("--cq-tau needs every gen shard to carry per-action q")
+        Q_ = tt(_fill_q(data, starts, n_act).astype(np.float32))
+        new = torch.zeros_like(Tf)
+        kl = flips = 0.0
+        with torch.no_grad():
+            for b in torch.split(torch.arange(n_dec, device=dev), 16384):
+                X, K, _, M = padded(b)
+                z = net(S_[b], X, K, M, None if MON_ is None else MON_[b]) / args.temperature
+                col = torch.arange(int(nact_[b].max()), device=dev)
+                flat = torch.where(M, start_[b][:, None] + col[None, :], 0)
+                qb = Q_[flat].masked_fill(~M, -math.inf)
+                qb = (qb - qb.max(-1, keepdim=True).values).masked_fill(~M, 0.0)
+                lp_ref = torch.log_softmax(z.masked_fill(~M, -math.inf), -1)
+                lp_t = torch.log_softmax((z + qb / args.cq_tau).masked_fill(~M, -math.inf), -1)
+                pt = lp_t.exp()
+                kl += torch.where(M, pt * (lp_t - lp_ref), 0.0).sum().item()
+                flips += (lp_t.argmax(-1) != lp_ref.argmax(-1)).sum().item()
+                new[flat[M]] = pt[M]
+        Tf = new
+        print(
+            f"[rollout_learn] cq target tau {args.cq_tau}: mean KL(target || init) "
+            f"{kl / n_dec:.4f}, top-1 changed on {flips / n_dec:.1%} of {n_dec} decisions",
+            flush=True,
+        )
     opt = torch.optim.AdamW(net.parameters(), lr=args.lr, weight_decay=args.wd)
 
     def logits(idx: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -954,6 +1020,8 @@ def train(args: argparse.Namespace) -> int:
     meta = {"data": args.data, "decisions": n_dec, "val_heuristic": base, "val": metrics(va_idx)}
     if init is not None:
         meta.update(init=args.init, kl_init=args.kl_init, val_init=meta_init)
+    if args.cq_tau is not None:
+        meta["cq_tau"] = args.cq_tau
     # The combat-bench holdout each gen run applied (absent for gen runs made
     # before GH #830, which held nothing out).
     meta["bench_holdout"] = {
@@ -1698,6 +1766,14 @@ def main(argv: list[str] | None = None) -> int:
         "--init",
         help="start from this net (JSON; same feature version): its weights and key "
         "vocabulary, new data keys appended at zero; --hidden/--emb-dim are ignored",
+    )
+    t.add_argument(
+        "--cq-tau",
+        type=float,
+        default=None,
+        help="with --init and gen data carrying q: train on the init's policy tilted by the "
+        "search's Q, softmax(z_init / T + (q - max q) / tau), instead of the visit / "
+        "recommended-action target",
     )
     t.add_argument(
         "--kl-init",

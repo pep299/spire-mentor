@@ -3,7 +3,6 @@ use super::prelude::*;
 
 /// Cloak Of Stars — pure self-block. Python pin:
 /// `regent.py:L125-L127`.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L125
 pub(crate) fn play_cloak_of_stars(
     state: &mut CombatState,
     _t: Option<CreatureUid>,

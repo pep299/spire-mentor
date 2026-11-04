@@ -71,11 +71,10 @@ fn brain_leech_share_knowledge(state: &mut RunState) -> EventOutcome {
     // bare `CreateForReward`, both builds), so SilverCrucible / SilkenTress
     // skip it (`SilverCrucible.cs:104`); see `RunState::offer_card_slate`.
     let option_cards = state.offer_card_slate(option_cards, false);
-    state
-        .pending_card_selects
-        .push(sts2_core::runstate::PendingCardSelect::from_cards(
-            &option_cards,
-        ));
+    // `Cancelable = false` (`BrainLeech.cs:68`): the grid has no skip.
+    let mut select = sts2_core::runstate::PendingCardSelect::from_cards(&option_cards);
+    select.can_skip = false;
+    state.pending_card_selects.push(select);
     EventOutcome::finished("Pick 1 of 5 character cards to gain.")
 }
 
@@ -179,7 +178,11 @@ fn room_full_of_cheese_gorge(state: &mut RunState) -> EventOutcome {
     let pick = ROOM_FULL_OF_CHEESE_GORGE_PICK.min(options.len());
     state
         .pending_card_grants
-        .push(sts2_core::runstate::PendingCardGrant { options, pick });
+        .push(sts2_core::runstate::PendingCardGrant {
+            options,
+            pick,
+            min_pick: pick,
+        });
     EventOutcome::finished("Pick 2 of 8 common cards to gain.")
 }
 

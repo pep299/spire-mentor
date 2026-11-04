@@ -1,4 +1,3 @@
-// port-pin-skip — ported from the C# decomp, no Python counterpart.
 //! The CrystalSphere divination minigame (GH #817).
 //!
 //! C# `CrystalSphereMinigame` (`Events.Custom.CrystalSphereEvent/
@@ -423,6 +422,19 @@ impl SphereReward {
     }
 }
 
+/// The order `RewardsSet.GenerateWithoutOffering` leaves the set in:
+/// `Rewards.Sort` by `RewardsSetIndex` (RewardsSet.cs:148, both builds).
+/// `List<T>.Sort` is .NET's introsort, which is not stable: a 3-element list
+/// runs a swap network, so two equal-index rewards ahead of a lower one swap
+/// places. Returns the indices into `keys` in sorted order.
+fn rewards_set_order(keys: &[u8]) -> Vec<usize> {
+    let mut idx: Vec<usize> = (0..keys.len()).collect();
+    sts2_core::cards::dotnet_list_sort(idx.as_mut_slice(), &|a: usize, b: usize| {
+        keys[a].cmp(&keys[b])
+    });
+    idx
+}
+
 /// `OfferCrystalSphereRewards` + `RewardsCmd.OfferCustom`, on the event Rng:
 ///
 /// 1. `ToReward` per revealed item, in reveal order. Only the potion rolls
@@ -433,9 +445,10 @@ impl SphereReward {
 ///    amount, but one draw), the relic rolls its rarity and pulls from the
 ///    front of the grab bag, a card reward rolls its three cards. The potion
 ///    is already populated.
-/// 3. The set is sorted by `RewardsSetIndex` (a stable insertion sort at this
-///    size) and the headless auto-taker selects in that order: gold, potions,
-///    relic, then each card reward as a decision.
+/// 3. The set is sorted by `RewardsSetIndex` with .NET's unstable
+///    `List.Sort` ([`rewards_set_order`]) and the headless auto-taker
+///    selects in that order: gold, potions, relic, then each card reward as
+///    a decision.
 fn offer_rewards(state: &mut RunState, rng: &mut Rng, revealed: &[CrystalSphereItemKind]) {
     use CrystalSphereItemKind as K;
     let character = state.character_id;
@@ -478,8 +491,18 @@ fn offer_rewards(state: &mut RunState, rng: &mut Rng, revealed: &[CrystalSphereI
             }
         }
     }
-    rewards.sort_by_key(|(reward, _)| reward.rewards_set_index());
-    for (reward, _) in rewards {
+    let keys: Vec<u8> = rewards
+        .iter()
+        .map(|(reward, _)| reward.rewards_set_index())
+        .collect();
+    let mut slots: Vec<Option<SphereReward>> = rewards
+        .into_iter()
+        .map(|(reward, _)| Some(reward))
+        .collect();
+    for i in rewards_set_order(&keys) {
+        let Some(reward) = slots[i].take() else {
+            continue;
+        };
         match reward {
             SphereReward::Gold(amount) => state.gain_gold(amount),
             SphereReward::Potion(Some(kind)) => {
@@ -499,6 +522,16 @@ fn offer_rewards(state: &mut RunState, rng: &mut Rng, revealed: &[CrystalSphereI
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// .NET `List.Sort` on 3 items is a swap network (unstable): two
+    /// equal-index rewards ahead of a lower one come out swapped. Larger
+    /// lists (insertion sort) and distinct keys keep the stable order.
+    #[test]
+    fn rewards_set_order_replays_the_dotnet_sort() {
+        assert_eq!(rewards_set_order(&[5, 5, 1]), vec![2, 1, 0]);
+        assert_eq!(rewards_set_order(&[5, 1, 3]), vec![1, 2, 0]);
+        assert_eq!(rewards_set_order(&[5, 5, 1, 2]), vec![2, 3, 0, 1]);
+    }
 
     fn rng(seed: u64) -> Rng {
         Rng::from_seed(seed)

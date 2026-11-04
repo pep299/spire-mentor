@@ -106,7 +106,10 @@ class Program
                     cmd.TryGetProperty("played_save", out var ps) && ps.GetBoolean(),
                     // "overgrowth" | "underdocks" | "roll". Omit for the historical
                     // default (GetDefaultList => Overgrowth). See RunSimulator.
-                    cmd.TryGetProperty("act1", out var a1) ? a1.GetString() : null
+                    cmd.TryGetProperty("act1", out var a1) ? a1.GetString() : null,
+                    // GH #1069: surface a `potion_swap` decision when a potion
+                    // reward finds a full belt, instead of dropping it.
+                    cmd.TryGetProperty("interactive_potion_swap", out var ips) && ips.GetBoolean()
                 );
 
             case "roll_acts":
@@ -147,6 +150,7 @@ class Program
                         };
                     }
                 }
+                StateTrace.BeginAction(action, actionArgs);
                 return sim.ExecuteAction(action, actionArgs);
             }
 
@@ -225,6 +229,16 @@ class Program
 
             case "get_state":
                 return sim.GetState();
+
+            // GH #1088 state-mutation trace (see StateTrace).
+            case "trace":
+            {
+                StateTrace.RngStreams = sim.RngStreamMap;
+                return StateTrace.SetEnabled(!cmd.TryGetProperty("on", out var on) || on.GetBoolean());
+            }
+
+            case "get_trace":
+                return StateTrace.GetTrace(cmd.TryGetProperty("since", out var since) ? since.GetInt32() : 0);
 
             case "write_continue_save":
             {
@@ -354,8 +368,23 @@ internal static class HeadlessPaths
         var perVersion = Path.Combine(LibDir, "localization_eng");
         if (Directory.Exists(perVersion))
             return perVersion;
+        // A non-default build's text is vendored as `localization_eng_<ver>/`
+        // beside the default `localization_eng/` (scripts/import_game.py,
+        // workbench/localization.py). Without this lookup the v0.111.0 oracle
+        // fell through to the v0.107.1 text and showed stale relic descriptions
+        // (SERE_TALON's `{Curses}`, DIAMOND_DIADEM's `{CardThreshold}`). A public
+        // export ships without the per-version dir and keeps the fallback.
+        var versioned = HeadlessPaths.GameVersion == HeadlessPaths.DefaultGameVersion
+            ? null
+            : $"localization_eng_{HeadlessPaths.GameVersion}";
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir != null; dir = dir.Parent)
         {
+            if (versioned != null)
+            {
+                var own = Path.Combine(dir.FullName, versioned);
+                if (Directory.Exists(own))
+                    return own;
+            }
             var candidate = Path.Combine(dir.FullName, "localization_eng");
             if (Directory.Exists(candidate))
                 return candidate;

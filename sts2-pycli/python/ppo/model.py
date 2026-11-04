@@ -185,6 +185,8 @@ class RunPolicyNet(nn.Module):
         bo = vocab.bosses().size + 1
         do = vocab.N_DECK_OP + 1
         en = vocab.enchantments().size + 1
+        ct = vocab.N_CARD_TYPE + 1
+        cr = vocab.N_CARD_RARITY + 1
         self.emb_card = nn.Embedding(c, dim, padding_idx=c - 1)
         self.emb_upg = nn.Embedding(ug, dim, padding_idx=ug - 1)
         self.emb_relic = nn.Embedding(r, dim, padding_idx=r - 1)
@@ -197,6 +199,8 @@ class RunPolicyNet(nn.Module):
         self.emb_boss = nn.Embedding(bo, dim, padding_idx=bo - 1)
         self.emb_deckop = nn.Embedding(do, dim, padding_idx=do - 1)
         self.emb_ench = nn.Embedding(en, dim, padding_idx=en - 1)
+        self.emb_ctype = nn.Embedding(ct, dim, padding_idx=ct - 1)
+        self.emb_rarity = nn.Embedding(cr, dim, padding_idx=cr - 1)
         self.emb_sec = nn.Embedding(N_SECTION, dim)
         self.cont_proj = SinusoidalProj(N_CONT, dim)
         self.blocks = nn.ModuleList([Block(dim, n_heads) for _ in range(n_layers)])
@@ -227,6 +231,9 @@ class RunPolicyNet(nn.Module):
         # inputs (GH #545).
         nn.init.zeros_(self.emb_deckop.weight)
         nn.init.zeros_(self.emb_ench.weight)
+        # `card_kind` (GH #977): same warm-start argument.
+        nn.init.zeros_(self.emb_ctype.weight)
+        nn.init.zeros_(self.emb_rarity.weight)
 
     def _embed(self, b: Batch) -> torch.Tensor:
         cat = b.cat
@@ -243,6 +250,8 @@ class RunPolicyNet(nn.Module):
             + self.emb_boss(cat[..., 9])
             + self.emb_deckop(cat[..., 10])
             + self.emb_ench(cat[..., 11])
+            + self.emb_ctype(cat[..., 12])
+            + self.emb_rarity(cat[..., 13])
             + self.emb_sec(b.sec)
             + self.cont_proj(b.cont)
         )

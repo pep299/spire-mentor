@@ -9,6 +9,7 @@ the CLI on real seeds.
 from __future__ import annotations
 
 import act23_state_parity as a23
+import pytest
 from run_parity import Snap
 
 
@@ -114,6 +115,37 @@ def test_diff_nav_clean_when_aligned() -> None:
 # --------------------------------------------------------------------------- #
 # HP oracle-artifact classifier (issue #158 step 3)
 # --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# Claws: C# is sent the same first-6 candidates Rust transformed atomically
+# --------------------------------------------------------------------------- #
+def _claws_view(n: int) -> dict:
+    return {
+        "decision": "card_select",
+        "prompt_key": "CLAWS.selectionScreenPrompt",
+        "source": "FromDeckForTransformation",
+        "min_select": 0,
+        "max_select": 6,
+        "cards": [{"index": i, "id": "CARD.STRIKE_IRONCLAD"} for i in range(n)],
+    }
+
+
+def test_claws_atomic_choice_picks_first_six_candidates() -> None:
+    assert a23.claws_atomic_choice(_claws_view(20)) == [
+        ("select_cards", {"indices": "0,1,2,3,4,5"})
+    ]
+
+
+def test_claws_atomic_choice_clamps_to_candidate_count() -> None:
+    assert a23.claws_atomic_choice(_claws_view(3)) == [("select_cards", {"indices": "0,1,2"})]
+    assert a23.claws_atomic_choice(_claws_view(0)) == []
+
+
+def test_claws_atomic_choice_ignores_other_selects() -> None:
+    view = _claws_view(10)
+    view["prompt_key"] = "TO_TRANSFORM"
+    assert a23.claws_atomic_choice(view) == []
+
+
 def test_hp_artifact_peeled_in_combat() -> None:
     cs, rs = _snap("combat", hp=99988), _snap("combat", hp=99986)
     assert a23._is_combat_hp_artifact(cs, rs, ["hp: cs=99988 rs=99986"])
@@ -143,3 +175,217 @@ def test_hp_artifact_not_peeled_above_tolerance() -> None:
     delta = a23.HP_ARTIFACT_TOLERANCE + 1
     cs, rs = _snap("combat", hp=100_000), _snap("combat", hp=100_000 - delta)
     assert not a23._is_combat_hp_artifact(cs, rs, [f"hp: cs=100000 rs={100_000 - delta}"])
+
+
+# --------------------------------------------------------------------------- #
+# survival policy: the walk must beat The Insatiable's Sandpit timer
+# --------------------------------------------------------------------------- #
+def _combat_view(hand: list[str], enemy_powers: list[str] = ()) -> dict:
+    return {
+        "decision": "combat_play",
+        "hand": [{"index": i, "id": cid} for i, cid in enumerate(hand)],
+        "enemies": [{"powers": [{"id": p, "amount": 1} for p in enemy_powers]}],
+    }
+
+
+def test_survival_choice_picks_frantic_escape() -> None:
+    view = _combat_view(["CARD.STRIKE_IRONCLAD", "CARD.FRANTIC_ESCAPE"])
+    choices = [
+        ("play_card", {"card_index": 0, "target_index": 0}),
+        ("play_card", {"card_index": 1, "target_index": None}),
+        ("end_turn", {}),
+    ]
+    assert a23._survival_choice(choices, view) == 1
+
+
+def test_survival_choice_none_without_survival_card() -> None:
+    view = _combat_view(["CARD.STRIKE_IRONCLAD"])
+    assert a23._survival_choice([("play_card", {"card_index": 0}), ("end_turn", {})], view) is None
+
+
+def test_survival_pool_drops_end_turn_only_under_a_timer_kill() -> None:
+    choices = [("play_card", {"card_index": 0}), ("end_turn", {})]
+    sandpit = _combat_view(["CARD.STRIKE_IRONCLAD"], ["SANDPIT_POWER"])
+    assert a23._survival_pool(choices, sandpit) == choices[:1]
+    assert a23._survival_pool(choices, _combat_view(["CARD.STRIKE_IRONCLAD"])) == choices
+    # Nothing left to play: ending the turn stays legal.
+    assert a23._survival_pool([("end_turn", {})], sandpit) == [("end_turn", {})]
+
+
+# --------------------------------------------------------------------------- #
+# checkpoints: recorder, naming, stale detection
+# --------------------------------------------------------------------------- #
+class _FakeRust:
+    def __init__(self) -> None:
+        self.n = 0
+
+    def start(self, **_kw):
+        self.n = 0
+        return {"n": self.n}
+
+    def act(self, verb, **_kw):
+        self.n += 1
+        return {"n": self.n, "verb": verb}
+
+    def set_player(self, **_kw):
+        return {"ok": True}
+
+    def get_map(self):
+        return {"map": True}
+
+
+def test_recorder_logs_only_mutating_calls() -> None:
+    rec = a23._RustRecorder(_FakeRust())
+    rec.start(character="Ironclad", seed="1", ascension=0)
+    rec.act("end_turn")
+    rec.set_player(hp=5)
+    assert rec.get_map() == {"map": True}
+    assert [c[0] for c in rec.calls] == ["start", "act", "set_player"]
+    assert rec.calls[1] == ["act", ["end_turn"], {}]
+
+
+def test_checkpoint_name_lineage() -> None:
+    assert a23.checkpoint_name("Ironclad", "1000", 0, 2) == "Ironclad-1000-a0-act2"
+    assert a23.checkpoint_name("Ironclad", "1000", 0, 3, "Ironclad-1000-a0-act2.b3") == (
+        "Ironclad-1000-a0-act2.b3-act3"
+    )
+
+
+class _FakeCs:
+    def load_save(self, path):
+        return {"decision": "map_select", "path": path}
+
+
+def test_resume_replays_rust_and_flags_a_stale_checkpoint(tmp_path) -> None:
+    rec = a23._RustRecorder(_FakeRust())
+    rec.start(character="Ironclad", seed="1", ascension=0)
+    view = rec.act("end_turn")
+    meta = {"rust_calls": rec.calls, "rs_view": view}
+
+    cs_view, rs_view = a23.resume_checkpoint(
+        tmp_path, _FakeCs(), a23._RustRecorder(_FakeRust()), meta
+    )
+    assert rs_view == view and cs_view["decision"] == "map_select"
+
+    stale = {**meta, "rs_view": {"n": 99}}
+    try:
+        a23.resume_checkpoint(tmp_path, _FakeCs(), a23._RustRecorder(_FakeRust()), stale)
+    except a23.CheckpointStale:
+        pass
+    else:
+        raise AssertionError("a changed Rust replay must raise CheckpointStale")
+
+
+# --------------------------------------------------------------------------- #
+# end to end: a checkpoint resumes in lockstep (needs both engines)
+# --------------------------------------------------------------------------- #
+@pytest.mark.slow
+@pytest.mark.oracle
+def test_checkpoint_round_trip(tmp_path) -> None:
+    """Build an act-2 checkpoint, then resume it: the resumed engines must
+    start in agreement and stay in lockstep for a stretch of act 2."""
+    built = a23.run_one_invincible(
+        "1000",
+        "Ironclad",
+        max_steps=4000,
+        checkpoint_dir=tmp_path,
+        checkpoint_acts=frozenset({2}),
+        stop_at_checkpoint=True,
+    )
+    assert built.result.terminal == "checkpointed", built.result.divergence
+    (ck,) = a23.list_checkpoints(tmp_path)
+    assert a23.read_checkpoint_meta(ck)["act"] == 2
+
+    resumed = a23.run_one_invincible("", from_checkpoint=ck, branch=0, max_steps=60)
+    assert resumed.result.divergence is None, resumed.result.divergence
+    assert resumed.result.terminal in ("max_steps", "game_over_match")
+
+
+# --------------------------------------------------------------------------- #
+# u8 option-index cap: Rust rejects a pick past option 255
+# --------------------------------------------------------------------------- #
+def _selects(n: int) -> list[tuple[str, dict]]:
+    return [("select_cards", {"indices": str(i)}) for i in range(n)]
+
+
+def test_select_index_cap_is_noop_at_256_options() -> None:
+    # Every index 0..255 fits a u8: nothing dropped, so no other run's walk
+    # (its choice list or its RNG draws) moves.
+    choices = [*_selects(256), ("skip_select", {})]
+    assert a23._within_select_index_cap(choices) == choices
+
+
+def test_select_index_cap_drops_picks_past_255() -> None:
+    # Ironclad-2012-a0-act2#b1: Headbutt over a 445-card discard pile. The walk
+    # picked '317', which C# took and Rust rejected (invalid_for_phase).
+    kept = a23._within_select_index_cap(_selects(445))
+    assert len(kept) == 256
+    assert max(int(kw["indices"]) for _, kw in kept) == a23.MAX_SELECT_INDEX
+
+
+def test_select_index_cap_checks_every_index_of_a_multi_pick() -> None:
+    choices = [
+        ("select_cards", {"indices": "0,1"}),
+        ("select_cards", {"indices": "0,300"}),
+        ("end_turn", {}),
+    ]
+    assert a23._within_select_index_cap(choices) == [
+        ("select_cards", {"indices": "0,1"}),
+        ("end_turn", {}),
+    ]
+
+
+# --------------------------------------------------------------------------- #
+# C#-alone atomic-select gate
+# --------------------------------------------------------------------------- #
+def test_cs_alone_select_when_rust_left_the_select() -> None:
+    assert a23._cs_alone_select("card_select", "map")
+    assert a23._cs_alone_select("card_select", "card_reward")
+
+
+def test_cs_alone_select_not_for_a_shared_select() -> None:
+    # A select Rust surfaces too (both paused) is driven through the lockstep,
+    # Dolly's Mirror included: Rust offers it as a pick-1 card grant.
+    assert not a23._cs_alone_select("card_select", "card_select")
+    assert not a23._cs_alone_select("map", "card_select")
+
+
+# --------------------------------------------------------------------------- #
+# A C# view that hid its pending select (Toasty Mittens, "combat phase settle")
+# --------------------------------------------------------------------------- #
+class _ProbeGame:
+    """Answers an argument-less ``select_cards`` like ``DoSelectCards``."""
+
+    def __init__(self, pending: bool) -> None:
+        self.pending = pending
+        self.calls: list[tuple[str, dict]] = []
+
+    def act(self, verb: str, **kw: object) -> dict:
+        self.calls.append((verb, kw))
+        if verb == "select_cards" and not kw:
+            msg = (
+                "select_cards requires 'indices' (comma-separated card indices)"
+                if self.pending
+                else "No pending card selection"
+            )
+            return {"type": "error", "message": msg}
+        return {"type": "decision", "decision": "combat_play"}
+
+
+def test_cs_select_still_pending_reads_the_probe_error() -> None:
+    # ckpt_act2_2000 Ironclad-2091-a0-act2#b1: C# logged "Card selection
+    # pending" then returned combat_play from the settle fallback.
+    hidden = _ProbeGame(pending=True)
+    assert a23._cs_select_still_pending(hidden)
+    assert hidden.calls == [("select_cards", {})]
+    assert not a23._cs_select_still_pending(_ProbeGame(pending=False))
+
+
+def test_stale_cs_select_pick_matches_the_rust_finalize_prefix() -> None:
+    cards = [{"index": i} for i in range(5)]
+    view = {"decision": "card_select", "cards": cards, "min_select": 1}
+    assert a23._stale_cs_select_pick(view) == ("select_cards", {"indices": "0"})
+    view["min_select"] = 2
+    assert a23._stale_cs_select_pick(view) == ("select_cards", {"indices": "0,1"})
+    view["min_select"] = 0
+    assert a23._stale_cs_select_pick(view) == ("skip_select", {})

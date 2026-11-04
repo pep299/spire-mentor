@@ -17,7 +17,6 @@ use super::prelude::*;
 /// from bead `sts2-rs-8z4u4` is lifted (parity fix RP6: the rider's 10 block
 /// is what reduced an 11-damage enemy attack to 1). This `play_*` body covers
 /// only the on-play block gain (shared by the normal-play and auto-play paths).
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L769
 pub(crate) fn play_i_am_invincible(
     state: &mut CombatState,
     _t: Option<CreatureUid>,

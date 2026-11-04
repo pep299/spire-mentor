@@ -26,7 +26,7 @@ use sts2_core::potions::CharacterId;
 use sts2_core::run_manager::{Phase, RunAction, RunManager};
 
 use super::map_ext::{obj, set, val};
-use super::names::{map_point_type_str, map_point_type_ui_str, room_type_str};
+use super::names::{event_encounter_id, map_point_type_str, map_point_type_ui_str, room_type_str};
 use super::run_action::run_action_to_value;
 
 // ---------------------------------------------------------------------------
@@ -349,6 +349,38 @@ pub fn current_room(rm: &RunManager) -> Value {
     }
 }
 
+/// The C# id (`UPPER_SNAKE`, `ModelId.Entry`) of the encounter the live
+/// combat fights, or `None` outside [`Phase::Combat`]. `RunManager.
+/// combat_state()` stamps it on the `CombatState` it returns as
+/// `encounter_id` (GH #1097).
+///
+/// An event's fight reports the event encounter
+/// ([`event_encounter_id`]); a map room's fight reports the encounter that
+/// `build_combat_for_room` resolved (`RunState::current_encounter_idx`),
+/// which on the live path is the act's generated identity: the next entry of
+/// `generated_rooms()[act - 1]["normal"]` or `["elite"]`, or its `boss` /
+/// `second_boss`. A combat entered around that builder (a raw-core
+/// `enter_combat`, `debug_enter_combat`) leaves the previous fight's id in
+/// place.
+///
+/// Gated on the phase, not on `rm.combat`: a won non-boss fight's
+/// `CombatState` lingers through the reward, map and event phases (see
+/// [`potions`]), while the run's encounter bookkeeping has moved on (an
+/// event fight's request is cleared when it ends).
+#[must_use]
+pub fn combat_encounter_id(rm: &RunManager) -> Option<&'static str> {
+    if rm.phase() != Phase::Combat || rm.combat.is_none() {
+        return None;
+    }
+    if let Some(req) = rm.run_state.event_combat.as_ref() {
+        return Some(event_encounter_id(req.encounter));
+    }
+    rm.run_state
+        .current_encounter_idx
+        .and_then(sts2_content::encounters::by_index)
+        .map(|def| def.id)
+}
+
 // ---------------------------------------------------------------------------
 // Scalars
 // ---------------------------------------------------------------------------
@@ -456,27 +488,20 @@ pub fn generated_rooms(rm: &RunManager) -> Value {
 /// live `master_deck` still contains the stolen card mid-combat. The deck
 /// VIEW ([`master_deck`] / [`master_deck_detailed`], consumed by the
 /// workbench player serialization) must reflect C#'s mid-combat shrink, so
-/// drop one `(card_id, upgraded)` match per un-reclaimed `swipe_stolen`
-/// entry of the active combat. Out of combat this is the identity (no
+/// drop the deck card of each un-reclaimed `swipe_stolen` entry of the
+/// active combat, found by its deck link
+/// ([`sts2_core::resolve_stolen_deck_index`]). Out of combat this is the identity (no
 /// active combat), and `exit_combat` has by then removed the cards for real.
 #[must_use]
 pub fn effective_master_deck_indices(rm: &RunManager) -> Vec<usize> {
-    let mut keep: Vec<usize> = (0..rm.run_state.master_deck.len()).collect();
+    let all = 0..rm.run_state.master_deck.len();
     let Some(combat) = rm.combat.as_ref() else {
-        return keep;
+        return all.collect();
     };
-    for stolen in &combat.swipe_stolen {
-        if stolen.reclaimed {
-            continue;
-        }
-        if let Some(pos) = keep.iter().position(|&i| {
-            let c = &rm.run_state.master_deck[i];
-            c.card_id == stolen.card_id && c.upgraded == stolen.upgraded
-        }) {
-            keep.remove(pos);
-        }
-    }
-    keep
+    // Each held card by its deck link (C# `DeckVersion`), not its combat
+    // state: an Armaments upgrade must not hide which permanent card it is.
+    let stolen = combat.unreclaimed_stolen_deck_indices(&rm.run_state.master_deck);
+    all.filter(|i| !stolen.contains(i)).collect()
 }
 
 /// `RunManager.master_deck()` — card ids in `PascalCase` `Debug` form. The
@@ -848,6 +873,11 @@ pub fn shop_inventory(rm: &RunManager) -> Value {
         set(&mut cd, "idx", idx);
         if let Some(c) = &e.card {
             set(&mut cd, "id", format!("{:?}", c.card_id));
+            // The merchant card hook (the eggs) can upgrade a stocked card
+            // (MerchantCardEntry.cs:92). Additive key, present only when true.
+            if c.upgraded {
+                set(&mut cd, "upgraded", true);
+            }
         }
         set(&mut cd, "price", price_of(e.price));
         set(&mut cd, "on_sale", e.on_sale);
@@ -1408,5 +1438,53 @@ mod tests {
         }
         let room = current_room(&rm);
         assert_eq!(room["room_type"], "event");
+    }
+
+    /// The first fight of a live run is the act's first generated normal
+    /// encounter; an event's fight reports the event encounter; outside
+    /// combat there is none.
+    #[test]
+    fn combat_encounter_id_names_the_generated_encounter_and_the_event_fight() {
+        use sts2_core::events::{EventCombatRequest, EventEncounter, EventId};
+        let mut rm = ironclad_seed_0();
+        assert_eq!(combat_encounter_id(&rm), None, "no combat on the map");
+        let col = rm
+            .get_available_actions()
+            .into_iter()
+            .find_map(|a| match a {
+                RunAction::Move { col } => Some(col),
+                _ => None,
+            })
+            .expect("a first move");
+        rm.take_action(RunAction::Move { col });
+        assert_eq!(rm.phase(), Phase::Combat);
+        let first_normal = rm.run_state.generated_rooms[0].normal_encounters[0];
+        assert_eq!(combat_encounter_id(&rm), Some(first_normal));
+        assert!(sts2_content::encounters::find(first_normal).is_some());
+
+        rm.run_state.event_combat = Some(EventCombatRequest {
+            encounter: EventEncounter::FakeMerchant,
+            resume: false,
+            parent_event: EventId::FakeMerchant,
+            victory_rewards: Vec::new(),
+        });
+        assert_eq!(
+            combat_encounter_id(&rm),
+            Some("FAKE_MERCHANT_EVENT_ENCOUNTER")
+        );
+        rm.run_state.event_combat = None;
+
+        // Win the fight: its `CombatState` lingers, its id does not.
+        rm.debug_set_player(Some(9999), Some(9999), None);
+        for _ in 0..5000 {
+            if rm.phase() != Phase::Combat {
+                break;
+            }
+            let action = rm.get_available_actions()[0];
+            rm.take_action(action);
+        }
+        assert_ne!(rm.phase(), Phase::Combat);
+        assert!(rm.combat.is_some(), "the won fight's state lingers");
+        assert_eq!(combat_encounter_id(&rm), None);
     }
 }

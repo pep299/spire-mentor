@@ -137,10 +137,11 @@ impl Workbench {
     }
 
     /// `POST /api/saves/load`: restore a stored payload; the body is the
-    /// enriched step.
+    /// enriched step. `now` (ISO-8601, the host's clock) stamps the run log
+    /// of the live run the restore replaces (`take_run_log`).
     #[must_use]
-    pub fn restore_save(&mut self, payload_json: &str) -> String {
-        reply(parse_body(payload_json).and_then(|p| self.inner.restore_save(&p)))
+    pub fn restore_save(&mut self, payload_json: &str, now: &str) -> String {
+        reply(parse_body(payload_json).and_then(|p| self.inner.restore_save(&p, now)))
     }
 
     /// The list-view header of a stored payload (`GET /api/saves` rows).

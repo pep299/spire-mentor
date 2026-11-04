@@ -2,7 +2,6 @@
 use super::prelude::*;
 
 /// ExplosiveAmpoule — deal 10 unpowered damage to every alive enemy.
-/// Port pin: `sts2-rl-agent@01c094d:sts2_env/potions/effects.py::
 /// _explosive_ampoule` (`_deal_unpowered_damage_all(combat, user, 10)`).
 /// Routed through [`deal_damage_to_all_alive_enemies`] with
 /// `ValueProps::UNPOWERED` so the per-enemy hit skips Strength /

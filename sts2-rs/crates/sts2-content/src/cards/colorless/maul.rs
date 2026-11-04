@@ -3,11 +3,17 @@ use super::prelude::*;
 
 /// Maul (Ancient-rarity Attack, Cost 1, Enemy). Hit target twice for
 /// `base_damage` (=5 unupgraded), breaking early if the target dies, then
-/// permanently increment the played card's own `base_damage` by
-/// `effect_vars.increase` (=1 unupgraded) — successive plays of the same
-/// Maul instance scale up. Mirrors
-/// `sts2-rl-agent@01c094d:sts2_env/cards/status.py:417-426` (maul_effect).
-/// Bead `sts2-rs-hufh` (6ynt.8-maul).
+/// permanently raise the `base_damage` of EVERY Maul in combat by the
+/// played Maul's `Increase` var.
+///
+/// C# `Maul.OnPlay` (v0.111.0 Maul.cs:52-57, v0.107.1 Maul.cs:53-58)
+/// iterates `Owner.PlayerCombatState.AllCards.OfType<Maul>()` — the five
+/// live piles Hand, Draw, Discard, Exhaust, Play
+/// (`PlayerCombatState.cs:76-88`) — calling `BuffFromMaulPlay(Increase)`
+/// on each, the played Maul included (it sits on the Play pile). The bonus
+/// lives in `DynamicVars.Damage.BaseValue` (= our `base_damage`), so it
+/// rides along on any `MutableClone` copy and survives `AfterDowngraded`
+/// (Maul.cs:66-70), which our delta-based downgrade reproduces.
 pub(crate) fn play_maul(state: &mut CombatState, target: Option<CreatureUid>) -> EffectResult {
     let t = target.expect("Maul: Enemy-targeted");
     let dmg = current_damage(state);
@@ -21,14 +27,8 @@ pub(crate) fn play_maul(state: &mut CombatState, target: Option<CreatureUid>) ->
         }
         let _ = deal_damage_player_to_enemy(state, t, dmg);
     }
-    // C# `Maul.cs` `DynamicVar("Increase", 1m)` with `OnUpgrade
-    // UpgradeValueBy(1m)` → permanent base_damage rider is +1 base /
-    // +2 upgraded. (The base damage upgrade 5→6 rides the spec.)
-    // The cross-Maul iteration (C# `AllCards.OfType<Maul>()`) is
-    // collapsed to "self only" matching the Python pin — separate
-    // beyond-scope concern from this upgrade-scaling fix.
-    // Bead `sts2-rs-h84kf`.
-    // v0.111.0: Increase 1 -> 2, upgrade still +1 (decomp Maul.cs:37,63).
+    // C# `DynamicVar("Increase", 1m)` (v0.107.1 Maul.cs:38) / `2m`
+    // (v0.111.0 Maul.cs:37), `OnUpgrade UpgradeValueBy(1m)` (Maul.cs:63).
     let base: i32 = if crate::cards::v0111::is_v0111(state.game_version) {
         2
     } else {
@@ -39,11 +39,21 @@ pub(crate) fn play_maul(state: &mut CombatState, target: Option<CreatureUid>) ->
     } else {
         base
     };
-    if let Some(idx) =
-        sts2_core::card_effects::resolving_card_uid(state).map(|u| u.0.get() as usize - 1)
-    {
-        if let Some(card) = state.cards.get_mut(idx) {
-            card.base_damage = card.base_damage.saturating_add(increase);
+    let p = &state.player;
+    let uids: SmallVec<[CardUid; 64]> = p
+        .hand
+        .iter()
+        .chain(p.draw.iter())
+        .chain(p.discard.iter())
+        .chain(p.exhaust.iter())
+        .chain(p.play.iter())
+        .copied()
+        .collect();
+    for uid in uids {
+        if let Some(card) = state.cards.get_mut(uid.0.get() as usize - 1) {
+            if card.card_id == CardId::Maul {
+                card.base_damage = card.base_damage.saturating_add(increase);
+            }
         }
     }
     EffectResult::Resolved

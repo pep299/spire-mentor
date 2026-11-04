@@ -11,6 +11,9 @@ use super::prelude::*;
 pub(crate) fn play_compact(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     gain_block_player(state, current_card_block(state));
     let upgraded = current_card_upgraded(state);
+    // C# filter is `c.IsTransformable && c.Type == Status`; `IsTransformable`
+    // (`CardModel.cs:740-751`) is only false for an Eternal card in the Deck
+    // pile, so every Status in hand qualifies.
     let status_uids: Vec<sts2_core::CardUid> = state
         .player
         .hand
@@ -22,6 +25,7 @@ pub(crate) fn play_compact(state: &mut CombatState, _t: Option<CreatureUid>) -> 
         })
         .collect();
     let spec = status_specs::fuel();
+    let mut fuel_uids = Vec::with_capacity(status_uids.len());
     for uid in status_uids {
         let mut fuel = card_from_spec(&spec);
         if upgraded {
@@ -31,9 +35,41 @@ pub(crate) fn play_compact(state: &mut CombatState, _t: Option<CreatureUid>) -> 
             // only worked because Fuel has no spec delta today.
             let _ = fuel.upgrade_for(state.game_version);
         }
-        let _ = state.transform_card(uid, fuel);
+        // Original hand position, read before the in-place swap below.
+        let pos = state.player.hand.iter().position(|&u| u == uid);
+        if let (Some(pos), Some(new_uid)) = (pos, state.transform_card(uid, fuel)) {
+            fuel_uids.push((pos, new_uid));
+        }
     }
+    reorder_like_batch_transform(state, &fuel_uids);
     EffectResult::Resolved
+}
+
+/// C# Compact makes ONE batch `CardCmd.Transform(list)` call
+/// (`Compact.cs:34-46`), not one transform per card. The batch first removes
+/// every original, recording each index with `IndexOf` AFTER the earlier
+/// removals (`CardCmd.cs:384-405`), sorts by (pile, index) (`PileIndexSort`,
+/// `CardCmd.cs:355-362`), then re-inserts each replacement with
+/// `pile.AddInternal(replacement, index)` (`CardCmd.cs:438-446`). For
+/// originals at ascending hand positions `p_0 < p_1 < ...` the recorded index
+/// is `p_j - j`, so the Fuels cluster toward the front: Statuses at 0, 1, 4
+/// give `[Fuel, Fuel, Fuel, <rest in order>]`. `transform_card` swaps each
+/// card in place at `p_j`, so move the minted Fuels to the C# slots after.
+fn reorder_like_batch_transform(
+    state: &mut CombatState,
+    fuel_uids: &[(usize, sts2_core::CardUid)],
+) {
+    if fuel_uids.len() < 2 {
+        return;
+    }
+    let mut placed = fuel_uids.to_vec();
+    placed.sort_by_key(|&(pos, _)| pos);
+    let hand = &mut state.player.hand;
+    hand.retain(|u| !placed.iter().any(|&(_, f)| f == *u));
+    for (j, &(pos, uid)) in placed.iter().enumerate() {
+        let idx = pos.saturating_sub(j).min(hand.len());
+        hand.insert(idx, uid);
+    }
 }
 
 #[must_use]

@@ -47,6 +47,8 @@ pub fn result_str(r: &ActionResult) -> &'static str {
         ActionResult::RunOver => "run_over",
         ActionResult::ShopPurchaseFailed(_) => "shop_purchase_failed",
         ActionResult::ShopRemoveCardFailed(_) => "shop_remove_card_failed",
+        ActionResult::InvalidTarget => "invalid_target",
+        ActionResult::IllegalPlay => "illegal_play",
         _ => "unknown",
     }
 }
@@ -358,6 +360,16 @@ pub fn pending_card_grants(rm: &RunManager) -> u32 {
         .map_or(0, |g| u32::try_from(g.pick).unwrap_or(u32::MAX))
 }
 
+/// `pending_card_grant_min` (picks the FRONT grant still REQUIRES; `0` for
+/// an optional grid such as SeaGlass's).
+#[must_use]
+pub fn pending_card_grant_min(rm: &RunManager) -> u32 {
+    rm.run_state
+        .pending_card_grants
+        .first()
+        .map_or(0, |g| u32::try_from(g.min_pick).unwrap_or(u32::MAX))
+}
+
 /// `pending_deck_removals`.
 #[must_use]
 pub fn pending_deck_removals(rm: &RunManager) -> u32 {
@@ -380,6 +392,15 @@ pub fn pending_deck_transforms(rm: &RunManager) -> u32 {
 #[must_use]
 pub fn pending_deck_enchants(rm: &RunManager) -> u32 {
     u32::try_from(rm.run_state.pending_deck_enchants.len()).unwrap_or(u32::MAX)
+}
+
+/// `pending_enchant_optional`: the front deck-enchant pick is an "up to N"
+/// screen (Kifuda / Gnarled Hammer).
+pub fn pending_enchant_optional(rm: &RunManager) -> bool {
+    rm.run_state
+        .pending_deck_enchants
+        .first()
+        .is_some_and(|p| p.optional)
 }
 
 /// `transform_select_deck_indices()`.
@@ -498,6 +519,12 @@ pub fn max_potion_slots(rm: &RunManager) -> i32 {
 #[must_use]
 pub fn total_floor(rm: &RunManager) -> i32 {
     rm.run_state.total_floor
+}
+
+/// The floor number the game shows: [`sts2_core::runstate::RunState::game_floor`].
+#[must_use]
+pub fn game_floor(rm: &RunManager) -> i32 {
+    rm.run_state.game_floor()
 }
 
 /// Whether an in-combat `pending_choice` (Headbutt etc.) is open.

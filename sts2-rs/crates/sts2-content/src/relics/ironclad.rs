@@ -1,7 +1,5 @@
 //! Ironclad starter relic: `BurningBlood`.
 //!
-//! Ported from `sts2-rl-agent@01c094d:sts2_env/relics/starter.py:24-33`.
-//!
 //! Bead P4-2 (sts2-rs-u4u) ships pure data — no relic-effect
 //! interpreter, no after-combat-victory dispatch. The Phase 7
 //! umbrella bead (sts2-rs-h9u) wires `RelicSpec.effect` into a

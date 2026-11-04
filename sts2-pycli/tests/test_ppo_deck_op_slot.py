@@ -40,14 +40,19 @@ def test_each_deck_op_gets_its_own_cat10_row():
     assert len(set(seen.values())) == 5
 
 
-def test_n_cat_is_twelve_and_the_appended_pads_are_last():
-    assert schema.N_CAT == 12
+def test_n_cat_is_fourteen_and_the_appended_pads_are_last():
+    assert schema.N_CAT == 14
     pad = schema.empty_cat()
     assert pad[schema.CAT_DECK_OP] == vocab.N_DECK_OP
     assert pad[schema.CAT_ENCHANT] == vocab.enchantments().size
+    assert pad[schema.CAT_CARD_TYPE] == vocab.N_CARD_TYPE
+    assert pad[schema.CAT_CARD_RARITY] == vocab.N_CARD_RARITY
 
 
-def test_deck_ops_keep_a_spare_row_above_the_named_entries():
-    # `N_FIXED` ran out of slack and became a fleet-breaking change to grow.
-    # This table is defined with one unused row so the next entry is free.
-    assert len(vocab.DECK_OPS) + 1 == vocab.N_DECK_OP
+def test_the_deck_op_pad_stays_at_row_eleven():
+    # The table was defined with one spare row; "bundle" (GH #978) took it.
+    # Every committed champion's `emb_deck_op` has 12 rows with the pad at
+    # 11, so the pad must not move: the next op needs a widened table.
+    assert vocab.N_DECK_OP == 11
+    assert len(vocab.DECK_OPS) == vocab.N_DECK_OP
+    assert vocab.deck_op_index("bundle") == 10

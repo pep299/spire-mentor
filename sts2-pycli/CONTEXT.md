@@ -33,6 +33,9 @@ A whole run driven through both implementations in lockstep from one seed, check
 **State parity**:
 A full-state diff taken at each decision point across a range of runs, rather than at the end.
 
+**State trace**:
+The C# oracle's record of every write to HP, block, powers, piles, energy and the named RNG streams, each tagged with the model method that made it. `act23_state_parity --trace-split` uses it to explain a run's first full-state split with the C# change history of each diverging field. Only C# is traced; the Rust side contributes its end value.
+
 **Residual**:
 A divergence that survives a parity sweep and still needs explaining. A count of residuals is a work list, not a bug count.
 _Avoid_: failure, diff, mismatch

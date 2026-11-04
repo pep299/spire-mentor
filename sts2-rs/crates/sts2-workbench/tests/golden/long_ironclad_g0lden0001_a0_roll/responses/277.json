@@ -3,7 +3,7 @@
   {
    "act": 1,
    "deck_size": 10,
-   "floor": 0,
+   "floor": 1,
    "idx": 0,
    "scores": {
     "block": 38.9,
@@ -15,7 +15,7 @@
   {
    "act": 1,
    "deck_size": 11,
-   "floor": 0,
+   "floor": 1,
    "idx": 2,
    "scores": {
     "block": 36.3,
@@ -27,7 +27,7 @@
   {
    "act": 1,
    "deck_size": 12,
-   "floor": 1,
+   "floor": 2,
    "idx": 12,
    "scores": {
     "block": 34.1,
@@ -39,7 +39,7 @@
   {
    "act": 1,
    "deck_size": 13,
-   "floor": 2,
+   "floor": 3,
    "idx": 25,
    "scores": {
     "block": 39.7,
@@ -51,7 +51,7 @@
   {
    "act": 1,
    "deck_size": 14,
-   "floor": 4,
+   "floor": 5,
    "idx": 44,
    "scores": {
     "block": 39.1,
@@ -63,7 +63,7 @@
   {
    "act": 1,
    "deck_size": 15,
-   "floor": 5,
+   "floor": 6,
    "idx": 46,
    "scores": {
     "block": 37.4,
@@ -75,7 +75,7 @@
   {
    "act": 1,
    "deck_size": 16,
-   "floor": 6,
+   "floor": 7,
    "idx": 71,
    "scores": {
     "block": 36.0,
@@ -87,7 +87,7 @@
   {
    "act": 1,
    "deck_size": 17,
-   "floor": 8,
+   "floor": 9,
    "idx": 75,
    "scores": {
     "block": 34.6,
@@ -99,7 +99,7 @@
   {
    "act": 1,
    "deck_size": 16,
-   "floor": 8,
+   "floor": 9,
    "idx": 78,
    "scores": {
     "block": 37.5,
@@ -111,7 +111,7 @@
   {
    "act": 1,
    "deck_size": 16,
-   "floor": 10,
+   "floor": 11,
    "idx": 83,
    "scores": {
     "block": 37.5,
@@ -123,7 +123,7 @@
   {
    "act": 1,
    "deck_size": 17,
-   "floor": 11,
+   "floor": 12,
    "idx": 107,
    "scores": {
     "block": 35.7,
@@ -135,7 +135,7 @@
   {
    "act": 1,
    "deck_size": 18,
-   "floor": 12,
+   "floor": 13,
    "idx": 131,
    "scores": {
     "block": 37.9,
@@ -147,7 +147,7 @@
   {
    "act": 1,
    "deck_size": 19,
-   "floor": 13,
+   "floor": 14,
    "idx": 146,
    "scores": {
     "block": 45.3,
@@ -159,7 +159,7 @@
   {
    "act": 1,
    "deck_size": 20,
-   "floor": 14,
+   "floor": 15,
    "idx": 169,
    "scores": {
     "block": 49.3,

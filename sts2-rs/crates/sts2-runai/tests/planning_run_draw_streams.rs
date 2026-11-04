@@ -143,13 +143,26 @@ fn event_choice_audit_no_stray_stream_outside_run_draw_set() {
             let is_event = matches!(pr.phase(), Phase::Event);
             let niche_before = pr.run_state().rng.niche.counter();
             let fp_before = pr.run_state().rng.run_draw_counter_fingerprint();
+            let visited_before = pr.run_state().visited_event_ids.clone();
             let action = actions[0];
             let out = pr.apply(action, 0);
             if is_event {
                 saw_event_choice = true;
                 let niche_after = pr.run_state().rng.niche.counter();
                 let fp_after = pr.run_state().rng.run_draw_counter_fingerprint();
-                if niche_after != niche_before && fp_after == fp_before {
+                // Entering a Combat-layout event rolls its creatures' fixed
+                // HP off niche (`EventId::combat_layout_monsters`): a cursor
+                // advance with no random outcome, so not a stray draw.
+                let layout_reads: u32 = pr
+                    .run_state()
+                    .visited_event_ids
+                    .iter()
+                    .filter(|id| !visited_before.contains(id))
+                    .map(|id| id.combat_layout_monsters().len() as u32)
+                    .sum();
+                let niche_drawn =
+                    niche_after - niche_before - layout_reads.min(niche_after - niche_before);
+                if niche_drawn != 0 && fp_after == fp_before {
                     niche_moved_without_covered = true;
                 }
             }

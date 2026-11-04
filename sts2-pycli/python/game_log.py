@@ -4,6 +4,7 @@ Game logging — saves every state + action per run as JSONL for debugging.
 Log files are stored in <project_root>/logs/ with auto-cleanup of old files.
 """
 
+import itertools
 import json
 import os
 import pathlib
@@ -81,12 +82,21 @@ class GameLogger:
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         safe_seed = str(seed).replace("/", "_")
-        filename = f"{ts}_{character}_{safe_seed}.jsonl"
-        self._path = os.path.join(out_dir, filename)
+        # Exclusive create, suffixed on a clash: two co-op seats share the seed
+        # and character, and advisors started in the same second both opened
+        # one file "w" and tore each other's lines (2026-10-27).
         # utf-8 explicitly: Windows' default cp1252 cannot encode the arrows in
         # action labels ("Play Strike → Cultist"), which silently broke every
         # log_advice/log_action write in the live-advisor lane (2026-08-21).
-        self._file = open(self._path, "w", encoding="utf-8")
+        stem = f"{ts}_{character}_{safe_seed}"
+        for n in itertools.count(1):
+            suffix = "" if n == 1 else f"_{n}"
+            self._path = os.path.join(out_dir, f"{stem}{suffix}.jsonl")
+            try:
+                self._file = open(self._path, "x", encoding="utf-8")
+                break
+            except FileExistsError:
+                continue
 
         # First record is a self-describing header so a log identifies its own
         # run (character / seed / ascension) without depending on the start_run

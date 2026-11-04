@@ -46,13 +46,13 @@
 
 <section class="hero">
   <h1>A fast, bit-exact Slay the Spire 2 engine in Rust, and an AI that plays it</h1>
-  <p class="lede">spire-mentor reimplements <em>Slay the Spire 2</em> from scratch,
+  <p class="lede">spire-mentor reimplements <em>Slay the Spire 2</em> in Rust,
   checks itself against the game's own code after every action, and runs
   fast enough to search thousands of futures per decision, with a run-level
   AI on top. Two front ends show
   that AI thinking: a browser workbench and a mod for the real game.</p>
   <figure class="shot wide">
-    <img src="img/wb-combat.webp" width="1440" height="900" alt="The browser workbench in the act-3 boss fight (Ironclad vs the Queen, floor 45): the best card, Dominate+, carries a 95% win badge, and the machine-reasoning panel ranks every legal move by value and visits.">
+    <img src="img/wb-combat.webp" width="1440" height="900" alt="The browser workbench in the act-3 boss fight (Ironclad vs the Queen): the best card, Dominate+, carries a 95% win badge, and the machine-reasoning panel ranks every legal move by value and visits.">
     <figcaption>The browser workbench in the act-3 boss fight: the search marks
     the best card with its win chance, and the machine-reasoning panel ranks
     every legal move.</figcaption>
@@ -75,10 +75,12 @@
 <section id="engine">
   <h2>The engine</h2>
   <p><code>sts2-rs</code> re-implements the game's rules in Rust, pinned to game
-  build <strong>v0.107.1</strong>. It is not an approximation: the random number
-  generator is a hand port of .NET's <code>System.Random</code> (the 56-element
-  subtractive generator the game uses), and every RNG stream is consumed in the
-  game's order. A seed yields the same map, the same card rewards, the same
+  build <strong>v0.107.1</strong>, with the game's decompiled C# as the
+  specification for every mechanic. It is not an approximation: the random
+  number generator is a hand port of the game's <code>MegaRandom</code> (a
+  Xoshiro256** generator with Splitmix64 seeding, which replaced .NET's
+  <code>System.Random</code> after v0.103.x), and every RNG stream is consumed
+  in the game's order. A seed yields the same map, the same card rewards, the same
   shuffles and the same monster rolls as the real game.</p>
 
   <div class="table-wrap">
@@ -116,7 +118,7 @@
       <tr><td>Against two other simulators, same random-play fights, one core</td><td class="num">3.13× faster than sansb<br>sts2core 1.56× faster</td></tr>
       <tr><td>Browser hint's search, 1,000 simulations</td><td class="num">13.7 ms native<br>18.4 ms WASM in Chromium</td></tr>
       <tr><td>Browser hint at its default 2,000 simulations, WASM in Chromium</td><td class="num">39.9 ms</td></tr>
-      <tr><td>Advisor's search on an Act-1 boss, 8,000 simulations</td><td class="num">275 ms on 1 thread<br>39.6 ms on 8</td></tr>
+      <tr><td>Search on an Act-1 boss, 8,000 simulations (the advisor's setting then; heuristic playouts)</td><td class="num">275 ms on 1 thread<br>39.6 ms on 8</td></tr>
       <tr><td>A typical PPO training iteration (Ironclad, 960 games)</td><td class="num">208 s (609 s before)<br>150 in ~9 h</td></tr>
     </tbody>
   </table>
@@ -308,8 +310,9 @@
   <h3>In the real game</h3>
   <p>Driven through the Spire Mentor mod against the actual
   <code>SlayTheSpire2.exe</code>, random seeds, no cheats, 40 runs each at
-  <strong>Ascension 8</strong>, with 8,000 simulations per combat decision.
-  These runs used the champions deployed in August 2026; the current ones,
+  <strong>Ascension 8</strong>, with 8,000 simulations per combat decision
+  split over 8 root-parallel trees of 1,000 each, which plays weaker than one
+  8,000-simulation tree. These runs used the champions deployed in August 2026; the current ones,
   above, have not been measured in the real game yet.</p>
   <div class="table-wrap fit">
   <table>
@@ -332,8 +335,8 @@
 
   <div class="gallery" id="wb-gallery">
     <figure class="shot wide">
-      <a href="img/wb-combat.webp"><img src="img/wb-combat.webp" width="1440" height="900" loading="lazy" alt="A hint in the act-3 boss fight (Ironclad vs the Queen, floor 45): the best card, Dominate+, carries a 95% win badge, and the machine-reasoning panel ranks every legal move by value and visits."></a>
-      <figcaption>A hint in the act-3 boss fight (Ironclad vs the Queen, floor 45): the best card, Dominate+, carries a 95% win badge, and the machine-reasoning panel ranks every legal move by value and visits.</figcaption>
+      <a href="img/wb-combat.webp"><img src="img/wb-combat.webp" width="1440" height="900" loading="lazy" alt="A hint in the act-3 boss fight (Ironclad vs the Queen): the best card, Dominate+, carries a 95% win badge, and the machine-reasoning panel ranks every legal move by value and visits."></a>
+      <figcaption>A hint in the act-3 boss fight (Ironclad vs the Queen): the best card, Dominate+, carries a 95% win badge, and the machine-reasoning panel ranks every legal move by value and visits.</figcaption>
     </figure>
     <figure class="shot">
       <a href="img/wb-search-tree.webp"><img src="img/wb-search-tree.webp" width="1440" height="900" loading="lazy" alt="The MCTS search tree for that position, as an outline: the most-visited line expanded through chance nodes (the possible draws), with visits, Q values and predicted outcomes."></a>
@@ -372,8 +375,8 @@
       <figcaption>Watch the AI play: the PPO champion and MCTS playing a Silent run live, here at the act-1 boss.</figcaption>
     </figure>
     <figure class="shot">
-      <a href="img/wb-ai-victory.webp"><img src="img/wb-ai-victory.webp" width="1440" height="900" loading="lazy" alt="…and winning it: 45 floors, 29 cards, 15 relics, with the replay one click away."></a>
-      <figcaption>…and winning it: 45 floors, 29 cards, 15 relics, with the replay one click away.</figcaption>
+      <a href="img/wb-ai-victory.webp"><img src="img/wb-ai-victory.webp" width="1440" height="900" loading="lazy" alt="…and winning it: 48 floors (the screenshot shows 45: it predates the workbench adopting the game's count, which includes the Ancient that opens each act), 29 cards, 15 relics, with the replay one click away."></a>
+      <figcaption>…and winning it: 48 floors (the screenshot shows 45: it predates the workbench adopting the game's count, which includes the Ancient that opens each act), 29 cards, 15 relics, with the replay one click away.</figcaption>
     </figure>
     <figure class="shot">
       <a href="img/wb-replay.webp"><img src="img/wb-replay.webp" width="1440" height="900" loading="lazy" alt="The replay viewer: scrub any recorded run step by step and “play from here”."></a>
@@ -558,9 +561,11 @@ just workbench-local   # → http://127.0.0.1:4173</code></pre>
   extracts those from a copy of the game you own, into git-ignored paths.
   The screenshots on this page show the game's art.</p>
   <p>The original work is MIT-licensed. <code>sts2-pycli</code> began as a
-  fork of <a href="https://github.com/wuhao21/sts2-cli">wuhao21/sts2-cli</a>;
+  fork of <a href="https://github.com/wuhao21/sts2-cli">wuhao21/sts2-cli</a>.
   Spire Mentor started as a port of zhiyue's STS2BridgeMod from
   <a href="https://github.com/zhiyue/sts2-rl-agent">zhiyue/sts2-rl-agent</a>.
+  The engine's early combat-loop scaffolding followed the Python simulator in
+  the same repository; it has since been rewritten against the decompiled C#.
   See <a href="https://github.com/tfriedel/spire-mentor/blob/main/NOTICE">NOTICE</a> and
   <a href="https://github.com/tfriedel/spire-mentor/blob/main/PROVENANCE.md">PROVENANCE.md</a>.</p>
 </section>

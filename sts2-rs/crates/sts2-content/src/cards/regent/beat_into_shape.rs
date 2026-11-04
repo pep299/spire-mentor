@@ -20,7 +20,6 @@ use super::prelude::*;
 /// forge. Read via `count_player_powered_hits_on_target_this_turn(t)`
 /// (issue #177); single-enemy parity is unchanged (per-target ==
 /// combat-wide when there is one enemy).
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L599
 pub(crate) fn play_beat_into_shape(
     state: &mut CombatState,
     target: Option<CreatureUid>,

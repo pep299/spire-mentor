@@ -1,5 +1,4 @@
 // HAND-MAINTAINED — edit directly. Add a `pub mod` line when you add a pool.
-// port-pin-skip — module aggregator; per-card files carry the port pins.
 //! Card content: static data definitions for every card in the pool.
 //!
 //! Shared types (`CardSpec`, `CardEffect`, `CardKeywords`, `CardRarity`)
@@ -71,3 +70,7 @@ pub mod spec_index;
 
 // v0.111.0 card values / rarities / keywords / pools overlay (GH #793).
 pub mod v0111;
+
+// The C# pools in `GenerateAllCards()` order and the co-op generation pools
+// derived from them (GH #991).
+pub mod pool_order;

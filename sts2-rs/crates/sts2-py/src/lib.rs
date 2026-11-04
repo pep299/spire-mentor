@@ -329,6 +329,7 @@ fn build_encounter_state(
         pending_enemy_exec_resume: None,
         combat_log: TurnEvents::default(),
         swipe_stolen: Vec::new(),
+        deck_link: None,
         escaped_creatures: 0,
         coop: sts2_core::coop::CoopState::default(),
         heist_recovered_gold: 0,
@@ -559,9 +560,17 @@ pub(crate) fn parse_bridge_action(dict: &Bound<'_, PyDict>) -> PyResult<Action> 
     };
 
     match action_kind.as_str() {
-        "play" => Ok(Action::PlayCard {
-            hand_index: req_u8("card_index")?,
-            target: opt_u8("target_index")?,
+        // `ally_index` (co-op, GH #1017): an `AnyAlly` card at that teammate
+        // (`Action::PlayCardAtAlly`); `target_index` is then ignored.
+        "play" => Ok(match opt_u8("ally_index")? {
+            Some(ally) => Action::PlayCardAtAlly {
+                hand_index: req_u8("card_index")?,
+                ally,
+            },
+            None => Action::PlayCard {
+                hand_index: req_u8("card_index")?,
+                target: opt_u8("target_index")?,
+            },
         }),
         "end_turn" => Ok(Action::EndTurn),
         // GH #303: `"potion"` is the back-compat spelling of
@@ -593,9 +602,17 @@ pub(crate) fn parse_bridge_action(dict: &Bound<'_, PyDict>) -> PyResult<Action> 
                      diverge from the world that emitted it",
                 ));
             }
-            Ok(Action::DrinkPotion {
-                potion_slot: req_u8("slot")?,
-                target: opt_u8("target_index")?,
+            // `ally_index` (co-op, GH #1017): thrown at that teammate
+            // (`Action::DrinkPotionAtAlly`); `target_index` is then ignored.
+            Ok(match opt_u8("ally_index")? {
+                Some(ally) => Action::DrinkPotionAtAlly {
+                    potion_slot: req_u8("slot")?,
+                    ally,
+                },
+                None => Action::DrinkPotion {
+                    potion_slot: req_u8("slot")?,
+                    target: opt_u8("target_index")?,
+                },
             })
         }
         "choose" => {
@@ -648,6 +665,10 @@ pub struct PyCombatState {
     /// `mcts_recommend` as `intent_damage_known` so consumers know
     /// when the win/loss split is unreliable. Bead `sts2-rs-bpt4`.
     intent_damage_known: bool,
+    /// The C# id of the encounter this combat fights (GH #1097), when the
+    /// builder knew it. The core state carries no encounter identity, so
+    /// the wrapper holds it; see the `encounter_id` getter.
+    encounter_id: Option<&'static str>,
 }
 
 impl PyCombatState {
@@ -666,7 +687,15 @@ impl PyCombatState {
             inner,
             seed,
             intent_damage_known: true,
+            encounter_id: None,
         }
+    }
+
+    /// This state with its `encounter_id` set (GH #1097).
+    #[must_use]
+    pub(crate) fn with_encounter_id(mut self, encounter_id: Option<&'static str>) -> Self {
+        self.encounter_id = encounter_id;
+        self
     }
 }
 
@@ -700,6 +729,8 @@ impl PyCombatState {
             inner,
             seed,
             intent_damage_known: true,
+            // The legacy monster-name encounters are not C# encounters.
+            encounter_id: None,
         })
     }
 
@@ -884,6 +915,21 @@ impl PyCombatState {
         Ok(())
     }
 
+    /// Turn the joint co-op hand-off (`sts2_core::coop::CoopState::joint`,
+    /// GH #1046) on or off for this state: on, our `EndTurn` seats the
+    /// teammate, who then moves through [`Self::apply`] until their own
+    /// `EndTurn`, so one search can steer both seats. For experiments.
+    fn set_coop_joint(&mut self, on: bool) {
+        self.inner.coop.joint = on;
+    }
+
+    /// The teammate the joint hand-off has seated (`allies` index), else
+    /// `None`.
+    #[getter]
+    fn coop_joint_acting(&self) -> Option<u8> {
+        self.inner.coop.joint_acting
+    }
+
     /// Run the engine's structural invariant suite against the current
     /// (UNCLAMPED) internal state and return the first violation message, or
     /// `None` when all invariants hold.
@@ -907,6 +953,8 @@ impl PyCombatState {
     ///
     /// Shape contract (mirrors the `sts2-rl-agent` rollout bridge):
     ///   * `{"action": "play", "card_index": i, "target_index": j | None}`
+    ///   * `{"action": "play", "card_index": i, "ally_index": k}` — co-op: an
+    ///     `AnyAlly` card at teammate `allies[k]`
     ///   * `{"action": "end_turn"}`
     ///   * `{"action": "choose", "index": i}` — emitted iff a
     ///     `pending_choice` is open; in that case no other actions
@@ -962,6 +1010,78 @@ impl PyCombatState {
         let mut out = self.clone();
         sts2_core::blindfold::blindfold_root(&mut out.inner, seed);
         out
+    }
+
+    /// The full telegraph of every enemy (GH #1097): one list per enemy, in
+    /// the order of `state_to_dict(cs)["encounter"]`, of intent dicts in the
+    /// wire's shape (`kind`, `amount`, `times`, `effective_amount`,
+    /// `modifiers`). Element 0 is the wire's `intents[0]`; when it is still
+    /// the first intent of the enemy's current move, the move's other intents
+    /// follow, which the wire drops (a multi-attack plus a buff shows both).
+    /// An enemy with no telegraph has `[]`. Read-only.
+    ///
+    /// Raises `ValueError` on a state whose enemy list names a missing
+    /// creature, as `state_to_dict` does.
+    fn telegraph<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let value = sts2_wire::emit::combat::enemy_telegraphs(&self.inner).map_err(emit_err)?;
+        value_to_pylist(py, &value)
+    }
+
+    /// The next `k` moves of every enemy after its current telegraph
+    /// (GH #1097): one list per enemy, in the order of
+    /// `state_to_dict(cs)["encounter"]`, of `{"step": int, "certainty":
+    /// float, "move_id": str, "intents": [intent dict, ...]}`.
+    ///
+    /// Step 1 is the move the enemy telegraphs after the coming enemy turn,
+    /// before and after its first move alike, so the forecast never repeats
+    /// the current telegraph. The walk takes the most likely branch at each
+    /// random pick against the board as it is now; `certainty` is the
+    /// product of those picks' weight shares (1.0 along a fixed pattern). A
+    /// move changed by something the turn itself does (a sleep counter
+    /// running out, an AI counter the telegraphed move decrements) is not
+    /// foreseen. Intent dicts have the `telegraph()` shape, baked against the
+    /// current board. `move_id` is the engine's hidden move-state id, for
+    /// privileged consumers only. An enemy without a move machine has `[]`;
+    /// dead enemies keep a forecast, so mask them with the wire's `is_dead`.
+    ///
+    /// Read-only: no RNG draw, and every hash and `state_to_dict` stay the
+    /// same. Raises `ValueError` for `k` above 255.
+    #[pyo3(signature = (k = 3))]
+    fn peek_intents<'py>(&self, py: Python<'py>, k: usize) -> PyResult<Bound<'py, PyList>> {
+        let value =
+            sts2_wire::emit::combat::enemy_intent_forecast(&self.inner, k).map_err(emit_err)?;
+        value_to_pylist(py, &value)
+    }
+
+    /// The top `k` cards of the player's draw pile in true draw order, top
+    /// (next draw) first, as wire card dicts (GH #1097); the whole pile when
+    /// it holds fewer. Hidden information, for privileged consumers only:
+    /// the same cards as `state_to_dict(cs)["deck"]["draw_pile"][:k]`
+    /// without building the rest of the dict.
+    ///
+    /// Raises `ValueError` on a `belief_view`, whose draw order is not
+    /// decided until a draw happens. A `sample_world` has a concrete order
+    /// and returns it.
+    #[pyo3(signature = (k = 10))]
+    fn true_draw_top<'py>(&self, py: Python<'py>, k: usize) -> PyResult<Bound<'py, PyList>> {
+        let value = sts2_wire::emit::combat::true_draw_top(&self.inner, k).map_err(emit_err)?;
+        value_to_pylist(py, &value)
+    }
+
+    /// The C# id of the encounter this combat fights, such as
+    /// `"TERROR_EEL_ELITE"` or `"FAKE_MERCHANT_EVENT_ENCOUNTER"` (GH #1097),
+    /// or `None` when the state's builder did not know it.
+    ///
+    /// `RunManager.combat_state()` sets it from the run (an event's fight
+    /// reports the event encounter; a map room's fight, the encounter the
+    /// run generated for it) and `build_scenario_state` from its
+    /// `encounter=` argument. `state_from_dict` and the legacy
+    /// `CombatState(encounter=...)` constructor give `None`. It carries over
+    /// to `clone()`, `belief_view` and `sample_world`, and stays fixed when
+    /// the state is stepped.
+    #[getter]
+    fn encounter_id(&self) -> Option<&'static str> {
+        self.encounter_id
     }
 
     /// The hash the search's transposition table keys on
@@ -1139,6 +1259,7 @@ impl PyCombatState {
             sts2_core::StepResult::CombatWon => "combat_won",
             sts2_core::StepResult::CombatLost => "combat_lost",
             sts2_core::StepResult::InvalidTarget => "invalid_target",
+            sts2_core::StepResult::IllegalPlay => "illegal_play",
         })
     }
 
@@ -1229,7 +1350,12 @@ impl PyCombatState {
     /// card's block: 89 of the 123 `$.player.block` records on the v14 sweep
     /// carried Vambrace, against an 11% base rate. Pass the relics the wire
     /// left at `None`; the ones it did disclose keep reality's value.
-    #[pyo3(signature = (carried, enemy_slots = None, carry_rng = true, carry_relic_counters = None, carry_power_counters = None))]
+    ///
+    /// `carry_turn_history`: carry the turn's exhaust count (Evil Eye) and
+    /// card block gains (Unmovable). Pass `false` when the wire disclosed them
+    /// (`cards_exhausted_this_turn` / `card_block_gains_this_turn`, GH #989):
+    /// then reality wins, as it does on `bound_card_played_this_turn`.
+    #[pyo3(signature = (carried, enemy_slots = None, carry_rng = true, carry_relic_counters = None, carry_power_counters = None, carry_turn_history = true))]
     fn transplant_hidden(
         &mut self,
         carried: &Self,
@@ -1237,6 +1363,7 @@ impl PyCombatState {
         carry_rng: bool,
         carry_relic_counters: Option<Vec<String>>,
         carry_power_counters: Option<Vec<String>>,
+        carry_turn_history: bool,
     ) -> PyResult<()> {
         let (fresh_draw, carried_draw) = (
             self.inner.player.draw.len(),
@@ -1478,9 +1605,21 @@ impl PyCombatState {
             dst.status_cards_drawn_this_turn = src.status_cards_drawn_this_turn;
             dst.doom_applied_by_player_this_turn = src.doom_applied_by_player_this_turn;
             dst.osty_attacks_this_turn = src.osty_attacks_this_turn;
-            dst.cards_exhausted_this_turn = src.cards_exhausted_this_turn;
+            if carry_turn_history {
+                dst.cards_exhausted_this_turn = src.cards_exhausted_this_turn;
+            }
             dst.hp_lost_this_turn = src.hp_lost_this_turn;
             dst.unblocked_damage_received_this_combat = src.unblocked_damage_received_this_combat;
+            // PaelsEye / Ambergris extra turns: `turn_number()` = round + this,
+            // and the turn-number gates (BagOfPreparation, Lantern, the
+            // turn-1 Innate floor) read it. Older mods do not send it, so a
+            // rebuild after an extra turn read turn = round (GH #812). Newer
+            // mods do (TurnNumber - RoundNumber), and the count never falls
+            // within a combat, so the larger of wire and mirror is right
+            // either way.
+            dst.extra_turns_taken_this_combat = dst
+                .extra_turns_taken_this_combat
+                .max(src.extra_turns_taken_this_combat);
             dst.energy_spent_this_turn = src.energy_spent_this_turn;
             dst.zero_cost_attacks_played_this_turn = src.zero_cost_attacks_played_this_turn;
             if !dst.public_finished_history {
@@ -1506,7 +1645,7 @@ impl PyCombatState {
             dst.joss_paper_ethereal_count = src.joss_paper_ethereal_count;
             dst.block_zero_at_turn_end = src.block_zero_at_turn_end;
             dst.block_before_late_turn_end = src.block_before_late_turn_end;
-            if !dst.public_block_history {
+            if carry_turn_history && !dst.public_block_history {
                 dst.unmovable_card_block_plays
                     .clone_from(&src.unmovable_card_block_plays);
                 dst.next_card_play = src.next_card_play;
@@ -1596,10 +1735,10 @@ impl PyCombatState {
                         // reconstructed card's `base_damage` already carries
                         // the growth and re-injecting the var double-counts —
                         // MCTS planned 37 where the game dealt 23 (v34wr seed
-                        // 1020 act-1 boss, round-4 agent 2). The SAME var on
-                        // any other card is Momentum's stash, which C# keeps
-                        // in the enchantment model (never on the wire), so
-                        // that carry must stay.
+                        // 1020 act-1 boss, round-4 agent 2). Momentum's stash
+                        // (`MomentumDamage`, GH #1021) lives in C#'s
+                        // enchantment model (never on the wire), so it is
+                        // carried on every card, Rampage included.
                         .filter(|(k, _)| {
                             !(*k == VarKey::RampageDamage
                                 && dst.card_id == sts2_core::cards::CardId::Rampage)
@@ -2033,10 +2172,10 @@ impl PyCombatState {
             ));
         }
         if id == RelicId::Toolbox {
-            let count = sts2_core::combat_loop::player_hand_draw_count(&mut self.inner);
+            let count = sts2_core::combat_loop::turn_start_hand_draw_count(&self.inner);
             let next = u8::try_from(index + 1)
                 .map_err(|_| pyo3::exceptions::PyValueError::new_err("too many equipped relics"))?;
-            self.inner.pending_relic_hand_draw_resume = Some((count, next));
+            self.inner.pending_relic_hand_draw_resume = Some((count, next, true));
         } else if !self.arm_turn_start_resume(relic)? {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "turn-start continuation could not be armed",
@@ -2045,40 +2184,10 @@ impl PyCombatState {
         Ok(())
     }
 
-    /// Mark the OPEN choice as a turn-start screen the world raised from a
-    /// relic's `AfterPlayerTurnStart`, so resolving it also runs the rest of
-    /// turn setup.
-    ///
-    /// Mirror-fidelity round-4 defect #13 (Gambling Chip). C#
-    /// `Hook.AfterPlayerTurnStart` **awaits** `GamblingChip`'s
-    /// `CardSelectCmd.FromHandForDiscard`, so the DLL's board at that decision
-    /// is a MID-turn-setup snapshot: the hand is drawn and energy is reset, but
-    /// every later relic on the `AfterPlayerTurnStart` pass (MercuryHourglass),
-    /// the whole `AfterPlayerTurnStartLate` pass (BloodVial) and the outer
-    /// loop's `Hook.AfterSideTurnStart` (Akabeko, Lantern) have NOT run — they
-    /// resolve only once the player answers. A mirror seeded from that wire and
-    /// handed a bare `discard_from_hand_and_draw` therefore never ran that
-    /// batch at all, and stayed short a Vigor 8 / +1 energy / −3-to-all / heal 2
-    /// for the rest of the combat.
-    ///
-    /// This parks [`sts2_core::PendingClusterResume`] with `relic_start` just
-    /// past `after_relic`'s equip slot, which is exactly the state the engine
-    /// parks itself when its OWN GamblingChip raises the screen. The resolve
-    /// step (`apply_step({"action": "choose", ...})`) then runs the remaining
-    /// relic listeners and the whole turn-start tail in C# order.
-    ///
-    /// Args:
-    ///     after_relic: python relic id (e.g. `"GAMBLING_CHIP"`) of the relic
-    ///         whose hook the world is blocked inside.
-    ///
-    /// Returns:
-    ///     `True` when the marker was armed. `False` — a no-op — when no choice
-    ///     is open or the player does not own `after_relic` (the driver's
-    ///     screen-recognition was wrong, and parking a resume against a board
-    ///     that never suspended would fire the batch twice).
-    ///
-    /// Raises:
-    ///     ValueError: `after_relic` is not a known relic id.
+    /// 公開観測にあるレリックのAfterPlayerTurnStart選択から再開する。
+    /// 選択元より後の装備順のリスナーとAfterPlayerTurnStartLateを続ける。
+    /// AfterSideTurnStartとorb queueの結果は観測済みなので再実行しない。
+    /// 選択または指定レリックが存在しなければfalseを返す。
     fn arm_turn_start_resume(&mut self, after_relic: &str) -> PyResult<bool> {
         let kind =
             crate::state_dict::relic_kind_from_python_name(after_relic).ok_or_else(|| {
@@ -2097,7 +2206,10 @@ impl PyCombatState {
             snapshot: self.inner.player_power_uids(),
             idx: 0,
             autoplay: sts2_core::PendingAutoplay::default(),
-            side_turn_start_fired: false,
+            // C# StartTurn runs Hook.AfterSideTurnStart (and the orb queue)
+            // as soon as SetupPlayerTurn pauses on this screen, so the wire the
+            // mirror was seeded from already carries Akabeko / Lantern / Rampart.
+            side_turn_start_fired: true,
             mayhem_phase: false,
             relic_start: Some(next),
         });
@@ -2125,8 +2237,7 @@ impl PyCombatState {
     /// (`combat_loop::run_after_player_turn_start_cluster`): a no-op
     /// auto-play at the suspending power's index, so the resume advances to
     /// `idx + 1` and runs the rest of the walk plus the turn-start tail.
-    /// `side_turn_start_fired` is false because that walk is a LATER step
-    /// than the cluster — it fires at its normal spot on resume.
+    /// AfterSideTurnStartの結果は観測済みなので、再開時には再実行しない。
     ///
     /// Args:
     ///     after_power: python power id (e.g. `"TYRANNY"`) of the power
@@ -2163,7 +2274,10 @@ impl PyCombatState {
             snapshot,
             idx,
             autoplay: sts2_core::PendingAutoplay::default(),
-            side_turn_start_fired: false,
+            // C# StartTurn runs Hook.AfterSideTurnStart (and the orb queue)
+            // as soon as SetupPlayerTurn pauses on this screen, so the wire the
+            // mirror was seeded from already carries Akabeko / Lantern / Rampart.
+            side_turn_start_fired: true,
             mayhem_phase: false,
             relic_start: None,
         });
@@ -2416,6 +2530,47 @@ fn non_removable_cards() -> Vec<String> {
         .copied()
         .filter(|&c| !sts2_content::cards::spec_index::card_is_removable_csharp(c))
         .map(|c| c.to_python_name().to_string())
+        .collect()
+}
+
+/// Every Curse a removal screen can offer, as canonical UPPER_SNAKE names.
+///
+/// The Curse-typed specs (`random_curse_card`'s pool) filtered by the same
+/// spec-level removability rule as [`non_removable_cards`], so Ascender's
+/// Bane, Curse of the Bell and the other Eternal curses are left out. The
+/// training curriculum for GH #977 draws from it: a curse the policy cannot
+/// remove teaches it nothing about removal.
+#[pyfunction]
+fn removable_curse_cards() -> Vec<String> {
+    use sts2_content::cards::spec_index::{card_is_removable_csharp, STATUS_SPECS};
+    STATUS_SPECS
+        .iter()
+        .map(|factory| factory())
+        .filter(|spec| spec.card_type == sts2_core::cards::CardType::Curse)
+        .filter(|spec| card_is_removable_csharp(spec.id))
+        .map(|spec| spec.id.to_python_name().to_string())
+        .collect()
+}
+
+/// Every card's spec-level `(name, type, rarity)`, as canonical UPPER_SNAKE
+/// names (`("INJURY", "CURSE", "CURSE")`).
+///
+/// The PPO `card_kind` encoder feature reads it to give every card token its
+/// type and rarity, so cards the policy rarely sees (most curses) share an
+/// embedding with the ones it does (GH #977). One list per process: the
+/// per-id lookup is a linear scan. Ids with no spec are left out.
+#[pyfunction]
+fn card_kinds() -> Vec<(String, String, String)> {
+    sts2_core::cards::CardId::all()
+        .iter()
+        .filter_map(|&c| sts2_content::cards::spec_index::spec_for_card_id(c))
+        .map(|spec| {
+            (
+                spec.id.to_python_name().to_string(),
+                format!("{:?}", spec.card_type).to_uppercase(),
+                format!("{:?}", spec.rarity).to_uppercase(),
+            )
+        })
         .collect()
 }
 
@@ -2685,8 +2840,9 @@ impl PyCombatState {
 /// `chooser(ally, choice, actions)` sees the open choice as `pending_choice()`
 /// shows it and the legal `choose` actions, and returns an index into them, a
 /// `choose` action dict (any selection the choice allows), or `None` for the
-/// engine's own pick. An exception the chooser raises leaves that pick to the
-/// engine and is re-raised once `body` is done.
+/// engine's own pick. `ally` is -1 when a teammate's card makes us choose
+/// ([`sts2_core::coop::US_CHOOSING`]). An exception the chooser raises leaves
+/// that pick to the engine and is re-raised once `body` is done.
 fn with_py_seat_chooser(chooser: Option<Py<PyAny>>, body: impl FnOnce()) -> PyResult<()> {
     let Some(chooser) = chooser else {
         body();
@@ -2713,7 +2869,12 @@ fn with_py_seat_chooser(chooser: Option<Py<PyAny>>, body: impl FnOnce()) -> PyRe
                         .map(sts2_wire::emit::combat_action_to_value)
                         .collect(),
                 );
-                let args = (ally, value_to_py(py, &choice)?, value_to_py(py, &legal)?);
+                let who = if ally == sts2_core::coop::US_CHOOSING {
+                    -1
+                } else {
+                    i64::try_from(ally).unwrap_or(-1)
+                };
+                let args = (who, value_to_py(py, &choice)?, value_to_py(py, &legal)?);
                 let answer = chooser.call1(py, args)?;
                 let answer = answer.bind(py);
                 if answer.is_none() {
@@ -3136,6 +3297,73 @@ fn search_playout_value(state: &PyCombatState) -> f32 {
     let s = state.inner_ref();
     let (cfg, leaf) = deployed_value_config(s.player.character);
     sts2_mcts::playout_return(s, &cfg, &leaf)
+}
+
+/// The human-agreement probe of GH #1022 phase 3
+/// (`ppo.bc_human.tie_agree`): the deployed pilot's search on `state` in a
+/// `tier` room (`"common"`, `"elite"` or `"boss"`;
+/// [`sts2_runai::policy::pilot_search`]), then its pick re-made under every
+/// rule set in `arms` (`TieRules::parse` strings, e.g. `"none"`,
+/// `"block+free"`) over that same tree. Moves come back as
+/// [`sts2_runai::tie_probe::move_key`]s, the human's `human` action dict
+/// too, so a human who played the other copy of a card agrees.
+///
+/// Returns `{"legal": n, "pick": {"key", "rule", "band"}, "arms": [{"key",
+/// "rule"}, ...], "human": key or None}`.
+#[pyfunction]
+#[pyo3(signature = (state, tier, sims, seed, arms, human = None))]
+fn tie_rule_picks<'py>(
+    py: Python<'py>,
+    state: &PyCombatState,
+    tier: &str,
+    sims: u32,
+    seed: u64,
+    arms: Vec<String>,
+    human: Option<&Bound<'py, PyDict>>,
+) -> PyResult<Bound<'py, PyDict>> {
+    use sts2_runai::policy::{pilot_search, BudgetTier};
+    use sts2_runai::tie_probe::move_key;
+    let s = state.inner_ref();
+    let tier = match tier {
+        "common" => BudgetTier::Common,
+        "elite" => BudgetTier::Elite,
+        "boss" => BudgetTier::Boss,
+        other => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "tie_rule_picks: tier {other:?} is not common, elite or boss"
+            )))
+        }
+    };
+    let rules = arms
+        .iter()
+        .map(|a| sts2_mcts::TieRules::parse(a).map_err(pyo3::exceptions::PyValueError::new_err))
+        .collect::<PyResult<Vec<_>>>()?;
+    let human = human.map(parse_bridge_action).transpose()?;
+    let searched = |e: sts2_mcts::SearchError| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("tie_rule_picks: {e:?}"))
+    };
+    let mut m = pilot_search(s, tier, sims, seed);
+    m.try_search_n(sims).map_err(searched)?;
+    let pick = m.explain_root_pick().map_err(searched)?;
+    let mut arm_rows = Vec::with_capacity(rules.len());
+    for r in rules {
+        let p = m.explain_root_pick_with(r).map_err(searched)?;
+        arm_rows.push(serde_json::json!({
+            "key": move_key(s, &p.action),
+            "rule": p.rule.as_str(),
+        }));
+    }
+    let out = serde_json::json!({
+        "legal": sts2_core::legal_actions(s).len(),
+        "pick": {
+            "key": move_key(s, &pick.action),
+            "rule": pick.rule.as_str(),
+            "band": pick.band.len(),
+        },
+        "arms": arm_rows,
+        "human": human.map(|a| move_key(s, &a)),
+    });
+    value_to_pydict(py, &out)
 }
 
 /// Run `run` over `jobs` once per character (`player.character`): each group
@@ -4430,6 +4658,8 @@ pub fn sts2_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(resolve_potion_swap_flag, m)?)?;
     m.add_function(wrap_pyfunction!(potion_swap_is_rule_side, m)?)?;
     m.add_function(wrap_pyfunction!(non_removable_cards, m)?)?;
+    m.add_function(wrap_pyfunction!(removable_curse_cards, m)?)?;
+    m.add_function(wrap_pyfunction!(card_kinds, m)?)?;
     m.add_function(wrap_pyfunction!(eternal_granting_enchantments, m)?)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_function(wrap_pyfunction!(build_git, m)?)?;
@@ -4441,6 +4671,7 @@ pub fn sts2_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(encounter_acts, m)?)?;
     m.add_function(wrap_pyfunction!(monster_species, m)?)?;
     m.add_function(wrap_pyfunction!(search_playout_value, m)?)?;
+    m.add_function(wrap_pyfunction!(tie_rule_picks, m)?)?;
     m.add_function(wrap_pyfunction!(values_many, m)?)?;
     m.add_function(wrap_pyfunction!(playout, m)?)?;
     m.add_class::<PyLearnedPlayout>()?;
@@ -4591,6 +4822,8 @@ fn state_from_dict_py(d: &Bound<'_, PyDict>) -> PyResult<PyCombatState> {
         inner,
         seed,
         intent_damage_known,
+        // The wire carries no encounter id.
+        encounter_id: None,
     })
 }
 
@@ -4687,6 +4920,8 @@ fn build_scenario_state_py(
         inner,
         seed,
         intent_damage_known: true,
+        // The builder resolved `encounter` through the same table.
+        encounter_id: sts2_content::encounters::find(encounter).map(|def| def.id),
     })
 }
 
@@ -5358,6 +5593,52 @@ mod tests {
         d
     }
 
+    #[test]
+    fn transplant_hidden_lets_a_disclosed_turn_history_win() {
+        // GH #989: the wire now carries the turn's exhausts and card block
+        // gains. When it did, the reconstruction's values are reality's and
+        // the carried mirror's must not overwrite them; when it did not, the
+        // carry still fills them in.
+        Python::with_gil(|py| {
+            let mut carried = mirror_fixture(py);
+            carried.inner.combat_log.cards_exhausted_this_turn = 2;
+            carried.inner.combat_log.unmovable_card_block_plays.push(1);
+            for (carry, exhausted, gains) in [(true, 2, 1), (false, 0, 0)] {
+                let mut fresh = mirror_fixture(py);
+                fresh
+                    .transplant_hidden(&carried, None, true, None, None, carry)
+                    .expect("shapes agree");
+                assert_eq!(fresh.inner.combat_log.cards_exhausted_this_turn, exhausted);
+                assert_eq!(
+                    fresh.inner.combat_log.unmovable_card_block_plays.len(),
+                    gains
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn transplant_hidden_keeps_the_larger_extra_turn_count() {
+        // GH #812: newer mods send `extra_turns_taken_this_combat`; older
+        // ones do not. The count only rises within a combat, so whichever
+        // of wire (fresh) and mirror (carried) is ahead wins.
+        Python::with_gil(|py| {
+            for (wire, mirror, want) in [(2u16, 1u16, 2u16), (0, 1, 1), (1, 1, 1)] {
+                let mut carried = mirror_fixture(py);
+                carried.inner.combat_log.extra_turns_taken_this_combat = mirror;
+                let mut fresh = mirror_fixture(py);
+                fresh.inner.combat_log.extra_turns_taken_this_combat = wire;
+                fresh
+                    .transplant_hidden(&carried, None, true, None, None, true)
+                    .expect("shapes agree");
+                assert_eq!(
+                    fresh.inner.combat_log.extra_turns_taken_this_combat, want,
+                    "wire {wire}, mirror {mirror}"
+                );
+            }
+        });
+    }
+
     /// `transplant_hidden` carries exactly the unobservable fields —
     /// A relic's `counter` is also where a one-shot per-combat latch lives,
     /// GH #370, the rest of the class. Each of these has a live content
@@ -5369,11 +5650,19 @@ mod tests {
             carried.inner.player.shivs_played_this_turn = 2;
             carried.inner.player.generated_cards_this_combat = 4;
             carried.inner.player.stars_gained_this_turn = 3;
+            carried.inner.combat_log.extra_turns_taken_this_combat = 1;
 
             let mut fresh = mirror_fixture(py);
             fresh
-                .transplant_hidden(&carried, None, true, None, None)
+                .transplant_hidden(&carried, None, true, None, None, true)
                 .expect("shapes agree");
+
+            assert_eq!(
+                fresh.inner.turn_number(),
+                fresh.inner.round + 1,
+                "an extra turn (PaelsEye / Ambergris) runs the turn number one \
+                 ahead of the round; the turn-number gates read it (GH #812)"
+            );
 
             assert_eq!(
                 fresh.inner.player.shivs_played_this_turn, 2,
@@ -5433,7 +5722,7 @@ mod tests {
             let mut fresh = mirror_fixture(py);
             with_chains_of_binding(&mut fresh, 1);
             fresh
-                .transplant_hidden(&carried, None, true, None, None)
+                .transplant_hidden(&carried, None, true, None, None, true)
                 .expect("shapes agree");
             assert_eq!(
                 fresh
@@ -5472,7 +5761,7 @@ mod tests {
             let mut fresh = mirror_fixture(py);
             fresh.inner.player.card_plays_started_this_turn = 0;
             fresh
-                .transplant_hidden(&carried, None, true, None, None)
+                .transplant_hidden(&carried, None, true, None, None, true)
                 .expect("shapes agree");
             assert_eq!(
                 fresh.inner.player.card_plays_started_this_turn, 3,
@@ -5507,7 +5796,7 @@ mod tests {
             fresh.inner.player.card_plays_started_this_turn = 1;
 
             fresh
-                .transplant_hidden(&carried, None, true, None, None)
+                .transplant_hidden(&carried, None, true, None, None, true)
                 .expect("shapes agree");
             assert_eq!(
                 fresh.inner.player.card_plays_started_this_turn, 1,
@@ -5542,7 +5831,7 @@ mod tests {
             carried.inner.player.vigor_latch_card = Some(carried.inner.player.play[1]);
 
             fresh
-                .transplant_hidden(&carried, None, true, None, None)
+                .transplant_hidden(&carried, None, true, None, None, true)
                 .expect("shapes agree");
 
             assert_eq!(
@@ -5566,7 +5855,7 @@ mod tests {
             // The play pile emptied between decisions (the play resolved).
             let mut fresh = mirror_fixture(py);
             fresh
-                .transplant_hidden(&carried, None, true, None, None)
+                .transplant_hidden(&carried, None, true, None, None, true)
                 .expect("shapes agree");
 
             assert_eq!(
@@ -5592,7 +5881,7 @@ mod tests {
             fresh.inner.player.play.swap(0, 1);
 
             fresh
-                .transplant_hidden(&carried, None, true, None, None)
+                .transplant_hidden(&carried, None, true, None, None, true)
                 .expect("shapes agree");
 
             assert_eq!(
@@ -5625,7 +5914,14 @@ mod tests {
             let mut fresh = mirror_fixture(py);
             push(&mut fresh, 0);
             fresh
-                .transplant_hidden(&carried, None, true, Some(vec!["VAMBRACE".into()]), None)
+                .transplant_hidden(
+                    &carried,
+                    None,
+                    true,
+                    Some(vec!["VAMBRACE".into()]),
+                    None,
+                    true,
+                )
                 .expect("shapes agree");
             assert_eq!(
                 fresh.inner.relics[0].counter, 1,
@@ -5636,7 +5932,7 @@ mod tests {
             let mut fresh = mirror_fixture(py);
             push(&mut fresh, 0);
             fresh
-                .transplant_hidden(&carried, None, true, None, None)
+                .transplant_hidden(&carried, None, true, None, None, true)
                 .expect("shapes agree");
             assert_eq!(
                 fresh.inner.relics[0].counter, 0,
@@ -5671,7 +5967,7 @@ mod tests {
                 .as_ref()
                 .map(sts2_core::MonsterAi::current_state_id);
             fresh
-                .transplant_hidden(&carried, None, true, None, None)
+                .transplant_hidden(&carried, None, true, None, None, true)
                 .expect("shapes agree");
 
             let ai = fresh.inner.creatures[0]
@@ -5701,7 +5997,14 @@ mod tests {
             let carried = mirror_fixture(py);
             let mut fresh = mirror_fixture(py);
             let err = fresh
-                .transplant_hidden(&carried, None, true, Some(vec!["VAMBRAAACE".into()]), None)
+                .transplant_hidden(
+                    &carried,
+                    None,
+                    true,
+                    Some(vec!["VAMBRAAACE".into()]),
+                    None,
+                    true,
+                )
                 .expect_err("an unknown relic must be refused");
             assert!(
                 err.to_string().contains("VAMBRAAACE"),
@@ -5713,9 +6016,8 @@ mod tests {
     /// Rampage's escalation is wire-owned (C# grows `Damage.BaseValue`
     /// itself, so the reconstructed card's `base_damage` already includes
     /// it) and must NOT be re-injected — the double-count had MCTS planning
-    /// 37 damage where the game dealt 23 (v34wr seed 1020). The same var on
-    /// any OTHER card is Momentum's stash, which never crosses the wire and
-    /// must keep being carried.
+    /// 37 damage where the game dealt 23 (v34wr seed 1020). Momentum's stash
+    /// never crosses the wire and must keep being carried, on a Rampage too.
     #[test]
     fn transplant_hidden_skips_rampage_var_on_rampage_only() {
         use sts2_core::cards::{CardId, VarKey};
@@ -5727,7 +6029,8 @@ mod tests {
             let midx = momentum_uid.0.get() as usize - 1;
             carried.inner.cards[ridx].card_id = CardId::Rampage;
             carried.inner.cards[ridx].set_combat_var(VarKey::RampageDamage, 14);
-            carried.inner.cards[midx].set_combat_var(VarKey::RampageDamage, 6);
+            carried.inner.cards[ridx].set_combat_var(VarKey::MomentumDamage, 4);
+            carried.inner.cards[midx].set_combat_var(VarKey::MomentumDamage, 6);
 
             let mut fresh = mirror_fixture(py);
             let f_rampage = fresh.inner.player.draw[0].0.get() as usize - 1;
@@ -5735,7 +6038,7 @@ mod tests {
             fresh.inner.cards[f_rampage].card_id = CardId::Rampage;
 
             fresh
-                .transplant_hidden(&carried, None, true, None, None)
+                .transplant_hidden(&carried, None, true, None, None, true)
                 .expect("shapes agree");
 
             assert_eq!(
@@ -5745,10 +6048,15 @@ mod tests {
                  carrying the var double-counts"
             );
             assert_eq!(
-                fresh.inner.cards[f_momentum].combat_var(VarKey::RampageDamage),
+                fresh.inner.cards[f_momentum].combat_var(VarKey::MomentumDamage),
                 6,
                 "Momentum's stash on a non-Rampage card never crosses the \
                  wire and must survive the rebuild"
+            );
+            assert_eq!(
+                fresh.inner.cards[f_rampage].combat_var(VarKey::MomentumDamage),
+                4,
+                "a Momentum Rampage keeps its Momentum stash (GH #1021)"
             );
         });
     }
@@ -5781,7 +6089,7 @@ mod tests {
             );
 
             fresh
-                .transplant_hidden(&carried, None, true, None, None)
+                .transplant_hidden(&carried, None, true, None, None, true)
                 .expect("shapes agree");
 
             let k = fresh.draw_pile_knowledge(py).unwrap();
@@ -5829,7 +6137,7 @@ mod tests {
             let mut fresh = mirror_fixture(py);
             fresh.inner.player.draw.pop();
             fresh
-                .transplant_hidden(&carried, None, true, None, None)
+                .transplant_hidden(&carried, None, true, None, None, true)
                 .expect("a shorter draw pile must not fail the transplant");
 
             assert!(
@@ -5854,7 +6162,7 @@ mod tests {
             fresh.inner.enemy_uids.pop();
 
             let err = fresh
-                .transplant_hidden(&carried, None, true, None, None)
+                .transplant_hidden(&carried, None, true, None, None, true)
                 .expect_err("an unaligned roster must be refused");
             assert!(
                 err.to_string().contains("enemy roster disagrees"),
@@ -5873,12 +6181,12 @@ mod tests {
             let mut fresh = mirror_fixture(py);
             fresh.inner.enemy_uids.pop();
             fresh
-                .transplant_hidden(&carried, Some(vec![]), true, None, None)
+                .transplant_hidden(&carried, Some(vec![]), true, None, None, true)
                 .expect("an explicit alignment must be honored");
 
             let mut newly_spawned = mirror_fixture(py);
             newly_spawned
-                .transplant_hidden(&carried, Some(vec![None]), true, None, None)
+                .transplant_hidden(&carried, Some(vec![None]), true, None, None, true)
                 .expect("a `None` slot is a newly-spawned enemy, not an error");
         });
     }
@@ -5931,6 +6239,11 @@ mod tests {
                 is_melted: false,
             });
         }
+        // 公開選択の観測には、先行したAfterSideTurnStartの結果が含まれる。
+        sts2_core::relic_effects::dispatch_after_side_turn_start(
+            &mut cs.inner,
+            sts2_core::Side::Player,
+        );
     }
 
     fn resolve_public_choice(cs: &mut PyCombatState, py: Python<'_>, index: u8) {
@@ -5943,7 +6256,7 @@ mod tests {
     fn assert_start_tail_once(cs: &mut PyCombatState) {
         assert_eq!(
             cs.inner.player.energy, 4,
-            "Lantern follows the selected hook exactly once"
+            "公開観測に含まれるLanternの加算を二重適用しない"
         );
         let enemy = cs
             .inner
@@ -5994,7 +6307,7 @@ mod tests {
                 cs.inner.player_power_amount(sts2_core::PowerKind::Strength),
                 0
             );
-            assert_eq!(cs.inner.player.energy, 3);
+            assert_eq!(cs.inner.player.energy, 4);
             assert_eq!(
                 cs.inner.pending_choice.as_ref().unwrap().post_effect,
                 Some(sts2_core::PostChoiceEffect::GainStrength(1))

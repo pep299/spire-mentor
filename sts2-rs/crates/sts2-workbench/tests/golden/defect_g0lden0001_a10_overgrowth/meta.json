@@ -22,7 +22,6 @@
   "route:/api/live/deck-analysis",
   "route:/api/live/from_replay",
   "route:/api/live/hint",
-  "route:/api/live/last-move-regret",
   "route:/api/live/map",
   "route:/api/live/ppo-policy",
   "route:/api/live/quit",
@@ -54,12 +53,12 @@
   "status:409"
  ],
  "engine": {
-  "src_hash": "13941df1bbea7678",
+  "src_hash": "4e5518f56fa396f6",
   "version": "0.0.1"
  },
  "final_act": 1,
- "final_floor": 11,
- "full_responses": 59,
+ "final_floor": 12,
+ "full_responses": 55,
  "full_steps": 0,
  "patches": {
   "assets_base_url": "https://assets.test",
@@ -68,7 +67,7 @@
  },
  "python": "3.13",
  "reached_game_over": true,
- "requests": 183,
+ "requests": 179,
  "scenario": {
   "act1": "overgrowth",
   "ascension": 10,
@@ -96,10 +95,6 @@
    {
     "at": 30,
     "kind": "choice_ranker"
-   },
-   {
-    "at": 31,
-    "kind": "last_move_regret"
    },
    {
     "at": 35,
@@ -143,10 +138,6 @@
     "kind": "search_tree"
    },
    {
-    "at": 56,
-    "kind": "last_move_regret"
-   },
-   {
     "at": 60,
     "kind": "save",
     "name": "golden mid"
@@ -185,10 +176,6 @@
     "kind": "choice_ranker"
    },
    {
-    "at": 81,
-    "kind": "last_move_regret"
-   },
-   {
     "at": 85,
     "kind": "reward_preview"
    },
@@ -217,10 +204,6 @@
     "kind": "search_tree"
    },
    {
-    "at": 106,
-    "kind": "last_move_regret"
-   },
-   {
     "at": 125,
     "kind": "state"
    },
@@ -235,10 +218,6 @@
    {
     "at": 130,
     "kind": "choice_ranker"
-   },
-   {
-    "at": 131,
-    "kind": "last_move_regret"
    },
    {
     "at": 150,

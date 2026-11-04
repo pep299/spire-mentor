@@ -32,7 +32,7 @@ import pytest
 import realgame_ppo as rp
 from realgame_mcts import pick_combat_action_mcts
 from realgame_random import pick_combat_action
-from sts2_realgame import reward_screen_choice
+from sts2_realgame import potion_swap_group, reward_screen_choice
 
 try:
     import torch  # noqa: F401
@@ -661,6 +661,122 @@ class TestRewardScreenCardSkipLoop:
         assert "card_reward_skipped" not in session  # flag consumed
 
 
+_FULL_BELT = [
+    {"slot": 0, "id": "FIRE_POTION", "empty": False},
+    {"slot": 1, "id": "BLOCK_POTION", "empty": False},
+    {"slot": 2, "id": "ENERGY_POTION", "empty": False},
+]
+
+
+def _swap_group(
+    first_index: int, button: int, potion: str = "STABLE_SERUM"
+) -> list[dict[str, Any]]:
+    """The mod's options for one full-belt potion reward (GH #1069)."""
+    reward = {"id": potion, "name": potion.title(), "slot": -1}
+    group = [
+        {
+            "index": first_index,
+            "id": "PotionReward",
+            "action": "potion_swap",
+            "label": "decline",
+            "reward": reward,
+            "reward_button": button,
+            "discard_slot": None,
+        }
+    ]
+    for k, held in enumerate(p["id"] for p in _FULL_BELT):
+        group.append(
+            {
+                "index": first_index + 1 + k,
+                "id": "PotionReward",
+                "action": "potion_swap",
+                "label": f"discard {held}",
+                "reward": reward,
+                "reward_button": button,
+                "discard_slot": k,
+            }
+        )
+    return group
+
+
+class TestRewardScreenPotionSwap:
+    """GH #1069: a potion reward that finds a full belt is a swap decision in
+    the real game (discard a held potion, then claim it). The mod offers it as
+    a group of ``potion_swap`` options; the driver answers it after the other
+    rewards and before the card, as the engines order their ``potion_swap``
+    decision, and declines unless ``STS2_RUNAI_POTION_SWAP`` is on."""
+
+    _STATE: ClassVar[dict] = {
+        **_envelope("reward_screen", {**_RUN_STATE, "potions": _FULL_BELT}),
+        "options": [
+            {"index": 0, "id": "CardReward", "action": "pick_reward"},
+            *_swap_group(1, 0),
+            {"index": 5, "id": "proceed", "action": "proceed"},
+        ],
+    }
+
+    def test_collector_answers_the_swap_before_the_card(self) -> None:
+        assert reward_screen_choice(self._STATE["options"]) == 1  # the decline
+
+    def test_collector_takes_plain_rewards_before_the_swap(self) -> None:
+        options = [{"index": 9, "id": "gold:12", "action": "pick_reward"}, *self._STATE["options"]]
+        assert reward_screen_choice(options) == 9
+
+    def test_group_is_the_first_blocked_potion_decline_first(self) -> None:
+        options = [*_swap_group(4, 1, "FEAR_POTION"), *_swap_group(0, 0)]
+        group = potion_swap_group(list(reversed(options)))
+        assert [o["discard_slot"] for o in group] == [None, 0, 1, 2]
+        assert {o["reward"]["id"] for o in group} == {"STABLE_SERUM"}
+
+    def test_builder_matches_the_engine_surface(self) -> None:
+        decision = rp._build_potion_swap(self._STATE)
+        assert decision is not None
+        assert decision.actions == [
+            {"action": "potion_swap", "discard_slot": None},
+            {"action": "potion_swap", "discard_slot": 0},
+            {"action": "potion_swap", "discard_slot": 1},
+            {"action": "potion_swap", "discard_slot": 2},
+        ]
+        assert decision.obs["pending_potion_swap"] == "STABLE_SERUM"
+        assert decision.obs["potions"] == ["FIRE_POTION", "BLOCK_POTION", "ENERGY_POTION"]
+        assert decision.responses == [{"action": "choose", "index": i} for i in (1, 2, 3, 4)]
+        assert decision.labels[0] == "decline"
+
+    def test_flag_off_declines_without_asking_the_net(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(rp, "_live_potion_swap_enabled", lambda: False)
+        policies, spy = _spy_policies()
+        action, extra = rp.pick_noncombat_action_ppo(
+            self._STATE, random.Random(0), policies, session={}
+        )
+        assert action == {"action": "choose", "index": 1}
+        assert extra is None
+        assert spy.seen == []
+
+    def test_flag_on_asks_the_net(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(rp, "_live_potion_swap_enabled", lambda: True)
+        policies, spy = _spy_policies()
+        action, _ = rp.pick_noncombat_action_ppo(
+            self._STATE, random.Random(0), policies, session={}
+        )
+        assert len(spy.seen) == 1
+        obs, actions, _metrics = spy.seen[0]
+        assert obs["pending_potion_swap"] == "STABLE_SERUM"
+        assert all(a["action"] == "potion_swap" for a in actions)
+        assert action["action"] == "choose"
+        assert action["index"] in (1, 2, 3, 4)
+        assert "annotations" in action
+
+    def test_flag_reads_the_shared_resolver(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        if _RS_SKIP_REASON is not None:
+            pytest.skip(_RS_SKIP_REASON)
+        monkeypatch.delenv("STS2_RUNAI_POTION_SWAP", raising=False)
+        assert rp._live_potion_swap_enabled() is False
+        monkeypatch.setenv("STS2_RUNAI_POTION_SWAP", "1")
+        assert rp._live_potion_swap_enabled() is True
+
+
 # ---------------------------------------------------------------------------
 # Tier 2: real inference against the committed Ironclad checkpoint.
 # ---------------------------------------------------------------------------
@@ -850,6 +966,37 @@ def _spy_policies() -> tuple[rp.PpoPolicyCache, _SpyPolicy]:
     spy = _SpyPolicy()
     policies._cache["ironclad"] = (spy, None)
     return policies, spy
+
+
+class TestTotalFloorOffset:
+    """GH #1051: the bridge's ``floor`` is the DLL's ``RunState.TotalFloor``,
+    which counts every act's start room (Neow, the Ancients); the engine's
+    ``total_floor`` the champion trained on counts none. So the offset is the
+    1-based act, not a flat 1 -- the old ``- 1`` fed acts 2-3 one and two
+    floors too deep. Twin of ``wire.rs``'s ``total_floor_offset_is_the_act_number``."""
+
+    @pytest.mark.parametrize(
+        ("act", "floor", "engine_floor", "act_index"),
+        [
+            (1, 1, 0, 1),  # Neow: engine 0, DLL 1
+            (1, 12, 11, 1),
+            (2, 19, 17, 2),  # act 2's first map choice after a 17-floor act 1
+            (3, 48, 45, 3),  # a won A0 run: game 48, engine 45
+            (None, 12, 11, 1),  # no act on the wire reads as act 1
+            (0, 12, 11, 1),  # so does a zero act -- and `act_index` with it
+            (-1, 12, 11, 1),  # and a negative one (wire.rs agrees)
+            (2, 1, 0, 2),  # never negative
+        ],
+    )
+    def test_total_floor_subtracts_the_act(self, act, floor, engine_floor, act_index) -> None:
+        state = {**_envelope("map_select"), "floor": floor}
+        if act is None:
+            state.pop("act")
+        else:
+            state["act"] = act
+        metrics = rp._base_metrics(state, _RUN_STATE)
+        assert metrics["total_floor"] == engine_floor
+        assert metrics["act_index"] == act_index
 
 
 class TestMapInjection:
@@ -1527,12 +1674,23 @@ class TestFakeMerchant:
         decision = rp._build_event(_fake_merchant_state())
         wire = decision.obs["event_options"]
         assert len(wire) == len(native)
-        keys = rp._STRUCTURED_DELTA_KEYS
+        # The buy price is rolled per visit (``MerchantRelicEntry.CalcCost``:
+        # 50 x Shops.NextFloat(0.85, 1.15)), so the fixture's fixed 50g only
+        # matches the engine's roll to within that band.
+        keys = [k for k in rp._STRUCTURED_DELTA_KEYS if k != "gold_delta"]
         for action in decision.actions:
             idx = action["idx"]
             assert {k: wire[idx].get(k, 0) for k in keys} == {
                 k: native[idx].get(k, 0) for k in keys
             }, f"option {idx} ({native[idx]['option_id']})"
+            wire_gold, native_gold = (
+                wire[idx].get("gold_delta", 0),
+                native[idx].get("gold_delta", 0),
+            )
+            if wire_gold == 0:
+                assert native_gold == 0, f"option {idx}"
+            else:
+                assert -57 <= native_gold <= -43, f"option {idx}: {native_gold}"
 
     @pytest.mark.skipif(
         _TORCH_SKIP_REASON is not None, reason=_TORCH_SKIP_REASON or "torch unavailable"

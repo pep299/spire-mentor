@@ -10,7 +10,7 @@
   "bg_col": 3,
   "bg_row": 16,
   "bg_seed": 1772253313,
-  "floor": 16,
+  "floor": 17,
   "step_no": 0,
   "turn": null
  },
@@ -65,7 +65,7 @@
    }
   ],
   "decision": "card_reward",
-  "floor": 16,
+  "floor": 17,
   "options": [
    {
     "action": "select_card_reward",
@@ -362,7 +362,7 @@
      "upgraded": false
     }
    ],
-   "gold": 258,
+   "gold": 257,
    "hp": 10,
    "max_hp": 75,
    "name": "Defect",

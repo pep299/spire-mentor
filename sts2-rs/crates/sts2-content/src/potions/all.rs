@@ -542,9 +542,10 @@ pub fn alchemize_procure_random_potion(state: &mut CombatState) {
             .next()
     });
     if let Some(kind) = rolled {
-        if state.player.potions.len() < state.player.effective_potion_slots() {
-            state.player.potions.push(kind);
-        }
+        // `TryToProcure → Player.AddPotionInternal` fills the FIRST open
+        // physical slot (`_potionSlots.IndexOf(null)`, `Player.cs:640`);
+        // a full belt makes it a no-op.
+        state.try_procure_potion(kind);
     }
 }
 
@@ -573,7 +574,14 @@ pub fn entropic_brew_fill_belt(state: &mut CombatState) {
         .next() else {
             break;
         };
-        state.player.potions.push(kind);
+        // Each procure lands in the FIRST open physical slot, not the end of
+        // the belt: C# `RemovePotionInternal` nulls the drunk Brew's slot
+        // without compacting (`Player.cs:703-708`) and `AddPotionInternal`
+        // takes `_potionSlots.IndexOf(null)` (`Player.cs:640`). So drinking
+        // Brew from slot 0 of [Brew, X, _] yields [new1, X, new2].
+        if !state.try_procure_potion(kind) {
+            break;
+        }
     }
 }
 

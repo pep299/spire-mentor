@@ -28,10 +28,6 @@
    "kind": "choice_ranker"
   },
   {
-   "at": 31,
-   "kind": "last_move_regret"
-  },
-  {
    "at": 35,
    "kind": "reward_preview"
   },
@@ -71,10 +67,6 @@
   {
    "at": 55,
    "kind": "search_tree"
-  },
-  {
-   "at": 56,
-   "kind": "last_move_regret"
   },
   {
    "at": 60,

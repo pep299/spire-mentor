@@ -2,6 +2,25 @@
 #![allow(unused_imports)]
 use super::prelude::*;
 
+/// Snapshot of the currently hittable (alive) enemies, mirroring C#
+/// `CombatState.HittableEnemies` — a `ToList()` copy (CombatState.cs:401).
+/// Cards that capture it BEFORE `DamageCmd.Attack` and then debuff "the
+/// enemies" (CrushUnder, DyingStar) only touch this list, so an enemy spawned
+/// mid-attack (StockPower.AfterDeath's replacement Axebot) is skipped.
+pub(crate) fn hittable_enemy_snapshot(state: &CombatState) -> Vec<CreatureUid> {
+    state
+        .enemy_uids
+        .iter()
+        .copied()
+        .filter(|uid| {
+            state
+                .creatures
+                .iter()
+                .any(|c| c.id == uid.0 && c.current_hp > 0)
+        })
+        .collect()
+}
+
 /// `true` if `target_uid` is a live enemy carrying an Artifact stack
 /// (`amount > 0`). Peeked BEFORE a debuff apply (the apply consumes the
 /// stack) to decide whether a `TemporaryStrengthPower`'s internal Strength
@@ -139,6 +158,18 @@ pub fn combat_forge(
     amount: i32,
     _source_card: Option<sts2_core::CardUid>,
 ) -> usize {
+    forge_for(state, forger, amount, false)
+}
+
+/// [`combat_forge`]'s body. `from_hammer_time`: this forge is a co-op
+/// teammate's Hammer Time answering another player's forge (C# `source is
+/// HammerTimePower`), which no Hammer Time passes on again.
+fn forge_for(
+    state: &mut CombatState,
+    forger: CreatureUid,
+    amount: i32,
+    from_hammer_time: bool,
+) -> usize {
     if amount <= 0 {
         return 0;
     }
@@ -224,6 +255,17 @@ pub fn combat_forge(
         source_listener: None,
     };
     dispatch_after_forge(state, &ctx);
+
+    // Co-op: C# `HammerTimePower.AfterForge` (HammerTimePower.cs:26) makes
+    // every other living player Forge the same amount when its owner forges
+    // (GH #1004).
+    if !from_hammer_time && state.player_power_amount(PowerKind::HammerTime) > 0 {
+        sts2_core::coop::each_other_player(state, |state| {
+            if let Some(me) = state.player.creature_uid {
+                forge_for(state, me, amount, true);
+            }
+        });
+    }
 
     all_blades.len()
 }
@@ -384,6 +426,23 @@ pub const CRESCENT_SPEAR_EXTRA_DAMAGE_UPGRADED: i32 = 3;
 /// ironclad/silent/colorless `apply_power_signed_to_creature` helpers.
 /// Bead `sts2-rs-crush-under-artifact`.
 pub(crate) fn add_power_to_enemy_signed(
+    state: &mut CombatState,
+    target_uid: CreatureUid,
+    kind: PowerKind,
+    amount: i32,
+) {
+    // A landed player drain fires SleightOfFlesh & co. (C#
+    // `Hook.AfterPowerAmountChanged` runs for silent applies too).
+    sts2_core::card_effects::signed_power_apply_with_reactors(
+        state,
+        target_uid,
+        kind,
+        amount,
+        |s| add_power_to_enemy_signed_raw(s, target_uid, kind, amount),
+    );
+}
+
+fn add_power_to_enemy_signed_raw(
     state: &mut CombatState,
     target_uid: CreatureUid,
     kind: PowerKind,

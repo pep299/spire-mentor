@@ -73,7 +73,7 @@ internal static class SimStateCopy
     /// envelope leaves it off `combat_action` and `run_snapshot`. Without it the
     /// importer cannot place the run and restarts it at the act entrance.
     /// </summary>
-    private static Dictionary<string, object>? BuildState()
+    internal static Dictionary<string, object>? BuildState()
     {
         RunState? runState = RunManager.Instance?.DebugOnlyGetState();
         if (runState == null)

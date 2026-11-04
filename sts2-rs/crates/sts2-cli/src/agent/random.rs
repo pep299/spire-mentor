@@ -64,6 +64,10 @@ fn fmt_action(a: &Action) -> String {
             || format!("play {hand_index}"),
             |t| format!("play {hand_index} {t}"),
         ),
+        Action::PlayCardAtAlly { hand_index, ally } => format!("play {hand_index} ally {ally}"),
+        Action::DrinkPotionAtAlly { potion_slot, ally } => {
+            format!("drink {potion_slot} ally {ally}")
+        }
         Action::EndTurn => "end".into(),
         Action::UsePotion { slot, target } => target.as_ref().map_or_else(
             || format!("potion {slot}"),

@@ -750,6 +750,15 @@ pub struct MctsCombatPolicy<M> {
     /// What the root filter did at the most recent combat decision (`None`
     /// with the knob off).
     last_root_filter: Option<RootFilterRecord>,
+    /// Root-parallel workers per combat search, from
+    /// `STS2_RUNAI_COMBAT_THREADS` (resolved once in `new`; see
+    /// [`resolve_combat_threads`]). `1` (unset, the default) is the single
+    /// tree every published win rate was measured with. `> 1` splits each
+    /// decision's budget across that many independent trees via
+    /// [`sts2_mcts::par_search_with_policy`] — the search the live-game
+    /// advisor runs with `--threads N` — so its win-rate cost can be
+    /// measured here.
+    combat_threads: u32,
 }
 
 /// What the turn-plan root filter did at one combat decision (GH #830),
@@ -1014,6 +1023,23 @@ fn resolve_tie_eps(env_value: Option<&str>) -> f32 {
     }
 }
 
+/// Pure `STS2_RUNAI_COMBAT_THREADS` env-value → root-parallel worker count.
+/// Unset → `1` (one tree, the deployed run agent). A positive integer is the
+/// worker count; anything else PANICS, like `STS2_RUNAI_TIE_EPS`, so a typo
+/// cannot silently run the single-tree arm of a threads A/B.
+fn resolve_combat_threads(env_value: Option<&str>) -> u32 {
+    match env_value {
+        None => 1,
+        Some(raw) => match raw.trim().parse::<u32>() {
+            Ok(n) if n >= 1 => n,
+            _ => panic!(
+                "STS2_RUNAI_COMBAT_THREADS={raw:?} is not a positive integer (expected unset \
+                 or e.g. \"4\") — refusing to silently fall back and poison the run"
+            ),
+        },
+    }
+}
+
 /// Pure `STS2_RUNAI_LOSS_GRADIENT` env-value → [`MctsConfig::loss_gradient`]
 /// resolution, factored out of [`MctsCombatPolicy::new`] like
 /// [`resolve_tie_eps`].
@@ -1125,6 +1151,8 @@ struct MctsKnobOverrides {
     persistent_weight: Option<f32>,
     loss_gradient: Option<bool>,
     root_guards: Option<bool>,
+    /// GH #1022: which in-band root rules run under `root_guards`.
+    tie_rules: Option<sts2_mcts::TieRules>,
     chance_closed_stops_widening: Option<bool>,
     rollout_policy: Option<sts2_mcts::RolloutPolicyKind>,
     belief_dialect: Option<bool>,
@@ -1151,6 +1179,7 @@ const MCTS_OVERRIDE_KNOB_NAMES: &str = "chance_widening_c, chance_widening_alpha
     draw_widening_c, draw_widening_alpha, endturn_widening_c, endturn_widening_alpha, \
     tie_eps, c_puct, loss_w_removed, loss_w_hp, loss_w_turns, \
     loss_turns_half_life, loss_span, loot_weight, persistent_weight, loss_gradient, root_guards, \
+    tie_rules (`+`-joined in-band root rules, e.g. block+free+junk or none, GH #1022), \
     chance_closed_stops_widening, rollout_policy (heuristic | uniform | net; net, the \
     honest-mode default, plays the built-in Ironclad playout net, or the STS2_ROLLOUT_NET \
     weights when set), belief_dialect (true: apply the BeliefDraw dialect even under \
@@ -1234,6 +1263,9 @@ impl MctsKnobOverrides {
         if let Some(v) = self.root_guards {
             config.root_guards = v;
         }
+        if let Some(v) = self.tie_rules {
+            config.tie_rules = v;
+        }
         if let Some(v) = self.chance_closed_stops_widening {
             config.chance_closed_stops_widening = v;
         }
@@ -1292,6 +1324,7 @@ impl MctsKnobOverrides {
             persistent_weight,
             loss_gradient,
             root_guards,
+            tie_rules,
             chance_closed_stops_widening,
             rollout_policy,
             belief_dialect,
@@ -1324,6 +1357,7 @@ impl MctsKnobOverrides {
             persistent_weight: persistent_weight.or(fallback.persistent_weight),
             loss_gradient: loss_gradient.or(fallback.loss_gradient),
             root_guards: root_guards.or(fallback.root_guards),
+            tie_rules: tie_rules.or(fallback.tie_rules),
             chance_closed_stops_widening: chance_closed_stops_widening
                 .or(fallback.chance_closed_stops_widening),
             rollout_policy: rollout_policy.or(fallback.rollout_policy),
@@ -1483,6 +1517,14 @@ fn parse_mcts_overrides(env_value: Option<&str>) -> MctsKnobOverrides {
             "win_potion_carry" => out.win_potion_carry = Some(carry_of(key, val)),
             "loss_gradient" => out.loss_gradient = Some(bool_of(key, val)),
             "root_guards" => out.root_guards = Some(bool_of(key, val)),
+            "tie_rules" => {
+                out.tie_rules = Some(sts2_mcts::TieRules::parse(val).unwrap_or_else(|e| {
+                    panic!(
+                        "STS2_RUNAI_MCTS_OVERRIDES: knob tie_rules={val:?}: {e} — refusing to \
+                         silently fall back and poison the run"
+                    )
+                }));
+            }
             "belief_dialect" => out.belief_dialect = Some(bool_of(key, val)),
             "leaf_playouts" => out.leaf_playouts = Some(playouts_of(key, val)),
             "tree_reuse" => out.tree_reuse = Some(bool_of(key, val)),
@@ -1733,6 +1775,9 @@ impl<M: RunPolicy> MctsCombatPolicy<M> {
                     .as_deref(),
             ),
             last_root_filter: None,
+            combat_threads: resolve_combat_threads(
+                std::env::var("STS2_RUNAI_COMBAT_THREADS").ok().as_deref(),
+            ),
         }
     }
 
@@ -2098,6 +2143,44 @@ impl<M: RunPolicy> MctsCombatPolicy<M> {
         // Turn-plan root filter (GH #830): which root actions the search may
         // pick. Computed from `combat` alone (no search state), so it is the
         // same whether or not a tree is reused below.
+        // Root-parallel search (`STS2_RUNAI_COMBAT_THREADS > 1`): the live
+        // advisor's `--threads N` path, `par_search_with_policy` over the
+        // same config, prior and leaf evaluator. It has no tree reuse, root
+        // filter or prior cache, so it refuses to combine with the first two.
+        if self.combat_threads > 1 {
+            assert!(
+                self.root_filter.is_none() && !self.tree_reuse_on(),
+                "STS2_RUNAI_COMBAT_THREADS > 1 does not combine with tree_reuse or the \
+                 turn-plan root filter"
+            );
+            let mut config = config;
+            config.max_simulations = sims;
+            let res = sts2_mcts::par_search_with_policy(
+                combat.clone(),
+                config,
+                self.combat_threads,
+                prior,
+                leaf_eval,
+            );
+            let chosen = match self.potion_timing {
+                Some(t) => {
+                    let coin = splitmix64(
+                        u64::from(self.run_seed as u32)
+                            ^ (u64::from(rm.run_state.total_floor as u32) << 32)
+                            ^ counter.wrapping_mul(0x9E37_79B9_7F4A_7C15),
+                    );
+                    t.perturb(&res.best_action, &res.outcomes, coin)
+                        .unwrap_or(res.best_action)
+                }
+                None => res.best_action,
+            };
+            return self.surface_pick(
+                chosen,
+                res.outcomes,
+                sts2_mcts::ExpandOrderStats::default(),
+                actions,
+            );
+        }
         let filter = self.root_filter.as_ref().map(|(scorer, k)| {
             let t0 = std::time::Instant::now();
             let f = sts2_mcts::turn_plan_scorer::root_filter(
@@ -2274,26 +2357,8 @@ impl<M: RunPolicy> MctsCombatPolicy<M> {
                 config.win_potion_carry = Some(potions);
             }
         }
-        // `SharedPolicy::uniform()` + `use_puct_prior = false` is documented
-        // byte-identical to `Mcts::<UniformPolicy>::new`, so the prior-less
-        // production path is unchanged by routing through `with_policy`.
-        // (`use_puct_prior` is not an override knob, so setting it after the
-        // override bundle in `search_config` is the same as before it.)
-        // The combat net's prior (`STS2_RUNAI_COMBAT_PRIOR=1`) replaces the
-        // move prior, as before the built-in one existed.
         let tier = BudgetTier::from_room(rm.run_state.current_room.as_ref().map(|r| r.room_type));
-        let move_prior = move_prior(prior_net_env(), character, tier, self.ironclad_layer_on());
-        let prior = match (combat_prior_net_from_env(), move_prior) {
-            (Some(net), _) => {
-                config.use_puct_prior = true;
-                sts2_mcts::SharedPolicy::new(sts2_mcts::LearnedPolicyPrior::new(net))
-            }
-            (None, Some(prior)) => {
-                config.use_puct_prior = true;
-                prior
-            }
-            (None, None) => sts2_mcts::SharedPolicy::uniform(),
-        };
+        let prior = self.search_prior(&mut config, character, tier);
         // Root-level potion opportunity-cost charge (GH #447 follow-up).
         // Slot-indexed from the CURRENT combat belt: each searched ply
         // builds a fresh `Mcts`, so the mapping cannot go stale across
@@ -2319,6 +2384,36 @@ impl<M: RunPolicy> MctsCombatPolicy<M> {
             config.root_drink_mask = true;
         }
         (config, leaf_eval, prior)
+    }
+
+    /// The PUCT move prior of a search in a `character` fight in a `tier`
+    /// room, with `config.use_puct_prior` set when there is one.
+    ///
+    /// `SharedPolicy::uniform()` + `use_puct_prior = false` is documented
+    /// byte-identical to `Mcts::<UniformPolicy>::new`, so the prior-less
+    /// production path is unchanged by routing through `with_policy`.
+    /// (`use_puct_prior` is not an override knob, so setting it after the
+    /// override bundle in `search_config` is the same as before it.)
+    /// The combat net's prior (`STS2_RUNAI_COMBAT_PRIOR=1`) replaces the
+    /// move prior, as before the built-in one existed.
+    fn search_prior(
+        &self,
+        config: &mut MctsConfig,
+        character: Option<CharacterId>,
+        tier: BudgetTier,
+    ) -> sts2_mcts::SharedPolicy {
+        let move_prior = move_prior(prior_net_env(), character, tier, self.ironclad_layer_on());
+        match (combat_prior_net_from_env(), move_prior) {
+            (Some(net), _) => {
+                config.use_puct_prior = true;
+                sts2_mcts::SharedPolicy::new(sts2_mcts::LearnedPolicyPrior::new(net))
+            }
+            (None, Some(prior)) => {
+                config.use_puct_prior = true;
+                prior
+            }
+            (None, None) => sts2_mcts::SharedPolicy::uniform(),
+        }
     }
 
     /// The search configuration and leaf evaluator one combat search of
@@ -2869,11 +2964,37 @@ pub fn deployed_value_config(character: Option<CharacterId>) -> (MctsConfig, Lea
     )
 }
 
+/// The deployed pilot's search for a bare `combat` in a `tier` room, fresh
+/// and unsearched: [`MctsCombatPolicy::build_search`] of a
+/// [`CombatBudget::eval_cheap`] policy, minus the seams that need the run
+/// around the fight — the boss win carry (GH #771, which only the run's last
+/// boss gets), the potion opportunity charge and the drink masks (both off
+/// unless their env seam is set). For probes of fixture and human-replay
+/// states, which have no `RunManager` (`tie_rule_probe`,
+/// `sts2_rs.tie_rule_picks`; GH #1022). A test pins it to `build_search` in a
+/// hallway fight.
+#[must_use]
+pub fn pilot_search(
+    combat: &CombatState,
+    tier: BudgetTier,
+    sims: u32,
+    seed: u64,
+) -> Mcts<sts2_mcts::SharedPolicy> {
+    let policy = MctsCombatPolicy::new(HeuristicPolicy::new(), CombatBudget::eval_cheap(), 0);
+    let character = combat.player.character;
+    let (mut config, leaf_eval) = policy.search_config(sims, seed, character);
+    let prior = policy.search_prior(&mut config, character, tier);
+    Mcts::with_policy(combat.clone(), config, prior)
+        .with_prior_cache(prior_cache_from_env())
+        .with_leaf_eval(leaf_eval)
+}
+
 // The sts2-mcts integration-test fixtures (`build_vertical_slice`), shared
-// so the `build_search` golden pins the same combat the search tests use.
+// so the `build_search` golden pins the same combat the search tests use
+// (and `tie_probe`'s tests key the same hand).
 #[cfg(test)]
 #[path = "../../../sts2-mcts/tests/common/mod.rs"]
-mod mcts_fixtures;
+pub(crate) mod mcts_fixtures;
 
 #[cfg(test)]
 mod tests {
@@ -3863,6 +3984,7 @@ mod tests {
             "loss_w_removed",
             "loss_gradient",
             "root_guards",
+            "tie_rules",
             "leaf_playouts",
             "net_expand_order",
             "fpu_reduction",
@@ -4268,6 +4390,39 @@ mod tests {
         assert_eq!(untouched.fpu_reduction, None);
     }
 
+    /// GH #1022: `tie_rules` parses a `+`-joined rule list into its slot and
+    /// `apply` writes that field alone; unmentioned, the deployed three
+    /// guards stay; a typo panics instead of running the default arm.
+    #[test]
+    fn mcts_knob_overrides_apply_tie_rules() {
+        let parsed = parse_mcts_overrides(Some("tie_rules=block+free"));
+        assert_eq!(
+            parsed.tie_rules,
+            Some(sts2_mcts::TieRules::BLOCK.union(sts2_mcts::TieRules::FREE_PLAY))
+        );
+        let deployed = mcts_config_for(
+            resolve_hidden_info(None),
+            1000,
+            7,
+            COMBAT_ROLLOUT_DEPTH,
+            MctsConfig::default().terminal_eval_mode,
+        );
+        assert_eq!(deployed.tie_rules, sts2_mcts::TieRules::DEFAULT);
+
+        let mut config = deployed;
+        parsed.apply(&mut config);
+        let mut expected = deployed;
+        expected.tie_rules = sts2_mcts::TieRules::BLOCK.union(sts2_mcts::TieRules::FREE_PLAY);
+        assert_eq!(format!("{config:?}"), format!("{expected:?}"));
+
+        let mut untouched = deployed;
+        parse_mcts_overrides(Some("c_puct=2.5")).apply(&mut untouched);
+        assert_eq!(untouched.tie_rules, sts2_mcts::TieRules::DEFAULT);
+
+        let typo = std::panic::catch_unwind(|| parse_mcts_overrides(Some("tie_rules=blok")));
+        assert!(typo.is_err(), "an unknown rule must panic");
+    }
+
     /// `root_sequential_halving` parses into its slot and `apply` writes that
     /// field alone; unmentioned, the deployed UCT root allocation stays.
     #[test]
@@ -4648,6 +4803,61 @@ mod tests {
             .chosen
             .clone();
         (chosen, policy.last_root_filter().cloned(), state)
+    }
+
+    /// `STS2_RUNAI_COMBAT_THREADS > 1` runs the advisor's root-parallel
+    /// search: the budget is split across the workers (total root visits =
+    /// the decision's sims, not `threads ×` it) and the pick is legal.
+    #[test]
+    fn combat_threads_split_the_budget_across_root_parallel_trees() {
+        let run_seed = 3;
+        let state = build_ftl_busy_hand_state(run_seed);
+        let rm = new_run_manager_for_character(run_seed, CharacterId::Ironclad);
+        let budget = CombatBudget {
+            sims: 400,
+            boss_sims: 400,
+            elite_sims: None,
+            motif_sims: None,
+            leaf: LeafKind::TexelWide,
+        };
+        let mut actions: Vec<RunAction> = vec![RunAction::EndTurn];
+        for hand_idx in 0..6 {
+            for target in [None, Some(0), Some(1), Some(2)] {
+                actions.push(RunAction::PlayCard { hand_idx, target });
+            }
+        }
+        let mut visits = Vec::new();
+        for threads in [1, 4] {
+            let mut policy = MctsCombatPolicy::new(FirstOptionPolicy, budget, run_seed);
+            assert_eq!(
+                policy.combat_threads, 1,
+                "the knob must default to one tree"
+            );
+            policy.combat_threads = threads;
+            policy
+                .mcts_pick(&rm, &state, &actions)
+                .expect("translatable pick");
+            let rec = policy.last_combat_search().expect("searched");
+            assert!(sts2_core::legal_actions(&state).contains(&rec.chosen));
+            let total: u32 = rec.outcomes.iter().map(|o| o.visits).sum();
+            visits.push(total);
+        }
+        // One tree spends its sims below the root too, so only bound it; the
+        // four trees together spend the same 400, not 1600.
+        assert!(visits[0] <= 400, "{visits:?}");
+        assert!(visits[1] <= 400 && visits[1] > 300, "{visits:?}");
+    }
+
+    #[test]
+    fn resolve_combat_threads_parses_and_defaults() {
+        assert_eq!(resolve_combat_threads(None), 1);
+        assert_eq!(resolve_combat_threads(Some(" 4 ")), 4);
+    }
+
+    #[test]
+    #[should_panic(expected = "STS2_RUNAI_COMBAT_THREADS")]
+    fn resolve_combat_threads_zero_panics() {
+        let _ = resolve_combat_threads(Some("0"));
     }
 
     /// A K that keeps every plan restricts nothing: the pick is the
@@ -5234,6 +5444,29 @@ mod tests {
         mcts.try_search_n(sims).expect("searched");
         let built = mcts.root_outcomes();
         assert_eq!(format!("{built:?}"), format!("{picked:?}"));
+    }
+
+    /// `pilot_search` (the probes' search, no `RunManager`) searches what
+    /// the eval-cheap pilot's `build_search` does in a hallway fight, where
+    /// none of the run-context seams it leaves out applies.
+    #[test]
+    fn pilot_search_matches_build_search_in_a_hallway() {
+        let (sims, seed) = (400, 0x1022);
+        let state = mcts_fixtures::build_vertical_slice(7);
+        let rm = new_run_manager_for_character(7, CharacterId::Ironclad);
+        assert_eq!(
+            BudgetTier::from_room(rm.run_state.current_room.as_ref().map(|r| r.room_type)),
+            BudgetTier::Common
+        );
+        let mut builder = MctsCombatPolicy::new(FirstOptionPolicy, CombatBudget::eval_cheap(), 7);
+        let mut built = builder.build_search(&rm, &state, sims, seed);
+        built.try_search_n(sims).expect("searched");
+        let mut piloted = pilot_search(&state, BudgetTier::Common, sims, seed);
+        piloted.try_search_n(sims).expect("searched");
+        assert_eq!(
+            format!("{:?}", piloted.root_outcomes()),
+            format!("{:?}", built.root_outcomes())
+        );
     }
 
     // ── the per-node PUCT prior cache (GH #830) ──────────────────────────

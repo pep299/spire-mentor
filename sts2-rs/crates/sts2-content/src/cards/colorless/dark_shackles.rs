@@ -29,10 +29,13 @@ pub(crate) fn play_dark_shackles(
     apply_power_to_creature(state, t, PowerKind::DarkShackles, amt);
     let after = power_amount_on_creature(state, t, PowerKind::DarkShackles);
     if after > before {
-        // TemporaryStrengthPower.BeforeApplied (TemporaryStrengthPower.cs:131):
-        // `PowerCmd.Apply<StrengthPower>(target, Sign * amount, ...)` with
-        // Sign = -1 for IsPositive=false.
-        apply_power_signed_to_creature(state, t, PowerKind::Strength, -amt);
+        // TemporaryStrengthPower.BeforeApplied (TemporaryStrengthPower.cs:134-136
+        // v0.111.0): `PowerCmd.Apply<StrengthPower>(target, Sign * amount, ...)`
+        // with Sign = -1 for IsPositive=false, where `amount` is the MODIFIED
+        // amount (PowerCmd.cs:129-136): twice the base under Unsettling Lamp,
+        // whose `HasDoubledTemporaryPowerSource` skips the inner Strength
+        // (UnsettlingLamp.cs:169). Drain what landed, not the base.
+        apply_power_signed_to_creature(state, t, PowerKind::Strength, -(after - before));
     }
     EffectResult::Resolved
 }

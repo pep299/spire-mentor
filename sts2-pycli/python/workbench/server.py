@@ -2678,26 +2678,6 @@ def create_app(
             raise HTTPException(409, "hint only available during combat")
         return result
 
-    @app.post("/api/live/last-move-regret")
-    def live_last_move_regret(
-        req: HintRequest, session: Session = Depends(get_session)
-    ) -> dict[str, Any]:
-        """Regret of the move that produced the current live state — the
-        "blunder right after you did one" warning.
-
-        Re-scores the previous combat position and diffs the move just made
-        against the MCTS line. 409 when there is no prior combat move to assess
-        (start of run, or the last decision wasn't a combat play). Body is
-        ``{"config": {...optional: blunder_pct + MCTS params}}``.
-        """
-        sess = session.live
-        if sess is None:
-            raise HTTPException(400, "no live run")
-        result = sess.last_move_regret(req.config)
-        if result is None:
-            raise HTTPException(409, "no prior combat move to assess")
-        return result
-
     @app.post("/api/live/regret-review")
     def live_regret_review(
         req: HintRequest, session: Session = Depends(get_session)

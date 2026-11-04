@@ -110,6 +110,7 @@ internal static class NonCombatBridgeProtocol
     public const string CollectTreasureAction = "collect";
     public const string PickRelicAction = "pick_relic";
     public const string PickRewardAction = "pick_reward";
+    public const string PotionSwapAction = "potion_swap";
     public const string PickCardBundleAction = "pick_card_bundle";
     public const string DivineCellAction = "divine_cell";
     public const string ProceedAction = "proceed";
@@ -1134,5 +1135,18 @@ internal static class SimPotionRules
             return false;
         return potion == null
             || Hook.ShouldProcurePotion(me.RunState, me.Creature.CombatState, potion, me);
+    }
+
+    /// <summary>
+    /// True when the belt is the ONLY thing refusing <paramref name="potion"/>:
+    /// no free slot, but every hook would let it in. Discarding a held potion
+    /// then makes it claimable, which the reward screen offers as a swap
+    /// (GH #1069). A hook refusal (Sozu) is no swap: no discard helps.
+    /// </summary>
+    public static bool BlockedOnlyByFullBelt(Player me, PotionModel? potion)
+    {
+        return potion != null
+            && !me.HasOpenPotionSlots
+            && Hook.ShouldProcurePotion(me.RunState, me.Creature.CombatState, potion, me);
     }
 }

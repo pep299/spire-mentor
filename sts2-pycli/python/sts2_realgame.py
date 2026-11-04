@@ -122,7 +122,7 @@ from realgame_bridge import DEFAULT_HOST, DEFAULT_PORT, RealGameBridgeClient
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["RealGame", "reward_screen_choice"]
+__all__ = ["RealGame", "potion_swap_group", "reward_screen_choice"]
 
 
 def reward_screen_choice(options: list[dict[str, Any]]) -> int | None:
@@ -137,6 +137,14 @@ def reward_screen_choice(options: list[dict[str, Any]]) -> int | None:
 
     Shared by :meth:`RealGame._auto_reward_screen` and the realgame drivers so
     every backend collects post-combat rewards through identical logic.
+
+    A potion reward that finds a full belt (GH #1069) comes as a
+    :func:`potion_swap_group` instead of a ``pick_reward``. It is answered
+    after the other rewards and before the card, the order the engines raise
+    their ``potion_swap`` decision in, and this default answer is the group's
+    decline: leave the potion, as the engines do with the swap off. A caller
+    that lets a policy decide checks whether the returned option's ``action``
+    is ``potion_swap`` and asks it instead.
     """
     collect_idx = next(
         (
@@ -148,10 +156,33 @@ def reward_screen_choice(options: list[dict[str, Any]]) -> int | None:
     )
     if collect_idx is not None:
         return collect_idx
+    decline_idx = next(
+        (o.get("index") for o in potion_swap_group(options) if o.get("discard_slot") is None),
+        None,
+    )
+    if decline_idx is not None:
+        return decline_idx
     card_idx = next((o.get("index") for o in options if o.get("id") == "CardReward"), None)
     if card_idx is not None:
         return card_idx
     return next((o.get("index") for o in options if o.get("action") == "proceed"), None)
+
+
+def potion_swap_group(options: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The first full-belt potion reward's ``potion_swap`` options, decline first.
+
+    The mod offers every potion reward that only a full belt blocks as a group
+    of ``reward_screen`` options sharing one ``reward_button``: a decline
+    (``discard_slot`` null) and one option per belt slot (``discard_slot`` k:
+    discard that potion, then claim the reward). The group mirrors the
+    engines' ``potion_swap`` decision. Empty when nothing is blocked.
+    """
+    swaps = [o for o in options if o.get("action") == "potion_swap"]
+    if not swaps:
+        return []
+    first = min(int(o.get("reward_button") or 0) for o in swaps)
+    group = [o for o in swaps if int(o.get("reward_button") or 0) == first]
+    return sorted(group, key=lambda o: -1 if o.get("discard_slot") is None else o["discard_slot"])
 
 
 class RealGame:
@@ -221,6 +252,11 @@ class RealGame:
             "remove_card": None,
         }
         self._gold_before_reward: int | None = None
+        # GH #1069: surface full-belt potion rewards as `potion_swap`
+        # decisions (set by :meth:`start`), and the pending group's bridge
+        # option index per `discard_slot` (None = decline).
+        self._interactive_potion_swap = False
+        self._swap_options: dict[int | None, int] = {}
 
     # ── Connection lifecycle ────────────────────────────────────────────────
 
@@ -251,6 +287,7 @@ class RealGame:
         seed: str | int | None = None,
         ascension: int | None = None,
         lang: str = "en",
+        interactive_potion_swap: bool = False,
     ) -> dict[str, Any]:
         """Start (or attach to) a run and return the first decision.
 
@@ -274,7 +311,14 @@ class RealGame:
             lang: Accepted for interface parity with ``sts2_client.Game``;
                 the bridge has no language setting (its Card/Relic/Potion
                 text is always whatever the live game's active locale is).
+            interactive_potion_swap: GH #1069, as in ``sts2_client.Game``. A
+                potion reward that finds a full belt becomes a
+                ``potion_swap`` decision (answer with the ``potion_swap``
+                action: ``discard_slot`` None declines, k discards that held
+                potion and claims the reward). Off, it is left on the reward
+                screen, which is what the engines do with the swap off.
         """
+        self._interactive_potion_swap = interactive_potion_swap
         if lang != "en":
             logger.warning(
                 "RealGame.start(): lang=%r ignored (bridge has no language switch)", lang
@@ -330,6 +374,7 @@ class RealGame:
                 seed=cmd.get("seed"),
                 ascension=cmd.get("ascension"),
                 lang=cmd.get("lang", "en"),
+                interactive_potion_swap=bool(cmd.get("interactive_potion_swap")),
             )
         if cmd_type == "action":
             return self.act(cmd.get("action"), **(cmd.get("args") or {}))
@@ -497,6 +542,10 @@ class RealGame:
                 continue
 
             if mtype == "reward_screen":
+                swap = self._translate_potion_swap(msg) if self._interactive_potion_swap else None
+                if swap is not None:
+                    self._last_decision_type = "potion_swap"
+                    return swap
                 msg = self._auto_reward_screen(msg)
                 continue
 
@@ -574,7 +623,42 @@ class RealGame:
         self.client.send_action({"action": "choose", "index": chosen})
         return self.client.receive_state()
 
+    def potion_swap(self, discard_slot: int | None = None) -> dict[str, Any]:
+        """Answer a ``potion_swap`` decision: None declines, k discards slot k."""
+        idx = self._swap_options.get(discard_slot)
+        if idx is None:
+            return {
+                "type": "error",
+                "message": f"potion_swap: discard_slot {discard_slot!r} is not offered",
+            }
+        self._swap_options = {}
+        return self._send({"action": "choose", "index": idx})
+
     # ── Decision translators: bridge message -> headless decision dict ─────
+
+    def _translate_potion_swap(self, msg: dict[str, Any]) -> dict[str, Any] | None:
+        """Headless ``PotionSwapState()``-shaped decision, or None when the
+        reward screen's next step is not a swap (see :func:`reward_screen_choice`).
+        """
+        options = msg.get("options") or []
+        chosen = reward_screen_choice(options)
+        picked = next((o for o in options if o.get("index") == chosen), None)
+        if picked is None or picked.get("action") != "potion_swap":
+            return None
+        group = potion_swap_group(options)
+        self._swap_options = {o.get("discard_slot"): int(o["index"]) for o in group}
+        potion = (group[0].get("reward") or {}).get("id")
+        return {
+            "type": "decision",
+            "decision": "potion_swap",
+            "context": self._context(msg, room_type=None),
+            "potion": potion,
+            "options": [
+                {"index": i, "discard_slot": o.get("discard_slot"), "label": o.get("label")}
+                for i, o in enumerate(group)
+            ],
+            "player": self._player_summary(msg.get("run_state") or {}),
+        }
 
     def _translate_combat(self, msg: dict[str, Any]) -> dict[str, Any]:
         run_state = msg.get("run_state") or {}
@@ -1125,4 +1209,5 @@ _ACTION_DISPATCH: dict[str, Any] = {
     "discard_potion": lambda self, a: self.discard_potion(a.get("potion_index")),
     "leave_room": lambda self, a: self.leave_room(),
     "proceed": lambda self, a: self.proceed(),
+    "potion_swap": lambda self, a: self.potion_swap(a.get("discard_slot")),
 }

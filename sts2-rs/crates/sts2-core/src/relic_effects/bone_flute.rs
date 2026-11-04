@@ -21,21 +21,36 @@ pub(crate) fn on_after_damage_given_bone_flute(
     if !player_owns_relic(state, crate::RelicKind::BoneFlute) {
         return EffectResult::NotImplemented;
     }
-    let dealer_uid = ctx.dealer;
-    let is_osty_dealer = state
-        .creatures
-        .iter()
-        .find(|c| c.id == dealer_uid.0)
-        .is_some_and(|c| c.species == Some(crate::MonsterKind::Osty));
-    if !is_osty_dealer {
+    // C# `BoneFlute.cs:21-28`: the attacker is an Osty whose `PetOwner` is
+    // the relic holder, i.e. the seated player's own pet, never a
+    // teammate's (GH #1017).
+    if state.player.pet_uid != Some(ctx.dealer) {
         return EffectResult::NotImplemented;
+    }
+    // C# grants once per Osty `AttackCommand`, in `AfterAttack` — after ALL of
+    // the command's hits — not per hit: a Bone Shards / High Five AoE over
+    // three enemies is one command and one +2 (Necrobinder full seed 5650,
+    // v0.111.0). Latch here; [`grant_latched_bone_flute`] grants at the
+    // after-attack boundary (`hooks::grant_latched_skittish`).
+    state.combat_log.bone_flute_latched = true;
+    EffectResult::Resolved
+}
+
+/// Grant a latched `BoneFlute.AfterAttack` block (see
+/// [`on_after_damage_given_bone_flute`]). Called from the engine's
+/// after-attack boundary, `hooks::grant_latched_skittish`.
+pub(crate) fn grant_latched_bone_flute(state: &mut CombatState) {
+    if !std::mem::take(&mut state.combat_log.bone_flute_latched) {
+        return;
+    }
+    if !player_owns_relic(state, crate::RelicKind::BoneFlute) {
+        return;
     }
     // BONE_FLUTE_BLOCK = 2 (mirrors `crates/sts2-content/src/relics/
     // common.rs::BONE_FLUTE_BLOCK`; inlined to avoid the content→core
     // dep cycle). C# `BoneFlute.cs`: `BlockVar(2m, ValueProp.Unpowered)`
     // — bypass Frail/Dexterity (bead `sts2-rs-fkwls`).
     gain_block_player_unpowered(state, 2);
-    EffectResult::Resolved
 }
 
 pub(crate) fn install() {

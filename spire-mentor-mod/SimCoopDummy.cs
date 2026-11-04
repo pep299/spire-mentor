@@ -7,8 +7,9 @@
 // it for an instance launched with `--spire-mentor-autoplay`; once the run is
 // live, SimAdvisorAutoplay hands it to the advisor lane, the same as F8 + F7.
 //
-// A host only embarks once another player is in the lobby: alone, the run
-// would start as a one-player co-op run.
+// A host only embarks once the whole party is in the lobby
+// (`--spire-mentor-coop-players N`, default 2): with fewer, the run would
+// start without the players still joining.
 
 using System;
 using System.Collections;
@@ -77,7 +78,7 @@ internal static class SimCoopDummy
             }
             StartRunLobby? lobby = screen.Lobby;
             NetGameType? type = lobby?.NetService?.Type;
-            if (type != NetGameType.Client && !(type == NetGameType.Host && LobbyPlayerCount(lobby!) >= 2))
+            if (type != NetGameType.Client && !(type == NetGameType.Host && LobbyPlayerCount(lobby!) >= SimMp.CoopPlayers))
             {
                 return;
             }

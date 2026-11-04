@@ -134,6 +134,27 @@ fn fresnel_lens_leaves_an_added_curse_bare() {
     }
 }
 
+/// FresnelLens's `Nimble.CanEnchant` gate reads `CardModel.GainsBlock`
+/// (`Nimble.cs:9-14`). v0.111.0 Expect a Fight overrides it to `true`
+/// (`ExpectAFight.cs:17`; its block is a `CalculatedBlockVar`, so the POD's
+/// `base_block` is 0); v0.107.1's energy card does not.
+#[test]
+fn fresnel_lens_enchants_expect_a_fight_only_in_v0111() {
+    for version in BOTH_BUILDS {
+        let mut rs = run_state(version, &[RelicId::FresnelLens]);
+        let mut card =
+            sts2_content::cards::v0111::card_pod_for(CardId::ExpectAFight, false, version)
+                .expect("expect a fight");
+        rs.modify_card_being_added_to_deck(&mut card);
+        let want = if version >= GameVersion::V0_111_0 {
+            2
+        } else {
+            0
+        };
+        assert_eq!(card.enchantment(EnchantmentId::Nimble), want, "{version}");
+    }
+}
+
 /// Lost Coffer's slate: SilkenTress Glams the first card reward it sees
 /// (`SilkenTress.cs:47-83`, gated on `IsCardReward`, which every
 /// `CardReward` carries, `CardReward.cs:115`).

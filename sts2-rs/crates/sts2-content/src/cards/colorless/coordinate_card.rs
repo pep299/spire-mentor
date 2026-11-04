@@ -6,13 +6,16 @@ use super::prelude::*;
 /// `(1, CardType.Skill, CardRarity.Uncommon, AnyAlly)`; Python:
 /// `colorless.py:288-293`.
 pub(crate) fn play_coordinate_card(
-    _state: &mut CombatState,
+    state: &mut CombatState,
     _t: Option<CreatureUid>,
 ) -> EffectResult {
-    // C# `PowerCmd.Apply<CoordinatePower>(cardPlay.Target, 5 (upg 8))`: the teammate's temporary Strength — all of it lands on the co-op teammate
-    // (`cardPlay.Target`), whose turn is not simulated, so playing it
-    // changes nothing here but the energy and the card's own pile move.
-    // Unplayable without a living teammate (`card_is_any_ally`).
+    // C# `PowerCmd.Apply<CoordinatePower>(cardPlay.Target, 5 (upg 8))`: the
+    // teammate's Strength until their turn ends. Like every
+    // `TemporaryStrengthPower`, the Strength is stamped on apply and the power
+    // reverts it (`hooks::after_turn_end`'s Coordinate arm).
+    let amount = if current_upgraded(state) { 8 } else { 5 };
+    sts2_core::coop::apply_power_to_card_target(state, PowerKind::Strength, amount);
+    sts2_core::coop::apply_power_to_card_target(state, PowerKind::Coordinate, amount);
     EffectResult::Resolved
 }
 

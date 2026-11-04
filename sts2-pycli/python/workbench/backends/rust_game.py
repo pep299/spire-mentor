@@ -28,6 +28,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from floors import engine_total_floor, game_floor
 from sts2_client import DEFAULT_GAME_VERSION, rs_engine_call
 from sts2_hint import display_maps
 
@@ -313,7 +314,13 @@ class RustGame(GameBackend):
 
     # ── lifecycle ─────────────────────────────────────────────────────────
     def start(
-        self, *, character: str, seed: str, ascension: int, act1: str = "overgrowth"
+        self,
+        *,
+        character: str,
+        seed: str,
+        ascension: int,
+        act1: str = "overgrowth",
+        interactive_potion_swap: bool = False,
     ) -> dict[str, Any]:
         import sts2_rs
 
@@ -326,23 +333,14 @@ class RustGame(GameBackend):
             character=character,
             ascension_level=ascension,
             neow_start=True,
-            # Present on-obtain card removals (Precise Scissors, …) as a
-            # player card_select, matching C#, instead of auto-removing.
-            interactive_card_removal=True,
-            # Present on-obtain card upgrades (Pomander) as a player
-            # card_select, matching C# `Pomander.AfterObtained` →
-            # `CardSelectCmd.FromDeckForUpgrade`, instead of auto-upgrading a
-            # random card. Bead sts2-rs-1hiht.
-            interactive_card_upgrade=True,
-            # Present on-obtain card transforms (New Leaf) as a player
-            # card_select whose replacement is rolled only after the pick,
-            # matching C# `NewLeaf.AfterObtained` →
-            # `CardSelectCmd.FromDeckForTransformation` →
-            # `CardCmd.TransformToRandom(item, Rng.Niche)`. GH #34.
-            interactive_card_transform=True,
-            # Grant the chosen Neow blessing relic directly (no redundant
-            # "Take relic / Skip" confirmation step), matching C#.
-            direct_event_relic_grant=True,
+            # GH #981: agent mode — every deck mutation the real game asks
+            # about (on-obtain removal: Precise Scissors; upgrade: Pomander;
+            # transform: New Leaf, which also gates enchant) is a player
+            # card_select matching C#, and the chosen Neow relic is granted
+            # directly with no "Take relic / Skip" step. One definition:
+            # `RunState::set_agent_decisions`, shared with the arena, the PPO
+            # env and the browser workbench.
+            mode="agent",
             # GH #544: STS2 ships TWO acts at index 0 and the real lobby rolls
             # between them off the `act_selection` stream. `"roll"` reproduces
             # that pick, which is what makes a workbench run match the player's
@@ -351,6 +349,9 @@ class RustGame(GameBackend):
             # — `rng.NextItem` over the unlocked candidates), so leaving this at
             # `"overgrowth"` silently shows the WRONG ACT for half of all seeds.
             act1=act1,
+            # GH #1069: full-belt potion rewards surface a `potion_swap`
+            # decision instead of being dropped (the oracle's matching flag).
+            interactive_potion_swap=interactive_potion_swap,
         )
         # Apply the remembered play-log recording preference now that the
         # RunManager exists (set_record_card_plays no-ops while rm is None).
@@ -413,10 +414,7 @@ class RustGame(GameBackend):
             character=character,
             ascension_level=ascension,
             neow_start=True,
-            interactive_card_removal=True,
-            interactive_card_upgrade=True,
-            interactive_card_transform=True,
-            direct_event_relic_grant=True,
+            mode="agent",  # GH #981: see `start` above
         )
         if self._record_card_plays and hasattr(self.rm, "set_record_card_plays"):
             self.rm.set_record_card_plays(True)
@@ -476,10 +474,7 @@ class RustGame(GameBackend):
             # Not a fresh run: the blessing was taken floors ago and the deck
             # arriving below already reflects it.
             neow_start=False,
-            interactive_card_removal=True,
-            interactive_card_upgrade=True,
-            interactive_card_transform=True,
-            direct_event_relic_grant=True,
+            mode="agent",  # GH #981: see `start` above
             # The game rolled this for the player; `roll` makes the same roll.
             act1="roll",
         )
@@ -498,7 +493,8 @@ class RustGame(GameBackend):
                 row,
                 list(snapshot.visited),
                 row + 1,
-                snapshot.floor,
+                # the paste carries the game's floor (see ``_base_state``)
+                engine_total_floor(snapshot.floor, snapshot.act),
             )
             self._import_notes.extend(_map_disagreements(self.rm, snapshot))
         else:
@@ -829,12 +825,43 @@ class RustGame(GameBackend):
         if action == "select_cards" and getattr(self.rm, "pending_deck_enchants", 0) > 0:
             raw = args.get("indices", "")
             idxs = sorted({int(s) for s in str(raw).split(",") if s.strip() != ""}, reverse=True)
-            if not idxs:
+            # An "up to N" screen (Kifuda / Gnarled Hammer, C#
+            # `CardSelectorPrefs(prompt, 0, N)`) may be confirmed with fewer
+            # cards, or none; the rest of its batch is then dropped.
+            optional = bool(getattr(self.rm, "pending_enchant_optional", False))
+            if not idxs and not optional:
                 return _err("select_cards requires an index")
             for i in idxs:
                 result = self.rm.take_action({"action": "enchant_deck_card", "idx": i})
                 if result not in ("advanced", "run_over"):
                     return _err(f"{action} rejected by engine: {result}")
+            if optional and getattr(self.rm, "pending_enchant_optional", False):
+                self.rm.decline_optional_deck_enchants()
+            return self._serialize()
+        # Skipping an "up to N" enchant screen is confirming it with no card:
+        # C# `CardSelectorPrefs(prompt, 0, N)` with `Cancelable = false`
+        # (Kifuda.cs:24-26) still accepts an empty confirm, and the oracle
+        # offers `skip_select` for it (min_select 0).
+        if (
+            action == "skip_select"
+            and getattr(self.rm, "pending_deck_enchants", 0) > 0
+            and getattr(self.rm, "pending_enchant_optional", False)
+        ):
+            self.rm.decline_optional_deck_enchants()
+            return self._serialize()
+        # Skipping the optional grant grid (Orobas SeaGlass,
+        # FromSimpleGridForRewards MinSelect 0) is confirming it with no pick:
+        # the engine's decline is ``grant_deck_card`` at idx == option count,
+        # the same confirm the ``select_cards`` branch below appends.
+        if (
+            action == "skip_select"
+            and getattr(self.rm, "pending_card_grants", 0) > 0
+            and int(getattr(self.rm, "pending_card_grant_min", 1)) == 0
+        ):
+            total = len(self.rm.card_grant_options())
+            result = self.rm.take_action({"action": "grant_deck_card", "idx": total})
+            if result not in ("advanced", "run_over"):
+                return _err(f"{action} rejected by engine: {result}")
             return self._serialize()
         # Interactive multi-pick card grant (RoomFullOfCheese Gorge): a single
         # pick-N card_select over the generated options. C# adds the picks to
@@ -844,10 +871,17 @@ class RustGame(GameBackend):
         if action == "select_cards" and getattr(self.rm, "pending_card_grants", 0) > 0:
             raw = args.get("indices", "")
             idxs = sorted({int(s) for s in str(raw).split(",") if s.strip() != ""})
-            if not idxs:
+            # Optional grid (SeaGlass, MinSelect 0): any 0..=N picks, then a
+            # confirm at idx == remaining option count.
+            optional = int(getattr(self.rm, "pending_card_grant_min", 1)) == 0
+            if not idxs and not optional:
                 return _err("select_cards requires an index")
-            for n, i in enumerate(idxs):
-                result = self.rm.take_action({"action": "grant_deck_card", "idx": i - n})
+            total = len(self.rm.card_grant_options())
+            steps = [i - n for n, i in enumerate(idxs)]
+            if optional and len(idxs) < total:
+                steps.append(total - len(idxs))
+            for idx in steps:
+                result = self.rm.take_action({"action": "grant_deck_card", "idx": idx})
                 if result not in ("advanced", "run_over"):
                     return _err(f"{action} rejected by engine: {result}")
             return self._serialize()
@@ -1012,6 +1046,10 @@ class RustGame(GameBackend):
             return {"action": "pick_card_reward", "idx": args["card_index"]}
         if action == "skip_card_reward":
             return {"action": "pick_card_reward", "idx": None}
+        if action == "potion_swap":
+            # GH #1069: `discard_slot` None declines the parked reward potion.
+            slot = args.get("discard_slot")
+            return {"action": "potion_swap", "discard_slot": None if slot is None else int(slot)}
         if action == "select_bundle":
             # Scroll Boxes: pick one pack. The engine models packs as a
             # no-skip CardReward fan-out, so the pack index IS the
@@ -1038,6 +1076,16 @@ class RustGame(GameBackend):
         if action == "leave_room":
             if phase == "shop":
                 return {"action": "leave_shop"}
+            # A MiniatureTent rest site with options still open: leaving is
+            # the C# `BeforeLocalRestSiteExited` skip, which the engine offers
+            # as `leave_shop` once one option was taken.
+            if phase == "rest_site":
+                leave = next(
+                    (a for a in self.rm.available_actions() if a.get("action") == "leave_shop"),
+                    None,
+                )
+                if leave is not None:
+                    return leave
             return self._first_action(phase)
         if action == "proceed":
             return self._first_action(phase)
@@ -1160,6 +1208,13 @@ class RustGame(GameBackend):
                 state = self._base_state("card_select")
                 fill(self, state)
                 return state
+        # GH #1069: a full-belt potion reward parked for a swap preempts the
+        # phase next, in the engine's own legal-action order.
+        incoming = getattr(rm, "pending_potion_swap", None)
+        if incoming:
+            state = self._base_state("potion_swap")
+            self._fill_potion_swap(state, incoming)
+            return state
 
         state = self._base_state(decision)
 
@@ -1191,13 +1246,24 @@ class RustGame(GameBackend):
         return state
 
     # ── per-decision builders ─────────────────────────────────────────────
+    def _fill_potion_swap(self, state: dict[str, Any], incoming: str) -> None:
+        """The oracle's ``potion_swap`` view: option 0 declines, option
+        ``i + 1`` discards held belt potion ``i`` (``RunSimulator.PotionSwapState``)."""
+        state["potion"] = incoming
+        options: list[dict[str, Any]] = [{"index": 0, "discard_slot": None, "label": "decline"}]
+        for i, kind in enumerate(self.rm.potions()):
+            options.append({"index": i + 1, "discard_slot": i, "label": f"discard {kind}"})
+        state["options"] = options
+
     def _base_state(self, decision: str) -> dict[str, Any]:
         """The run-wide part of every decision view; a ``_fill_*`` adds the rest."""
         rm = self.rm
         return {
             "decision": decision,
             "player": self._player(),
-            "floor": rm.total_floor(),
+            # The game's floor (`RunState.TotalFloor`) counts each act's start
+            # room (Neow, the Ancients); the engine's counter does not.
+            "floor": game_floor(rm.total_floor(), rm.act_index),
             "act": rm.act_index,
             "ascension": rm.ascension_level,
         }
@@ -1415,7 +1481,9 @@ class RustGame(GameBackend):
         count = int(getattr(self.rm, "pending_deck_enchants", 1) or 1)
         count = max(1, min(count, len(cards)))
         state["cards"] = cards
-        state["min_select"] = count
+        # "Up to N" (Kifuda / Gnarled Hammer) vs exactly N.
+        optional = bool(getattr(self.rm, "pending_enchant_optional", False))
+        state["min_select"] = 0 if optional else count
         state["max_select"] = count
         state["can_skip"] = False
         state["context"] = "enchant"
@@ -1425,8 +1493,9 @@ class RustGame(GameBackend):
         Gorge). Cards are the engine's generated option list
         (``card_grant_options()`` → ``(PascalCase id, upgraded)``), ``index`` =
         position in that list (the ``grant_deck_card`` ``idx`` space, matching
-        C# ``FromSimpleGridForRewards``). Mandatory pick-N (``min == max ==
-        pending_card_grants``)."""
+        C# ``FromSimpleGridForRewards``). Pick-N (``max ==
+        pending_card_grants``); ``min`` is N too, or 0 for an optional grid
+        (SeaGlass, ``pending_card_grant_min == 0``)."""
         options: list[tuple[str, bool]] = self.rm.card_grant_options()
         cards = []
         for i, (cid, upgraded) in enumerate(options):
@@ -1444,7 +1513,9 @@ class RustGame(GameBackend):
         count = int(getattr(self.rm, "pending_card_grants", 1) or 1)
         count = max(1, min(count, len(cards)))
         state["cards"] = cards
-        state["min_select"] = count
+        # Optional grid (SeaGlass, MinSelect 0): any 0..=count.
+        optional = int(getattr(self.rm, "pending_card_grant_min", 1)) == 0
+        state["min_select"] = 0 if optional else count
         state["max_select"] = count
         state["can_skip"] = False
         state["context"] = "grant"

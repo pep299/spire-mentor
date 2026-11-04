@@ -10,7 +10,6 @@ use super::prelude::*;
 /// `PlayerCmd.EndTurn(owner, canBackOut: false)` in `VoidForm.OnPlay`
 /// (VoidForm.cs:26) and Python's `_end_turn_after_play` consumer at
 /// `sts2-rl-agent@01c094d:sts2_env/core/combat.py:909-911`.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L842
 pub(crate) fn play_void_form(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     apply_power_to_player(state, PowerKind::VoidForm, 2);
     state.player.request_end_turn_after_play = true;

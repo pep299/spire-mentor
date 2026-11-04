@@ -112,6 +112,41 @@ def test_rows_from_mcts_carries_wlt():
     assert rows[0]["wins"] == 0 and rows[0]["losses"] == 10 and rows[0]["ties"] == 0
 
 
+def test_rows_from_mcts_crowns_the_engines_next_choice():
+    """GH #1022: the engine's pick is a row this boundary does not surface (a
+    channel); the star goes to its next choice by ``pick_rank``, and every row
+    keeps its band flag."""
+    from workbench.reasoning import rows_from_mcts
+
+    raw = {
+        "actions": [
+            {
+                "action": {"action": "channel"},
+                "visits": 50,
+                "p_win": 0.9,
+                "is_best": True,
+                "pick_rank": 0,
+                "in_band": True,
+            },
+            {"action": {"action": "end_turn"}, "visits": 10, "p_win": 0.8, "pick_rank": 2},
+            {
+                "action": {"action": "play", "card_index": 0},
+                "visits": 40,
+                "p_win": 0.7,
+                "pick_rank": 1,
+                "in_band": True,
+            },
+        ]
+    }
+    rows = rows_from_mcts(raw, {"hand": [{"index": 0, "name": "Zap"}]})
+    assert [(r["stable_idx"], r["is_best"], r["in_band"]) for r in rows] == [
+        (0, True, True),
+        (-1, False, False),
+    ]
+    assert [r["pick_rank"] for r in rows] == [1, 2]
+    assert all(r["pick_reason"] is None for r in rows), "an heir has no reason"
+
+
 def test_rows_from_mcts_passes_final_hp():
     from workbench.reasoning import rows_from_mcts
 

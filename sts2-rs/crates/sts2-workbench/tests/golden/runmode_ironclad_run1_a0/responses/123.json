@@ -16,7 +16,7 @@
    "bg_col": 3,
    "bg_row": 6,
    "bg_seed": 1,
-   "floor": 6,
+   "floor": 7,
    "step_no": 0,
    "turn": null
   },
@@ -32,7 +32,7 @@
    "bg_row": 6,
    "bg_seed": 1,
    "decision": "game_over",
-   "floor": 6,
+   "floor": 7,
    "options": [],
    "player": {
     "block": 0,
@@ -233,7 +233,7 @@
       "upgraded": false
      }
     ],
-    "gold": 44,
+    "gold": 46,
     "hp": 0,
     "max_hp": 80,
     "name": "Ironclad",

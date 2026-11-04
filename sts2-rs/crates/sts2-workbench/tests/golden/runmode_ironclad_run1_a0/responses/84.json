@@ -1,17 +1,17 @@
 {
  "alternative": {
   "error": "verify arm hit the 12-step cap without ending",
-  "label": "Choose: Small Capsule",
+  "label": "Take Battle Trance",
   "over": false,
   "steps": 12,
   "won": false
  },
- "decision": "event_choice",
- "node_id": 0,
+ "decision": "card_reward",
+ "node_id": 19,
  "note": "inconclusive — a continuation didn't finish; one agent-played continuation per line (same-seeded combat search) — a paired spot check, not a probability",
  "played": {
   "error": "verify arm hit the 12-step cap without ending",
-  "label": "Choose: Booming Conch",
+  "label": "Take Blood Wall",
   "over": false,
   "steps": 12,
   "won": false

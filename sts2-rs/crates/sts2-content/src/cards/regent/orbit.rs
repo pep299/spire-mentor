@@ -2,7 +2,6 @@
 use super::prelude::*;
 
 /// Orbit — apply 1 Orbit to self.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L446
 pub(crate) fn play_orbit(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     apply_power_to_player(state, PowerKind::Orbit, 1);
     EffectResult::Resolved

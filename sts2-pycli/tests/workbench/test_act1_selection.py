@@ -14,9 +14,31 @@ the regression fixture for the whole axis.
 from __future__ import annotations
 
 import pytest
+import sts2_client
 from workbench.backends.rust_game import RustGame, _act_name
 
 REPORTED_SEED = "C9EXV1KTPH"
+
+#: The act-1 boss the reported seed pins, per act, per game build: (id, name,
+#: kind). v0.111.0 reseeded every stream (XxHash64), so the same seed rolls a
+#: different boss out of the same three-boss pools (``Underdocks.cs`` /
+#: ``Overgrowth.cs`` ``BossDiscoveryOrder`` hold the same three at both builds).
+_PINNED_BOSS: dict[str, dict[str, tuple[str, str, str]]] = {
+    "v0.107.1": {
+        "underdocks": ("LAGAVULIN_MATRIARCH_BOSS", "Lagavulin Matriarch", "LagavulinMatriarch"),
+        "overgrowth": ("VANTOM_BOSS", "Vantom", "Vantom"),
+    },
+    "v0.111.0": {
+        "underdocks": ("WATERFALL_GIANT_BOSS", "Waterfall Giant", "WaterfallGiant"),
+        "overgrowth": ("CEREMONIAL_BEAST_BOSS", "Ceremonial Beast", "CeremonialBeast"),
+    },
+}
+
+#: Each act 1's boss pool (``BossDiscoveryOrder``): a pin outside it is the bug.
+_ACT1_BOSSES = {
+    "underdocks": {"WATERFALL_GIANT_BOSS", "SOUL_FYSH_BOSS", "LAGAVULIN_MATRIARCH_BOSS"},
+    "overgrowth": {"VANTOM_BOSS", "CEREMONIAL_BEAST_BOSS", "THE_KIN_BOSS"},
+}
 
 
 def _start(act1: str) -> tuple[RustGame, dict]:
@@ -54,20 +76,25 @@ def test_the_map_boss_matches_the_act_that_was_walked() -> None:
     Assert on the NAME: the id was already correct while the bug was live."""
     g, _ = _start("underdocks")
     boss = g.get_map()["boss"]
-    assert boss["id"] == "LAGAVULIN_MATRIARCH_BOSS"
-    assert boss["name"] == "Lagavulin Matriarch"
-    assert boss["kind"] == "LagavulinMatriarch"
+    boss_id, name, kind = _PINNED_BOSS[sts2_client.GAME_VERSION]["underdocks"]
+    assert boss_id in _ACT1_BOSSES["underdocks"]
+    assert boss["id"] == boss_id
+    assert boss["name"] == name
+    assert boss["kind"] == kind
     # And the host-facing "what am I about to fight?" accessor agrees.
-    assert g.rm.pinned_boss_encounter_id() == "LAGAVULIN_MATRIARCH_BOSS"
+    assert g.rm.pinned_boss_encounter_id() == boss_id
 
 
 def test_overgrowth_still_reports_its_own_boss() -> None:
     """The control: the fix must not make every act report Underdocks."""
     g, _ = _start("overgrowth")
     boss = g.get_map()["boss"]
-    assert boss["id"] == "VANTOM_BOSS"
-    assert boss["name"] == "Vantom"
-    assert g.rm.pinned_boss_encounter_id() == "VANTOM_BOSS"
+    boss_id, name, kind = _PINNED_BOSS[sts2_client.GAME_VERSION]["overgrowth"]
+    assert boss_id in _ACT1_BOSSES["overgrowth"]
+    assert boss["id"] == boss_id
+    assert boss["name"] == name
+    assert boss["kind"] == kind
+    assert g.rm.pinned_boss_encounter_id() == boss_id
 
 
 # ── act_name: the field every painted region is keyed off ─────────────────────

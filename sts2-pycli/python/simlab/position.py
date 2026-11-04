@@ -136,7 +136,14 @@ def _card_row(wire_card: dict[str, Any], notes: list[str], where: str) -> dict[s
     }
     dropped = [
         key
-        for key in ("enchantment", "affliction", "flags", "combat_vars", "tinker_time_rider")
+        for key in (
+            "enchantment",
+            "affliction",
+            "flags",
+            "combat_vars",
+            "base_replay_count",
+            "tinker_time_rider",
+        )
         if wire_card.get(key)
     ]
     if dropped:

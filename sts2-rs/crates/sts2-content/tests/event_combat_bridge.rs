@@ -144,8 +144,12 @@ fn build_event_combat_mysterious_knight_carries_spawn_buffs() {
         EventId::TheLanternKey,
         Vec::new(),
     );
+    let niche_before = rs.rng.niche.counter();
     let combat = build_event_combat(&mut rs, &req);
     assert_eq!(first_enemy_kind(&combat), MonsterKind::MysteriousKnight);
+    // The knight was created (and its HP rolled) when TheLanternKey's room
+    // was entered; the fight reuses it (EventModel.cs:624-627).
+    assert_eq!(rs.rng.niche.counter(), niche_before, "no second niche roll");
     // MysteriousKnight.AfterAddedToRoom applies Strength(6) + Plating(6).
     assert!(enemy_has_power(&combat, PowerKind::Strength));
     assert!(enemy_has_power(&combat, PowerKind::Plating));

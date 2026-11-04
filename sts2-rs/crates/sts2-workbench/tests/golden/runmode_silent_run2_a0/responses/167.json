@@ -10,7 +10,7 @@
   "bg_col": 0,
   "bg_row": 7,
   "bg_seed": 2,
-  "floor": 7,
+  "floor": 8,
   "step_no": 0,
   "turn": 6
  },
@@ -417,7 +417,7 @@
   "energy_image": "https://assets.test/sprite_fonts/silent_energy_icon.png",
   "exhaust_pile": [],
   "exhaust_pile_count": 0,
-  "floor": 7,
+  "floor": 8,
   "hand": [],
   "max_energy": 3,
   "options": [],

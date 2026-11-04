@@ -95,7 +95,7 @@ fn drive_run(seed: i32) -> RunSummary {
                     let c = combat?;
                     c.player.hand.iter().enumerate().find_map(|(i, uid)| {
                         let card = c.cards.get(uid.0.get() as usize - 1)?;
-                        let energy = i32::from(c.player.energy);
+                        let energy = c.player.energy;
                         let cost = sts2_core::hooks::effective_card_cost(c, *uid);
                         if cost >= 0 && cost <= energy && card.card_type == want {
                             Some(i)
@@ -107,7 +107,7 @@ fn drive_run(seed: i32) -> RunSummary {
                 use sts2_core::cards::CardType;
                 // Power-first only if we'd still have ≥1 energy left after
                 // (avoids burning whole turn-1 on Demon Form with no block).
-                let energy = i32::from(combat.map_or(0, |c| c.player.energy));
+                let energy = combat.map_or(0, |c| c.player.energy);
                 let power_idx = if energy >= 2 {
                     pick_by_type(CardType::Power)
                 } else {

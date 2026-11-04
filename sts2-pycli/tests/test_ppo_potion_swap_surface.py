@@ -205,8 +205,10 @@ def test_live_path_carries_the_offer_into_the_state_token(monkeypatch):
     `oc_env.is_some()`, so an OC table would resolve the swap rule-side and
     never yield it as a decision — the exact set this test needs to inspect.
 
-    Seed 5 is a known cover seed: with the flag on it produces exactly one
-    full-belt potion reward at A0 (re-censused 2026-08-26). If an engine
+    Seed 17 is a known cover seed: with the flag on it produces exactly one
+    full-belt potion reward at A0 (re-censused 2026-11-02: seed 17 is the
+    only swap over 0..20; seed 15 lost its swap to the #1054 round-5
+    parity fixes, seed 5 lost its swap earlier). If an engine
     change moves the cover this test fails loudly — re-derive it by censusing
     `potion_swap` over seeds 0..20 rather than deleting the assertion, because
     "no swap ever surfaced" is precisely the invisibility bug being closed
@@ -217,7 +219,7 @@ def test_live_path_carries_the_offer_into_the_state_token(monkeypatch):
     monkeypatch.setenv("STS2_RUNAI_POTION_SWAP", "1")
     monkeypatch.delenv("STS2_RUNAI_POTION_OC", raising=False)
 
-    env = PpoRunEnv(seed=5, expert=True)
+    env = PpoRunEnv(seed=17, expert=True)
     for out in env.expert_run():
         if isinstance(out, Terminal):
             break
@@ -243,7 +245,7 @@ def test_live_path_carries_the_offer_into_the_state_token(monkeypatch):
                 assert cat[3] == vocab.potions().index(belt[slot]), f"slot {slot}"
         return
 
-    pytest.fail("seed 5 no longer produces a potion swap — re-derive the cover seed")
+    pytest.fail("seed 17 no longer produces a potion swap — re-derive the cover seed")
 
 
 # --- the startup banner (GH #545) -------------------------------------------

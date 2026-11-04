@@ -308,6 +308,9 @@ pub(crate) const ASCENSION_TOUGH_BLOCK_SCALING: &[(MonsterKind, &str, i32, i32)]
     // (primary).
     (MonsterKind::MagiKnight, "FIRST_POWER_SHIELD", 5, 9),
     (MonsterKind::MagiKnight, "PREP", 5, 9),
+    // C# `Nibbit.cs:32,108` `SliceBlock => (.., 6, 5)`; secondary (head is
+    // the SingleAttack), granted by `nibbit_slice_effect`.
+    (MonsterKind::Nibbit, "SLICE", 5, 6),
     // C# `Seapunk.cs:38,86` `BubbleBlock => (.., 8, 7)`; secondary (the head
     // intent is the Buff), granted by `seapunk_bubble_burp_effect`. The grant
     // already read the A8 pair inline but the Defend telegraph kept 7 (GH #893).

@@ -2,7 +2,6 @@
 use super::prelude::*;
 
 /// `NeutronAegis` — apply 8 Plating to self.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L802
 pub(crate) fn play_neutron_aegis(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     // C# NeutronAegis.cs: PlatingPower 8, +3 on upgrade → 11. Bead `sts2-rs-rjnca`.
     let amount = if current_card_upgraded(state) { 11 } else { 8 };

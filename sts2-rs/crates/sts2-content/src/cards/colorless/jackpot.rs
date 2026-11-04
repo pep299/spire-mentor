@@ -57,7 +57,15 @@ pub(crate) fn play_jackpot(state: &mut CombatState, target: Option<CreatureUid>)
     // index vs C#. Defect isn't validated against C# yet and still uses its raw
     // slice (no cost-0 Basic/Ancient/Event/MultiplayerOnly card, so equivalent
     // here). Bead `sts2-rs-q6bix`.
+    let coop = crate::cards::pool_order::is_multiplayer(state);
     let mut pool: SmallVec<[CardSpec; 64]> = match state.player.character {
+        // Co-op (GH #991): the character's co-op pool, already in the build's
+        // values.
+        Some(c) if coop => super::helpers::fight_pool(state, c)
+            .iter()
+            .copied()
+            .filter(|s| s.cost == 0)
+            .collect(),
         Some(CharacterId::Ironclad) => {
             crate::cards::ironclad::specs::ironclad_combat_generatable_specs()
                 .into_iter()
@@ -106,7 +114,7 @@ pub(crate) fn play_jackpot(state: &mut CombatState, target: Option<CreatureUid>)
     // difference; the spawned card takes the build's values in
     // `spawn_card_into_hand`.
     let version = state.game_version;
-    if crate::cards::v0111::is_v0111(version) {
+    if !coop && crate::cards::v0111::is_v0111(version) {
         pool = pool
             .into_iter()
             .map(|s| crate::cards::v0111::pool_spec_of(s, version))

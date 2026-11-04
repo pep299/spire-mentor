@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
-import CommandPalette, { filterEntries, isPaletteChord, type PaletteEntry } from "./CommandPalette";
+import CommandPalette from "./CommandPalette";
+import { filterEntries, isPaletteChord, type PaletteEntry } from "./paletteEntries";
 
 const entries = (run = vi.fn()): PaletteEntry[] => [
   { id: "save", label: "Save", group: "Run", run },

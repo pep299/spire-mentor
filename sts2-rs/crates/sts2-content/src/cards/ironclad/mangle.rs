@@ -21,40 +21,39 @@ pub(crate) fn play_mangle(state: &mut CombatState, target: Option<CreatureUid>) 
     let _ = deal_damage_player_to_enemy(state, t, current_damage(state));
     // C# Mangle.cs OnUpgrade bumps StrengthLoss 10->15. Bead `sts2-rs-ja5qw`.
     let amt = if current_upgraded(state) { 15 } else { 10 };
-    // C# `PowerCmd.Apply<ManglePower>` first folds the amount through
-    // Artifact (`ModifyPowerAmountReceived` → zeroed if the target has
-    // Artifact, since ManglePower is a visible Debuff), THEN passes that
-    // already-modified amount to `ManglePower.BeforeApplied`, which applies
-    // `Sign * amount` (= `-amount`) Strength (`TemporaryStrengthPower.cs:123-131`,
-    // `PowerCmd.cs:92-93`). So Artifact suppresses BOTH the ManglePower
-    // instance and the internal `-Strength`. Mirror that by applying
-    // ManglePower (Artifact-aware) first and only applying the `-Strength`
-    // leg when the target has NO active Artifact to absorb the debuff (a
-    // zeroed ManglePower amount makes `Sign * amount = -0` a no-op).
-    // Bead `sts2-rs-q6bix`.
-    let absorbed_by_artifact = target_has_active_artifact(state, t);
+    // C# `PowerCmd.Apply<ManglePower>` folds the amount through
+    // `ModifyPowerAmountGiven` (Unsettling Lamp x2) and
+    // `ModifyPowerAmountReceived` (Artifact zeroes the visible Debuff), THEN
+    // passes that modified amount to `ManglePower.BeforeApplied`, which applies
+    // `Sign * amount` (= `-amount`) Strength (PowerCmd.cs:129-136 v0.111.0,
+    // TemporaryStrengthPower.cs:134-136; a stack goes through
+    // `AfterPowerAmountChanged` with the same delta, :139-143). So the Strength
+    // leg equals the ManglePower amount that actually LANDED: 0 under Artifact,
+    // twice the base under the Lamp (whose `HasDoubledTemporaryPowerSource`
+    // skips the inner Strength, UnsettlingLamp.cs:169). Drain that delta.
+    let before = mangle_power_amount(state, t);
     apply_power_to_enemy(state, t, PowerKind::ManglePower, amt);
-    if !absorbed_by_artifact {
-        // BeforeApplied: -StrengthLoss Strength to the target (signed apply,
-        // since `apply_power_to_enemy` rejects non-positive amounts).
-        apply_power_signed_to_creature(state, t, PowerKind::Strength, -amt);
+    let landed = mangle_power_amount(state, t) - before;
+    if landed > 0 {
+        // Signed apply, since `apply_power_to_enemy` rejects non-positive
+        // amounts.
+        apply_power_signed_to_creature(state, t, PowerKind::Strength, -landed);
     }
     EffectResult::Resolved
 }
 
-/// True if `target` currently has an Artifact stack (`amount > 0`) that will
-/// absorb the ManglePower debuff — mirroring the gate in
-/// `card_effects::try_consume_artifact_for_debuff`.
-fn target_has_active_artifact(state: &CombatState, target: CreatureUid) -> bool {
+/// The target's current ManglePower amount (0 when absent).
+fn mangle_power_amount(state: &CombatState, target: CreatureUid) -> i32 {
     let Some(creature) = state.creatures.iter().find(|c| c.id == target.0) else {
-        return false;
+        return 0;
     };
-    creature.powers.iter().any(|uid| {
-        state
-            .powers
-            .iter()
-            .any(|p| p.id == uid.0 && p.kind == PowerKind::Artifact && p.amount > 0)
-    })
+    creature
+        .powers
+        .iter()
+        .filter_map(|uid| state.powers.get_by_id(uid.0))
+        .filter(|p| p.kind == PowerKind::ManglePower)
+        .map(|p| p.amount)
+        .sum()
 }
 
 #[must_use]

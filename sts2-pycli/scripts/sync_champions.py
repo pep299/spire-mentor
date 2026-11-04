@@ -156,7 +156,9 @@ def _rustfmt(text: str) -> str:
             ],
             input=text,
             capture_output=True,
-            text=True,
+            # utf-8 explicitly: Windows' default cp1252 mangles net.rs's "—",
+            # rustfmt rejects the stream, and the raw one-line arm came back.
+            encoding="utf-8",
             check=False,
         )
     except OSError:

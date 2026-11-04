@@ -1,29 +1,5 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-
-export type EffectsMode = "full" | "reduced" | "off";
-
-export function resolveMode(opts: { toggle: EffectsMode; autoplaying: boolean; reducedMotion: boolean }): EffectsMode {
-  if (opts.toggle === "off") return "off";
-  // Autoplay/fast-step: keep attack/hurt/death cues playing but calm the big
-  // motion (screen shake) — the loop is paced by the per-action server round
-  // trip, so the one-shots are watchable. Set the fx toggle to "off" for a
-  // truly silent fast-step.
-  if (opts.autoplaying) return "reduced";
-  if (opts.reducedMotion) return "reduced"; // still show informative cues; motion is calmed
-  return opts.toggle;
-}
-
-interface EffectsValue {
-  mode: EffectsMode;
-  toggle: EffectsMode;
-  setToggle: (m: EffectsMode) => void;
-}
-
-const Ctx = createContext<EffectsValue>({ mode: "full", toggle: "full", setToggle: () => {} });
-
-export function useEffectsMode(): EffectsValue {
-  return useContext(Ctx);
-}
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { resolveMode, EffectsCtx, type EffectsMode } from "./useEffectsMode";
 
 export function EffectsProvider({ autoplaying, children }: { autoplaying: boolean; children: ReactNode }) {
   const [toggle, setToggle] = useState<EffectsMode>("full");
@@ -38,5 +14,5 @@ export function EffectsProvider({ autoplaying, children }: { autoplaying: boolea
   }, []);
   const mode = resolveMode({ toggle, autoplaying, reducedMotion });
   const value = useMemo(() => ({ mode, toggle, setToggle }), [mode, toggle]);
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+  return <EffectsCtx.Provider value={value}>{children}</EffectsCtx.Provider>;
 }

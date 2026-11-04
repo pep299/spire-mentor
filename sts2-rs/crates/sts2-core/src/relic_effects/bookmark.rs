@@ -34,7 +34,7 @@ pub(crate) fn on_after_turn_end_bookmark(state: &mut CombatState, side: Side) ->
         .copied()
         .filter(|uid| {
             crate::card_by_uid(&state.cards, *uid).is_some_and(|c| {
-                c.cost > 0
+                i32::from(c.cost) - c.combat_var(crate::cards::VarKey::CostReductionUntilPlayed) > 0
                     && !c.is_x_cost()
                     && (c.local_energy_cost.is_some()
                         || c.combat_var(crate::cards::VarKey::FreeThisTurn) == 0)
@@ -51,7 +51,7 @@ pub(crate) fn on_after_turn_end_bookmark(state: &mut CombatState, side: Side) ->
         .combat_card_selection
         .next_int_exclusive(0, eligible.len() as i32) as usize];
     if let Some(card) = crate::card_by_uid_mut(&mut state.cards, chosen) {
-        card.reduce_cost_until_played(1);
+        card.add_cost_reduction_until_played(1);
     }
     EffectResult::Resolved
 }

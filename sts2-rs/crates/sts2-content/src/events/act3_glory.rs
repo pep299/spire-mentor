@@ -1,7 +1,5 @@
 //! Act3-pool event specs. Bead `sts2-rs-6ynt.4.3`.
 //!
-//! Port pin: `sts2-rl-agent@01c094d:sts2_env/events/act3.py`.
-//!
 //! All 5 act3 events have `is_allowed = False` in Python — none spawn
 //! from the random room-roll. They are reachable only via special
 //! game logic:
@@ -147,13 +145,22 @@ fn war_historian_unlock_cage(state: &mut RunState) {
 /// The potions are rolled here rather than left as `Reward::Potion` sentinels:
 /// a sentinel rolls when the queue drains, which is after the relic rolls
 /// below, and that reverses C#'s order on the shared Rewards stream.
+///
+/// Each potion is its own `PotionReward`, so each `Populate` is a separate
+/// count-1 `CreateRandomPotionOutOfCombat` over the full pool
+/// (`PotionReward.cs:54-61`, `PotionFactory.cs:30-33`): the two can repeat,
+/// and the first pick is never removed from the second roll's pool.
 fn war_historian_unlock_chest(state: &mut RunState) {
     let character = state.character_id;
-    let potions = crate::potions::all::create_random_potions_out_of_combat(
-        &mut state.rng.rewards,
-        character,
-        WAR_HISTORIAN_CHEST_POTIONS,
-    );
+    let potions: Vec<_> = (0..WAR_HISTORIAN_CHEST_POTIONS)
+        .flat_map(|_| {
+            crate::potions::all::create_random_potions_out_of_combat(
+                &mut state.rng.rewards,
+                character,
+                1,
+            )
+        })
+        .collect();
     let relics: Vec<RelicId> = (0..WAR_HISTORIAN_CHEST_RELICS)
         .map(|_| {
             let rarity = state.roll_reward_relic_rarity();
@@ -512,6 +519,50 @@ mod tests {
         rs
     }
 
+    /// C# `UnlockChest`'s potions: two independent `PotionReward`s, each
+    /// `Populate`d by its own `CreateRandomPotionOutOfCombat` (count 1) on a
+    /// fresh full pool (`PotionReward.cs:54-61`, `PotionFactory.cs:30-33`).
+    fn independent_chest_potion_rolls(
+        rng: &mut sts2_core::DotNetRng,
+        character: sts2_core::CharacterId,
+    ) -> Vec<sts2_core::PotionKind> {
+        (0..WAR_HISTORIAN_CHEST_POTIONS)
+            .flat_map(|_| {
+                crate::potions::all::create_random_potions_out_of_combat(rng, character, 1)
+            })
+            .collect()
+    }
+
+    /// The two chest potions roll independently, so they can repeat and the
+    /// second is never shifted by removing the first from the pool (C#
+    /// `CreateRandomPotions` removes picks only from its own per-call list).
+    /// Rolling both in one `count = 2` call gave Ironclad seed 2055 Blood +
+    /// Dexterity where C# had Blood + Colorless.
+    #[test]
+    fn war_historian_repy_unlock_chest_potions_roll_independently() {
+        let mut saw_pool_removal_shift = false;
+        for burn in 0..256 {
+            let mut rs = war_historian_rs(1);
+            for _ in 0..burn {
+                let _ = rs.rng.rewards.next_float(1.0);
+            }
+            let character = rs.character_id;
+            let expected = independent_chest_potion_rolls(&mut rs.rng.rewards.clone(), character);
+            let one_call = crate::potions::all::create_random_potions_out_of_combat(
+                &mut rs.rng.rewards.clone(),
+                character,
+                WAR_HISTORIAN_CHEST_POTIONS,
+            );
+            saw_pool_removal_shift |= expected != one_call;
+            let _ = super::super::dispatch::resolve_by_index(&mut rs, 1).unwrap();
+            assert_eq!(rs.potions, expected, "burn {burn}");
+        }
+        assert!(
+            saw_pool_removal_shift,
+            "no stream state separates the two rollings; the test cannot discriminate"
+        );
+    }
+
     fn lantern_keys(rs: &RunState) -> usize {
         rs.master_deck
             .iter()
@@ -567,11 +618,7 @@ mod tests {
     fn war_historian_repy_unlock_chest_rolls_two_potions_then_two_relics() {
         let mut rs = war_historian_rs(1);
         let mut rewards = rs.rng.rewards.clone();
-        let expected_potions = crate::potions::all::create_random_potions_out_of_combat(
-            &mut rewards,
-            rs.character_id,
-            WAR_HISTORIAN_CHEST_POTIONS,
-        );
+        let expected_potions = independent_chest_potion_rolls(&mut rewards, rs.character_id);
         let relics_before = rs.relics.len();
         let outcome = super::super::dispatch::resolve_by_index(&mut rs, 1).unwrap();
         assert!(outcome.finished);

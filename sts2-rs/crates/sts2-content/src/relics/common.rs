@@ -1,4 +1,3 @@
-// Ported from sts2-rl-agent@01c094d:sts2_env/relics/common.py
 //! Common-tier relic factories — bead `sts2-rs-evs` (P7-2).
 //!
 //! Ports the 30 common relics from
@@ -382,12 +381,10 @@ pub fn install_pool() {
         listener_fencing_manual as AfterSideTurnStartFn,
     );
     // Bead `sts2-rs-78l88`: real `modify_unknown_map_point_room_types`
-    // listener for JuzuBracelet. Removes `RoomType::Monster` from the
-    // `?`-room candidate set while the run is "before act-3 treasure
-    // chest" — Python's `is_before_act3_treasure_chest(run_state)`
-    // returns `total_floor < 41` (single-player). Unblocked by
-    // sts2-rs-2c0ze (added `RunState.total_floor`) + sts2-rs-vuxmm
-    // (channel). Channel is the same one GoldenCompass uses
+    // listener for JuzuBracelet — drops `RoomType::Monster` from the
+    // `?`-room candidate set. Ungated: C#'s `IsBeforeAct3TreasureChest`
+    // is only the relic's `IsAllowed` grab-bag gate, not part of the hook
+    // (`JuzuBracelet.cs:12`). Channel is the same one GoldenCompass uses
     // (sts2-rs-k2nuu); ordering between the two is RelicId-sorted
     // by the registry but observationally either order produces the
     // same fixed-point set since GoldenCompass narrows to {Event}
@@ -413,22 +410,6 @@ pub fn install_pool() {
     register_after_obtained(RelicId::WarPaint, listener_war_paint as AfterObtainedRunFn);
 }
 
-/// Single-player `is_before_act3_treasure_chest` threshold. Mirrors
-/// Python `relics/base.py::RelicInstance.is_before_act3_treasure_chest`:
-///
-/// ```python
-/// threshold = 38 if len(getattr(run_state, "players", [])) > 1 else 41
-/// return getattr(run_state, "total_floor", 0) < threshold
-/// ```
-///
-/// The Rust port is single-player at this pin so the 41 branch is
-/// the only one used. Bead `sts2-rs-78l88`. Hoisted as a top-level
-/// `const` so future relics that hit the same gate (JuzuBracelet
-/// here; rare/event-pool relics in `shop_event.rs` per the audit
-/// note in `tests/parity/known_divergences.md`) can re-use it
-/// without duplicating the magic number.
-const IS_BEFORE_ACT3_TREASURE_CHEST_TOTAL_FLOOR_SP: i32 = 41;
-
 /// `JuzuBracelet::modify_unknown_map_point_room_types` — Python pin
 /// `relics/common.py::JuzuBracelet`:
 ///
@@ -440,18 +421,17 @@ const IS_BEFORE_ACT3_TREASURE_CHEST_TOTAL_FLOOR_SP: i32 = 41;
 ///     return {rt for rt in room_types if rt is not RoomType.MONSTER}
 /// ```
 ///
-/// Owner-gated via `rs.relics.contains` and run-gated via the
-/// `is_before_act3_treasure_chest` (total_floor < 41) check. When
-/// both gates pass, drops `RoomType::Monster` from the in-flight
-/// candidate set.
+/// Owner-gated via `rs.relics.contains`; drops `RoomType::Monster` from
+/// the in-flight candidate set at every floor. The Python pin's
+/// `is_allowed` floor check is the grab-bag gate
+/// ([`sts2_core::runstate::relic_is_allowed_at`]), not part of the hook:
+/// C# `JuzuBracelet.ModifyUnknownMapPointRoomTypes` (`JuzuBracelet.cs:12`)
+/// removes Monster unconditionally.
 fn listener_juzu_bracelet(
     rs: &mut RunState,
     room_types: &mut std::collections::BTreeSet<RoomType>,
 ) -> EffectResult {
     if !rs.owns_active_relic(RelicId::JuzuBracelet) {
-        return EffectResult::NotImplemented;
-    }
-    if rs.total_floor >= IS_BEFORE_ACT3_TREASURE_CHEST_TOTAL_FLOOR_SP {
         return EffectResult::NotImplemented;
     }
     let removed = room_types.remove(&RoomType::Monster);
@@ -2051,8 +2031,8 @@ mod tests {
         let before = state.player.energy;
         let _ = sts2_core::relic_effects::dispatch_after_energy_reset(&mut state);
         assert_eq!(
-            i32::from(state.player.energy),
-            i32::from(before) + VENERABLE_TEA_SET_ENERGY,
+            state.player.energy,
+            before + VENERABLE_TEA_SET_ENERGY,
             "+2 energy on latched consume"
         );
         let consumed_idx = state
@@ -2518,6 +2498,34 @@ mod tests {
         assert!(rewards.iter().all(|r| matches!(r, Reward::Potion(_))));
     }
 
+    /// Tiny Mailbox + Sozu: a rest-site heal still QUEUES both empty potion
+    /// rewards. C# `RewardsCmd.OfferCustom` -> `RewardsSet.GenerateWithoutOffering`
+    /// (v0.111.0 `RewardsSet.cs:128-150`) Populates every reward unconditionally,
+    /// and `PotionReward.Populate` (`PotionReward.cs:54-61`) rolls the potion on
+    /// `PlayerRng.Rewards`; Sozu's veto only bites later in `OnSelect` ->
+    /// `PotionCmd.TryToProcure`. Vetoing at queue time skipped the roll and left
+    /// the rewards stream 4 draws behind (Ironclad seed 2177 act 2).
+    #[test]
+    fn rest_site_heal_queues_tiny_mailbox_potions_under_sozu() {
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.max_hp = 80;
+        rs.current_hp = 40;
+        rs.relics.push(RelicId::TinyMailbox);
+        rs.relics.push(RelicId::Sozu);
+        rs.pending_rewards.clear();
+        let _ = rs.rest_site_heal(24);
+        let potions = rs
+            .pending_rewards
+            .iter()
+            .filter(|r| matches!(r, Reward::Potion(_)))
+            .count();
+        assert_eq!(
+            potions, 2,
+            "both rewards must reach the drain so they roll on the Rewards stream"
+        );
+    }
+
     /// No-op when the relic is not owned: rewards list untouched.
     #[test]
     fn listener_tiny_mailbox_is_noop_without_ownership() {
@@ -2766,8 +2774,10 @@ mod tests {
         assert_eq!(room_types.len(), 4, "only Monster removed");
     }
 
+    /// C# applies the hook at every floor (`JuzuBracelet.cs:12`) — past the
+    /// act-3 treasure too; only the grab-bag `IsAllowed` is floor-gated.
     #[test]
-    fn listener_juzu_bracelet_noop_at_or_past_threshold() {
+    fn listener_juzu_bracelet_still_drops_monster_in_late_act3() {
         use sts2_core::run_effects::dispatch_modify_unknown_map_point_room_types;
         crate::relics::dispatch::ensure_installed();
 
@@ -2779,8 +2789,8 @@ mod tests {
         let _ = dispatch_modify_unknown_map_point_room_types(&mut rs, &mut room_types);
 
         assert!(
-            room_types.contains(&RoomType::Monster),
-            "at threshold the gate must be closed → Monster stays"
+            !room_types.contains(&RoomType::Monster),
+            "the hook is not floor-gated → Monster still removed"
         );
     }
 

@@ -14,7 +14,7 @@
 //! hint, search tree, choice ranker — are one seeded search over the same
 //! engine state through the same emitter on both hosts, so they are hashed
 //! like everything else. The routes in [`STRUCTURAL_ROUTES`] cannot match by
-//! hash on purpose: the regret routes re-score the parent's NATIVE snapshot
+//! hash on purpose: the regret review re-scores each parent's NATIVE snapshot
 //! where Python re-scores a lossy wire dict, and "play best" off combat asks
 //! the Rust `HeuristicPolicy` where Python asks its own `run_policy`. Those
 //! are held to status + top-level key shape (when the body was stored).
@@ -60,7 +60,6 @@ const ASSETS_BASE: &str = "https://assets.test";
 /// module docs for why each cannot be bit-exact).
 const STRUCTURAL_ROUTES: &[&str] = &[
     "/api/live/auto-action",
-    "/api/live/last-move-regret",
     "/api/live/regret-review",
     // M4 replay: host paths / mtimes, and the exact-state re-searches.
     "/api/runs",
@@ -181,15 +180,27 @@ struct SaveStore {
 }
 
 impl SaveStore {
+    /// Store every run log the last request wrote (a quit's, or the one a
+    /// start / import / resume / save-load wrote for the run it replaced). A
+    /// taken name gets `_2`, `_3`, … (the worker's `storeRunLogs`, Python's
+    /// `GameLogger`).
+    fn collect_logs(&mut self, wb: &mut Workbench) {
+        while let Some(log) = wb.take_run_log() {
+            let stem = log.filename.trim_end_matches(".jsonl").to_string();
+            let mut name = log.filename;
+            for n in 2.. {
+                if !self.runs.iter().any(|(r, _)| *r == name) {
+                    break;
+                }
+                name = format!("{stem}_{n}.jsonl");
+            }
+            self.runs.push((name, log.text));
+        }
+    }
+
     fn route(&mut self, wb: &mut Workbench, req: &Req) -> Option<Result<Value, ApiError>> {
         match (req.method.as_str(), route_path(&req.route)) {
-            ("POST", "/api/live/quit") => {
-                let out = wb.call("POST", "/api/live/quit", &req.body);
-                if let Some(log) = wb.take_run_log() {
-                    self.runs.push((log.filename, log.text));
-                }
-                Some(out)
-            }
+            ("POST", "/api/live/quit") => Some(wb.call("POST", "/api/live/quit", &req.body)),
             ("GET", "/api/runs") => {
                 let mut names: Vec<&String> = self.runs.iter().map(|(n, _)| n).collect();
                 names.reverse();
@@ -228,7 +239,9 @@ impl SaveStore {
                 let name = req.body.get("name").and_then(Value::as_str).unwrap_or("");
                 Some(match self.saves.get(&slugify(name)) {
                     None => Err(ApiError::new(404, format!("unknown save: {name}"))),
-                    Some(payload) => wb.restore_save(&payload.clone()),
+                    Some(payload) => {
+                        wb.restore_save(&payload.clone(), sts2_workbench::runlog::DEFAULT_NOW_ISO)
+                    }
                 })
             }
             _ => None,
@@ -324,6 +337,7 @@ fn replay_scenario(dir: &Path) -> Vec<String> {
         let result = store
             .route(&mut wb, &req)
             .unwrap_or_else(|| wb.call(&req.method, &req.route, &req.body));
+        store.collect_logs(&mut wb);
         let (status, body) = match result {
             Ok(b) => (200_u16, b),
             Err(e) => (e.status, e.body()),
@@ -350,14 +364,6 @@ fn replay_scenario(dir: &Path) -> Vec<String> {
                     py_keys
                         .as_ref()
                         .is_none_or(|py| rust_keys.iter().all(|k| py.contains(k))),
-                ),
-                // The coach assesses every move the oracle does and more:
-                // Python's wire round-trip loses a potion's slot and can lose
-                // the played card, and then answers 409 where the native
-                // snapshot scores the move. Never the reverse.
-                "/api/live/last-move-regret" => (
-                    status == req.status || (req.status == 409 && status == 200),
-                    status != req.status || py_keys.as_ref().is_none_or(|py| *py == rust_keys),
                 ),
                 _ => (
                     status == req.status,

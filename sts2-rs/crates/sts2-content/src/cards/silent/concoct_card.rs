@@ -9,11 +9,11 @@ use super::prelude::*;
 /// `AnyAlly`: C# `CardModel.CanPlay` (`CardModel.cs:1742`) makes it
 /// unplayable without a living ally, which single-player never has
 /// (`card_effects::card_is_any_ally`), so this handler does not run in SP.
-pub(crate) fn play_concoct(_state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
-    // C# `PowerCmd.Apply<ConcoctPower>(cardPlay.Target, 3 (upg 4))` — all of it lands on the co-op teammate
-    // (`cardPlay.Target`), whose turn is not simulated, so playing it
-    // changes nothing here but the energy and the card's own pile move.
-    // Unplayable without a living teammate (`card_is_any_ally`).
+pub(crate) fn play_concoct(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
+    // C# `PowerCmd.Apply<ConcoctPower>(cardPlay.Target, 3 (upg 4))`: the
+    // teammate's powered attacks poison until the enemy turn ends.
+    let amount = if current_card_upgraded(state) { 4 } else { 3 };
+    sts2_core::coop::apply_power_to_card_target(state, PowerKind::Concoct, amount);
     EffectResult::Resolved
 }
 

@@ -4,7 +4,6 @@ use super::prelude::*;
 /// Prophesize — draw `CardsVar` cards (6 base, 9 upgraded).
 /// C# `Prophesize.cs:OnUpgrade` UpgradeValueBy 3 on `Cards`. Bead
 /// `sts2-rs-se2kx`.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L475
 pub(crate) fn play_prophesize(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     let draws = if current_card_upgraded(state) { 9 } else { 6 };
     let _ = sts2_core::cards::draw_via_state(state, draws);

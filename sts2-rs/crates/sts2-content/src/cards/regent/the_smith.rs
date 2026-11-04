@@ -5,7 +5,6 @@ use super::prelude::*;
 ///   CanonicalVars = [ForgeVar(30)];
 ///   OnUpgrade: base.DynamicVars.Forge.UpgradeValueBy(10m);
 /// Bead `sts2-rs-w8a3s`.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L832
 pub(crate) fn play_the_smith(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     let forge = if current_card_upgraded(state) { 40 } else { 30 };
     let _ = forge_from_card(state, forge);

@@ -1,11 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, it, expect } from "vitest";
-import {
-  DecisionAnalyzeButton,
-  DecisionWinChip,
-  useDecisionAdvisor,
-  type DecisionAdvisorState,
-} from "../DecisionAdvisor";
+import { DecisionAnalyzeButton, DecisionWinChip } from "../DecisionAdvisor";
+import { useDecisionAdvisor, type DecisionAdvisorState } from "../useDecisionAdvisor";
 import { HintsFixture } from "../../hints/HintsContext";
 import { type DecisionAdvisorCandidate } from "../../api";
 

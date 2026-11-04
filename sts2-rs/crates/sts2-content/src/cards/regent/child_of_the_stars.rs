@@ -5,7 +5,6 @@ use super::prelude::*;
 /// per-star block listener body already exists in
 /// `crates/sts2-core/src/powers/regent.rs`; dispatcher wiring lives
 /// under `sts2-rs-jxz`.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L315
 pub(crate) fn play_child_of_the_stars(
     state: &mut CombatState,
     _t: Option<CreatureUid>,

@@ -16,7 +16,7 @@
    "bg_col": null,
    "bg_row": null,
    "bg_seed": "11180935036767329045",
-   "floor": 0,
+   "floor": 1,
    "step_no": 0,
    "turn": null
   },
@@ -294,7 +294,7 @@
    ],
    "context": "upgrade",
    "decision": "card_select",
-   "floor": 0,
+   "floor": 1,
    "game_version": "v0.111.0",
    "max_select": 1,
    "min_select": 1,

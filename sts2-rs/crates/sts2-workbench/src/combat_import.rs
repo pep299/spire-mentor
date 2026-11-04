@@ -364,7 +364,18 @@ fn translate_card(
     if let Some(v) = int_of(resolved) {
         spec.insert("cost_override".into(), json!(v));
     }
-    for key in ["base_cost", "persistent_cost", "played_cost", "stable_cost"] {
+    // The layered energy costs, then their STAR twins (C# `CurrentStarCost` /
+    // `GetStarCostThisCombat`): `SetToFreeThisTurn` zeroes both currencies, so
+    // without the star pair a Splash'd Regent star card imports free in energy
+    // but at its printed star cost, unplayable for a star-less character.
+    for key in [
+        "base_cost",
+        "persistent_cost",
+        "played_cost",
+        "stable_cost",
+        "star_cost",
+        "persistent_star_cost",
+    ] {
         if let Some(v) = int_of(card.get(key)) {
             spec.insert(key.into(), json!(v));
         }

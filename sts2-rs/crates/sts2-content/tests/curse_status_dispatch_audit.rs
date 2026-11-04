@@ -314,6 +314,29 @@ fn dazed_ethereal_expel_lands_in_exhaust() {
     );
 }
 
+/// Folly (UNPLAYABLE + ETERNAL + INNATE + ETHEREAL, `Folly.cs` in both
+/// v0.107.1 and v0.111.0). Its spec was missing ETHEREAL, so Rust discarded
+/// it at end of turn where C# exhausts it (Regent 1006 / Necrobinder 1017,
+/// GH #1054 round 5). Eternal only blocks deck removal, not the expel.
+#[test]
+fn folly_ethereal_expel_lands_in_exhaust() {
+    content_dispatch::ensure_installed();
+    let (mut state, _e) = fresh_state_with_enemy();
+    let folly_uid = push_card(&mut state, CardId::Folly, -1, PileKind::Hand);
+
+    arm_end_turn_phase_two(&mut state);
+    let _ = sts2_core::combat_loop::end_player_turn_phase_two(&mut state);
+
+    assert!(
+        state.player.exhaust.contains(&folly_uid),
+        "Folly (ETHEREAL) must land in exhaust at end-of-turn",
+    );
+    assert!(
+        !state.player.discard.contains(&folly_uid),
+        "Folly (ETHEREAL) must NOT land in discard",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Exhaust-on-play (sub-bead sts2-rs-6ynt.3.4)
 //

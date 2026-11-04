@@ -48,10 +48,11 @@ public class SimRewardsScreenHandler : IScreenHandler, IHandler
             ct.ThrowIfCancellationRequested();
 
             List<NRewardButton> claimable = ClaimableRewards(screen, claimed);
+            List<NRewardButton> blocked = FullBeltPotionRewards(screen, claimed);
             NProceedButton? proceed = UiHelper.FindFirst<NProceedButton>(screen);
 
             // Nothing left to take: leaving is the only move, so it is not asked.
-            if (claimable.Count == 0)
+            if (claimable.Count == 0 && blocked.Count == 0)
             {
                 if (proceed != null)
                     await ProceedAndCloseAsync(screen, proceed, ct);
@@ -59,9 +60,9 @@ public class SimRewardsScreenHandler : IScreenHandler, IHandler
                 return;
             }
 
-            RewardScreenChoice choice = await ChooseRewardScreenOption(claimable, proceed, ct);
+            RewardOptionSlot choice = await ChooseRewardScreenOption(claimable, blocked, proceed, ct);
 
-            if (choice.ShouldProceed)
+            if (choice.Kind == RewardOptionKind.Proceed)
             {
                 if (proceed != null)
                     await ProceedAndCloseAsync(screen, proceed, ct);
@@ -69,7 +70,25 @@ public class SimRewardsScreenHandler : IScreenHandler, IHandler
                 return;
             }
 
-            NRewardButton button = choice.Button!;
+            NRewardButton button;
+            if (choice.Kind == RewardOptionKind.Pick)
+            {
+                button = claimable[choice.Button];
+            }
+            else
+            {
+                button = blocked[choice.Button];
+                if (choice.Kind == RewardOptionKind.SwapDecline)
+                {
+                    // Left on the screen, as a player who walks past it. Not
+                    // offered again on this screen.
+                    claimed.Add(button);
+                    AutoSlayLog.Action($"Rewards: leaving {RewardLabel(button)} (belt full)");
+                    continue;
+                }
+                await DiscardForSwapAsync(choice.DiscardSlot, ct);
+            }
+
             claimed.Add(button);
             AutoSlayLog.Action($"Clicking reward button: {RewardLabel(button)}");
             await UiHelper.Click(button);
@@ -85,6 +104,21 @@ public class SimRewardsScreenHandler : IScreenHandler, IHandler
     }
 
     /// <summary>
+    /// Frees belt slot <paramref name="slot"/> for a full-belt potion reward:
+    /// the discard the game's potion popup offers on the reward screen
+    /// (PotionCmd.Discard). The reward's click then procures into that slot,
+    /// the first free one.
+    /// </summary>
+    private static async Task DiscardForSwapAsync(int slot, CancellationToken ct)
+    {
+        Player? me = LocalContext.GetMe(RunManager.Instance.DebugOnlyGetState());
+        if (me == null)
+            return;
+        AutoSlayLog.Action($"Rewards: discarding potion slot {slot} to make room");
+        await SimCombatHandler.DiscardPotionAndWaitAsync(me, slot, ct);
+    }
+
+    /// <summary>
     /// Enabled reward buttons not yet clicked by this handler. Potions are
     /// only claimable when the player can take them (free slot, no Sozu).
     /// </summary>
@@ -95,6 +129,23 @@ public class SimRewardsScreenHandler : IScreenHandler, IHandler
         return UiHelper.FindAll<NRewardButton>(screen)
             .Where(b => b.IsEnabled && !claimed.Contains(b))
             .Where(b => b.Reward is not PotionReward pr || (me != null && SimPotionRules.CanProcure(me, pr.Potion)))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Potion rewards that only a full belt blocks (GH #1069). Discarding a
+    /// held potion makes them claimable, so they are offered as a swap. A
+    /// potion a hook refuses (Sozu) stays hidden: no discard helps.
+    /// </summary>
+    private static List<NRewardButton> FullBeltPotionRewards(
+        NRewardsScreen screen, HashSet<NRewardButton> claimed)
+    {
+        Player? me = LocalContext.GetMe(RunManager.Instance.DebugOnlyGetState());
+        if (me == null)
+            return new List<NRewardButton>();
+        return UiHelper.FindAll<NRewardButton>(screen)
+            .Where(b => b.IsEnabled && !claimed.Contains(b))
+            .Where(b => b.Reward is PotionReward pr && SimPotionRules.BlockedOnlyByFullBelt(me, pr.Potion))
             .ToList();
     }
 
@@ -117,31 +168,53 @@ public class SimRewardsScreenHandler : IScreenHandler, IHandler
     }
 
     /// <summary>
-    /// Asks the agent which reward to take. Index i &lt; count picks reward i;
-    /// index == count picks the trailing "proceed" option, which is only
-    /// offered while the proceed button is enabled. Proceed is re-checked for
-    /// every ask and again when the reply arrives.
+    /// Asks the agent what to do next. The options follow
+    /// <see cref="RewardSwapLayout"/>: each claimable reward, then a decline
+    /// option and one discard option per belt slot for every full-belt potion
+    /// reward, then the trailing "proceed", which is only offered while the
+    /// proceed button is enabled. Proceed is re-checked for every ask and
+    /// again when the reply arrives.
     /// </summary>
-    private static async Task<RewardScreenChoice> ChooseRewardScreenOption(
-        List<NRewardButton> buttons, NProceedButton? proceed, CancellationToken ct)
+    private static async Task<RewardOptionSlot> ChooseRewardScreenOption(
+        List<NRewardButton> buttons, List<NRewardButton> blocked, NProceedButton? proceed, CancellationToken ct)
     {
+        Player? me = LocalContext.GetMe(RunManager.Instance.DebugOnlyGetState());
+        List<string?> belt = me?.PotionSlots.Select(p => p?.Id.Entry).ToList() ?? new List<string?>();
+        List<RewardOptionSlot> layout = RewardSwapLayout.Build(
+            buttons.Count, blocked.Select(_ => belt.Count).ToList(), proceed != null);
         bool proceedOffered = false;
 
         int index = await SimAgentChoice.AskAsync(
             (_, _) =>
             {
-                List<Dictionary<string, object>> options = buttons.Select((b, i) => RewardOption(b, i)).ToList();
-                proceedOffered = ProceedEnabled(proceed);
-                if (proceedOffered)
+                var options = new List<object>();
+                for (int i = 0; i < layout.Count; i++)
                 {
-                    options.Add(new Dictionary<string, object>
+                    RewardOptionSlot slot = layout[i];
+                    switch (slot.Kind)
                     {
-                        ["index"] = buttons.Count,
-                        ["id"] = NonCombatBridgeProtocol.ProceedAction,
-                        ["action"] = NonCombatBridgeProtocol.ProceedAction,
-                        ["label"] = NonCombatBridgeProtocol.ProceedAction,
-                        ["enabled"] = true,
-                    });
+                        case RewardOptionKind.Pick:
+                            options.Add(RewardOption(buttons[slot.Button], i));
+                            break;
+                        case RewardOptionKind.SwapDecline:
+                        case RewardOptionKind.Swap:
+                            options.Add(SwapOption(blocked[slot.Button], slot, belt, i));
+                            break;
+                        case RewardOptionKind.Proceed:
+                            proceedOffered = ProceedEnabled(proceed);
+                            if (proceedOffered)
+                            {
+                                options.Add(new Dictionary<string, object>
+                                {
+                                    ["index"] = i,
+                                    ["id"] = NonCombatBridgeProtocol.ProceedAction,
+                                    ["action"] = NonCombatBridgeProtocol.ProceedAction,
+                                    ["label"] = NonCombatBridgeProtocol.ProceedAction,
+                                    ["enabled"] = true,
+                                });
+                            }
+                            break;
+                    }
                 }
                 return new Dictionary<string, object>
                 {
@@ -149,13 +222,40 @@ public class SimRewardsScreenHandler : IScreenHandler, IHandler
                     ["options"] = options,
                 };
             },
-            proceed != null ? buttons.Count + 1 : buttons.Count,
+            layout.Count,
             NonCombatBridgeProtocol.RewardScreenState, "SimRewards", ct,
-            rejectAtReply: i => i == buttons.Count && !(proceedOffered && ProceedEnabled(proceed))
+            rejectAtReply: i => layout[i].Kind == RewardOptionKind.Proceed && !(proceedOffered && ProceedEnabled(proceed))
                 ? $"index {i} (proceed) is not enabled"
                 : null);
 
-        return index < buttons.Count ? RewardScreenChoice.Pick(buttons[index]) : RewardScreenChoice.Proceed;
+        return layout[index];
+    }
+
+    /// <summary>
+    /// One option of a full-belt potion's swap group. Shaped like the sim's
+    /// `potion_swap` decision option: `discard_slot` null declines, slot k
+    /// discards the held potion there. `reward_button` tells groups apart
+    /// when two potion rewards are blocked.
+    /// </summary>
+    private static Dictionary<string, object?> SwapOption(
+        NRewardButton button, RewardOptionSlot slot, List<string?> belt, int index)
+    {
+        bool decline = slot.Kind == RewardOptionKind.SwapDecline;
+        string label = decline
+            ? "decline"
+            : $"discard {belt[slot.DiscardSlot] ?? "empty"}";
+        return new Dictionary<string, object?>
+        {
+            ["index"] = index,
+            ["id"] = RewardLabel(button),
+            ["action"] = NonCombatBridgeProtocol.PotionSwapAction,
+            ["label"] = label,
+            ["description"] = RewardDescription(button),
+            ["enabled"] = true,
+            ["reward"] = RewardDetail(button),
+            ["reward_button"] = slot.Button,
+            ["discard_slot"] = decline ? null : slot.DiscardSlot,
+        };
     }
 
     private static bool ProceedEnabled(NProceedButton? proceed) =>
@@ -224,13 +324,5 @@ public class SimRewardsScreenHandler : IScreenHandler, IHandler
         {
             return "";
         }
-    }
-
-    /// <summary>Either "click proceed" or "claim this reward button".</summary>
-    private readonly record struct RewardScreenChoice(bool ShouldProceed, NRewardButton? Button)
-    {
-        public static RewardScreenChoice Proceed => new(true, null);
-
-        public static RewardScreenChoice Pick(NRewardButton button) => new(false, button);
     }
 }

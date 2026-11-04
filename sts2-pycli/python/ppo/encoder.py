@@ -246,6 +246,11 @@ class _Ctx:
         self.event_name: str = str(obs.get("event_name") or "")
         self.event_options: list[dict] = obs.get("event_options") or []
         self.card_reward_ids: list[str] = obs.get("card_reward_option_ids") or []
+        # Scroll Boxes packs (GH #978): `card_reward_ids` holds each pack's
+        # first card, this the whole pack. Only read under `card_bundles`.
+        self.bundles: list[list[str]] = (
+            (obs.get("card_reward_bundles") or []) if schema.CARD_BUNDLES in features else []
+        )
         # Per-option upgrade flags aligned with `card_reward_ids`; short or
         # missing means "not upgraded" (bundle / choose-screen offerings carry
         # no upgrade state). Only read under the `reward_upgrade` feature.
@@ -316,6 +321,35 @@ def _stamp_enchant(ctx: _Ctx, cat: list[int], cont: list[float], lst: list, i: A
         cont[C_ENCH_AMT] = int(amount) * ENCH_AMT_SCALE
 
 
+def _stamp_card_kind(cats: list[list[int]]) -> None:
+    """Stamp every token that names a card with its type and rarity (GH #977).
+
+    One pass over the finished tokens rather than a call at each card site, so
+    no site can be missed: whatever wrote ``cat[0]`` (deck, reward, removal,
+    shop, a Neow option naming a card) gets the columns. The OOV row reads the
+    pad, like an empty ``cat[0]``. Mirrors ``encoder.rs::stamp_card_kind``.
+    """
+    types, rarities = vocab.card_kind_rows()
+    pad = vocab.cards().size
+    for cat in cats:
+        c = cat[0]
+        if c != pad:
+            cat[schema.CAT_CARD_TYPE] = types[c]
+            cat[schema.CAT_CARD_RARITY] = rarities[c]
+
+
+def _bundle_cat(pack: int) -> list[int]:
+    """`cat` shared by a pack's member tokens and its pick action (GH #978).
+
+    The pack index rides in the option-index column, so the pick-pack action
+    token and its members share one embedding row the net can match on.
+    """
+    cat = empty_cat()
+    cat[schema.CAT_DECK_OP] = vocab.deck_op_index("bundle")
+    cat[7] = min(vocab.MAX_OPT_IDX - 1, pack)
+    return cat
+
+
 def _fixed_tok(kind: str, price: int = 0):
     cat = empty_cat()
     cat[6] = vocab.fixed_index(kind)
@@ -353,6 +387,9 @@ def _build_action_token(ctx: _Ctx, a: dict[str, Any]):
         idx = a.get("idx")
         if idx is None:
             return _fixed_tok("skip_card")
+        if ctx.bundles:
+            # A pack pick: no card of its own, the members are obs tokens.
+            return SEC_CARD, _bundle_cat(int(idx)), [0.0] * N_CONT, AUX_IGNORE
         cid = _at(ctx.card_reward_ids, int(idx), "card reward")
         # `roll_for_upgrade` pre-upgrades non-rare reward options in acts 2+,
         # but every champion to date was trained with the flag dropped — see
@@ -625,6 +662,13 @@ def featurize_row(
         cat[3] = vocab.potions().index(pid)
         add_obs(SEC_POTION, cat, [0.0] * N_CONT)
 
+    # Scroll Boxes pack members (GH #978, `card_bundles`), after the potions.
+    for k, pack in enumerate(ctx.bundles):
+        for cid in pack:
+            cat = _bundle_cat(k)
+            cat[0] = vocab.cards().index(cid)
+            add_obs(SEC_CARD, cat, [0.0] * N_CONT)
+
     # Map node tokens (R5b). The terminal boss node also carries the boss's
     # identity; every other node carries the pad row.
     for nf in ctx.mapf.nodes:
@@ -651,6 +695,10 @@ def featurize_row(
         act_cat.append(cat)
         act_cont.append(cont)
         aux_room.append(aux)
+
+    if schema.CARD_KIND in features:
+        _stamp_card_kind(obs_cat)
+        _stamp_card_kind(act_cat)
 
     return Featurized(
         obs_cat=np.array(obs_cat, dtype=np.int64),

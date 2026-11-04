@@ -5,8 +5,6 @@
 
 //! Shared / event / boss-encounter monster ports (bead sts2-rs-uzn).
 //!
-//! Ported from sts2-rl-agent@01c094d:sts2_env/monsters/shared.py
-//!
 //! Ports the 18 monsters from
 //! `sts2-rl-agent@01c094d:sts2_env/monsters/shared.py` (506 LOC) to
 //! data-driven `MonsterAi` instances. Conventions match [`super::act1_overgrowth`]
@@ -106,7 +104,11 @@ fn war_chant_effect(state: &mut CombatState, owner: sts2_core::CreatureUid) {
 /// telegraph-only; both side-effects live here. Previously `noop_effect`.
 fn wriggle_effect(state: &mut CombatState, owner: sts2_core::CreatureUid) {
     use sts2_core::card_effects::PileKind;
-    let _ = crate::cards::status::spawn_infection(state, PileKind::Discard);
+    // Co-op: every player the move targets gets one (GH #989), as in the
+    // act-2 Wriggler's copy of this move.
+    sts2_core::coop::each_player(state, |state| {
+        let _ = crate::cards::status::spawn_infection(state, PileKind::Discard);
+    });
     sts2_core::card_effects::apply_power_to_creature(state, owner, PowerKind::Strength, 2);
 }
 

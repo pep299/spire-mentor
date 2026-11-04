@@ -27,10 +27,10 @@ def off_board(enemy: dict[str, Any]) -> bool:
     return bool(enemy.get("is_dead") or enemy.get("is_escaped")) or enemy.get("is_alive") is False
 
 
-def enemy_labels(enemies: list[dict[str, Any]]) -> list[str]:
-    """One display label per entry of ``enemies``, in the same order."""
-    names = [str(e.get("name") or e.get("id") or f"enemy {i}") for i, e in enumerate(enemies)]
-    counted = [not off_board(e) for e in enemies]
+def numbered(names: list[str], counted: list[bool]) -> list[str]:
+    """``names`` with each name shared by several ``counted`` entries suffixed
+    by its 1-based place among them (``"Two-Tailed Rat #2"``); an uncounted
+    entry keeps its bare name and takes no number."""
     total = Counter(n for n, c in zip(names, counted, strict=True) if c)
     seen: Counter[str] = Counter()
     labels: list[str] = []
@@ -43,8 +43,28 @@ def enemy_labels(enemies: list[dict[str, Any]]) -> list[str]:
     return labels
 
 
+def enemy_labels(enemies: list[dict[str, Any]]) -> list[str]:
+    """One display label per entry of ``enemies``, in the same order."""
+    names = [str(e.get("name") or e.get("id") or f"enemy {i}") for i, e in enumerate(enemies)]
+    return numbered(names, [not off_board(e) for e in enemies])
+
+
+def _in_range(items: list[Any], index: Any) -> bool:
+    return isinstance(index, int) and not isinstance(index, bool) and 0 <= index < len(items)
+
+
 def enemy_label(enemies: list[dict[str, Any]], index: Any) -> str | None:
     """The label of ``enemies[index]``, or ``None`` when out of range."""
-    if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < len(enemies):
+    return enemy_labels(enemies)[index] if _in_range(enemies, index) else None
+
+
+def ally_label(allies: list[dict[str, Any]], index: Any) -> str | None:
+    """The label of teammate ``allies[index]`` (the board's ``allies[]``, the
+    index a co-op ``AnyAlly`` play names, GH #1017): their character,
+    numbered as enemies are when two share one. Every teammate is counted,
+    dead or alive, so a teammate keeps their number. ``None`` when out of
+    range."""
+    if not _in_range(allies, index):
         return None
-    return enemy_labels(enemies)[index]
+    names = [str(a.get("character") or f"teammate {i}") for i, a in enumerate(allies)]
+    return numbered(names, [True] * len(names))[index]

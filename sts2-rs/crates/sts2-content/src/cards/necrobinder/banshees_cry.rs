@@ -8,22 +8,19 @@ use super::prelude::*;
 /// the count of Ethereal cards already played). Upgraded: base cost 9 → 7
 /// (`EnergyCost.UpgradeBy(-2)`, in card_upgrades_generated.rs).
 ///
-/// PARTIAL PORT: only the OnPlay (33 damage to all enemies) is modeled. The
-/// Ethereal-cost-discount mechanic — C# `AfterCardEnteredCombat` (count past
-/// Ethereal plays by this owner, subtract `EnergyVar` × count) and
-/// `AfterCardPlayed` (subtract `EnergyVar` whenever the owner plays an Ethereal
-/// card) — is a PER-CARD combat listener that has no equivalent in the current
-/// spec+handler model. There is no `EnergyCost.AddThisCombat` surface nor a
-/// per-card `after_card_played` / `after_card_entered_combat` listener for
-/// pool cards. Recorded as a blocker rather than faked.
+/// The `AfterCardPlayed` discount runs in the engine's play pipeline
+/// (`CombatState::discount_banshees_cry_on_ethereal_play`); the
+/// `AfterCardEnteredCombat` retroactive discount for a Banshee's Cry
+/// generated mid-combat after Ethereal plays runs in
+/// `card_effects::banshees_cry_entered_combat` (a deck copy enters
+/// combat before any play, where it is 0).
 pub(crate) fn play_banshees_cry(
     state: &mut CombatState,
     _target: Option<CreatureUid>,
 ) -> EffectResult {
     // C# BansheesCry.OnPlay:
     //   DamageCmd.Attack(Damage.BaseValue).FromCard(this).TargetingAllOpponents(...)
-    // Damage is a plain stat (33), unaffected by OnUpgrade. The cost discount is
-    // handled by the (unported) AfterCardEnteredCombat / AfterCardPlayed hooks.
+    // Damage is a plain stat (33), unaffected by OnUpgrade.
     deal_damage_all_enemies(state, current_damage(state));
     EffectResult::Resolved
 }

@@ -7,7 +7,6 @@ use super::prelude::*;
 /// the damage; that surface routes overflow into discard once the hand is
 /// at `MAX_HAND_SIZE`. Wired via [`spawn_card_into_hand`] (bead
 /// `sts2-rs-7up3`).
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L130
 pub(crate) fn play_collision_course(
     state: &mut CombatState,
     target: Option<CreatureUid>,

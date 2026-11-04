@@ -343,6 +343,28 @@ fn orobas_single_entry_pool3_still_draws() {
     assert_eq!(rng.counter(), 5, "1-element NextItem must still sample");
 }
 
+/// An EMPTY `OptionPool3` (no Starter relic, no transcendence starter card)
+/// is a LOCKED placeholder option in C# (`Orobas.cs:88-91`): `NextItem` still
+/// draws once over that one-element list, and the slot offers no relic. So
+/// the first two offers and the stream position match the single-entry case.
+#[test]
+fn orobas_empty_pool3_is_locked_slot_but_still_draws() {
+    for seed in 0..64i32 {
+        let mut locked = cond();
+        locked.orobas_pool3 = Vec::new();
+        let mut rng = event_rng(seed, AncientId::Orobas);
+        let offers = roll_offers(AncientId::Orobas, &mut rng, &locked);
+
+        let mut single = cond();
+        single.orobas_pool3 = vec![RelicId::TouchOfOrobas];
+        let mut rng1 = event_rng(seed, AncientId::Orobas);
+        let reference = roll_offers(AncientId::Orobas, &mut rng1, &single);
+
+        assert_eq!(offers, reference[..2], "seed {seed}: locked slot dropped");
+        assert_eq!(rng.counter(), rng1.counter(), "seed {seed}: one draw");
+    }
+}
+
 // ── Pael ────────────────────────────────────────────────────────────────
 
 /// `list.AddRange(list)` doubles OptionPool2 *before* `PaelsGrowth` is
@@ -583,8 +605,8 @@ fn darv_paired_relic_sets_contribute_at_most_one_offer() {
 
 fn arb_conditions(tc: &TestCase) -> AncientConditions {
     let count = |hi: u32| gs::integers::<u32>().min_value(0).max_value(hi);
-    // OptionPool3 is never empty in practice (TouchOfOrobas's starter relic
-    // always exists) and `NextItem` would have nothing to pick otherwise.
+    // A non-empty OptionPool3 here; the empty (LOCKED, 2-offer) case is
+    // pinned by `orobas_empty_pool3_is_locked_slot_but_still_draws`.
     let pool3 = match tc.draw(count(2)) {
         0 => vec![RelicId::TouchOfOrobas],
         1 => vec![RelicId::ArchaicTooth],

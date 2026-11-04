@@ -84,10 +84,13 @@
     "action": "end turn",
     "hp_n": 0,
     "hp_sd": null,
+    "in_band": false,
     "is_best": true,
     "losses": 0,
     "low_confidence": false,
     "mean_final_hp": null,
+    "pick_rank": null,
+    "pick_reason": null,
     "q": 0.0,
     "q_saturated": false,
     "stable_idx": -1,
@@ -111,7 +114,7 @@
    "bg_col": 3,
    "bg_row": 4,
    "bg_seed": 2,
-   "floor": 4,
+   "floor": 5,
    "step_no": 0,
    "turn": 3
   },
@@ -351,7 +354,7 @@
    "energy_image": "https://assets.test/sprite_fonts/silent_energy_icon.png",
    "exhaust_pile": [],
    "exhaust_pile_count": 0,
-   "floor": 4,
+   "floor": 5,
    "hand": [
     {
      "base_cost": 1,

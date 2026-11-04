@@ -8,11 +8,15 @@ use super::prelude::*;
 ///
 /// `AnyAlly` — unplayable in single-player (`card_effects::card_is_any_ally`);
 /// in co-op the effect lands on the teammate (`any_ally_card_target`).
-pub(crate) fn play_blaze(_state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
-    // C# `PowerCmd.Apply<StrengthPower>(cardPlay.Target, 5 (upg 7))`: the teammate gains Strength — all of it lands on the co-op teammate
-    // (`cardPlay.Target`), whose turn is not simulated, so playing it
-    // changes nothing here but the energy and the card's own pile move.
-    // Unplayable without a living teammate (`card_is_any_ally`).
+pub(crate) fn play_blaze(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
+    // C# `PowerCmd.Apply<StrengthPower>(cardPlay.Target, 5 (upg 7))`: the
+    // teammate's Strength.
+    let amount = if card_effects::resolving_card_upgraded(state) {
+        7
+    } else {
+        5
+    };
+    sts2_core::coop::apply_power_to_card_target(state, PowerKind::Strength, amount);
     EffectResult::Resolved
 }
 

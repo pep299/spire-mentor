@@ -5,7 +5,6 @@ use super::prelude::*;
 /// effects real (forge wired by `sts2-rs-5o9w`). C# source of truth
 /// `RefineBlade.cs`: `ForgeVar(9)` + `EnergyVar(1)` (bead
 /// `sts2-rs-nntl0` corrected the forge amount 6 -> 9).
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L245
 pub(crate) fn play_refine_blade(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     // C# RefineBlade.cs OnUpgrade bumps ForgeVar 9->13; EnergyVar(1)
     // is not upgrade-scaled. Bead `sts2-rs-a3428`.

@@ -5,7 +5,6 @@ use super::prelude::*;
 ///   CanonicalVars = [EnergyVar(2)];
 ///   OnUpgrade: base.DynamicVars.Energy.UpgradeValueBy(1m);
 /// Bead `sts2-rs-2ror2`.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L275
 pub(crate) fn play_alignment(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     let amt = if current_card_upgraded(state) { 3 } else { 2 };
     state.player.energy = state.player.energy.saturating_add(amt);

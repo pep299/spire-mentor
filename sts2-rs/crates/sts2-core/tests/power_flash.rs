@@ -351,6 +351,8 @@ fn no_energy_gain_flashes_only_when_its_guard_holds() {
 #[test]
 fn no_draw_flashes_only_when_its_guard_holds() {
     let mut state = state_with_power(PowerKind::NoDraw, 1);
+    // A live player: a dead one makes the combat ending, so draws move no card.
+    state.player.current_hp = 80;
     // A non-empty draw pile, so every negative half below is a draw that would
     // really have moved cards. With an empty pile nothing happens on any path
     // and the negatives cannot fail.
@@ -479,6 +481,8 @@ fn juggling_does_not_count_non_attacks_toward_its_third() {
 #[test]
 fn corrosive_wave_flashes_once_per_drawn_card() {
     let mut state = state_with_power(PowerKind::CorrosiveWave, 2);
+    // A live player: a dead one makes the combat ending, so draws move no card.
+    state.player.current_hp = 80;
     add_enemy(&mut state, 40);
     for i in 1..=3u32 {
         let uid = add_card(&mut state, i, sts2_core::cards::CardType::Skill);
@@ -830,6 +834,8 @@ fn hailstorm_flashes_only_when_its_guard_holds() {
 #[test]
 fn iteration_flashes_only_when_its_guard_holds() {
     let mut state = state_with_power(PowerKind::Iteration, 1);
+    // A live player: a dead one makes the combat ending, so draws move no card.
+    state.player.current_hp = 80;
     // An all-Status draw pile, so every draw below really reaches the arm and
     // the negative half cannot pass by drawing nothing.
     for i in 1..=6u32 {
@@ -855,6 +861,9 @@ fn iteration_flashes_only_when_its_guard_holds() {
 #[test]
 fn smokestack_flashes_only_when_its_guard_holds() {
     let mut state = state_with_power(PowerKind::Smokestack, 3);
+    // Alive player: a dead one means combat is ending, and C#
+    // `IterateCombatHookListeners` then runs no generation listener.
+    state.player.current_hp = 80;
     add_enemy(&mut state, 40);
 
     let status = make_card(sts2_core::cards::CardType::Status);
@@ -892,6 +901,8 @@ fn smokestack_flashes_only_when_its_guard_holds() {
 #[test]
 fn arsenal_flashes_only_when_its_guard_holds() {
     let mut state = state_with_power(PowerKind::Arsenal, 2);
+    // Alive player (see `smokestack_flashes_only_when_its_guard_holds`).
+    state.player.current_hp = 80;
 
     // C# `ArsenalPower.cs:23` has NO card-type filter — any player-generated
     // card fires it.
@@ -919,6 +930,8 @@ fn arsenal_flashes_only_when_its_guard_holds() {
 #[test]
 fn pillar_of_creation_flashes_only_when_its_guard_holds() {
     let mut state = state_with_power(PowerKind::PillarOfCreation, 2);
+    // Alive player (see `smokestack_flashes_only_when_its_guard_holds`).
+    state.player.current_hp = 80;
 
     let skill = make_card(sts2_core::cards::CardType::Skill);
     sts2_core::card_effects::spawn_card_into_pile_with_origin(
@@ -944,6 +957,8 @@ fn pillar_of_creation_flashes_only_when_its_guard_holds() {
 #[test]
 fn trash_to_treasure_flashes_only_when_its_guard_holds() {
     let mut state = state_with_power(PowerKind::TrashToTreasure, 2);
+    // Alive player (see `smokestack_flashes_only_when_its_guard_holds`).
+    state.player.current_hp = 80;
     state.player.orbs = sts2_core::orbs::OrbSlots::with_capacity(3);
 
     let status = make_card(sts2_core::cards::CardType::Status);
@@ -2575,6 +2590,8 @@ fn pale_blue_dot_flashes_only_when_the_power_is_present() {
 #[test]
 fn automation_flashes_only_when_the_counter_resets() {
     let mut state = CombatState::default();
+    // A live player: a dead one makes the combat ending, so draws move no card.
+    state.player.current_hp = 80;
     state.combat_log.event_log.set_recording(true);
     let puid = push_player_power(&mut state, 1, PowerKind::Automation, 1);
     if let Some(p) = state.powers.iter_mut().find(|p| p.id == puid.0) {
@@ -2602,6 +2619,8 @@ fn automation_flashes_only_when_the_counter_resets() {
 #[test]
 fn pagestorm_flashes_only_on_an_ethereal_card_drawn() {
     let mut state = CombatState::default();
+    // A live player: a dead one makes the combat ending, so draws move no card.
+    state.player.current_hp = 80;
     state.combat_log.event_log.set_recording(true);
     push_player_power(&mut state, 1, PowerKind::Pagestorm, 1);
     let normal = add_card(&mut state, 1, sts2_core::cards::CardType::Attack);
@@ -2901,4 +2920,79 @@ fn gh650_feral_beats_both_and_costs_no_rebound_stack() {
         1,
         "no redirect by Rebound means no stack spent"
     );
+}
+
+/// C# `CreatureCmd.Damage` fires `Hook.AfterDamageGiven` BEFORE
+/// `Hook.AfterDamageReceived` for each hit (v0.111.0 `CreatureCmd.cs:410-417`,
+/// v0.107.1 `:390-394`). So a ScrollOfBiting's PaperCuts costs the player max
+/// HP while the Scroll is still alive, and only then does the player's
+/// FlameBarrier (an `AfterDamageReceived` listener) kill it (act23
+/// Ironclad-2103: C# loses 2 max HP on the killing hit, Rust lost none).
+#[test]
+fn paper_cuts_fires_before_flame_barrier_kills_the_dealer() {
+    let mut state = CombatState::default();
+    state.player.max_hp = 50;
+    state.player.current_hp = 50;
+    let player = state.init_player_creature();
+    let enemy = add_enemy(&mut state, 3);
+    push_enemy_power(&mut state, 1, enemy, PowerKind::PaperCuts, 2);
+    push_player_power(&mut state, 2, PowerKind::FlameBarrier, 4);
+    state.sync_player_creature();
+
+    let _ = sts2_core::combat_loop::apply_damage_to_player(
+        &mut state,
+        CreatureRef::Enemy(enemy),
+        5,
+        ValueProps::MOVE,
+        None,
+    );
+    let enemy_hp = state
+        .creatures
+        .iter()
+        .find(|c| c.id == enemy.0)
+        .map(|c| c.current_hp)
+        .expect("enemy");
+    assert_eq!(enemy_hp, 0, "FlameBarrier's 4 kills the 3-HP dealer");
+    let max_hp = state
+        .creatures
+        .iter()
+        .find(|c| c.id == player.0)
+        .map(|c| c.max_hp)
+        .expect("player creature");
+    assert_eq!(max_hp, 48, "PaperCuts fired while the dealer was alive");
+}
+
+/// PaperCuts on a dealer that died mid-hit (Thorns in its own hit's
+/// `BeforeDamageReceived`) no longer fires: C# has already removed the dead
+/// dealer from `IterateHookListeners` when the hit's `AfterDamageGiven` runs
+/// (CreatureCmd.cs:285,412). Ironclad v0.111.0 full seed 2674.
+#[test]
+fn paper_cuts_skips_a_dead_dealer() {
+    let mut state = CombatState::default();
+    state.player.max_hp = 50;
+    state.player.current_hp = 50;
+    let player = state.init_player_creature();
+    let enemy = add_enemy(&mut state, 40);
+    push_enemy_power(&mut state, 1, enemy, PowerKind::PaperCuts, 2);
+    let ctx = sts2_core::hooks::DamageCtx {
+        card_source: None,
+        dealer: CreatureRef::Enemy(enemy),
+        target: CreatureRef::Player,
+        props: ValueProps::MOVE,
+    };
+    let max_hp = |s: &CombatState| {
+        s.creatures
+            .iter()
+            .find(|c| c.id == player.0)
+            .map(|c| c.max_hp)
+            .expect("player creature")
+    };
+    sts2_core::hooks::dispatch_after_damage_given(&mut state, &ctx, 5, 5, false);
+    assert_eq!(max_hp(&state), 48, "a living dealer's PaperCuts fires");
+
+    if let Some(c) = state.creatures.iter_mut().find(|c| c.id == enemy.0) {
+        c.current_hp = 0;
+    }
+    sts2_core::hooks::dispatch_after_damage_given(&mut state, &ctx, 5, 5, false);
+    assert_eq!(max_hp(&state), 48, "a dead dealer's PaperCuts does not");
 }

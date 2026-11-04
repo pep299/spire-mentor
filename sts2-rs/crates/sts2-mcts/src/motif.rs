@@ -120,6 +120,8 @@ impl Motif {
         if gold.starts_with("EndTurn") {
             out.push(Self::GoldEndTurn);
         }
+        // `DrinkPotionAtAlly` starts with "DrinkPotion" too: a throw is a
+        // potion move.
         if gold.starts_with("DrinkPotion") || gold.starts_with("UsePotion") {
             out.push(Self::GoldPotion);
         }
@@ -204,7 +206,7 @@ pub fn motifs_at(state: &CombatState) -> Vec<Motif> {
     let mut potion = false;
     for a in &legal {
         match a {
-            Action::PlayCard { hand_index, .. } => {
+            Action::PlayCard { hand_index, .. } | Action::PlayCardAtAlly { hand_index, .. } => {
                 let Some(uid) = state.player.hand.get(usize::from(*hand_index)) else {
                     continue;
                 };
@@ -218,7 +220,11 @@ pub fn motifs_at(state: &CombatState) -> Vec<Motif> {
                     power_play = true;
                 }
             }
-            Action::DrinkPotion { .. } | Action::UsePotion { .. } => potion = true,
+            Action::DrinkPotion { .. }
+            | Action::UsePotion { .. }
+            | Action::DrinkPotionAtAlly { .. } => {
+                potion = true;
+            }
             _ => {}
         }
     }
@@ -310,7 +316,7 @@ mod tests {
         }
         let player = PlayerCombatState {
             hand: hand_uids,
-            energy,
+            energy: i32::from(energy),
             max_energy: energy.max(3),
             current_hp: hp,
             max_hp: 80,

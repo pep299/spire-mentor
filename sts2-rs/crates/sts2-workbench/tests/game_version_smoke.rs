@@ -207,7 +207,9 @@ fn save_persist_and_run_log_keep_a_v0111_run() {
     let save = wb.build_save("v111", "2026-10-20T00:00:00Z").expect("save");
     assert_eq!(save["game_version"], json!("v0.111.0"));
     let mut wb2 = new_wb();
-    let restored = wb2.restore_save(&save).expect("restore");
+    let restored = wb2
+        .restore_save(&save, sts2_workbench::runlog::DEFAULT_NOW_ISO)
+        .expect("restore");
     assert_eq!(live_run(&wb2), (GameVersion::V0_111_0, seed));
     assert_eq!(restored["state"], step["state"]);
 
@@ -232,7 +234,9 @@ fn save_persist_and_run_log_keep_a_v0111_run() {
     // An unknown build in a stored payload is refused, not replayed as 0.107.
     let mut bad = save.clone();
     bad["game_version"] = json!("v9");
-    assert!(new_wb().restore_save(&bad).is_err_and(|e| e.status == 409));
+    assert!(new_wb()
+        .restore_save(&bad, sts2_workbench::runlog::DEFAULT_NOW_ISO)
+        .is_err_and(|e| e.status == 409));
     let mut bad = persist.clone();
     bad["game_version"] = json!("v9");
     assert!(new_wb()
@@ -256,7 +260,8 @@ fn default_build_payloads_never_name_it() {
     assert!(persist.get("game_version").is_none());
     // And they restore as v0.107.1.
     let mut wb2 = new_wb();
-    wb2.restore_save(&save).expect("restore");
+    wb2.restore_save(&save, sts2_workbench::runlog::DEFAULT_NOW_ISO)
+        .expect("restore");
     assert_eq!(live_run(&wb2).0, GameVersion::V0_107_1);
     call(&mut wb, "POST", "/api/live/quit", Value::Null);
     let log = wb.take_run_log().expect("log");

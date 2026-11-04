@@ -7,7 +7,6 @@ use super::prelude::*;
 /// (`EnergyCost.AddThisCombat(-1)`). That per-draw cost-reduction is
 /// wired in `sts2_core::CombatState::invoke_card_drawn_for_newly_drawn`
 /// (keyed off `CardId::KinglyKick`) — bead `sts2-rs-8z4u4`.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L380
 pub(crate) fn play_kingly_kick(
     state: &mut CombatState,
     target: Option<CreatureUid>,

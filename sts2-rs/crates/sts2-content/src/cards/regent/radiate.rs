@@ -6,7 +6,6 @@ use super::prelude::*;
 /// (i49k) shape but with `count_player_stars_gained_this_turn` as the
 /// hit count and no per-iteration target check (AoE dispatcher already
 /// skips dead enemies per `deal_damage_all_enemies`).
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L499
 /// `CalculatedHits`: one hit per Star gained this turn. Shared with the card
 /// face — see `crate::cards::preview`.
 pub(crate) fn preview_radiate(

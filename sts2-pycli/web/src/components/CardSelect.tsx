@@ -2,15 +2,11 @@ import { useEffect, useState, type ReactNode } from "react";
 import { api, type ChoiceRankRow, type Step, type ChooseHandler, type Card } from "../api";
 import CardFrame from "./CardFrame";
 import { cardBoxHeight } from "../cardGeometry";
-import { useHints } from "../hints/HintsContext";
+import { useHints } from "../hints/useHints";
 import { useMediaQuery, SHORT_QUERY, TOUCH_QUERY } from "../useMediaQuery";
 import { DECK_OP_CONTEXTS } from "../choiceKinds";
-import {
-  useDecisionAdvisor,
-  DecisionAnalyzeButton,
-  DecisionAnalyzeStatus,
-  DecisionWinChip,
-} from "./DecisionAdvisor";
+import { DecisionAnalyzeButton, DecisionAnalyzeStatus, DecisionWinChip } from "./DecisionAdvisor";
+import { useDecisionAdvisor } from "./useDecisionAdvisor";
 
 // Which card_selects are in-combat pending choices (vs. deck operations) lives
 // in ../choiceKinds — App shares the same distinction for "play best".
@@ -188,7 +184,6 @@ export default function CardSelect({ step, onChoose }: { step: Step; onChoose?: 
       })
       .catch(() => {}); // 409 off-choice / search failure → silently omit
     return () => { alive = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resetKey, advEnabled, hints.on]);
 
   return (

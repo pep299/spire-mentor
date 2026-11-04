@@ -21,7 +21,6 @@ use super::prelude::*;
 /// the Rust port has no per-card `effect_vars` map yet so the
 /// literal is inlined. Break-on-death matches the Python loop:
 /// subsequent hits are suppressed once the target dies.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L730
 pub(crate) fn play_heavenly_drill(
     state: &mut CombatState,
     target: Option<CreatureUid>,

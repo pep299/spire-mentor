@@ -2,15 +2,26 @@
 use super::prelude::*;
 
 /// `VexingPuzzlebox.after_side_turn_start` — round-1 PLAYER side:
-/// sample 1 distinct card from the player's character pool, set its
-/// cost to 0 until played or turn end, route into hand. Per C# canon
+/// sample 1 distinct card from the player's character pool, make it free
+/// this turn, route into hand. Per C# canon
 /// `VexingPuzzlebox.cs::AfterPlayerTurnStart`:
 ///
 /// [decompiled C# omitted — see the cited path]
 ///
+/// `SetToFreeThisTurn` is `EnergyCost.SetThisTurnOrUntilPlayed(0)` — an
+/// `EndOfTurn | WhenPlayed` modifier — so it is the `FreeThisTurn` rider,
+/// not a permanent `cost = 0`: once played, or once the turn ends, the card
+/// costs its printed cost again (a permanent 0 made it free for every later
+/// redraw in the combat).
+///
 /// Gracefully no-ops when the player's character is unset, the
 /// character sampler isn't installed (core-only test build), or the
 /// pool is empty. Bead `sts2-rs-t7vn`.
+/// `AfterPlayerTurnStart` entry for [`on_after_side_turn_start_vexing_puzzlebox`].
+fn on_after_player_turn_start_vexing_puzzlebox(state: &mut CombatState) -> EffectResult {
+    on_after_side_turn_start_vexing_puzzlebox(state, Side::Player)
+}
+
 pub(crate) fn on_after_side_turn_start_vexing_puzzlebox(
     state: &mut CombatState,
     side: Side,
@@ -40,8 +51,12 @@ pub(crate) fn on_after_side_turn_start_vexing_puzzlebox(
 }
 
 pub(crate) fn install() {
-    register_after_side_turn_start(
+    // C# `VexingPuzzlebox` overrides `AfterPlayerTurnStart` (both builds), so it rides
+    // that equip-ordered relic walk, not the later `AfterSideTurnStart` walk:
+    // its order against ChoicesParadox / GamblingChip / RoyalPoison is the
+    // player's relic order (GH #1054).
+    register_after_player_turn_start(
         RelicId::VexingPuzzlebox,
-        on_after_side_turn_start_vexing_puzzlebox as AfterSideTurnStartFn,
+        on_after_player_turn_start_vexing_puzzlebox as AfterPlayerTurnStartFn,
     );
 }

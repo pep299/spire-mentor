@@ -43,7 +43,7 @@ use crate::hooks::{CreatureRef, ValueProps};
 use crate::{CardUid, CombatState, PlayerCombatState};
 
 // Bit-packed per-combat "used" flags stashed on the card's
-// `VarKey::Generic` combat-var. The Vigorous + Glam bits agree
+// `VarKey::EnchantmentUsed` combat-var. The Vigorous + Glam bits agree
 // byte-for-byte with the content-side `sts2-content::enchantments`
 // encoding (helpers `mark_vigorous_used` / `vigorous_used` /
 // `mark_glam_used` / `glam_used`). Swift + Sown bits are core-side
@@ -57,7 +57,7 @@ const SOWN_USED_BIT: i32 = 0b1000;
 /// Additive damage bonus contributed by the *played card's* enchantments,
 /// for a powered attack. Mirrors the C# `*.EnchantDamageAdditive` chain
 /// (`Sharp`/`Inky` flat, `Vigorous` once-per-card, `Momentum` accumulated
-/// into `VarKey::RampageDamage`) and the Python `enchant_damage_additive`.
+/// into `VarKey::MomentumDamage`) and the Python `enchant_damage_additive`.
 /// Returns 0 for unpowered hits (C# gates each enchantment on
 /// `props.IsPoweredAttack()`).
 ///
@@ -87,18 +87,16 @@ pub fn enchant_damage_additive_for(
         return 0;
     }
     let mut total = card.enchantment(EnchantmentId::Sharp);
-    // Momentum stashes `+stack` per play onto RampageDamage (see
-    // `dispatch_on_card_played`); the running total is the bonus. Gated on the
-    // Momentum enchantment because `VarKey::RampageDamage` is ALSO the Rampage
-    // card's own scaling slot — without the gate, the Rampage card (which is
-    // not Momentum-enchanted) would double-count its scaling through this
-    // additive term.
+    // Momentum stashes `+stack` per play onto its own `MomentumDamage` slot
+    // (see `dispatch_on_card_played`); the running total is the bonus. It
+    // used to share Rampage's `RampageDamage` slot, which made a Momentum
+    // Rampage count both growths twice (GH #1021).
     if card.has_enchantment(EnchantmentId::Momentum) {
-        total = total.saturating_add(card.combat_var(VarKey::RampageDamage));
+        total = total.saturating_add(card.combat_var(VarKey::MomentumDamage));
     }
     // Vigorous applies once per card per combat; the consumed bit lives on
-    // `VarKey::Generic`.
-    if card.combat_var(VarKey::Generic) & VIGOROUS_USED_BIT == 0 {
+    // `VarKey::EnchantmentUsed`.
+    if card.combat_var(VarKey::EnchantmentUsed) & VIGOROUS_USED_BIT == 0 {
         total = total.saturating_add(card.enchantment(EnchantmentId::Vigorous));
     }
     // Inky (Blade of Ink shivs): fixed +1, regardless of stacks. v0.107.1
@@ -205,7 +203,7 @@ pub fn enchant_play_count_bonus(card: &crate::cards::Card) -> i32 {
         bonus += TIMES;
     }
     if card.has_enchantment(EnchantmentId::Glam)
-        && card.combat_var(VarKey::Generic) & GLAM_USED_BIT == 0
+        && card.combat_var(VarKey::EnchantmentUsed) & GLAM_USED_BIT == 0
     {
         bonus += TIMES;
     }
@@ -266,7 +264,7 @@ pub fn dispatch_on_card_drawn(state: &mut CombatState, card_uid: CardUid, from_h
 ///
 /// **Wave 3 (`sts2-rs-g7rni`):** Slither cost-roll. Python pin:
 /// `if card.has_enchantment("Slither"):
-///   card.set_combat_cost(combat.combat_energy_costs_rng.next_int(0, 3))`.
+///   card.set_cost_this_combat(combat.combat_energy_costs_rng.next_int(0, 3))`.
 ///
 /// **Divergence:** Python uses a dedicated `combat_energy_costs_rng`
 /// sub-stream on `RunState`; the dispatch site here has access to
@@ -291,9 +289,14 @@ fn on_card_drawn_stub(state: &mut CombatState, card_uid: CardUid, _from_hand_dra
     if !card.has_enchantment(EnchantmentId::Slither) {
         return;
     }
+    // C# `Slither.AfterCardDrawn`: `if (base.Card.Pile.Type != PileType.Hand)
+    // return;` — no roll for a card that already left the hand.
+    if !state.player.hand.contains(&card_uid) {
+        return;
+    }
     let new_cost: i8 = state.run_rng.combat_energy_costs.next_int(0, 3) as i8;
     if let Some(card) = state.cards.get_mut(idx) {
-        card.set_combat_cost(new_cost);
+        card.set_cost_this_combat(new_cost);
     }
 }
 
@@ -301,9 +304,11 @@ fn on_card_drawn_stub(state: &mut CombatState, card_uid: CardUid, _from_hand_dra
 // 2. after_player_turn_start
 // ---------------------------------------------------------------------------
 
-/// Fire enchantment `after_player_turn_start` once per player turn
-/// start. Walks the draw pile to surface Imbued cards (auto-play on
-/// turn 1).
+/// Fire the enchantment turn-start channel once per player turn. Walks the
+/// draw pile to surface Imbued cards (auto-play on turn 1). Despite the name,
+/// the caller fires it in the AutoPrePlay phase
+/// (`Imbued.AfterAutoPrePlayPhaseEntered`, Imbued.cs:20), after
+/// `AfterPlayerTurnStart` and `AfterSideTurnStart`.
 ///
 /// Python entry: `enchantments.py:126` —
 /// `after_player_turn_start(owner, combat)`.
@@ -326,10 +331,9 @@ pub fn dispatch_after_player_turn_start(state: &mut CombatState) {
 /// **v0.107.1 retime/rewindow (§8):** C# `Imbued.cs` moved its body from
 /// `BeforePlayPhaseStart` to `AfterAutoPrePlayPhaseEntered` and changed the
 /// window from `CombatState.RoundNumber == 1` to
-/// `PlayerCombatState.TurnNumber <= 1`. Both C# hook points fire after the
-/// turn-setup task completes (after `AfterPlayerTurnStart`), so the relative
-/// dispatch point is unchanged — this remains the engine's per-turn-start
-/// enchant pass. `TurnNumber` starts at `1` and increments once per player
+/// `PlayerCombatState.TurnNumber <= 1`. The AutoPrePlay phase follows
+/// `AfterPlayerTurnStart` and `AfterSideTurnStart`, so the combat loop fires
+/// this from its AutoPrePlay tail. `TurnNumber` starts at `1` and increments once per player
 /// turn; with no extra-turn mechanic in the solo engine `TurnNumber <= 1`
 /// ≡ `round_no() == 1` (see the MrStruggles `RoundNumber→TurnNumber` note),
 /// so the existing round-1 gate below is the faithful window.
@@ -387,17 +391,15 @@ fn after_player_turn_start_stub(state: &mut CombatState) {
             state.player.draw.insert(0, uid);
             crate::cards::pin_top(&mut state.player, uid);
         } else if pos != 0 {
-            // KNOWN PARITY DIVERGENCE (pre-existing; found in the GH #785
-            // review, left as is so clairvoyant mode stays byte-stable): the
-            // swap moves the old top card down to the Imbued card's slot.
             // C# `CardCmd.AutoPlay(card)` plays the card where it sits and
-            // leaves the rest of the pile in order, so the next turn's draws
-            // differ. The fix is the remove + insert(0) shape above. (C#
-            // also moves Imbued cards to the BOTTOM before the turn-1 hand
-            // draw — `ShouldStartAtBottomOfDrawPile`, `CombatManager.cs:662`
-            // — which this engine does not model either; see the round-1
-            // Innate float in `combat_loop.rs`.)
-            state.player.draw.swap(0, pos);
+            // leaves the rest of the pile in order, so lift it to the top
+            // (remove + insert) rather than swapping, which dropped the old
+            // top card into the Imbued card's slot. Imbued cards now start at
+            // the BOTTOM (`ShouldStartAtBottomOfDrawPile`, CombatManager.cs:
+            // 661-666, see `start_player_turn`), so a swap would bury the top
+            // card at the bottom on every Imbued combat (act23 Ironclad:1013).
+            state.player.draw.remove(pos);
+            state.player.draw.insert(0, uid);
         }
         // Imbued does NOT force-exhaust — C# `Imbued.cs` calls
         // `CardCmd.AutoPlay(card, null)` which leaves `ExhaustOnNextPlay`
@@ -428,18 +430,15 @@ pub fn dispatch_before_flush(state: &mut CombatState) {
 /// Listener body.
 ///
 /// **Wave 4 (`sts2-rs-uafi0`):** SlumberingEssence cost-tick. For each
-/// card in the player hand carrying SlumberingEssence, decrement its
-/// combat-cost by 1 (saturating at 0) before the end-of-turn flush
-/// moves it to discard. X-cost cards (Python `has_energy_cost_x`) are
-/// skipped — Rust analog is [`Card::is_x_cost`].
-///
-/// Python pin (`enchantments.py:before_flush`):
-/// ```text
-/// for card in list(state.hand):
-///     if not card.has_enchantment("SlumberingEssence"): continue
-///     if card.has_energy_cost_x: continue
-///     card.set_combat_cost(max(0, card.cost - 1))
-/// ```
+/// card in the player hand carrying SlumberingEssence, take 1 energy off
+/// its cost UNTIL PLAYED before the end-of-turn flush. C#
+/// `SlumberingEssence.BeforeFlush` does `Card.EnergyCost.AddUntilPlayed(-1)`
+/// (`SlumberingEssence.cs`), a `Relative`, `WhenPlayed` local modifier — so
+/// the discounts stack while the card waits and all expire when it is played
+/// (a permanent `cost -= 1` kept them through every later redraw). Banked in
+/// [`crate::cards::VarKey::CostReductionUntilPlayed`]; the evaluated cost
+/// floors at 0. X-cost cards are skipped: C# `GetWithModifiers` ignores local
+/// modifiers on a `CostsX` card.
 #[inline]
 fn before_flush_stub(state: &mut CombatState) {
     let hand: Vec<CardUid> = state.player.hand.iter().copied().collect();
@@ -455,7 +454,7 @@ fn before_flush_stub(state: &mut CombatState) {
             continue;
         }
         if card.cost > 0 {
-            card.reduce_cost_until_played(1);
+            card.add_cost_reduction_until_played(1);
         }
     }
 }
@@ -474,11 +473,18 @@ fn before_flush_stub(state: &mut CombatState) {
 /// Python skips — PerfectFit only applies to mid-combat reshuffles).
 /// The surface stub respects the Python early-out semantics (no-op
 /// when initial) so the dispatch site can fire unconditionally.
+///
+/// `listener_order` is the pre-shuffle pile sequence (draw pile, then
+/// discard pile): the order C# `IterateCombatHookListeners` visits the cards'
+/// enchantments (`PlayerCombatState.AllPiles` = Hand, Draw, Discard, Exhaust,
+/// Play, each in pile order; the hand is empty or already moved into the draw
+/// pile at every shuffle site).
 pub fn dispatch_modify_shuffle_order(
     player: &mut PlayerCombatState,
     cards: &mut [CardUid],
     is_initial_shuffle: bool,
     state_cards: &[Card],
+    listener_order: &[CardUid],
 ) {
     if is_initial_shuffle {
         return;
@@ -493,46 +499,37 @@ pub fn dispatch_modify_shuffle_order(
     if !any_enchanted {
         return;
     }
-    modify_shuffle_order_stub(player, cards, state_cards);
+    modify_shuffle_order_stub(player, cards, state_cards, listener_order);
 }
 
 /// Listener body.
 ///
-/// **Wave 4 (`sts2-rs-uafi0`):** PerfectFit re-ordering. Float
-/// PerfectFit-marked cards to the front of `cards` while preserving
-/// the relative order within both groups (stable partition).
-///
-/// Python pin (`enchantments.py:modify_shuffle_order`):
-/// ```text
-/// perfect_fit = [c for c in cards if c.has_enchantment("PerfectFit")]
-/// if perfect_fit:
-///     remaining = [c for c in cards if not c.has_enchantment("PerfectFit")]
-///     cards[:] = perfect_fit + remaining
-/// ```
-///
-/// The `is_initial_shuffle` guard already early-exits in the dispatch
-/// wrapper.
+/// PerfectFit re-ordering, C# `PerfectFit.ModifyShuffleOrder`
+/// (`Models.Enchantments/PerfectFit.cs`): each PerfectFit card in the shuffled
+/// list removes itself and re-inserts at index 0 (the top), one listener at a
+/// time in `listener_order`. With several PerfectFit cards the LAST one
+/// visited ends on top, so they come out in reverse listener order, ahead of
+/// every other card (whose shuffled order is untouched). This replaced a
+/// stable partition (PerfectFit cards in shuffled order), which matched C#
+/// only for a single PerfectFit card (GH #1021).
 #[inline]
 fn modify_shuffle_order_stub(
     _player: &mut PlayerCombatState,
     cards: &mut [CardUid],
     state_cards: &[Card],
+    listener_order: &[CardUid],
 ) {
     let has_perfect_fit = |uid: &CardUid| {
         state_cards
             .get((uid.get() as usize).saturating_sub(1))
             .is_some_and(|c| c.has_enchantment(EnchantmentId::PerfectFit))
     };
-    // Stable partition: PerfectFit-bearing cards float to the front
-    // while preserving relative order within each group. Mirrors
-    // Python's `perfect_fit + remaining` list concat.
-    let mut buf: Vec<CardUid> = Vec::with_capacity(cards.len());
-    buf.extend(cards.iter().copied().filter(has_perfect_fit));
-    if buf.is_empty() {
-        return; // No PerfectFit cards — preserve input order.
+    for uid in listener_order.iter().filter(|u| has_perfect_fit(u)) {
+        if let Some(pos) = cards.iter().position(|c| c == uid) {
+            // `Remove` + `Insert(0, ..)`: rotate the prefix right by one.
+            cards[..=pos].rotate_right(1);
+        }
     }
-    buf.extend(cards.iter().copied().filter(|u| !has_perfect_fit(u)));
-    cards.copy_from_slice(&buf);
 }
 
 // ---------------------------------------------------------------------------
@@ -570,7 +567,7 @@ pub fn dispatch_on_card_played(state: &mut CombatState, card_uid: CardUid) {
 ///
 /// **Wave 2 (`sts2-rs-vkpir`) — dynamic damage triplet wired:**
 ///   - `Momentum` — stash `+N` (the enchantment stack) onto the card's
-///     `VarKey::RampageDamage` slot. Read back by
+///     `VarKey::MomentumDamage` slot. Read back by
 ///     `enchantments::enchant_damage_additive` at damage-calc time so
 ///     subsequent plays of THIS card see the accumulated bonus.
 ///   - `Corrupted` — deal `2` self-damage with
@@ -597,28 +594,43 @@ fn on_card_played_stub(state: &mut CombatState, card_uid: CardUid) {
     // discipline: the immutable borrow of `card_for` dies before we
     // call `apply_damage_to_player` / `gain_block_player` (which
     // need `&mut state`).
-    let (momentum_amount, has_corrupted, adroit_amount, swift_amount, sown_amount, used_bits) = {
+    let (
+        card_id,
+        momentum_amount,
+        has_corrupted,
+        adroit_amount,
+        swift_amount,
+        sown_amount,
+        used_bits,
+    ) = {
         let Some(card) = card_for(state, card_uid) else {
             return;
         };
         (
+            card.card_id,
             card.enchantment(EnchantmentId::Momentum),
             card.has_enchantment(EnchantmentId::Corrupted),
             card.enchantment(EnchantmentId::Adroit),
             card.enchantment(EnchantmentId::Swift),
             card.enchantment(EnchantmentId::Sown),
-            card.combat_var(VarKey::Generic),
+            card.combat_var(VarKey::EnchantmentUsed),
         )
     };
 
     if momentum_amount > 0 {
         let idx = (card_uid.get() as usize).saturating_sub(1);
         if let Some(card) = state.cards.get_mut(idx) {
-            let prior = card.combat_var(VarKey::RampageDamage);
-            card.set_combat_var(VarKey::RampageDamage, prior.saturating_add(momentum_amount));
+            let prior = card.combat_var(VarKey::MomentumDamage);
+            card.set_combat_var(
+                VarKey::MomentumDamage,
+                prior.saturating_add(momentum_amount),
+            );
         }
     }
 
+    // C# `Corrupted.OnPlay`: `CreatureCmd.Damage(owner, 2, Unblockable |
+    // Unpowered | Move, base.Card)` — the card is the damage's `cardSource`
+    // (GH #1021), so card-keyed damage listeners see it.
     if has_corrupted {
         let _ = crate::combat_loop::apply_damage_to_player(
             state,
@@ -627,7 +639,7 @@ fn on_card_played_stub(state: &mut CombatState, card_uid: CardUid) {
             ValueProps::UNBLOCKABLE
                 .union(ValueProps::UNPOWERED)
                 .union(ValueProps::MOVE),
-            None,
+            Some(card_id),
         );
     }
 
@@ -693,7 +705,7 @@ fn after_card_played_stub(state: &mut CombatState, card_uid: CardUid) {
     let Some(card) = state.cards.get_mut(idx) else {
         return;
     };
-    let mut bits = card.combat_var(VarKey::Generic);
+    let mut bits = card.combat_var(VarKey::EnchantmentUsed);
     if card.has_enchantment(EnchantmentId::Vigorous) {
         bits |= VIGOROUS_USED_BIT;
     }
@@ -706,7 +718,7 @@ fn after_card_played_stub(state: &mut CombatState, card_uid: CardUid) {
     if card.has_enchantment(EnchantmentId::Sown) {
         bits |= SOWN_USED_BIT;
     }
-    card.set_combat_var(VarKey::Generic, bits);
+    card.set_combat_var(VarKey::EnchantmentUsed, bits);
     if card.has_enchantment(EnchantmentId::Goopy) {
         let amount = card.enchantment(EnchantmentId::Goopy);
         card.set_enchantment(EnchantmentId::Goopy, amount.saturating_add(1));
@@ -759,6 +771,18 @@ mod tests {
         state
     }
 
+    /// The pre-shuffle listener order a shuffle site would pass (draw, then
+    /// discard).
+    fn snapshot_listeners(state: &CombatState) -> Vec<CardUid> {
+        state
+            .player
+            .draw
+            .iter()
+            .chain(state.player.discard.iter())
+            .copied()
+            .collect()
+    }
+
     /// Empty-bus on every channel: a state with no enchantments
     /// dispatches without panic and is observably a no-op.
     #[test]
@@ -773,7 +797,13 @@ mod tests {
         let cards_snapshot = state.cards.clone();
         let mut shuffle_buf = state.player.draw.clone();
         let mut player = state.player.clone();
-        dispatch_modify_shuffle_order(&mut player, &mut shuffle_buf, false, &cards_snapshot);
+        dispatch_modify_shuffle_order(
+            &mut player,
+            &mut shuffle_buf,
+            false,
+            &cards_snapshot,
+            &snapshot_listeners(&state),
+        );
         dispatch_on_card_played(&mut state, uid(1));
         dispatch_after_card_played(&mut state, uid(1));
 
@@ -797,6 +827,7 @@ mod tests {
             &mut shuffle_buf,
             true, // is_initial_shuffle
             &cards_snapshot,
+            &snapshot,
         );
         assert_eq!(shuffle_buf.as_slice(), snapshot.as_slice());
     }
@@ -814,7 +845,13 @@ mod tests {
         let cards_snapshot = state.cards.clone();
         let mut shuffle_buf = state.player.draw.clone();
         let mut player = state.player.clone();
-        dispatch_modify_shuffle_order(&mut player, &mut shuffle_buf, false, &cards_snapshot);
+        dispatch_modify_shuffle_order(
+            &mut player,
+            &mut shuffle_buf,
+            false,
+            &cards_snapshot,
+            &snapshot_listeners(&state),
+        );
         dispatch_on_card_played(&mut state, uid(1));
         dispatch_after_card_played(&mut state, uid(1));
     }
@@ -898,6 +935,55 @@ mod tests {
         assert_eq!(crate::hooks::modify_damage(&state, 6, &powered), 6);
     }
 
+    /// C# `Hook.ModifyDamage` applies the card's enchantment stage to the base
+    /// BEFORE any power (Hook.cs:1630-1644): an Instinct (2x) Strike under -2
+    /// Strength deals `6 * 2 - 2 = 10`, not `(6 - 2) * 2 = 8`. Necrobinder
+    /// act23 seed 1001.
+    #[test]
+    fn instinct_doubles_the_base_before_strength_applies() {
+        let mut state = state_with_one_enchanted_card(EnchantmentId::Instinct, 1);
+        state.player.hand.clear();
+        state.player.play.push(uid(1));
+        let strength = std::num::NonZeroU32::new(99).expect("nz");
+        state.powers.push(crate::Power {
+            id: strength,
+            kind: crate::PowerKind::Strength,
+            amount: -2,
+            counter: 0,
+            applier: None,
+            skip_next_tick: false,
+        });
+        state.player.powers.push(crate::PowerUid(strength));
+        let ctx = crate::hooks::DamageCtx {
+            card_source: None,
+            dealer: crate::hooks::CreatureRef::Player,
+            target: crate::hooks::CreatureRef::Player,
+            props: ValueProps::MOVE,
+        };
+        assert_eq!(crate::hooks::modify_damage(&state, 6, &ctx), 10);
+    }
+
+    /// A relic's `ModifyDamageAdditive` (MiniatureCannon +3) runs in
+    /// `ModifyDamageInternal`, after the enchantment stage, so Corrupted does
+    /// not multiply it: `13 * 1.5 + 3 = 22.5 -> 22`, not `(13 + 3) * 1.5 = 24`.
+    /// Regent 1004 (GH #1054).
+    #[test]
+    fn corrupted_does_not_multiply_a_relic_additive() {
+        let mut state = state_with_one_enchanted_card(EnchantmentId::Corrupted, 1);
+        state.player.hand.clear();
+        state.player.play.push(uid(1));
+        let ctx = crate::hooks::DamageCtx {
+            card_source: None,
+            dealer: crate::hooks::CreatureRef::Player,
+            target: crate::hooks::CreatureRef::Player,
+            props: ValueProps::MOVE,
+        };
+        assert_eq!(
+            crate::hooks::modify_damage_with_relic_additive(&state, 13, 3, &ctx),
+            22
+        );
+    }
+
     /// GH #64 §5: the Favored multiplicative (2×) is now threaded into
     /// `modify_damage` for a player card on the play pile. A powered hit
     /// doubles; an unpowered hit is unaffected (C# gates on
@@ -956,13 +1042,21 @@ mod tests {
         let ctx = crate::hooks::BlockCtx {
             target: crate::hooks::CreatureRef::Player,
             props: ValueProps::MOVE,
-            card_source: None,
+            card_source: Some(uid(1)),
         };
         assert_eq!(
             crate::hooks::modify_block(&state, 5, &ctx),
             9,
             "Nimble(4) adds +4 to a powered player block grant"
         );
+        // GH #1021: C# reads the grant's own `cardSource`. Block a power or
+        // relic grants while the Nimble card resolves (Feel No Pain inside a
+        // Nimble True Grit) has none, so it gets no bonus.
+        let sourceless = crate::hooks::BlockCtx {
+            card_source: None,
+            ..ctx
+        };
+        assert_eq!(crate::hooks::modify_block(&state, 5, &sourceless), 5);
         // Block landing on a non-player target gets no card enchant bonus.
         let enemy_uid = crate::CreatureUid(NonZeroU32::new(2).expect("non-zero"));
         let enemy_ctx = crate::hooks::BlockCtx {
@@ -985,7 +1079,7 @@ mod tests {
         let unpowered = crate::hooks::BlockCtx {
             target: crate::hooks::CreatureRef::Player,
             props: ValueProps::UNPOWERED,
-            card_source: None,
+            card_source: Some(uid(1)),
         };
         assert_eq!(
             crate::hooks::modify_block(&state, 5, &unpowered),
@@ -1024,17 +1118,17 @@ mod tests {
         );
     }
 
-    /// Momentum: each play stashes `+stack` onto the RampageDamage
+    /// Momentum: each play stashes `+stack` onto the MomentumDamage
     /// slot so subsequent plays of this same card see the accumulated
     /// bonus. Two plays of Momentum(3) → stash = 6.
     #[test]
     fn momentum_on_card_played_accumulates_rampage_damage() {
         let mut state = state_with_one_enchanted_card(EnchantmentId::Momentum, 3);
-        assert_eq!(state.cards[0].combat_var(VarKey::RampageDamage), 0);
+        assert_eq!(state.cards[0].combat_var(VarKey::MomentumDamage), 0);
         dispatch_on_card_played(&mut state, uid(1));
-        assert_eq!(state.cards[0].combat_var(VarKey::RampageDamage), 3);
+        assert_eq!(state.cards[0].combat_var(VarKey::MomentumDamage), 3);
         dispatch_on_card_played(&mut state, uid(1));
-        assert_eq!(state.cards[0].combat_var(VarKey::RampageDamage), 6);
+        assert_eq!(state.cards[0].combat_var(VarKey::MomentumDamage), 6);
     }
 
     /// Corrupted: dealing the card fires 2 UNBLOCKABLE self-damage on
@@ -1055,21 +1149,24 @@ mod tests {
     }
 
     /// Vigorous: after_card_played sets the per-combat used bit on the
-    /// card's VarKey::Generic slot. The encoding mirrors
+    /// card's VarKey::EnchantmentUsed slot. The encoding mirrors
     /// `sts2-content::enchantments::mark_vigorous_used` (bit 0).
     #[test]
     fn vigorous_after_card_played_marks_used_bit() {
         let mut state = state_with_one_enchanted_card(EnchantmentId::Vigorous, 5);
-        assert_eq!(state.cards[0].combat_var(VarKey::Generic) & 0b01, 0);
+        assert_eq!(state.cards[0].combat_var(VarKey::EnchantmentUsed) & 0b01, 0);
         dispatch_after_card_played(&mut state, uid(1));
         assert_eq!(
-            state.cards[0].combat_var(VarKey::Generic) & 0b01,
+            state.cards[0].combat_var(VarKey::EnchantmentUsed) & 0b01,
             0b01,
             "Vigorous-used bit set after first play resolves",
         );
         // Idempotent: a second after_card_played leaves the bit set.
         dispatch_after_card_played(&mut state, uid(1));
-        assert_eq!(state.cards[0].combat_var(VarKey::Generic) & 0b01, 0b01);
+        assert_eq!(
+            state.cards[0].combat_var(VarKey::EnchantmentUsed) & 0b01,
+            0b01
+        );
     }
 
     /// Sharp: pure query-side enchantment; on_card_played MUST NOT
@@ -1080,15 +1177,18 @@ mod tests {
     fn sharp_on_card_played_is_inert() {
         let mut state = state_with_one_enchanted_card(EnchantmentId::Sharp, 3);
         let hp_before = state.player.current_hp;
-        let rampage_before = state.cards[0].combat_var(VarKey::RampageDamage);
-        let generic_before = state.cards[0].combat_var(VarKey::Generic);
+        let momentum_before = state.cards[0].combat_var(VarKey::MomentumDamage);
+        let generic_before = state.cards[0].combat_var(VarKey::EnchantmentUsed);
         dispatch_on_card_played(&mut state, uid(1));
         assert_eq!(state.player.current_hp, hp_before);
         assert_eq!(
-            state.cards[0].combat_var(VarKey::RampageDamage),
-            rampage_before
+            state.cards[0].combat_var(VarKey::MomentumDamage),
+            momentum_before
         );
-        assert_eq!(state.cards[0].combat_var(VarKey::Generic), generic_before);
+        assert_eq!(
+            state.cards[0].combat_var(VarKey::EnchantmentUsed),
+            generic_before
+        );
     }
 
     /// Favored: pure query-side multiplier; on_card_played MUST NOT
@@ -1100,8 +1200,8 @@ mod tests {
         let hp_before = state.player.current_hp;
         dispatch_on_card_played(&mut state, uid(1));
         assert_eq!(state.player.current_hp, hp_before);
-        assert_eq!(state.cards[0].combat_var(VarKey::RampageDamage), 0);
-        assert_eq!(state.cards[0].combat_var(VarKey::Generic), 0);
+        assert_eq!(state.cards[0].combat_var(VarKey::MomentumDamage), 0);
+        assert_eq!(state.cards[0].combat_var(VarKey::EnchantmentUsed), 0);
     }
 
     // -----------------------------------------------------------------
@@ -1146,7 +1246,7 @@ mod tests {
         // Set the consumed marker (Wave 3 after_card_played wiring).
         dispatch_after_card_played(&mut state, uid(1));
         assert_eq!(
-            state.cards[0].combat_var(VarKey::Generic) & 0b0100,
+            state.cards[0].combat_var(VarKey::EnchantmentUsed) & 0b0100,
             0b0100,
             "Swift-used bit set"
         );
@@ -1165,7 +1265,7 @@ mod tests {
         assert_eq!(state.player.energy, 2);
         dispatch_after_card_played(&mut state, uid(1));
         assert_eq!(
-            state.cards[0].combat_var(VarKey::Generic) & 0b1000,
+            state.cards[0].combat_var(VarKey::EnchantmentUsed) & 0b1000,
             0b1000,
             "Sown-used bit set"
         );
@@ -1181,11 +1281,11 @@ mod tests {
         let mut state = state_with_one_enchanted_card(EnchantmentId::Glam, 1);
         // on_card_played is inert for Glam.
         dispatch_on_card_played(&mut state, uid(1));
-        assert_eq!(state.cards[0].combat_var(VarKey::Generic) & 0b10, 0);
+        assert_eq!(state.cards[0].combat_var(VarKey::EnchantmentUsed) & 0b10, 0);
         // after_card_played sets the bit.
         dispatch_after_card_played(&mut state, uid(1));
         assert_eq!(
-            state.cards[0].combat_var(VarKey::Generic) & 0b10,
+            state.cards[0].combat_var(VarKey::EnchantmentUsed) & 0b10,
             0b10,
             "Glam-used bit set on after_card_played"
         );
@@ -1203,8 +1303,8 @@ mod tests {
         assert_eq!(state.player.current_hp, hp_before);
         assert_eq!(state.player.energy, energy_before);
         assert_eq!(state.player.block, block_before);
-        // Generic combat_var must stay 0 — Spiral does not own any bit.
-        assert_eq!(state.cards[0].combat_var(VarKey::Generic), 0);
+        // The used-bits combat_var must stay 0 — Spiral does not own any bit.
+        assert_eq!(state.cards[0].combat_var(VarKey::EnchantmentUsed), 0);
     }
 
     /// Nimble: query-only block bonus; on_card_played is inert. The
@@ -1237,22 +1337,32 @@ mod tests {
     // uafi0 (vxvvs Wave 4): stateful / boss enchantments
     // -----------------------------------------------------------------
 
-    /// SlumberingEssence: before_flush ticks cost down by 1 on each
-    /// marked card in hand, saturating at 0. X-cost (-1) cards skip.
+    /// SlumberingEssence: before_flush takes 1 energy off each marked card
+    /// in hand UNTIL PLAYED (C# `AddUntilPlayed(-1)`), stacking per flush;
+    /// the evaluated cost floors at 0 and playing the card retires every
+    /// discount, restoring the printed cost.
     #[test]
     fn slumbering_essence_before_flush_ticks_cost_down() {
         let mut state = state_with_one_enchanted_card(EnchantmentId::SlumberingEssence, 1);
         state.cards[0].cost = 3;
         // Card must be in hand for before_flush to consider it.
         // state_with_one_enchanted_card already pushes uid(1) to hand.
+        let cost = |s: &CombatState| crate::hooks::effective_card_cost(s, uid(1));
         dispatch_before_flush(&mut state);
-        assert_eq!(state.cards[0].cost, 2, "tick from 3 → 2");
+        assert_eq!(cost(&state), 2, "tick from 3 → 2");
         dispatch_before_flush(&mut state);
-        assert_eq!(state.cards[0].cost, 1);
+        assert_eq!(cost(&state), 1);
         dispatch_before_flush(&mut state);
-        assert_eq!(state.cards[0].cost, 0, "saturates at 0");
+        assert_eq!(cost(&state), 0, "saturates at 0");
         dispatch_before_flush(&mut state);
-        assert_eq!(state.cards[0].cost, 0, "stays at 0 — no underflow");
+        assert_eq!(cost(&state), 0, "stays at 0 — no underflow");
+        assert_eq!(state.cards[0].cost, 3, "printed cost untouched");
+        state.restore_wire_cost_expiring_on_play(uid(1));
+        assert_eq!(
+            cost(&state),
+            3,
+            "played: every until-played discount expires"
+        );
     }
 
     /// SlumberingEssence skips X-cost cards (cost == -1 sentinel).
@@ -1298,11 +1408,38 @@ mod tests {
             }
             state.cards.push(c);
         }
-        let mut shuffle = vec![uid(1), uid(2), uid(3), uid(4)];
+        // C# `PerfectFit.ModifyShuffleOrder` moves each PerfectFit card to
+        // index 0 in listener order (pre-shuffle pile order), so the last one
+        // visited ends on top; the other cards keep their shuffled order.
         let mut player = state.player.clone();
-        dispatch_modify_shuffle_order(&mut player, &mut shuffle, false, &state.cards);
-        // PerfectFit (2,4) preserve relative order; remaining (1,3) too.
+        let mut shuffle = vec![uid(1), uid(2), uid(3), uid(4)];
+        dispatch_modify_shuffle_order(
+            &mut player,
+            &mut shuffle,
+            false,
+            &state.cards,
+            &[uid(2), uid(4)],
+        );
+        assert_eq!(shuffle, vec![uid(4), uid(2), uid(1), uid(3)]);
+        let mut shuffle = vec![uid(1), uid(2), uid(3), uid(4)];
+        dispatch_modify_shuffle_order(
+            &mut player,
+            &mut shuffle,
+            false,
+            &state.cards,
+            &[uid(4), uid(2)],
+        );
         assert_eq!(shuffle, vec![uid(2), uid(4), uid(1), uid(3)]);
+        // A listener-order card that is not being shuffled does not move.
+        let mut shuffle = vec![uid(1), uid(2), uid(3)];
+        dispatch_modify_shuffle_order(
+            &mut player,
+            &mut shuffle,
+            false,
+            &state.cards,
+            &[uid(4), uid(2)],
+        );
+        assert_eq!(shuffle, vec![uid(2), uid(1), uid(3)]);
     }
 
     /// PerfectFit with no marked cards leaves the order untouched.
@@ -1312,7 +1449,7 @@ mod tests {
         let mut shuffle = vec![uid(1)];
         let mut player = state.player.clone();
         let original = shuffle.clone();
-        dispatch_modify_shuffle_order(&mut player, &mut shuffle, false, &state.cards);
+        dispatch_modify_shuffle_order(&mut player, &mut shuffle, false, &state.cards, &original);
         assert_eq!(shuffle, original, "no PerfectFit → no reorder");
         // Burn `state` so clippy doesn't moan about `let mut` going unused.
         state.player.hand.clear();
@@ -1329,7 +1466,7 @@ mod tests {
         let energy_before = state.player.energy;
         let block_before = state.player.block;
         let cost_before = state.cards[0].cost;
-        let generic_before = state.cards[0].combat_var(VarKey::Generic);
+        let generic_before = state.cards[0].combat_var(VarKey::EnchantmentUsed);
 
         dispatch_on_card_drawn(&mut state, uid(1), true);
         dispatch_after_player_turn_start(&mut state);
@@ -1337,7 +1474,7 @@ mod tests {
         let mut shuffle = vec![uid(1)];
         let cards_snapshot = state.cards.clone();
         let mut player = state.player.clone();
-        dispatch_modify_shuffle_order(&mut player, &mut shuffle, false, &cards_snapshot);
+        dispatch_modify_shuffle_order(&mut player, &mut shuffle, false, &cards_snapshot, &[uid(1)]);
         dispatch_on_card_played(&mut state, uid(1));
         dispatch_after_card_played(&mut state, uid(1));
 
@@ -1345,7 +1482,10 @@ mod tests {
         assert_eq!(state.player.energy, energy_before);
         assert_eq!(state.player.block, block_before);
         assert_eq!(state.cards[0].cost, cost_before);
-        assert_eq!(state.cards[0].combat_var(VarKey::Generic), generic_before);
+        assert_eq!(
+            state.cards[0].combat_var(VarKey::EnchantmentUsed),
+            generic_before
+        );
         assert_eq!(shuffle, vec![uid(1)]);
     }
 

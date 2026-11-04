@@ -138,9 +138,10 @@ pub struct Workbench {
     live: Option<Session>,
     /// The loaded replay (`Session.store`), from `load_run`.
     store: Option<ReplayStore>,
-    /// The run log the last `quit` wrote, until the host collects it
-    /// (`take_run_log`).
-    pending_log: Option<RunLog>,
+    /// Run logs written but not yet collected by the host (`take_run_log`),
+    /// oldest first: a `quit`'s, and the one a start / import / resume /
+    /// save-load writes for the live run it replaces.
+    pending_logs: std::collections::VecDeque<RunLog>,
     /// Loaded PPO champions by lowercase character name (`load_ppo`), and
     /// the host's reason a load was not attempted / failed (`set_ppo_error`).
     ppo: std::collections::BTreeMap<String, ppo::Net>,
@@ -162,7 +163,7 @@ impl Workbench {
             config,
             live: None,
             store: None,
-            pending_log: None,
+            pending_logs: std::collections::VecDeque::new(),
             ppo: std::collections::BTreeMap::new(),
             ppo_errors: std::collections::BTreeMap::new(),
             sweeps: crate::simlab_sweep::SweepRegistry::default(),
@@ -323,10 +324,11 @@ impl Workbench {
         Ok(out)
     }
 
-    /// The run log the last `quit` wrote, once (`None` afterwards or when
-    /// no run was live). The host stores it under `filename`.
+    /// The oldest run log not yet collected, once; `None` when every log
+    /// has been taken. A host calls it until `None` after any route that
+    /// can end a run, and stores each under `filename`.
     pub fn take_run_log(&mut self) -> Option<RunLog> {
-        self.pending_log.take()
+        self.pending_logs.pop_front()
     }
 
     /// `GET /api/mcts-runs` over the host's `(filename, text)` logs.
@@ -399,6 +401,21 @@ impl Workbench {
             .get(&key)
             .map(|r| ppo::missing_net_error(&sess.character, Some(r)));
         sess.set_ppo(net, error);
+    }
+
+    /// Install `sess` as the live run, quitting the one it replaces as
+    /// `/api/live/quit` would: that run's log is written, stamped `now`, for
+    /// the host to collect. Python's `LiveRuns.replace` and `import-state`
+    /// quit the prior run the same way, so starting over, importing,
+    /// resuming a recording or loading a save keeps the run that was being
+    /// played instead of dropping it.
+    fn replace_live(&mut self, sess: Session, now: &str) {
+        if let Some(prior) = self.live.as_mut() {
+            let log = runlog::write_run_log(prior, now);
+            prior.quit(log.as_ref().map(|l| l.filename.clone()));
+            self.pending_logs.extend(log);
+        }
+        self.install(sess);
     }
 
     /// Install `sess` as the live run (discarding the old one) with its
@@ -582,10 +599,6 @@ impl Workbench {
                 advisors::last_turn_grade(self.live()?, &config_of(body))?
                     .ok_or_else(|| ApiError::new(409, "no gradable turn just ended"))
             }
-            ("POST", "/api/live/last-move-regret") => {
-                advisors::last_move_regret(self.live()?, &config_of(body))?
-                    .ok_or_else(|| ApiError::new(409, "no prior combat move to assess"))
-            }
             ("POST", "/api/live/last-choice-grade") => self
                 .live()?
                 .last_choice_grade()?
@@ -669,17 +682,11 @@ impl Workbench {
             ("POST", "/api/live/wpa-review") => Ok(self.live()?.wpa_review(&config_of(body))?),
             ("POST", "/api/live/wpa-verify") => self.live_wpa_verify(body),
             ("POST", "/api/live/quit") => {
-                // The host stamps `now`; a host without a clock (the golden
-                // replay) gets the dump's pinned instant.
-                let now = body
-                    .get("now")
-                    .and_then(Value::as_str)
-                    .unwrap_or(runlog::DEFAULT_NOW_ISO)
-                    .to_string();
+                let now = host_now(body);
                 let sess = self.live()?;
                 let log = runlog::write_run_log(sess, &now);
                 let out = sess.quit(log.as_ref().map(|l| l.filename.clone()));
-                self.pending_log = log;
+                self.pending_logs.extend(log);
                 self.live = None;
                 Ok(out)
             }
@@ -858,7 +865,7 @@ impl Workbench {
                 ));
             }
         };
-        self.install(sess);
+        self.replace_live(sess, &host_now(body));
         Ok(live_step(state, &self.ctx()))
     }
 
@@ -1043,7 +1050,7 @@ impl Workbench {
             }
         };
         let notes = sess.import_notes();
-        self.install(sess);
+        self.replace_live(sess, &host_now(body));
         let mut step = live_step(state, &self.ctx());
         // The graft's warnings ride alongside the parser's: the user sees one
         // list.
@@ -1082,7 +1089,7 @@ impl Workbench {
                 ));
             }
         };
-        self.install(sess);
+        self.replace_live(sess, &host_now(body));
         Ok(live_step(state, &self.ctx()))
     }
 
@@ -1130,7 +1137,7 @@ impl Workbench {
                 return Err(ApiError::new(400, e.message));
             }
         };
-        self.install(sess);
+        self.replace_live(sess, &host_now(body));
         Ok(live_step(state, &self.ctx()))
     }
 
@@ -1244,9 +1251,10 @@ impl Workbench {
     }
 
     /// `POST /api/saves/load`: restore a save payload into a fresh session,
-    /// replacing any current one. 404 for an invalid payload, 409 if replay
+    /// replacing any current one (whose run log is written, stamped `now`;
+    /// see [`Self::replace_live`]). 404 for an invalid payload, 409 if replay
     /// diverges.
-    pub fn restore_save(&mut self, payload: &Value) -> Result<Value, ApiError> {
+    pub fn restore_save(&mut self, payload: &Value, now: &str) -> Result<Value, ApiError> {
         if !saves::is_valid(payload) {
             return Err(ApiError::new(404, "unknown save"));
         }
@@ -1286,7 +1294,7 @@ impl Workbench {
                 node_values.clone(),
             ) {
                 Ok(state) => {
-                    self.install(sess);
+                    self.replace_live(sess, now);
                     return Ok(live_step(state, &self.ctx()));
                 }
                 Err(e) => {
@@ -1339,6 +1347,16 @@ impl Workbench {
         self.install(sess);
         Ok(live_step(state, &self.ctx()))
     }
+}
+
+/// The host's clock from a request body (`now`, ISO-8601) for the run logs a
+/// route writes; a host without one (the golden replay) gets the dump's
+/// pinned instant.
+fn host_now(body: &Value) -> String {
+    body.get("now")
+        .and_then(Value::as_str)
+        .unwrap_or(runlog::DEFAULT_NOW_ISO)
+        .to_string()
 }
 
 /// `Instant`-based clock for native hosts (none on wasm32, where the host

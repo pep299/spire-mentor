@@ -80,6 +80,17 @@ export default function Reasoning({ scores, pv, advice, enemies, heading = true 
   const byQ = scores.map((s) => s.q).sort((a, b) => b - a);
   const top2Gap = byQ.length > 1 ? byQ[0] - byQ[1] : Infinity;
   const unresolved = scores.length > 1 && top2Gap < UNRESOLVED_TOP2_Q_GAP;
+
+  // The engine's own tie band (GH #1022): the moves it cannot tell from its
+  // pick, and the rule's reason for the ★. Read off the rows, never a
+  // threshold of the panel's.
+  const rowLabel = (s: Score) =>
+    `${s.action}${s.target_index != null ? ` → ${labelFor(s.target_index)}` : ""}`;
+  const star = scores.find((s) => s.is_best);
+  const band = scores
+    .filter((s) => s.in_band)
+    .sort((a, b) => (a.pick_rank ?? Infinity) - (b.pick_rank ?? Infinity));
+  const tieBand = !unsearched && star?.in_band && band.length > 1 ? band : null;
   return (
     <div>
       {heading && (
@@ -96,6 +107,15 @@ export default function Reasoning({ scores, pv, advice, enemies, heading = true 
           style={{ fontSize: 10, color: "var(--muted)", border: "1px solid var(--border)",
             borderRadius: 4, padding: "4px 6px", marginBottom: 8 }}>
           ~ too close to call — top two within {UNRESOLVED_TOP2_Q_GAP} Q
+        </div>
+      )}
+      {tieBand && (
+        <div className="mono" data-testid="tie-band"
+          title={"The search's tie band: these moves score within its tie_eps of the best, "
+            + "so it picks among them by rule rather than by value."}
+          style={{ fontSize: 10, color: "var(--muted)", marginBottom: 8 }}>
+          ≈ about equal: {tieBand.map(rowLabel).join(" ≈ ")}
+          {star?.pick_reason ? ` · ★ ${star.pick_reason}` : ""}
         </div>
       )}
       {/* Policy-ranked advice (no search visits): the recorded advisor ranking
@@ -127,7 +147,7 @@ export default function Reasoning({ scores, pv, advice, enemies, heading = true 
       <div className="mono" style={{ ...SCORE_GRID, fontSize: 11 }}>
         {scores.map((s) => {
           const share = totalVisits > 0 ? Math.round((s.visits / totalVisits) * 100) : 0;
-          const label = `${s.action}${s.target_index != null ? ` → ${labelFor(s.target_index)}` : ""}`;
+          const label = rowLabel(s);
           if (unsearched) {
             return (
               <Fragment key={`${s.stable_idx}:${s.target_index}`}>

@@ -119,13 +119,17 @@ def _csharp_card_id(name: str) -> str:
     Latent today — no scenario's card list names ``SLOTH`` — but a status card
     is exactly the kind of thing a future scenario adds. At most ONE suffix
     comes off: a registry id carries exactly one.
+
+    An enchantment suffix (``ID[+1]@ENCH:amount``, GH #1021) passes through
+    unchanged; the oracle's ``set_player`` parses it.
     """
+    name, at, ench = name.partition("@")
     base, plus, lvl = name.partition("+")
     for suffix in ("_CARD", "_STATUS"):
         if base.endswith(suffix):
             base = base[: -len(suffix)]
             break
-    return f"{base}+{lvl}" if plus else base
+    return (f"{base}+{lvl}" if plus else base) + (f"@{ench}" if at else "")
 
 
 def _csharp_init(g: Game, sc: Scenario) -> dict:
@@ -188,6 +192,7 @@ def _rust_init(
     sc: Scenario,
     monsters: list[str] | None = None,
     move_states: list[str | None] | None = None,
+    encounter_floor: int | None = None,
 ):
     """Build the Rust-side scenario state.
 
@@ -207,8 +212,21 @@ def _rust_init(
     rotation C# rolled. Harmless for every non-rotating monster — the
     Rust side returns `None` from `starter_args_for_move_state` and
     keeps the encounter-table default. Bead sts2-rs-u3wjj.
+
+    `encounter_floor`, when provided, is C#'s `TotalFloor` at room entry
+    (`get_state` total_floor). Rust then rolls the encounter's roster off the
+    same per-encounter `Rng(Seed + TotalFloor + hash(id))` C# used, so an
+    RNG-branched roster matches without `monsters` — which only lists the
+    LIVING enemies and so misses one a setup AoE (FestivePopper) already
+    killed (GH #1054). `run_seed` is the scenario's own seed, so passing it
+    leaves every other stream exactly as before.
     """
     rust_seed = rust_master_seed(SEED_STRING_CANONICAL)
+    floor_kwargs = (
+        {}
+        if encounter_floor is None
+        else {"run_seed": rust_seed, "encounter_floor": encounter_floor}
+    )
     # `rs_engine_call` passes the selected build as `game_version=`, so the
     # scenario's `RunRngSet` is seeded in that build's width.
     inner = rs_engine_call(
@@ -223,6 +241,7 @@ def _rust_init(
         monsters=monsters,
         potions=list(sc.potions),
         move_states=move_states,
+        **floor_kwargs,
     )
     return _RustStateAdapter(inner)
 
@@ -503,11 +522,21 @@ def _drain_rust_multi_select(state, pc: dict, max_iters: int) -> None:
     accounting holds whether the core offers single-index or bundled picks.
     """
     n0 = len(pc.get("cards") or [])
+    kind0 = pc.get("kind")
     target = min(max(int(pc.get("min_select") or 0), 1), n0)
     for _ in range(max_iters):
         raw = state.legal_actions()
         if not raw or any(a["action"] != "choose" for a in raw):
             return  # choice auto-closed (e.g. min == max cap reached)
+        # The choice auto-closed at its cap and the resumed flow opened a NEW
+        # one (ForegoneConclusion's 2-pick -> turn-start draw -> Tyranny's
+        # exhaust pick). Counting that choice's options against this one's
+        # `n0` read it as already committed and "finalized" it with an empty
+        # selection, skipping C#'s pick (Regent full seeds 2639/3197). Hand it
+        # back to the caller's loop instead.
+        cur = state.pending_choice() if hasattr(state, "pending_choice") else None
+        if cur is not None and (cur.get("kind") != kind0 or len(cur.get("cards") or []) > n0):
+            return
         nonempty = [a for a in raw if a.get("selection")]
         committed = n0 - len(nonempty)
         if committed >= target or not nonempty:

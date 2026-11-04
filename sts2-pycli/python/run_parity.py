@@ -93,6 +93,7 @@ _CS_PHASE = {
     "card_reward": "card_reward",
     "card_select": "card_select",
     "bundle_select": "bundle",
+    "potion_swap": "potion_swap",
     "game_over": "game_over",
     "unknown": "unknown",
 }
@@ -116,6 +117,7 @@ _RS_PHASE = {
     "boss_relic": "boss_relic",
     "bundle_select": "bundle",
     "treasure": "treasure",
+    "potion_swap": "potion_swap",
     "game_over": "game_over",
 }
 
@@ -283,6 +285,27 @@ def diff_maps(cs: dict | None, rs: dict | None) -> list[str]:
     return out
 
 
+def rust_finalize_atomic_select(r: Any, rs_view: dict[str, Any]) -> Any:
+    """Finalize a Rust ``card_select`` that the C# headless resolved atomically.
+
+    In combat the headless sets ``AutoResolveInline`` and takes the option-0
+    prefix ``[0, max(min_select, 1))`` (``HeadlessCardSelector.GetSelectedCards``).
+    ``skip_select`` finalizes Rust with no pick, which matches only while the
+    select is optional. A mandatory one (Tools of the Trade's discard,
+    ``min_select`` 1) needs the same prefix, or the hands split (GH #1054,
+    Silent:1007). The min-0 path keeps ``skip_select``, and a rejected prefix
+    falls back to it.
+    """
+    cards = rs_view.get("cards") or []
+    min_sel = int(rs_view.get("min_select") or 0)
+    if min_sel >= 1 and cards:
+        idxs = [str(c["index"]) for c in cards[: min(min_sel, len(cards))]]
+        nxt = r.act("select_cards", indices=",".join(idxs))
+        if not (isinstance(nxt, dict) and (nxt.get("error") or nxt.get("type") == "error")):
+            return nxt
+    return r.act("skip_select")
+
+
 # --------------------------------------------------------------------------- #
 # Choice enumeration from the C# decision view (the oracle). Each entry is a
 # ``(verb, kwargs)`` pair applicable to both backends via ``act``.
@@ -295,6 +318,10 @@ def enumerate_choices(g: Any, cs_view: dict[str, Any]) -> list[tuple[str, dict[s
         for o in cs_view.get("options") or []:
             if not o.get("is_locked") and o.get("enabled", True):
                 out.append(("choose_option", {"option_index": o["index"]}))
+        # MiniatureTent: after one option the rest site stays open and the
+        # player may leave with the rest unused (C# BeforeLocalRestSiteExited).
+        if dec == "rest_site" and cs_view.get("can_leave"):
+            out.append(("leave_room", {}))
 
     elif dec == "map_select":
         for c in cs_view.get("choices") or []:
@@ -327,6 +354,11 @@ def enumerate_choices(g: Any, cs_view: dict[str, Any]) -> list[tuple[str, dict[s
             for combo in itertools.islice(itertools.combinations(idxs, min_sel), 64):
                 out.append(("select_cards", {"indices": ",".join(str(i) for i in combo)}))
 
+    elif dec == "potion_swap":
+        # GH #1069: decline, or discard held slot k to take the reward potion.
+        for o in cs_view.get("options") or []:
+            out.append(("potion_swap", {"discard_slot": o.get("discard_slot")}))
+
     elif dec == "bundle_select":
         for b in cs_view.get("bundles") or []:
             out.append(("select_bundle", {"bundle_index": b["index"]}))
@@ -354,6 +386,15 @@ def enumerate_choices(g: Any, cs_view: dict[str, Any]) -> list[tuple[str, dict[s
             pass
 
     return out
+
+
+def potion_swap_enabled() -> bool:
+    """GH #1069: whether the lockstep runs both engines with
+    ``interactive_potion_swap`` (a full-belt potion reward becomes a
+    ``potion_swap`` decision, as on the real reward screen). On by default;
+    ``--no-potion-swap`` sets ``RUN_PARITY_POTION_SWAP=0``, which pool
+    workers inherit."""
+    return os.environ.get("RUN_PARITY_POTION_SWAP", "1") != "0"
 
 
 @dataclass
@@ -394,8 +435,13 @@ def run_one(
     g, r = CS(), RS()
     res = RunResult(seed=seed, steps=0, terminal="error")
     try:
-        cs_view = g.start(character=character, seed=seed, ascension=ascension)
-        rs_view = r.start(character=character, seed=seed, ascension=ascension)
+        swap = potion_swap_enabled()
+        cs_view = g.start(
+            character=character, seed=seed, ascension=ascension, interactive_potion_swap=swap
+        )
+        rs_view = r.start(
+            character=character, seed=seed, ascension=ascension, interactive_potion_swap=swap
+        )
 
         for step in range(max_steps):
             res.steps = step
@@ -425,7 +471,7 @@ def run_one(
             while (
                 rs_snap.phase == "card_select" and cs_snap.phase != "card_select" and sel_guard < 8
             ):
-                nxt_rs = r.act("skip_select")
+                nxt_rs = rust_finalize_atomic_select(r, rs_view)
                 if isinstance(nxt_rs, dict) and (
                     nxt_rs.get("error") or nxt_rs.get("type") == "error"
                 ):
@@ -1331,7 +1377,12 @@ def _record_cs_trajectory(
     terminal = "max_steps"
     try:
         watchdog.reset()
-        view = g.start(character=character, seed=seed, ascension=ascension)
+        view = g.start(
+            character=character,
+            seed=seed,
+            ascension=ascension,
+            interactive_potion_swap=potion_swap_enabled(),
+        )
         for _ in range(max_steps):
             watchdog.reset()  # per step: trips only a wedged step
             dec = view.get("decision") or view.get("type")
@@ -1396,7 +1447,12 @@ def _replay_against_rust(rec: dict[str, Any], stop_on_diverge: bool = True) -> R
     r = RS()
     res = RunResult(seed=seed, steps=0, terminal="error")
     try:
-        rs_view = r.start(character=character, seed=seed, ascension=ascension)
+        rs_view = r.start(
+            character=character,
+            seed=seed,
+            ascension=ascension,
+            interactive_potion_swap=potion_swap_enabled(),
+        )
         for step, e in enumerate(entries):
             res.steps = step
             cs_view = e["view"]
@@ -1433,7 +1489,7 @@ def _replay_against_rust(rec: dict[str, Any], stop_on_diverge: bool = True) -> R
             while (
                 rs_snap.phase == "card_select" and cs_snap.phase != "card_select" and sel_guard < 8
             ):
-                nxt = r.act("skip_select")
+                nxt = rust_finalize_atomic_select(r, rs_view)
                 if isinstance(nxt, dict) and (nxt.get("error") or nxt.get("type") == "error"):
                     break
                 rs_view = nxt
@@ -1571,8 +1627,17 @@ class _RunTraceCache:
         os.makedirs(self._dir, exist_ok=True)
 
     def _key(self, seed: str, character: str, ascension: int, max_steps: int) -> str:
+        key: dict[str, Any] = {
+            "seed": seed,
+            "character": character,
+            "asc": ascension,
+            "steps": max_steps,
+        }
+        if not potion_swap_enabled():
+            # The drop-mode trajectory differs from the swap-mode one (GH #1069).
+            key["potion_swap"] = False
         payload = json.dumps(
-            {"seed": seed, "character": character, "asc": ascension, "steps": max_steps},
+            key,
             sort_keys=True,
             separators=(",", ":"),
         )
@@ -1926,6 +1991,12 @@ def main() -> int:
     ap.add_argument("--steps", type=int, default=400)
     ap.add_argument("--seeds", type=int, default=1, help="run N seeds (seed, seed+1, ...)")
     ap.add_argument("--verbose", action="store_true")
+    ap.add_argument(
+        "--no-potion-swap",
+        action="store_true",
+        help="run both engines with the historical full-belt potion drop instead "
+        "of the real game's potion_swap decision (GH #1069)",
+    )
     ap.add_argument("--no-stop", action="store_true", help="keep going past first divergence")
     ap.add_argument(
         "--rng-parity",
@@ -2042,6 +2113,8 @@ def main() -> int:
     )
     add_game_version_arg(ap)
     args = ap.parse_args()
+    if args.no_potion_swap:
+        os.environ["RUN_PARITY_POTION_SWAP"] = "0"
     apply_game_version_arg(args)
 
     if args.sweep:

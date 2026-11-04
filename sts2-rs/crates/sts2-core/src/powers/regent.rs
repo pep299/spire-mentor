@@ -1,8 +1,7 @@
 #![allow(clippy::doc_markdown)]
 //! Regent character power listeners — bead `sts2-rs-jxz` (umbrella).
 //!
-//! Ported from `sts2-rl-agent@01c094d:sts2_env/powers/{remaining_a,remaining_b,turn_effects}.py`
-//! (Regent-exclusive PowerKinds). The Regent character revolves around a
+//! Regent-exclusive PowerKinds. The Regent character revolves around a
 //! "stars" resource: card plays generate/spend stars, and many powers in
 //! this module react to the stars pipeline (`on_stars_gained`,
 //! `on_stars_spent`) or the closely-coupled draw/energy/card-generation
@@ -97,9 +96,6 @@ pub const fn regent_owns(kind: PowerKind) -> bool {
 /// Returns the per-enemy damage value the dispatcher should apply for
 /// the triggering stars-{gained,spent} event (0 if the event delta is
 /// non-positive, i.e. no damage burst).
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/remaining_a.py:256`
-/// (`BlackHolePower.on_stars_spent` / `on_stars_gained`).
 #[must_use]
 pub const fn black_hole_damage_on_stars_event(power_amount: i32, stars_delta: i32) -> i32 {
     if stars_delta > 0 {
@@ -116,9 +112,6 @@ pub const fn black_hole_damage_on_stars_event(power_amount: i32, stars_delta: i3
 /// triggering `on_stars_spent` event. The Python pin in
 /// `remaining_a.py:413` calls `owner.gain_block(self.amount * stars)`
 /// only when `stars > 0`.
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/remaining_a.py:408`
-/// (`ChildOfTheStarsPower.on_stars_spent`).
 #[must_use]
 pub const fn child_of_the_stars_block_on_spend(power_amount: i32, stars_spent: i32) -> i32 {
     if stars_spent > 0 {
@@ -134,9 +127,6 @@ pub const fn child_of_the_stars_block_on_spend(power_amount: i32, stars_spent: i
 ///
 /// Returns the number of stars to grant; the dispatcher is
 /// responsible for clearing the power instance afterward.
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/turn_effects.py:207`
-/// (`StarNextTurnPower.after_side_turn_start`).
 #[must_use]
 pub const fn star_next_turn_stars_granted(power_amount: i32, is_owner_side: bool) -> i32 {
     if is_owner_side {
@@ -155,9 +145,6 @@ pub const fn star_next_turn_stars_granted(power_amount: i32, is_owner_side: bool
 /// Python pin passes `self.amount` directly into
 /// `owner.apply_power(STRENGTH, self.amount)` — for `DyingStar` this
 /// is the stored (negative) amount.
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/remaining_a.py:987`
-/// (`DyingStarPower.after_turn_end`).
 #[must_use]
 pub const fn dying_star_strength_delta_on_turn_end(power_amount: i32, is_owner_side: bool) -> i32 {
     if is_owner_side {
@@ -172,9 +159,6 @@ pub const fn dying_star_strength_delta_on_turn_end(power_amount: i32, is_owner_s
 /// draw count.
 ///
 /// Returns the additive draw bonus (0 if the threshold isn't met).
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/remaining_b.py:1161`
-/// (`PaleBlueDotPower.modify_hand_draw`).
 #[must_use]
 pub const fn pale_blue_dot_draw_bonus(power_amount: i32, cards_played_last_turn: i32) -> i32 {
     const CARD_PLAY_THRESHOLD: i32 = 5;
@@ -191,9 +175,6 @@ pub const fn pale_blue_dot_draw_bonus(power_amount: i32, cards_played_last_turn:
 /// Returns the block delta the dispatcher should grant per
 /// `on_card_generated` event. The Python pin grants
 /// `owner.gain_block(self.amount)` unconditionally per event.
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/remaining_b.py:1285`
-/// (`PillarOfCreationPower.on_card_generated`).
 #[must_use]
 pub const fn pillar_of_creation_block_per_generation(power_amount: i32) -> i32 {
     power_amount
@@ -209,9 +190,6 @@ pub const fn pillar_of_creation_block_per_generation(power_amount: i32) -> i32 {
 /// `power_amount` and calls `combat.gain_energy`). Encapsulates the
 /// `triggers = energy_spent // 4 - trigger_count` arithmetic from
 /// the pin verbatim, clamped to `>= 0`.
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/remaining_b.py:1051`
-/// (`OrbitPower.on_energy_spent`, `ENERGY_INCREMENT = 4`).
 #[must_use]
 pub const fn orbit_triggers_on_energy_spent(
     energy_spent_total_after: i32,
@@ -241,10 +219,6 @@ pub const fn orbit_triggers_on_energy_spent(
 /// Gate (per Python pin): the active `card_source` is
 /// `CardId::SovereignBlade`, the damage `target` is the owner of this
 /// power, and the damage props are `powered`.
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/remaining_a.py:492`
-/// (`ConqueroPower.modify_damage_multiplicative` /
-/// `after_turn_end`).
 #[must_use]
 pub const fn conqueror_damage_scale(
     is_sovereign_blade_source: bool,
@@ -260,9 +234,6 @@ pub const fn conqueror_damage_scale(
 
 /// `Conqueror` end-of-turn tick: decrements stack by 1 on the owner's
 /// side, otherwise leaves the stack untouched. Returns the new stack.
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/remaining_a.py:506`
-/// (`ConqueroPower.after_turn_end`).
 #[must_use]
 pub const fn conqueror_tick_on_turn_end(stack: i32, is_owner_side: bool) -> i32 {
     if is_owner_side {
@@ -279,9 +250,6 @@ pub const fn conqueror_tick_on_turn_end(stack: i32, is_owner_side: bool) -> i32 
 ///
 /// Returns the Strength delta to apply to the owner on
 /// `after_turn_end`, gated to the owner's side.
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/remaining_a.py:659`
-/// (`CrushUnderPower.after_turn_end`).
 #[must_use]
 pub const fn crush_under_strength_restore_on_turn_end(
     power_amount: i32,
@@ -301,9 +269,6 @@ pub const fn crush_under_strength_restore_on_turn_end(
 /// Returns the number of cards to select. Gated to owner-side
 /// AND the owner being a player; off-side or non-player returns 0
 /// (no-op).
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/remaining_a.py:1304`
-/// (`ForegoneConclusionPower.before_side_turn_start`).
 #[must_use]
 pub const fn foregone_conclusion_cards_to_pick(
     power_amount: i32,
@@ -320,9 +285,6 @@ pub const fn foregone_conclusion_cards_to_pick(
 /// `Furnace` — at the start of the owner's side turn, forge a card
 /// `amount` times (Regent forge mechanic). Returns the forge-call
 /// count; 0 off-side.
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/remaining_a.py:1354`
-/// (`FurnacePower.after_side_turn_start`).
 #[must_use]
 pub const fn furnace_forge_count(power_amount: i32, is_owner_side: bool) -> i32 {
     if is_owner_side {
@@ -337,9 +299,6 @@ pub const fn furnace_forge_count(power_amount: i32, is_owner_side: bool) -> i32 
 ///
 /// Returns the number of stars to grant; 0 if off-side or owner is
 /// not a player.
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/remaining_a.py:1382`
-/// (`GenesisPower.after_side_turn_start`).
 #[must_use]
 pub const fn genesis_stars_granted(
     power_amount: i32,
@@ -357,9 +316,6 @@ pub const fn genesis_stars_granted(
 /// `amount` `MonarchsGazeStrengthDown` to the target. Returns the
 /// `MonarchsGazeStrengthDown` delta to stack on the target; 0 if the
 /// dealer is not the owner or the damage props are not powered.
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/remaining_b.py:792`
-/// (`MonarchsGazePower.after_damage_given`).
 #[must_use]
 pub const fn monarchs_gaze_strength_down_amount(
     power_amount: i32,
@@ -377,9 +333,6 @@ pub const fn monarchs_gaze_strength_down_amount(
 /// an extra reward. Returns the gold delta to grant; unconditional
 /// per the Python pin (the `after_combat_victory` channel only fires
 /// on victory, so no extra gating is needed here).
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/remaining_c.py:258`
-/// (`RoyaltiesPower.after_combat_victory`).
 #[must_use]
 pub const fn royalties_gold_on_victory(power_amount: i32) -> i32 {
     power_amount
@@ -394,9 +347,6 @@ pub const fn royalties_gold_on_victory(power_amount: i32) -> i32 {
 /// (any positive stack). Surfaced as a typed predicate so callers
 /// route through `regent_owns` + this helper instead of touching the
 /// raw stack.
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/remaining_c.py:315`
-/// (`SeekingEdgePower` — flag-only, no overridden hooks).
 #[must_use]
 pub const fn seeking_edge_is_active(power_amount: i32) -> bool {
     power_amount > 0
@@ -404,9 +354,6 @@ pub const fn seeking_edge_is_active(power_amount: i32) -> bool {
 
 /// `Tyranny` — additive hand-draw bonus. Returns the draw delta the
 /// `modify_hand_draw` dispatcher should add for the owner's player.
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/remaining_c.py:1363`
-/// (`TyrannyPower.modify_hand_draw`).
 #[must_use]
 pub const fn tyranny_draw_bonus(power_amount: i32) -> i32 {
     power_amount
@@ -415,9 +362,6 @@ pub const fn tyranny_draw_bonus(power_amount: i32) -> i32 {
 /// `Tyranny` — at the start of the player owner's side turn, request
 /// the player to exhaust `amount` cards from hand. Returns the
 /// exhaust-request count; 0 off-side or for non-player owners.
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/remaining_c.py:1366`
-/// (`TyrannyPower.after_side_turn_start`).
 #[must_use]
 pub const fn tyranny_exhaust_request(
     power_amount: i32,
@@ -436,9 +380,6 @@ pub const fn tyranny_exhaust_request(
 /// (override the card's energy cost to 0), else `None` (leave cost
 /// untouched). Caller passes the running `cards_played_this_turn`
 /// counter and the owner-equality flag.
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/remaining_c.py:1531`
-/// (`VoidFormPower.modify_card_cost`).
 #[must_use]
 pub const fn void_form_cost_override(
     power_amount: i32,
@@ -457,9 +398,6 @@ pub const fn void_form_cost_override(
 /// `VoidForm` — increments the cards-played counter when the owner
 /// plays a card. Returns the new counter value (`prev_counter + 1` if
 /// owned by the owner, else unchanged).
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/remaining_c.py:1540`
-/// (`VoidFormPower.after_card_played`).
 #[must_use]
 pub const fn void_form_increment_on_play(prev_counter: i32, card_owned_by_owner: bool) -> i32 {
     if card_owned_by_owner {
@@ -472,9 +410,6 @@ pub const fn void_form_increment_on_play(prev_counter: i32, card_owned_by_owner:
 /// `VoidForm` — at the start of the owner's side turn, reset the
 /// cards-played counter to 0. Returns the new counter value (0 on
 /// owner side, otherwise the unchanged `prev_counter`).
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/remaining_c.py:1545`
-/// (`VoidFormPower.before_side_turn_start`).
 #[must_use]
 pub const fn void_form_reset_on_turn_start(prev_counter: i32, is_owner_side: bool) -> i32 {
     if is_owner_side {
@@ -496,9 +431,6 @@ pub const fn void_form_reset_on_turn_start(prev_counter: i32, is_owner_side: boo
 /// Gate (per Python pin): the card is colorless AND its `owner` is
 /// either the owner or unset (None == implicit owner-side, matches
 /// the Python `card_owner is owner or card_owner is None` branch).
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/remaining_a.py:131`
-/// (`ArsenalPower.after_card_played`).
 #[must_use]
 pub const fn arsenal_strength_on_card_played(
     power_amount: i32,
@@ -521,8 +453,7 @@ pub const fn arsenal_strength_on_card_played(
 /// The dispatcher loops over `combat.get_teammates_of(owner)` and
 /// calls `combat.forge(teammate, amount, source=self)`.
 ///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/remaining_b.py:177`
-/// (`HammerTimePower.after_forge`). The `after_forge` dispatcher
+/// The `after_forge` dispatcher
 /// already exists in `hooks.rs` (see `dispatch_after_forge`); wiring
 /// listeners is left to a follow-up plumbing pass.
 #[must_use]
@@ -545,9 +476,6 @@ pub const fn hammer_time_teammate_forge_amount(
 /// Returns the Strength delta the `after_card_played` dispatcher
 /// should apply (gated to owner-owned card plays). The accumulator
 /// (`_strength_applied` in Python) is tracked by the dispatcher.
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/monster.py:1073`
-/// (`MonologuePower.after_card_played`).
 #[must_use]
 pub const fn monologue_strength_per_card_played(
     strength_per_card: i32,
@@ -563,9 +491,6 @@ pub const fn monologue_strength_per_card_played(
 /// `Monologue` — at end of owner's turn, restore `-strength_applied`
 /// Strength (undo the accumulated buff) and signal removal. Returns
 /// the Strength delta the dispatcher should apply; 0 off-side.
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/monster.py:1079`
-/// (`MonologuePower.after_turn_end`).
 #[must_use]
 pub const fn monologue_strength_undo_on_turn_end(
     strength_applied: i32,
@@ -585,9 +510,6 @@ pub const fn monologue_strength_undo_on_turn_end(
 /// Gate (per Python pin): the card is Sovereign Blade AND its
 /// `owner` matches the power owner (or is None == implicit
 /// owner-side, mirroring Arsenal's branch).
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/remaining_b.py:1234`
-/// (`ParryPower.after_card_played`).
 #[must_use]
 pub const fn parry_block_on_sovereign_blade(
     power_amount: i32,
@@ -608,9 +530,6 @@ pub const fn parry_block_on_sovereign_blade(
 /// Gate (per Python pin): `blocked_amount > 0`, a dealer exists, and
 /// the incoming damage is `powered`. The dispatcher is responsible
 /// for issuing `combat.deal_damage(owner -> dealer, …, UNPOWERED)`.
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/damage_reactions.py:215`
-/// (`ReflectPower.on_damage_blocked`).
 #[must_use]
 pub const fn reflect_damage_to_dealer(
     blocked_amount: i32,
@@ -627,9 +546,6 @@ pub const fn reflect_damage_to_dealer(
 /// `Reflect` — at the start of the owner's side, decrement the
 /// power's stack by 1; the dispatcher prunes the power when the
 /// resulting stack drops to 0 or below. Returns the new stack.
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/damage_reactions.py:233`
-/// (`ReflectPower.after_side_turn_start`).
 #[must_use]
 pub const fn reflect_tick_on_turn_start(stack: i32, is_owner_side: bool) -> i32 {
     if is_owner_side {
@@ -643,9 +559,6 @@ pub const fn reflect_tick_on_turn_start(stack: i32, is_owner_side: bool) -> i32 
 /// is a player, generate `amount` Colorless cards directly into hand.
 /// Returns the number of cards to generate; 0 off-side or for
 /// non-player owners.
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/remaining_c.py:717`
-/// (`SpectrumShiftPower.before_side_turn_start`).
 #[must_use]
 pub const fn spectrum_shift_cards_to_generate(
     power_amount: i32,
@@ -662,9 +575,6 @@ pub const fn spectrum_shift_cards_to_generate(
 /// `SwordSage` — repeat-count modifier for Sovereign Blade card plays.
 /// Returns the number of times a Sovereign Blade should repeat
 /// (`amount + 1`, mirroring the Python `get_sovereign_blade_repeats`).
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/remaining_c.py:1006`
-/// (`SwordSagePower.get_sovereign_blade_repeats`).
 #[must_use]
 pub const fn sword_sage_sovereign_blade_repeats(power_amount: i32) -> i32 {
     power_amount + 1
@@ -673,9 +583,6 @@ pub const fn sword_sage_sovereign_blade_repeats(power_amount: i32) -> i32 {
 /// `SwordSage` — additive cost increase for Sovereign Blade card
 /// plays. Returns the extra energy cost the
 /// `modify_card_play_count` / cost-mod dispatcher should add.
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/remaining_c.py:1010`
-/// (`SwordSagePower.get_sovereign_blade_cost_increase`).
 #[must_use]
 pub const fn sword_sage_sovereign_blade_cost_increase(power_amount: i32) -> i32 {
     power_amount
@@ -685,9 +592,6 @@ pub const fn sword_sage_sovereign_blade_cost_increase(power_amount: i32) -> i32 
 /// gain `amount` star(s). Returns the stars-delta the
 /// `before_card_played` dispatcher should grant; 0 if the played
 /// card is not owner-owned.
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/remaining_c.py:1240`
-/// (`TheSealedThronePower.before_card_played`).
 #[must_use]
 pub const fn the_sealed_throne_stars_on_before_play(
     power_amount: i32,
@@ -709,9 +613,6 @@ pub const fn the_sealed_throne_stars_on_before_play(
 /// are `powered`, and the tracked attack matches the active
 /// card-source / attack (the dispatcher tracks `_command_to_modify`
 /// from `before_attack`).
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/damage_modifiers.py:57`
-/// (`VigorPower.modify_damage_additive`).
 #[must_use]
 pub const fn vigor_damage_additive(
     power_amount: i32,
@@ -733,9 +634,6 @@ pub const fn vigor_damage_additive(
 /// Gate (per Python pin): the attacker is the owner, the damage
 /// props are `powered`, the attack has a card-typed `model_source`,
 /// and no other attack is currently being tracked.
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/damage_modifiers.py:44`
-/// (`VigorPower.before_attack`).
 #[must_use]
 #[allow(clippy::fn_params_excessive_bools)] // mirrors the 4-way Python gate verbatim
 pub const fn vigor_should_track_attack(
@@ -752,9 +650,6 @@ pub const fn vigor_should_track_attack(
 /// in `before_attack`. Returns the new amount; the dispatcher prunes
 /// the power when the result drops to 0 (or below, if
 /// `allow_negative=false`).
-///
-/// Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/damage_modifiers.py:74`
-/// (`VigorPower.after_attack`).
 #[must_use]
 pub const fn vigor_consume_on_after_attack(
     power_amount: i32,

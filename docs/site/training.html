@@ -177,10 +177,12 @@
   <pre><code>return  = 0.5 · floors_reached / total_floors  +  0.5 · won
 shaping = Φ(s′) − Φ(s),   Φ = 0.1 · hp_fraction + 0.035 · upgraded_cards − 0.307</code></pre>
   <p><code>total_floors</code> is 45 (46 at A10, which adds a second boss).
+  That is the engine's floor counter, which skips the Ancient that opens each
+  act; the game itself counts 48 floors in a single-player run (49 at A10).
   The discount is γ = 1. Reaching Act 3 and dying is worth more than dying
   in Act 1, but only a win reaches 1.</p>
   <figure class="fig">
-    <div class="canvas"><svg viewBox="0 0 760 270" role="img" aria-label="The return grows linearly with the floor reached up to 0.5, and a win adds another 0.5"><defs><marker id="ah-ret" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrowhead"/></marker><marker id="aa-ret" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrowhead-acc"/></marker></defs><line x1="70" y1="220" x2="560" y2="220" class="grid"/><text x="60" y="224" class="s num" text-anchor="end">0.00</text><line x1="70" y1="172.5" x2="560" y2="172.5" class="grid"/><text x="60" y="176.5" class="s num" text-anchor="end">0.25</text><line x1="70" y1="125.0" x2="560" y2="125.0" class="grid"/><text x="60" y="129.0" class="s num" text-anchor="end">0.50</text><line x1="70" y1="77.5" x2="560" y2="77.5" class="grid"/><text x="60" y="81.5" class="s num" text-anchor="end">0.75</text><line x1="70" y1="30.0" x2="560" y2="30.0" class="grid"/><text x="60" y="34.0" class="s num" text-anchor="end">1.00</text><text x="70.0" y="240" class="s num" text-anchor="middle">0</text><text x="233.33333333333331" y="240" class="s num" text-anchor="middle">15</text><text x="396.66666666666663" y="240" class="s num" text-anchor="middle">30</text><text x="560.0" y="240" class="s num" text-anchor="middle">45</text><text x="315.0" y="262" class="m" text-anchor="middle">floor reached</text><line x1="70.0" y1="220" x2="560.0" y2="125.0" class="line-m"/><line x1="560.0" y1="125.0" x2="560.0" y2="30.0" class="path dash"/><circle cx="560.0" cy="30.0" r="6" class="acc"/><text x="572.0" y="34.0" class="acc-t" text-anchor="start" style="font-weight:650">win: 1.0</text><circle cx="396.66666666666663" cy="156.66666666666669" r="5" class="mutedfill"/><text x="406.66666666666663" y="174.66666666666669" class="m" text-anchor="start">died on floor 30: 0.33</text><text x="572.0" y="129.0" class="m" text-anchor="start">died at the last boss: 0.5</text><text x="70" y="16" class="s" text-anchor="start">return = 0.5 · floors / 45 + 0.5 · won   (46 floors at A10)</text></svg></div>
+    <div class="canvas"><svg viewBox="0 0 760 270" role="img" aria-label="The return grows linearly with the floor reached up to 0.5, and a win adds another 0.5"><defs><marker id="ah-ret" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrowhead"/></marker><marker id="aa-ret" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrowhead-acc"/></marker></defs><line x1="70" y1="220" x2="560" y2="220" class="grid"/><text x="60" y="224" class="s num" text-anchor="end">0.00</text><line x1="70" y1="172.5" x2="560" y2="172.5" class="grid"/><text x="60" y="176.5" class="s num" text-anchor="end">0.25</text><line x1="70" y1="125.0" x2="560" y2="125.0" class="grid"/><text x="60" y="129.0" class="s num" text-anchor="end">0.50</text><line x1="70" y1="77.5" x2="560" y2="77.5" class="grid"/><text x="60" y="81.5" class="s num" text-anchor="end">0.75</text><line x1="70" y1="30.0" x2="560" y2="30.0" class="grid"/><text x="60" y="34.0" class="s num" text-anchor="end">1.00</text><text x="70.0" y="240" class="s num" text-anchor="middle">0</text><text x="233.33333333333331" y="240" class="s num" text-anchor="middle">15</text><text x="396.66666666666663" y="240" class="s num" text-anchor="middle">30</text><text x="560.0" y="240" class="s num" text-anchor="middle">45</text><text x="315.0" y="262" class="m" text-anchor="middle">floor reached (engine count)</text><line x1="70.0" y1="220" x2="560.0" y2="125.0" class="line-m"/><line x1="560.0" y1="125.0" x2="560.0" y2="30.0" class="path dash"/><circle cx="560.0" cy="30.0" r="6" class="acc"/><text x="572.0" y="34.0" class="acc-t" text-anchor="start" style="font-weight:650">win: 1.0</text><circle cx="396.66666666666663" cy="156.66666666666669" r="5" class="mutedfill"/><text x="406.66666666666663" y="174.66666666666669" class="m" text-anchor="start">died on floor 30: 0.33</text><text x="572.0" y="129.0" class="m" text-anchor="start">died at the last boss: 0.5</text><text x="70" y="16" class="s" text-anchor="start">return = 0.5 · floors / 45 + 0.5 · won   (46 floors at A10)</text></svg></div>
     <figcaption>The base return, before potential-based shaping. Shaping adds the step-to-step change in Φ on top.</figcaption>
   </figure>
 
@@ -343,8 +345,11 @@ shaping = Φ(s′) − Φ(s),   Φ = 0.1 · hp_fraction + 0.035 · upgraded_card
     and cannot resolve effects below about 8 points; only full gates are
     trusted.</li>
     <li><strong>A cheap combat surrogate is not good enough to train
-    on.</strong> Agents trained against it ended runs with 34–50% of their
-    HP to spare: they learned a game easier than the real one.</li>
+    on.</strong> No agent was trained against it; it failed the check
+    before that. Replaying held-out runs with the surrogate fighting in
+    place of the search ended them 34–50% of max HP healthier than the
+    search did, with 0.64–0.68 of them surviving against 0.29. A policy
+    trained on it would have learned a game easier than the real one.</li>
   </ul>
 </section>
 
@@ -366,7 +371,8 @@ shaping = Φ(s′) − Φ(s),   Φ = 0.1 · hp_fraction + 0.035 · upgraded_card
   <p>In the real game, at Ascension 8, the champions deployed in August
   2026 (Ironclad <code>deckmut_it150</code>, Silent <code>asc_it300</code>)
   won 13 of 40 and 11 of 40 runs, driven through the Spire Mentor advisor at
-  8,000 simulations per combat decision and graded by the game's own run
+  8,000 simulations per combat decision (split over 8 root-parallel trees)
+  and graded by the game's own run
   history. The current champions have not yet been measured in the real
   game.</p>
 </section>

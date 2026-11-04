@@ -4,8 +4,16 @@ use super::prelude::*;
 /// Tank (Rare, 1 energy, Power). Bead `sts2-rs-vdl`: apply
 /// `PowerKind::Tank(1)` to the player. Mirrors
 /// `sts2-rl-agent@01c094d:sts2_env/cards/ironclad.py:2012-2013`.
+///
+/// Co-op: C# `TankPower.AfterApplied` (TankPower.cs:35-39) puts Guarded on
+/// every other living player. It runs only for a fresh instance; a second
+/// Tank stacks onto the first (`PowerCmd.ModifyAmount`) without it.
 pub(crate) fn play_tank(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
+    let fresh = state.player_power_amount(PowerKind::Tank) <= 0;
     apply_power_to_player(state, PowerKind::Tank, 1);
+    if fresh {
+        sts2_core::coop::tank_guards_teammates(state, 1);
+    }
     EffectResult::Resolved
 }
 

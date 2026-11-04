@@ -10,7 +10,6 @@ use super::prelude::*;
 /// excludes it. Spawn `10 - hand.len()` Debris status cards into hand via
 /// the generated-card path (bumps `generated_cards_this_combat` + fires
 /// `after_card_entered_combat`).
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L648
 pub(crate) fn play_crash_landing(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     deal_damage_all_enemies(state, current_damage(state));
     let to_add = sts2_core::cards::HAND_LIMIT.saturating_sub(state.player.hand.len());

@@ -270,16 +270,64 @@ DECK_OPS = (
     "grant",
     "shop_buy",
     "shop_remove",
+    # A Scroll Boxes pack: its member cards (obs tokens) and the pick-this-pack
+    # action token (GH #978, `card_bundles` feature). Took the spare row.
+    "bundle",
 )
 DECK_OP_IDX = {k: i for i, k in enumerate(DECK_OPS)}
-# `len(...) + 1`, deliberately: one SPARE row above the named entries, so the
-# next deck op to exist is a free append rather than a pad move. `N_FIXED`
-# lost exactly this slack and became a change no one can make cheaply.
-N_DECK_OP = len(DECK_OPS) + 1
+# The PAD row, pinned at 11. The table was defined with one SPARE row above
+# the named entries so the next deck op was a free append rather than a pad
+# move; "bundle" (GH #978) took it, so this is now `len(DECK_OPS)`. The NEXT
+# op moves the pad and every committed champion's `cat[10]` with it (the
+# `N_FIXED` trap): widen the table and re-export the fleet, or find a slot.
+N_DECK_OP = 11
+assert len(DECK_OPS) == N_DECK_OP, "deck-op pad must stay at row 11"
 
 
 def deck_op_index(kind: str) -> int:
     return DECK_OP_IDX.get(kind, DECK_OP_IDX["none"])
+
+
+# A card's spec-level type and rarity (`card_kind` feature, GH #977), in the
+# engine's enum order (`CardType`, `CardRarity`). Append-only: the position is
+# the embedding row, and the pad row is `len(...)`.
+CARD_TYPES = ("ATTACK", "SKILL", "POWER", "CURSE", "STATUS")
+CARD_RARITIES = (
+    "BASIC",
+    "COMMON",
+    "UNCOMMON",
+    "RARE",
+    "ANCIENT",
+    "STATUS",
+    "CURSE",
+    "EVENT",
+    "TOKEN",
+    "QUEST",
+)
+N_CARD_TYPE = len(CARD_TYPES)
+N_CARD_RARITY = len(CARD_RARITIES)
+
+
+@lru_cache(maxsize=1)
+def card_kind_rows() -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """``(type_row, rarity_row)`` per :func:`cards` index, pad where unknown.
+
+    Indexed by the card's embedding row (OOV included), so the encoder stamps
+    a token from the ``cat[0]`` it already wrote. Read from the engine's specs
+    (``sts2_rs.card_kinds``), the same source the Rust encoder uses.
+    """
+    reg = cards()
+    types = [N_CARD_TYPE] * reg.size
+    rarities = [N_CARD_RARITY] * reg.size
+    t_idx = {t: i for i, t in enumerate(CARD_TYPES)}
+    r_idx = {r: i for i, r in enumerate(CARD_RARITIES)}
+    for name, ctype, rarity in sts2_rs.card_kinds():
+        i = reg.index(name)
+        if i == reg.oov:
+            continue
+        types[i] = t_idx.get(ctype, N_CARD_TYPE)
+        rarities[i] = r_idx.get(rarity, N_CARD_RARITY)
+    return tuple(types), tuple(rarities)
 
 
 # Event option-index embedding rows (options beyond this clamp to the last).

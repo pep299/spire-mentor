@@ -319,3 +319,26 @@ fn afflicted_copy_stays_a_distinct_root_child() {
         "the root pick must be legal against the root state"
     );
 }
+
+/// GH #1017 follow-up: the co-op teammate play is its own `EdgeAction`
+/// variant, so a single-player `PlayCard` edge keeps its exact `Debug` text.
+/// The pinned tree fingerprints (`eval_levers`, `net_expand_order`) hash that
+/// text through `children` and `untried_actions`; an `ally: None` field on
+/// every edge broke all four pins without changing a single-player search.
+#[test]
+fn a_single_player_play_edge_prints_as_before() {
+    let edge = sts2_mcts::EdgeAction::PlayCard {
+        card_id: CardId::StrikeIronclad,
+        upgraded: false,
+        cost: 1,
+        local_cost: None,
+        free: false,
+        affliction: None,
+        target: Some(0),
+    };
+    assert_eq!(
+        format!("{edge:?}"),
+        "PlayCard { card_id: StrikeIronclad, upgraded: false, cost: 1, free: false, \
+         affliction: None, target: Some(0) }"
+    );
+}

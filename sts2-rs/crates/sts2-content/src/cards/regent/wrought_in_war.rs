@@ -6,7 +6,6 @@ use super::prelude::*;
 /// `DamageVar(7)` + `ForgeVar(7)`. OnUpgrade: Damage +2, Forge +2 →
 /// forge 9 upgraded. Bead `sts2-rs-nntl0` corrected the forge amount
 /// 5 → 7; bead `sts2-rs-w8a3s` adds the +2 forge upgrade rider.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L264
 pub(crate) fn play_wrought_in_war(
     state: &mut CombatState,
     target: Option<CreatureUid>,

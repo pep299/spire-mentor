@@ -1,4 +1,3 @@
-// port-pin-skip — version overlay; C#-first, cites the v0.111.0 decomp per row.
 //! Card metadata and values of game build v0.111.0 (GH #793, S8a part 1).
 //!
 //! Every card's `spec()` keeps returning its **v0.107.1** truth, so the
@@ -690,11 +689,7 @@ mod tests {
             }
             state.player.energy = 0;
             play(&mut state, CardId::Fuel, enemy);
-            assert_eq!(
-                i32::from(state.player.energy),
-                energy,
-                "{version} upgraded={upgraded}"
-            );
+            assert_eq!(state.player.energy, energy, "{version} upgraded={upgraded}");
             assert_eq!(
                 state.player.hand.len(),
                 hand,

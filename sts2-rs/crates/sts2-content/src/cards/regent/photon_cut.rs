@@ -5,7 +5,6 @@ use super::prelude::*;
 /// draw. Full body landed by `sts2-rs-k2gai` once `sts2-rs-yc2d`
 /// (request_card_choice + PutBack arm) shipped. Glimmer-mirror at
 /// regent.rs:962. Python pin: `regent.py:L228-L242`.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L228
 pub(crate) fn play_photon_cut(
     state: &mut CombatState,
     target: Option<CreatureUid>,
@@ -28,22 +27,12 @@ pub(crate) fn play_photon_cut(
     if state.player.hand.is_empty() || sts2_core::combat_loop::combat_is_ending(state) {
         return EffectResult::Resolved;
     }
-    let options: Vec<ChoiceOption> = state
-        .player
-        .hand
-        .iter()
-        .map(|uid| {
-            let idx = uid.0.get() as usize - 1;
-            let card = &state.cards[idx];
-            ChoiceOption {
-                card_id: card.card_id,
-                upgraded: card.upgraded,
-                card_uid: Some(*uid),
-                source_pile: Some(sts2_core::cards::PileKind::Hand),
-            }
-        })
-        .collect();
-    state.request_card_choice(ChoiceKind::PutBack, options, 1, 1, false);
+    // `CardSelectCmd.FromHand` with `CardSelectorPrefs(prompt, 1)` takes the
+    // hand without asking when it holds no more than the 1 card required
+    // (CardSelectCmd.cs:713); `open_put_back_from_hand` does exactly that and
+    // only surfaces the pick for 2+ cards (act23 Regent 1015: the lone card
+    // stayed in hand behind a phantom select).
+    state.open_put_back_from_hand();
     EffectResult::Resolved
 }
 

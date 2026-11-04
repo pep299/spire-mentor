@@ -113,3 +113,104 @@ def test_the_search_values_blocking_an_exposed_teammate() -> None:
     assert exposed == pytest.approx(11 * 0.5 * 100 / 14000, abs=0.01)
     safe = _lift_gain(_mawler_with_lift([{"hp": 40, "max_hp": 70, "block": 20}]))
     assert abs(safe) < 0.01
+
+
+def test_with_two_teammates_each_is_its_own_play_and_gets_the_card() -> None:
+    """GH #1017: with three players Lift is offered once per living teammate,
+    ``ally_index`` naming the ``allies[]`` entry (no enemy ``target_index``),
+    and lands on that one."""
+    second = dict(TEAMMATE, character="DEFECT", block=0)
+    wire = translate(to_headless_combat_play(_board([TEAMMATE, second])))
+    plays = _plays_of(_lift_state(wire), "LIFT")
+    assert sorted(p.get("ally_index") for p in plays) == [0, 1]
+    assert all(p.get("target_index") is None for p in plays)
+    for ally in (0, 1):
+        state = _lift_state(wire)
+        play = next(p for p in _plays_of(state, "LIFT") if p.get("ally_index") == ally)
+        state.apply(play)
+        blocks = [a["block"] for a in sts2_rs.state_to_dict(state)["allies"]]
+        want = [4, 0]
+        want[ally] += 11
+        assert blocks == want
+
+
+def test_a_dead_second_teammate_leaves_one_untargeted_play() -> None:
+    dead = dict(TEAMMATE, hp=0, is_dead=True)
+    wire = translate(to_headless_combat_play(_board([dead, TEAMMATE])))
+    plays = _plays_of(_lift_state(wire), "LIFT")
+    assert [(p.get("target_index"), p.get("ally_index")) for p in plays] == [(None, None)]
+
+
+def test_the_advisor_names_the_teammate_an_any_ally_card_goes_to() -> None:
+    from enemy_labels import ally_label
+    from realgame_advisor import _best_to_action, _tag_label
+    from sts2_hint.recommender import HintTag
+
+    allies = [{"character": "SILENT"}, {"character": "DEFECT"}, {"character": "SILENT"}]
+    assert ally_label(allies, 1) == "DEFECT"
+    assert ally_label(allies, 2) == "SILENT #2"
+    assert ally_label(allies, 3) is None
+    board = {
+        "allies": allies,
+        "enemies": [{"name": "Cultist"}],
+        "hand": [{"name": "Lift", "target_type": "AnyAlly"}],
+    }
+    tag = HintTag(stable_idx=0, win_prob=0.5, bucket_label="", is_best=True, ally_index=2)
+    assert _tag_label(tag, board) == "Lift → SILENT #2"
+    assert _best_to_action(tag, board) == {"action": "play", "card_index": 0, "ally_index": 2}
+
+
+def _human_lift(ally: int | None) -> dict[str, Any]:
+    """The mod's report of the human's Lift, at ``allies[ally]`` (GH #1017)."""
+    msg: dict[str, Any] = {
+        "type": "human_action",
+        "decision_type": "combat_action",
+        "action": "card_play",
+        "detail": "IRONCLAD played LIFT",
+        "card": {"id": "LIFT", "upgraded": False},
+        "target_index": None,
+    }
+    if ally is not None:
+        msg["ally_index"] = ally
+    return msg
+
+
+@pytest.mark.parametrize("ally", [0, 1])
+def test_the_mirror_follows_a_human_play_to_the_teammate_they_picked(ally: int) -> None:
+    """The mirror aims the human's Lift where the human did, not at the first
+    living teammate. Checked on the mirror's own prediction: reconciling with
+    the next board would hide a miss, since a teammate's block is a field
+    their own moves change (``teammate_adoptions``, not a desync)."""
+    from realgame_advisor_mirror import AdvisorMirror
+    from sts2_hint.recommender import RecommendConfig
+
+    second = dict(TEAMMATE, character="DEFECT", block=0)
+    wire = translate(to_headless_combat_play(_board([TEAMMATE, second])))
+    world = _lift_state(wire)
+    advisor = AdvisorMirror(RecommendConfig(sims=24))
+    board = {"act": 1, "floor": 3}
+    assert advisor.on_combat_board(sts2_rs.state_to_dict(world), board) is not None
+    play = next(p for p in _plays_of(world, "LIFT") if p.get("ally_index") == ally)
+    world.apply_step(play)
+    advisor.on_world_action(_human_lift(ally))
+    assert advisor.stats["followed"] == 1
+    assert advisor.live is not None
+    predicted = [a["block"] for a in sts2_rs.state_to_dict(advisor.live.state)["allies"]]
+    assert predicted == [a["block"] for a in sts2_rs.state_to_dict(world)["allies"]]
+
+
+def test_the_coach_grades_a_human_play_against_its_teammates_row() -> None:
+    """With a row per teammate, the human's Lift at ``allies[1]`` is that row."""
+    from realgame_coach import _match_row_index, native_action
+
+    info = {"hand": [("LIFT", False)], "potions": []}
+    native = native_action(_human_lift(1), info)
+    assert native == {"action": "play", "card_index": 0, "ally_index": 1}
+    rows = [
+        {"stable_idx": 0, "target_index": None, "ally_index": 0},
+        {"stable_idx": 0, "target_index": None, "ally_index": 1},
+    ]
+    assert _match_row_index(rows, native) == 1
+    plain = native_action(_human_lift(None), info)
+    assert plain == {"action": "play", "card_index": 0, "target_index": None}
+    assert _match_row_index([{"stable_idx": 0, "target_index": None}], plain) == 0

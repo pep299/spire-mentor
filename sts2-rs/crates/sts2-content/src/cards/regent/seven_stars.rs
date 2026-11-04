@@ -4,7 +4,6 @@ use super::prelude::*;
 /// `SevenStars` — deal AoE damage 7 times. Mirrors Python `for _ in
 /// range(7): _deal_damage_all(...)`. Each iteration recomputes alive
 /// targets inside [`deal_damage_all_enemies`].
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L820
 pub(crate) fn play_seven_stars(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     let dmg = current_damage(state);
     for _ in 0..7 {

@@ -476,7 +476,9 @@ fn run_mode_saves_restore_with_their_values_and_persist_round_trips() {
     assert_eq!(payload["node_values"], json!(values_before));
     let mut fresh = new_wb();
     fresh.load_ppo("Ironclad", &ironclad_champion()).unwrap();
-    let restored = fresh.restore_save(&payload).expect("restore");
+    let restored = fresh
+        .restore_save(&payload, sts2_workbench::runlog::DEFAULT_NOW_ISO)
+        .expect("restore");
     assert_eq!(restored["decision"], state_before["decision"]);
     assert_eq!(restored["state"]["floor"], state_before["state"]["floor"]);
     let after = call(&mut fresh, "GET", "/api/live/timeline", Value::Null);
@@ -652,4 +654,16 @@ fn choice_check_streams_you_vs_ai() {
         frames,
         vec![json!({"type": "error", "error": "nothing to check"})]
     );
+}
+
+/// The workbench shows the game's floor count (`RunState.TotalFloor`), which
+/// counts Neow as floor 1; the engine's own counter is still 0 there.
+#[test]
+fn neow_is_floor_one_like_the_game() {
+    let mut wb = new_wb();
+    start_neow(&mut wb, "FLOORONE");
+    let st = call(&mut wb, "GET", "/api/live/state", Value::Null);
+    assert_eq!(st["state"]["decision"], json!("event_choice"), "{st}");
+    assert_eq!(st["state"]["floor"], json!(1));
+    assert_eq!(st["state"]["act"], json!(1));
 }

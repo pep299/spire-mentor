@@ -106,11 +106,16 @@ def loc_id(raw_id: str) -> str:
       its shared id space, but the game's loc key / art stem is just ``SLOTH``.
 
     ``SLOTH_STATUS`` is the only ``_STATUS``-suffixed card id and no loc key
-    ends in ``_STATUS``, so the strip is safe here (relic/potion ids never end
-    in either suffix).
+    ends in ``_STATUS``, so the strip is safe for cards. It is NOT applied to a
+    ``RELIC.``-prefixed id: the Membership Card relic's loc key really is
+    ``MEMBERSHIP_CARD.title``, and stripping it to ``MEMBERSHIP`` left the name
+    unresolved and made the act-2/3 parity probe report a phantom relic
+    mismatch against C#'s ``MEMBERSHIPCARD``.
     """
-    bare = raw_id.split(".", 1)[1] if "." in raw_id else raw_id
+    prefix, bare = raw_id.split(".", 1) if "." in raw_id else ("", raw_id)
     stem = pascal_to_screaming_snake(bare)
+    if prefix.upper() == "RELIC":
+        return stem
     for suffix in ("_CARD", "_STATUS"):
         if stem.endswith(suffix):
             return stem[: -len(suffix)]

@@ -10,7 +10,7 @@
   "bg_col": 1,
   "bg_row": 7,
   "bg_seed": 206169372,
-  "floor": 7,
+  "floor": 8,
   "step_no": 0,
   "turn": null
  },
@@ -26,7 +26,7 @@
   "bg_row": 7,
   "bg_seed": 206169372,
   "decision": "game_over",
-  "floor": 7,
+  "floor": 8,
   "options": [],
   "player": {
    "block": 0,

@@ -10,7 +10,7 @@
   "bg_col": null,
   "bg_row": null,
   "bg_seed": 3,
-  "floor": 0,
+  "floor": 1,
   "step_no": 0,
   "turn": null
  },
@@ -52,7 +52,7 @@
     "title": "Cursed Pearl"
    }
   ],
-  "floor": 0,
+  "floor": 1,
   "options": [
    {
     "action": "choose_option",

@@ -148,20 +148,19 @@ fn lethal_anchor_set_when_kill_exists() {
 
 #[test]
 fn lethal_anchor_covers_a_random_killing_plan() {
-    let mut state = fixture(&[CardId::PommelStrike], 6, &[], 3);
-    push_draw(
-        &mut state,
-        &[CardId::StrikeIronclad, CardId::DefendIronclad, CardId::Bash],
-    );
+    // Sword Boomerang's hits pick a random enemy, so its killing play ends
+    // on a chance node. (A Pommel Strike kill no longer does: the draw after
+    // the lethal hit moves no card, CardPileCmd.cs:822.)
+    let state = fixture(&[CardId::SwordBoomerang], 6, &[], 3);
     let set = plans(&state);
     let flags = anchors(&state, &set);
-    let pommel = set
+    let boomerang = set
         .plans
         .iter()
         .position(|p| matches!(p.actions.first(), Some(Action::PlayCard { .. })))
-        .expect("a Pommel Strike plan");
-    assert_eq!(set.plans[pommel].end, PlanEnd::Chance, "{set:?}");
-    assert!(flags[pommel].lethal, "{flags:?}");
+        .expect("a Sword Boomerang plan");
+    assert_eq!(set.plans[boomerang].end, PlanEnd::Chance, "{set:?}");
+    assert!(flags[boomerang].lethal, "{flags:?}");
     assert_eq!(flags.iter().filter(|f| f.lethal).count(), 1, "{flags:?}");
 }
 

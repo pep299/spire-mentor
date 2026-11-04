@@ -60,7 +60,7 @@ fn state_with(relic: RelicKind, hand: &[CardId], energy: i8) -> CombatState {
         state.cards.push(card);
         state.player.hand.push(uid);
     }
-    state.player.energy = energy;
+    state.player.energy = i32::from(energy);
     state.phase = sts2_core::CombatPhase::PlayerPlayPhase;
     state
 }

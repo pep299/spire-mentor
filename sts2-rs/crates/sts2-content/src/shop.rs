@@ -14,9 +14,6 @@
 //!   normal-pool [`PotionKind`] list filtered by `(rarity,
 //!   character_lock, !is_event_only)`.
 //!
-//! Pin: `sts2-rl-agent@01c094d:sts2_env/run/shop.py:399-455`
-//! (`generate_shop_inventory`) + 201-353 (`_create_*` helpers).
-//!
 //! ## RNG order divergence (documented)
 //!
 //! Python interleaves rarity-roll → candidate-pick → price for each

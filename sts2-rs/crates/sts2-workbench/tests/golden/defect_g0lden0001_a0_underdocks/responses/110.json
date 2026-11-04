@@ -14,7 +14,7 @@
    "bg_col": 2,
    "bg_row": 8,
    "bg_seed": 1772253313,
-   "floor": 8,
+   "floor": 9,
    "step_no": 0,
    "turn": null
   },
@@ -256,7 +256,7 @@
    ],
    "context": "remove",
    "decision": "card_select",
-   "floor": 8,
+   "floor": 9,
    "max_select": 1,
    "min_select": 0,
    "options": [
@@ -628,7 +628,7 @@
       "upgraded": false
      }
     ],
-    "gold": 96,
+    "gold": 95,
     "hp": 41,
     "max_hp": 75,
     "name": "Defect",
@@ -680,7 +680,7 @@
      "name": "FOCUS_POTION.title"
     },
     {
-     "cost": 50,
+     "cost": 48,
      "id": "EXPLOSIVE_AMPOULE",
      "index": 2,
      "is_available": true,

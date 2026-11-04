@@ -6,7 +6,7 @@ export type CombatPreset = "quick" | "benchmark";
 /** The sim budget the two presets stand for. `benchmark` is the offline
  *  win-rate sweep's budget, so a run at it is comparable to a benchmarked
  *  number; `quick` trades that away for iteration speed. */
-export const PRESET_SIMS: Record<CombatPreset, { monster: number; boss: number }> = {
+const PRESET_SIMS: Record<CombatPreset, { monster: number; boss: number }> = {
   quick: { monster: 200, boss: 800 },
   benchmark: { monster: 1000, boss: 4000 },
 };

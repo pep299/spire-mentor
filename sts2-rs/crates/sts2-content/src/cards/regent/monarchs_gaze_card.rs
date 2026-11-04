@@ -2,7 +2,6 @@
 use super::prelude::*;
 
 /// `MonarchsGazeCard` — apply 1 `MonarchsGaze` to self.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L797
 pub(crate) fn play_monarchs_gaze_card(
     state: &mut CombatState,
     _t: Option<CreatureUid>,

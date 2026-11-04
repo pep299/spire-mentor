@@ -7,7 +7,6 @@ use super::prelude::*;
 ///   OnUpgrade: base.DynamicVars.Forge.UpgradeValueBy(4m);
 /// `SeekingEdgePower(1m)` is hardcoded in C# OnPlay and not
 /// upgrade-scaled. Bead `sts2-rs-w8a3s`.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L813
 pub(crate) fn play_seeking_edge(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     // C# order: `Apply<SeekingEdgePower>` THEN `ForgeCmd.Forge`. Applying the
     // power first matters because the forge flips every blade's `target_type`

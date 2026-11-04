@@ -1,4 +1,3 @@
-// Ported from sts2-rl-agent@01c094d:sts2_env/relics/starter.py
 //! Canonical non-Ironclad starter relics — bead `sts2-rs-evs` (P7-2).
 //!
 //! Ports the four canonical non-Ironclad starter-relic factories from

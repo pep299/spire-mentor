@@ -5,7 +5,9 @@ import {
   bugReportEndpointAvailable,
   captureBrowserBugReport,
   fetchBrowserBugReport,
+  importReportPosition,
   loadReportIntoWorkbench,
+  reportGamePosition,
   reportLoadKind,
   reportRunFilename,
   resetBugReportProbe,
@@ -161,5 +163,31 @@ describe("loading a report into the reader's workbench", () => {
     // The engine's refusal comes through.
     const { api: refusing } = fakeApi({ "POST /api/live/import": jsonRes({ detail: "persisted session is empty" }, 409) });
     await expect(loadReportIntoWorkbench(base({ persist }), { api: refusing })).rejects.toThrow("409 persisted session is empty");
+  });
+});
+
+describe("the game position a report carries", () => {
+  const base = { schema_version: 1, repro: {}, ui: { screen: null, overlay: null }, note: null };
+  const position = { type: "advice_request", advice_for: "card_reward", game_version: "v0.111.0" };
+
+  it("a mod report's game_state; a bundled-workbench report's live_game; nothing else", () => {
+    const mod = { ...base, meta: { source: "mod" }, state: { game_state: position } } as BugReportDump;
+    expect(reportGamePosition(mod)).toBe(position);
+    const bundled = { ...base, meta: { mode: "replay" }, state: { game_state: { floor: 3 }, live_game: position } } as BugReportDump;
+    expect(reportGamePosition(bundled)).toBe(position);
+    // A workbench step is not a mod message, whoever claims it.
+    const plain = { ...base, meta: { mode: "live" }, state: { game_state: { floor: 3 } } } as BugReportDump;
+    expect(reportGamePosition(plain)).toBeNull();
+    const fake = { ...base, meta: { source: "mod" }, state: { game_state: { floor: 3 } } } as BugReportDump;
+    expect(reportGamePosition(fake)).toBeNull();
+  });
+
+  it("imports it through the state import, in the build it was taken in", async () => {
+    const { api, calls } = fakeApi({ "POST /api/live/import-state": { idx: 0, import: { lane: "run" } } });
+    const mod = { ...base, meta: { source: "mod" }, state: { game_state: position } } as BugReportDump;
+    expect(await importReportPosition(mod, { api })).toEqual({ lane: "run" });
+    expect(calls[0].body).toEqual({ payload: JSON.stringify(position), lane: "auto", game_version: "v0.111.0" });
+    const none = { ...base, meta: {}, state: {} } as BugReportDump;
+    await expect(importReportPosition(none, { api })).rejects.toThrow("no game position");
   });
 });

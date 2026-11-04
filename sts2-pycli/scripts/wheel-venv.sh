@@ -89,6 +89,64 @@ CANONICAL_MAIN="$(cd "$PYCLI_DIR/../sts2-rs" 2>/dev/null && pwd -P || echo "$PYC
 
 die() { echo "wheel-venv: $*" >&2; exit 1; }
 
+# Venv layout (GH #506). A POSIX venv keeps its interpreter at `bin/python` and
+# the extension at `lib/python3.X/site-packages/sts2_rs/*.so`; a native Windows
+# venv (this script under Git Bash) uses `Scripts/python.exe` and
+# `Lib/site-packages/sts2_rs/*.pyd`; an MSYS2/mingw Python mixes the two
+# (`bin/python.exe`, `lib/python3.X/site-packages/sts2_rs/*.pyd`). Probing only
+# the POSIX paths made `ensure_venv` miss an existing Windows venv and abort on
+# `uv venv`, so the freshness gate below was unreachable there and a stale
+# wheel went unnoticed. Every venv probe goes through these helpers.
+#
+# The paths are globbed rather than asked of the interpreter
+# (`sysconfig.get_paths()`): under Git Bash a native Python answers with
+# `C:\…` paths that would need `cygpath` before bash could glob them, and the
+# self-heal below must find the extension even when it no longer imports.
+is_windows() {
+  case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) return 0 ;; esac
+  return 1
+}
+
+# The venv's interpreter: whichever layout exists, else this platform's default
+# (so a not-yet-created venv is probed where `uv venv` will put it).
+venv_python() {
+  local venv="$1"
+  if [ -x "$venv/bin/python" ]; then
+    echo "$venv/bin/python"
+  elif [ -x "$venv/Scripts/python.exe" ]; then
+    echo "$venv/Scripts/python.exe"
+  elif is_windows; then
+    echo "$venv/Scripts/python.exe"
+  else
+    echo "$venv/bin/python"
+  fi
+}
+
+# The venv's executables dir (`bin` / `Scripts`), for PATH.
+venv_bin() { dirname "$(venv_python "$1")"; }
+
+# The installed sts2_rs extension module(s), one per line, any layout: either
+# suffix under either site-packages root.
+venv_ext_modules() {
+  local venv="$1" f
+  for f in "$venv"/lib/python*/site-packages/sts2_rs/*.so \
+           "$venv"/lib/python*/site-packages/sts2_rs/*.pyd \
+           "$venv"/Lib/site-packages/sts2_rs/*.pyd \
+           "$venv"/Lib/site-packages/sts2_rs/*.so; do
+    if [ -e "$f" ]; then echo "$f"; fi
+  done
+  return 0
+}
+
+# The first of those, or empty. Not `venv_ext_modules | head -1`: under
+# `pipefail` a second match can SIGPIPE the producer, and `set -e` then kills
+# the script wherever it was only printing a banner.
+venv_first_ext_module() {
+  local so=""
+  IFS= read -r so < <(venv_ext_modules "$1") || true
+  echo "$so"
+}
+
 # Resolve the sts2-rs checkout to operate on.
 #   1. explicit SRC arg / $STS2_RS_SRC
 #   2. the git toplevel owning $PWD, if that toplevel looks like sts2-rs
@@ -149,7 +207,7 @@ venv_for() {
 
 ensure_venv() {
   local venv="$1"
-  if [ ! -x "$venv/bin/python" ]; then
+  if [ ! -x "$(venv_python "$venv")" ]; then
     echo "wheel-venv: creating venv $venv" >&2
     if command -v uv >/dev/null 2>&1; then
       uv venv "$venv" >&2
@@ -172,7 +230,7 @@ ensure_venv() {
 ensure_app_deps() {
   local venv="$1"
   ensure_venv "$venv"
-  "$venv/bin/python" -c "import uvicorn, fastapi, pydantic" >/dev/null 2>&1 && return 0
+  "$(venv_python "$venv")" -c "import uvicorn, fastapi, pydantic" >/dev/null 2>&1 && return 0
   if ! command -v uv >/dev/null 2>&1; then
     echo "wheel-venv: uv not found — cannot provision app deps into $venv (workbench/simlab won't import)" >&2
     return 0
@@ -198,7 +256,21 @@ relink_dot_venv() {
     return 0
   fi
   local target=".venv-h/$(basename "$venv")"   # relative, matches existing convention
-  ln -sfn "$target" "$dot"
+  if is_windows; then
+    # Git Bash's `ln -s` silently DEEP-COPIES a directory unless native
+    # symlinks are enabled (MSYS=winsymlinks:nativestrict plus Developer Mode),
+    # and the copy is a real dir that every later build leaves as-is, so
+    # `.venv` went stale for good. A junction needs no privilege; MSYS reports
+    # it as a symlink (`-L`), and `rm -f` removes only the link.
+    # One string for cmd (MSYS would rewrite a separate `/J` into a path),
+    # run from $PYCLI_DIR with relative, space-free names so nothing needs
+    # quoting (MSYS escapes embedded quotes in a way cmd does not parse).
+    [ -L "$dot" ] && rm -f "$dot"
+    ( cd "$PYCLI_DIR" && cmd //c "mklink /J .venv .venv-h\\$(basename "$venv")" >/dev/null ) \
+      || { echo "wheel-venv: could not junction $dot -> $venv" >&2; return 0; }
+  else
+    ln -sfn "$target" "$dot"
+  fi
   echo "wheel-venv: .venv -> $target" >&2
 }
 
@@ -211,7 +283,7 @@ relink_dot_venv() {
 verify_fresh() {
   local venv="$1" src="$2"
   [ "${STS2_SKIP_WHEEL_CHECK:-0}" = "1" ] && return 0
-  PYTHONPATH="$PYCLI_DIR/python" "$venv/bin/python" \
+  PYTHONPATH="$PYCLI_DIR/python" "$(venv_python "$venv")" \
     -c "import sys, parity_audit; parity_audit.assert_wheel_fresh(sys.argv[1])" "$src" 2>&1
 }
 
@@ -222,8 +294,10 @@ verify_fresh() {
 # that predates build_info) means "no".
 installed_pgo_fresh() {
   local venv="$1" src="$2"
-  [ -x "$venv/bin/python" ] || return 1
-  "$venv/bin/python" -I - "$src" >/dev/null 2>&1 <<'PY'
+  local py
+  py="$(venv_python "$venv")"
+  [ -x "$py" ] || return 1
+  "$py" -I - "$src" >/dev/null 2>&1 <<'PY'
 import sys
 
 import sts2_rs
@@ -272,6 +346,17 @@ build_into() {
   local mutex="$src/scripts/build-mutex.sh"
   local -a prefix=()
   [ -x "$mutex" ] && prefix=("$mutex")
+  # maturin from PATH (`cargo install` / `pipx install`), else an ephemeral
+  # one through uv, pinned to sts2-py's build-backend range. Windows boxes set
+  # up by install-windows-deps.ps1 have uv but no maturin (their documented
+  # flow is `uv sync`), so a bare `maturin` failed here with "command not
+  # found" after the venv and app deps were already provisioned.
+  local -a maturin=(maturin)
+  if ! command -v maturin >/dev/null 2>&1; then
+    command -v uv >/dev/null 2>&1 \
+      || die "maturin not found on PATH and no uv to fetch it (cargo install maturin)"
+    maturin=(uv tool run --from 'maturin>=1.7,<2.0' maturin)
+  fi
   # The `build_info()` PGO stamps are pgo_wheel.sh's alone: strip any that
   # leaked into the caller's env so a plain build can never claim PGO.
   # Run from $src: rustup picks the toolchain from the cwd's
@@ -280,8 +365,8 @@ build_into() {
   run_maturin() {
     echo "wheel-venv: maturin develop --release ($src) -> $venv" >&2
     ( cd "$src" && env -u STS2_WHEEL_PGO_PROFDATA_SHA256 -u STS2_WHEEL_PGO_INSTRUMENTED \
-      -u STS2_WHEEL_TARGET_CPU VIRTUAL_ENV="$venv" PATH="$venv/bin:$PATH" \
-      "${prefix[@]}" maturin develop --release -m "$manifest" >&2 )
+      -u STS2_WHEEL_TARGET_CPU VIRTUAL_ENV="$venv" PATH="$(venv_bin "$venv"):$PATH" \
+      "${prefix[@]}" "${maturin[@]}" develop --release -m "$manifest" >&2 )
   }
   run_maturin
 
@@ -294,7 +379,13 @@ build_into() {
   if ! out="$(verify_fresh "$venv" "$src")"; then
     echo "wheel-venv: post-build check says the wheel is STALE — self-healing (rm .so + recompile)…" >&2
     printf '%s\n' "$out" >&2
-    rm -f "$venv"/lib/python*/site-packages/sts2_rs/*.so 2>/dev/null || true
+    # A failed rm must not trip `set -e` (the old glob carried `|| true`): on
+    # Windows another process holding the .pyd makes it undeletable, and the
+    # recompile + re-verify below still reports that case with its fix.
+    local ext
+    while IFS= read -r ext; do
+      rm -f "$ext" || echo "wheel-venv: could not remove $ext (in use?) — recompiling over it" >&2
+    done < <(venv_ext_modules "$venv")
     run_maturin
     if ! out="$(verify_fresh "$venv" "$src")"; then
       printf '%s\n' "$out" >&2
@@ -413,10 +504,10 @@ guard_ambiguous_run() {
 # venv-path contract).
 binding_banner() {
   local src="$1" venv="$2" so so_mtime="" build=""
-  so="$(ls "$venv"/lib/python*/site-packages/sts2_rs/*.so 2>/dev/null | head -1)"
+  so="$(venv_first_ext_module "$venv")"
   if [ -n "$so" ] && [ -e "$so" ]; then
     so_mtime="$(date -r "$so" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || true)"
-    build="$("$venv/bin/python" -I -c 'import sts2_rs; f = getattr(sts2_rs, "build_info", None); i = f() if f else {}; print("PGO, profdata sha256 " + i["profdata_sha256"][:12] if i.get("pgo") else "plain")' 2>/dev/null || true)"
+    build="$("$(venv_python "$venv")" -I -c 'import sts2_rs; f = getattr(sts2_rs, "build_info", None); i = f() if f else {}; print("PGO, profdata sha256 " + i["profdata_sha256"][:12] if i.get("pgo") else "plain")' 2>/dev/null || true)"
   else
     so="(not built yet)"
   fi
@@ -500,7 +591,7 @@ case "$cmd" in
       # Pinned to a prebuilt venv. With content addressing the venv path encodes
       # the source hash, so "missing" means the engine source changed (or was
       # never built) — fail loudly instead of silently running an empty venv.
-      if [ ! -x "$venv/bin/python" ]; then
+      if [ ! -x "$(venv_python "$venv")" ]; then
         die "WHEEL_VENV_NO_BUILD=1 but no prebuilt venv for this source:
    $venv
  The engine source hash moved (you edited the engine) or it was never built.
@@ -509,7 +600,7 @@ case "$cmd" in
     fi
     binding_banner "$src" "$venv"
     export VIRTUAL_ENV="$venv"
-    export PATH="$venv/bin:$PATH"
+    export PATH="$(venv_bin "$venv"):$PATH"
     export PYTHONPATH="$PYCLI_DIR/python${PYTHONPATH:+:$PYTHONPATH}"
     cd "$PYCLI_DIR"
     exec "$@"
@@ -517,6 +608,27 @@ case "$cmd" in
   gc)
     # Prune content-addressed venvs no live checkout needs (best-effort).
     reachable_prune || true
+    ;;
+  venv-layout)
+    # Low-level / testing (GH #506): print what the layout helpers resolve for
+    # the venv dir $1 — `python=`, `bin=`, `first=` (the banner's module),
+    # then one `ext=` line per installed sts2_rs extension module. Pure path
+    # logic, no build.
+    [ "$#" -eq 1 ] || die "venv-layout: usage: venv-layout <venv-dir>"
+    echo "python=$(venv_python "$1")"
+    echo "bin=$(venv_bin "$1")"
+    # Called directly, not inside `$(…)`, so it runs under `set -e` the way
+    # the old banner pipeline did (a command substitution drops errexit).
+    printf 'first='; venv_first_ext_module "$1"
+    while IFS= read -r ext; do echo "ext=$ext"; done < <(venv_ext_modules "$1")
+    ;;
+  relink-dot-venv)
+    # Low-level / testing: point <pycli-dir>/.venv at <pycli-dir>/.venv-h/<hash>
+    # exactly as a worktree build does (a junction on Windows, where Git
+    # Bash's `ln -s` deep-copies). No build.
+    [ "$#" -eq 2 ] || die "relink-dot-venv: usage: relink-dot-venv <pycli-dir> <hash>"
+    PYCLI_DIR="$1"
+    relink_dot_venv "$PYCLI_DIR/.venv-h/$2"
     ;;
   gc-prune)
     # Low-level / testing: remove $1/<dir> whose basename is NOT in the

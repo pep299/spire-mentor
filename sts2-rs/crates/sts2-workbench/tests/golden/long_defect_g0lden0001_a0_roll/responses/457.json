@@ -1,0 +1,87 @@
+{
+ "assumptions": {
+  "energy": 3,
+  "hand": 5,
+  "samples": 200
+ },
+ "block": {
+  "per_turn": 8.3,
+  "scaling_cards": []
+ },
+ "composition": {
+  "by_rarity": {
+   "Basic": 9,
+   "Common": 8,
+   "Quest": 1,
+   "Rare": 1,
+   "Uncommon": 4
+  },
+  "by_type": {
+   "Attack": 11,
+   "Power": 1,
+   "Quest": 1,
+   "Skill": 10
+  },
+  "dead_cards": 0,
+  "energy_curve": {
+   "0": 5,
+   "1": 15,
+   "2": 2,
+   "X": 1
+  },
+  "unupgraded_basics": 8
+ },
+ "damage": {
+  "aoe_attacks": [
+   "Sweeping Beam"
+  ],
+  "attack_count": 11,
+  "per_turn": 19.4,
+  "scaling_cards": [
+   "Zap",
+   "Rocket Punch",
+   "Rocket Punch"
+  ],
+  "single_target": 17.8,
+  "vs_group": 21.0
+ },
+ "deck_size": 23,
+ "lenses": {
+  "boss": 32.2,
+  "hallway": 34.6,
+  "scaling": 30.9
+ },
+ "scores": {
+  "block": 34.0,
+  "damage": 38.4,
+  "velocity": 24.0,
+  "volume": 31.5
+ },
+ "velocity": {
+  "bottleneck": "energy",
+  "cards_per_turn": 4.0,
+  "dilution": 0.65,
+  "draw_limited_turns": 1.3,
+  "energy_limited_turns": 4.6,
+  "engine_cards": 5,
+  "extra_per_turn": 0.4,
+  "tags": {
+   "draw": 4,
+   "energy": 1
+  }
+ },
+ "warnings": [
+  {
+   "severity": "warn",
+   "text": "Thin on block and no block engine — big hits will land in Act 2+."
+  },
+  {
+   "severity": "info",
+   "text": "Low velocity — few draw/energy cards; you'll often draw the wrong hand."
+  },
+  {
+   "severity": "info",
+   "text": "Energy-limited — cards stranded in hand; more energy helps, more draw won't."
+  }
+ ]
+}

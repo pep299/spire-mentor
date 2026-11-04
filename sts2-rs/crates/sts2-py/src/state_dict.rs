@@ -418,7 +418,7 @@ mod tests {
             carried.inner.combat_log.unmovable_card_block_plays.push(0);
             carried.inner.combat_log.next_card_play = 3;
             fresh
-                .transplant_hidden(&carried, None, false, None, None)
+                .transplant_hidden(&carried, None, false, None, None, true)
                 .unwrap();
             assert_eq!(fresh.inner.player.card_plays_started_this_turn, 0);
             assert_eq!(fresh.inner.combat_log.cards_started_this_turn, [0; 5]);
@@ -1957,6 +1957,17 @@ mod tests {
         // Just verify it's a Python ValueError shape; message contains the bad kind.
         let msg = err.to_string();
         assert!(msg.contains("widget"), "msg: {msg}");
+    }
+
+    #[test]
+    fn power_all_adds_every_builds_powers_and_power_stays_put() {
+        // `power` is an embedding vocabulary (v0.107.1 only); the adapters
+        // check carried ids against `power_all`, which has v0.111.0's too.
+        let base = list_registry_names_impl("power").unwrap();
+        let all = list_registry_names_impl("power_all").unwrap();
+        assert!(!base.iter().any(|s| s == "ONE_FOR_ALL"));
+        assert!(all.iter().any(|s| s == "ONE_FOR_ALL"));
+        assert!(base.iter().all(|s| all.contains(s)));
     }
 
     #[test]

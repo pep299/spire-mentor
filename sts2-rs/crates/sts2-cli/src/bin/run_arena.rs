@@ -1265,12 +1265,31 @@ fn sweep(args: &SweepArgs) -> std::io::Result<()> {
         },
     );
 
+    // Each row also goes to `<out>.partial` the moment its cell finishes, so
+    // a long sweep shows progress and a stopped one keeps what it finished.
+    // The sorted report replaces it at the end.
+    if let Some(parent) = args.out.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
+    let partial_path = partial_report_path(&args.out);
+    let partial = std::sync::Mutex::new(std::fs::File::create(&partial_path)?);
+    eprintln!("run_arena sweep: rows stream to {}", partial_path.display());
+    let on_row = |row: &ArenaRow| {
+        let line = serde_json::to_string(row).expect("arena row serializes");
+        let mut f = partial
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Best effort: a full disk must not kill the sweep; the final
+        // report is still written from memory.
+        let _ = writeln!(f, "{line}").and_then(|()| f.flush());
+    };
+
     let started = Instant::now();
     let mut results: Vec<(ArenaRow, Vec<String>)> =
         if args.timeout_ms > 0 && args.harvest_fixtures.is_none() {
-            sweep_process_per_seed(args, &cells)?
+            sweep_process_per_seed(args, &cells, &on_row)?
         } else {
-            sts2_runai::arena::run_panel(&cells, args.jobs)
+            sts2_runai::arena::run_panel_streaming(&cells, args.jobs, &on_row)
                 .into_iter()
                 .map(|(row, records)| {
                     let lines = records
@@ -1291,15 +1310,13 @@ fn sweep(args: &SweepArgs) -> std::io::Result<()> {
         }
     }
 
-    // The report. `create_dir_all` so both the under-`target/` default and any
-    // explicit nested `--out` work without the caller pre-making directories.
-    if let Some(parent) = args.out.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent)?;
-    }
+    // The report (its directory was created for the partial file above).
     let mut out = std::fs::File::create(&args.out)?;
     for (row, _) in &results {
         writeln!(out, "{}", serde_json::to_string(row)?)?;
     }
+    drop(partial);
+    let _ = std::fs::remove_file(&partial_path);
     println!("report: {}", args.out.display());
 
     // audit log (concatenated in row order so re-runs are stable)
@@ -1317,6 +1334,14 @@ fn sweep(args: &SweepArgs) -> std::io::Result<()> {
     print_realism_check(&rows);
     println!("report: {}", args.out.display());
     Ok(())
+}
+
+/// `report.jsonl` → `report.jsonl.partial`: where a sweep streams rows
+/// before the sorted report exists.
+fn partial_report_path(out: &Path) -> PathBuf {
+    let mut name = out.file_name().unwrap_or_default().to_os_string();
+    name.push(".partial");
+    out.with_file_name(name)
 }
 
 fn num_threads() -> usize {
@@ -1626,6 +1651,7 @@ fn run_calibrate(args: &CalibrateArgs) -> std::io::Result<()> {
 fn sweep_process_per_seed(
     args: &SweepArgs,
     cells: &[CellSpec],
+    on_row: &(dyn Fn(&ArenaRow) + Sync),
 ) -> std::io::Result<Vec<(ArenaRow, Vec<String>)>> {
     let exe = std::env::current_exe()?;
     let timeout = Duration::from_millis(args.timeout_ms);
@@ -1643,7 +1669,11 @@ fn sweep_process_per_seed(
     let run_all = || -> Vec<(ArenaRow, Vec<String>)> {
         cells
             .par_iter()
-            .map(|cell| run_cell_in_child(&exe, cell, timeout, audit_tmp_dir.as_deref()))
+            .map(|cell| {
+                let result = run_cell_in_child(&exe, cell, timeout, audit_tmp_dir.as_deref());
+                on_row(&result.0);
+                result
+            })
             .collect()
     };
     let results = if args.jobs == 0 {

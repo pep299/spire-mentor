@@ -65,3 +65,18 @@ test("a failed capture is reported, not swallowed", async () => {
   render(<BugReportToast result={null} error="capture failed" onDismiss={() => {}} />);
   expect(screen.getByText("capture failed")).toBeInTheDocument();
 });
+
+test("a report saved locally (no store to reach) says so and offers the path", async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+  const local = {
+    id: "wb-00000000000000aa",
+    url: "C:\\Users\\<user>\\AppData\\Local\\SpireMentor\\logs\\bugreports\\wb-00000000000000aa.json",
+    detail: "Not sent (could not reach the report store). Saved to … -- attach that file.",
+  };
+  render(<BugReportToast result={local} error={null} onDismiss={() => {}} />);
+  expect(screen.getByTestId("bugreport-detail")).toHaveTextContent(/Not sent/);
+  expect(screen.getByTitle("Copy report URL")).toHaveTextContent(/copy path/);
+  await waitFor(() => expect(writeText).toHaveBeenCalledWith(local.url));
+  vi.unstubAllGlobals();
+});

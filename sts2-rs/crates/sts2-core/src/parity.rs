@@ -388,7 +388,7 @@ const fn target_type_python_name(t: TargetType) -> &'static str {
 /// add a TODO if it diverges).
 #[must_use]
 fn card_is_playable(card: &Card, state: &CombatState) -> bool {
-    i32::from(state.player.energy) >= i32::from(card.cost)
+    state.player.energy >= i32::from(card.cost)
 }
 
 /// Serialize one [`Card`] from the player's hand into the bridge-state

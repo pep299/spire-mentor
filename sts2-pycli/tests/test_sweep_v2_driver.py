@@ -18,7 +18,9 @@ def test_full_upgraded_count_matches_pools() -> None:
     import parity_fuzz_scenario as m
 
     trials = assemble_v2_trials(tier="full", axes=["upgraded"])
-    assert len(trials) == len(m.ALL_IC_CARDS) + len(m.ALL_COLORLESS_CARDS)
+    # the pools of the selected build (`--game-version`): v0.111.0 drops/adds cards
+    pool = m.class_cards_for_build("Ironclad") + m.colorless_cards_for_build()
+    assert len(trials) == len(pool)
 
 
 def test_fuzz_tier_sizes() -> None:

@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { Step } from "./api";
-import { isTextInput } from "./keys";
+import { isBrowserChord, isTextInput } from "./keys";
 
 export interface ShortcutContext {
   mode: "replay" | "play" | "mcts";
@@ -33,7 +33,7 @@ export function useShortcuts(ctx: ShortcutContext): void {
       if (e.key === "?") { e.preventDefault(); c.onToggleHelp(); return; }
       // Enter starts a run even from a focused form field.
       if (e.key === "Enter" && c.mode === "play" && !c.live) { e.preventDefault(); c.onStart(); return; }
-      if (isTextInput(e.target)) return;
+      if (isTextInput(e.target) || isBrowserChord(e)) return;
 
       if (c.mode === "replay") {
         if (e.key === "ArrowRight") { e.preventDefault(); c.onScrub(1); }

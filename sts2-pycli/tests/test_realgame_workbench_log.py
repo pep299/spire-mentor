@@ -449,3 +449,19 @@ def test_log_round_trip_keeps_hp_stats_and_coach(tmp_path: Path) -> None:
     assert [s["mean_final_hp"] for s in scores] == pytest.approx([55.0, 48.5])
     assert [s["hp_n"] for s in scores] == [280, 90]
     assert store.coach()["by_step"] == {"0": ["choice:1"]}
+
+
+class TestReconnect:
+    """GH #989: after the advisor lost the mod, the next board says so: the
+    mod's requests it never read took their combat-log rows with them."""
+
+    def test_the_board_after_a_reconnect_is_marked_once(self, tmp_path: Path) -> None:
+        wlog = WorkbenchRunLogger(str(tmp_path))
+        assert wlog.log_decision(EVENT_MSG, "event") is not None
+        wlog.note_reconnect()
+        assert wlog.log_decision({**EVENT_MSG, "floor": 4}, "event") is not None
+        assert wlog.log_decision({**EVENT_MSG, "floor": 5}, "event") is not None
+        assert wlog.path is not None
+        store = TimelineStore.load_jsonl(Path(wlog.path))
+        marks = [store.get(i)["state"].get("after_reconnect") for i in range(3)]
+        assert marks == [None, True, None]

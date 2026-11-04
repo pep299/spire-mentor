@@ -267,3 +267,54 @@ def test_a_teammates_whole_seat_rides_from_the_mod_to_the_engine() -> None:
 
     old = translate(to_headless_combat_play(_board()))["allies"][0]
     assert "draw_pile" not in old and "relics" not in old
+
+
+def _whole_seat_board(*, seat_index: int | None = None) -> dict[str, Any]:
+    """``_board`` with the rest of the teammate's seat, as a current mod sends it."""
+    board = _board()
+    relic = json.loads(FIXTURE.read_text(encoding="utf-8"))["state"]["run_state"]["relics"][0]
+    mate = board["allies"][0]
+    mate["draw_pile"] = {
+        "type": "Draw",
+        "count": 6,
+        "cards": [_mod_card("STRIKE_SILENT", "Attack", "AnyEnemy") for _ in range(6)],
+    }
+    mate["discard_pile"] = {"type": "Discard", "count": 0, "cards": []}
+    mate["exhaust_pile"] = {"type": "Exhaust", "count": 0, "cards": []}
+    mate["relics"] = [dict(relic, id="RING_OF_THE_SNAKE", name="Ring of the Snake")]
+    if seat_index is not None:
+        board["player"]["seat_index"] = seat_index
+    return board
+
+
+def test_a_whole_seat_loads_the_advisors_board_as_a_full_fight() -> None:
+    """GH #1046: with every teammate's whole seat on the board, the advisor's
+    wire is a whole co-op fight, so the search's teammate keeps playing past
+    this round instead of standing idle while we face the scaled enemies alone."""
+    wire = translate(to_headless_combat_play(_whole_seat_board(seat_index=1)))
+    assert wire["coop_full"] is True
+    assert wire["coop_seat_index"] == 1
+    assert sts2_rs.state_to_dict(sts2_rs.state_from_dict(wire))["coop_full"] is True
+
+
+def test_a_seat_without_its_piles_keeps_the_threat_round_board() -> None:
+    """An older mod (hand only) or a teammate the mod could not read whole
+    (``MinimalAlly``: HP and block) cannot be played past this round."""
+    assert "coop_full" not in translate(to_headless_combat_play(_board()))
+    board = _whole_seat_board()
+    board["allies"].append(
+        {"character": "DEFECT", "hp": 40, "max_hp": 75, "block": 0, "is_dead": False}
+    )
+    assert "coop_full" not in translate(to_headless_combat_play(board))
+
+
+def test_in_a_full_fight_the_teammate_still_attacks_next_round() -> None:
+    """The bug: on the threat-round board the teammate's Strikes stop after
+    the round the board was read on. In a full fight they draw and play again."""
+    wire = translate(to_headless_combat_play(_whole_seat_board()))
+    for e in wire["encounter"]:
+        e["hp"] = e["max_hp"] = 500
+    once = _end_turn(wire)
+    hp_after_round_1 = once["encounter"][0]["hp"]
+    twice = _end_turn(once)
+    assert twice["encounter"][0]["hp"] < hp_after_round_1, "the teammate struck again"

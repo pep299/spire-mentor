@@ -44,6 +44,12 @@ pub(crate) fn play_sweeping_gaze(
     if sts2_core::card_effects::osty_dealer_ref(state).is_some() {
         if let Some(t) = state.get_random_enemy() {
             deal_damage_from_osty_to_enemy(state, t, current_damage(state));
+        } else {
+            // No hittable enemy (an Adaptable corpse keeps the combat open):
+            // C# still executes the Osty's `AttackCommand` with no hit, and
+            // its `AfterAttack` owes BoneFlute's block (act23
+            // Necrobinder:1006). No damage lands to set the latch, so set it.
+            state.combat_log.bone_flute_latched = true;
         }
     }
     EffectResult::Resolved

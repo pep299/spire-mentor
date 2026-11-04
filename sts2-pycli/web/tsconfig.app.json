@@ -69,6 +69,7 @@
     "src/effects/particles/__tests__/simulateManifestCoverage.test.ts",
     "src/effects/particles/__tests__/composite.test.ts",
     "src/effects/particles/__tests__/shaders.test.ts",
-    "src/coach/coachRank.test.ts"
+    "src/coach/coachRank.test.ts",
+    "src/claude/__tests__/routeTable.test.ts"
   ]
 }

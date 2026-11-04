@@ -619,7 +619,7 @@ fn is_choose(a: &Action) -> bool {
 }
 
 fn is_play(a: &Action) -> bool {
-    matches!(a, Action::PlayCard { .. })
+    a.card_play().is_some()
 }
 
 /// `_best_attack`: kills first, then raw damage, then cheaper.

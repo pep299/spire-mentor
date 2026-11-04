@@ -225,6 +225,136 @@ class TestToHeadlessCombatPlayShape:
         del bridge_state["run_state"]["potion_slot_count"]
         assert "potion_slots" not in to_headless_combat_play(bridge_state)["player"]
 
+    def test_the_act_and_a_boss_room_reach_the_wire(self) -> None:
+        """GH #989: the mod's top-level ``act`` (1-based) and a ``Boss`` room
+        ride to the wire as ``act_index`` / ``is_boss``, off their defaults."""
+        from sts2_hint.adapter import translate
+
+        bridge_state = _load_fixture("single_enemy_ironclad.json")["state"]
+        bridge_state.update(act=3, room_type="Boss")
+        wire = translate(to_headless_combat_play(bridge_state))
+        assert (wire["act_index"], wire["is_boss"]) == (3, True)
+
+        bridge_state.update(act=1, room_type="Monster")
+        wire = translate(to_headless_combat_play(bridge_state))
+        assert "act_index" not in wire and "is_boss" not in wire
+
+    def test_skittish_latch_and_a_teammates_plays_reach_the_wire(self) -> None:
+        """GH #989: Skittish's once-a-turn latch (sent with the power's vars)
+        becomes the engine's ``counter``, and a teammate's play buckets ride
+        with their seat (their Ripple Basin counts Attacks)."""
+        from sts2_hint.adapter import translate
+
+        bridge_state = _load_fixture("single_enemy_ironclad.json")["state"]
+        bridge_state["enemies"][0]["powers"] = [
+            {
+                "id": "SKITTISH_POWER",
+                "name": "Skittish",
+                "amount": 9,
+                "vars": {"HasGainedBlockThisTurn": 1},
+            },
+        ]
+        bridge_state["allies"] = [
+            {
+                "character": "IRONCLAD",
+                "hp": 50,
+                "max_hp": 70,
+                "block": 0,
+                "energy": 3,
+                "max_energy": 3,
+                "powers": [],
+                "hand": [],
+                "cards_played_this_turn": [2, 1, 0, 0, 0],
+            },
+        ]
+        wire = translate(to_headless_combat_play(bridge_state))
+        skittish = wire["encounter"][0]["powers"][0]
+        assert (skittish["name"], skittish["counter"]) == ("SKITTISH", 1)
+        assert wire["allies"][0]["cards_played_this_turn"] == [2, 1, 0, 0, 0]
+
+    def test_a_powers_applier_reaches_the_wire_as_a_seat(self) -> None:
+        """GH #1004: the mod names who applied a power by net id; the wire
+        carries the seat (0 us, ``i + 1`` for ``allies[i]``), which Flanking,
+        Knockdown and Tag Team key on. Solo, or for an unknown id, nothing."""
+        from sts2_hint.adapter import translate
+
+        bridge_state = _load_fixture("single_enemy_ironclad.json")["state"]
+        bridge_state["player"]["net_id"] = "1"
+        bridge_state["enemies"][0]["powers"] = [
+            {"id": "FLANKING_POWER", "name": "Flanking", "amount": 2, "applier": "1000"},
+            {"id": "FLANKING_POWER", "name": "Flanking", "amount": 2, "applier": "1"},
+            {"id": "KNOCKDOWN_POWER", "name": "Knockdown", "amount": 2, "applier": "77"},
+        ]
+        solo = translate(to_headless_combat_play(bridge_state))
+        assert all("applier_seat" not in p for p in solo["encounter"][0]["powers"])
+
+        bridge_state["allies"] = [
+            {"character": "SILENT", "hp": 50, "max_hp": 70, "block": 0, "net_id": "1000"},
+        ]
+        wire = translate(to_headless_combat_play(bridge_state))
+        seats = [p.get("applier_seat") for p in wire["encounter"][0]["powers"]]
+        assert seats == [1, 0, None]
+        assert all("applier" not in p for p in wire["encounter"][0]["powers"])
+
+    def test_imitation_learnings_seat_is_the_teammate_it_copies(self) -> None:
+        """GH #992: Imitation Learning's ``applier`` is its own holder; the
+        seat the engine needs is ``player_target``, the teammate it copies.
+        Without one (an older mod) the seat is left to the engine."""
+        from sts2_hint.adapter import translate
+
+        bridge_state = _load_fixture("single_enemy_ironclad.json")["state"]
+        bridge_state["player"]["net_id"] = "1"
+        il = {"id": "IMITATION_LEARNING_POWER", "name": "Imitation Learning", "amount": 2}
+        bridge_state["player"]["powers"] = [{**il, "applier": "1", "player_target": "1000"}]
+        bridge_state["allies"] = [
+            {
+                "character": "DEFECT",
+                "hp": 50,
+                "max_hp": 70,
+                "block": 0,
+                "net_id": "1000",
+                "hand": [],
+                "powers": [{**il, "applier": "1000"}],
+            },
+        ]
+        wire = translate(to_headless_combat_play(bridge_state))
+        (ours,) = wire["player"]["powers"]
+        assert (ours["name"], ours.get("applier_seat")) == ("IMITATION_LEARNING", 1)
+        (theirs,) = wire["allies"][0]["powers"]
+        assert "applier_seat" not in theirs
+        assert "applier" not in theirs
+
+    def test_a_teammates_osty_reaches_their_seat(self) -> None:
+        """GH #1017: a Necrobinder teammate's ``pets`` (newer mods) become
+        their seat's ``osty``, in our shape, and the engine builds it into
+        their seat. Without ``pets`` (an older mod) no Osty is guessed."""
+        from sts2_hint.adapter import translate
+
+        bridge_state = _load_fixture("single_enemy_ironclad.json")["state"]
+        mate = {
+            "character": "NECROBINDER",
+            "hp": 50,
+            "max_hp": 70,
+            "block": 0,
+            "energy": 3,
+            "max_energy": 3,
+            "powers": [],
+            "hand": [],
+        }
+        bridge_state["allies"] = [dict(mate)]
+        old = translate(to_headless_combat_play(bridge_state))
+        assert "osty" not in old["allies"][0]
+
+        osty = {"id": "OSTY", "name": "Osty", "is_alive": True, "hp": 4, "max_hp": 9, "block": 0}
+        byrdpip = {"id": "BYRDPIP", "name": "Byrdpip", "is_alive": True, "hp": 1, "max_hp": 1}
+        bridge_state["allies"] = [{**mate, "pets": [byrdpip, osty]}]
+        wire = translate(to_headless_combat_play(bridge_state))
+        assert wire["allies"][0]["osty"] == {"alive": True, "hp": 4, "max_hp": 9, "block": 0}
+        assert "osty" not in wire["player"]
+        if sts2_rs is not None:
+            again = sts2_rs.state_to_dict(sts2_rs.state_from_dict(wire))
+            assert again["allies"][0]["osty"] == wire["allies"][0]["osty"]
+
     def test_rejects_non_combat_action_state(self) -> None:
         with pytest.raises(ValueError, match="combat_action"):
             to_headless_combat_play({"type": "map_select"})
@@ -410,6 +540,86 @@ class TestLayeredCostPassthrough:
         assert "persistent_cost" not in out["hand"][0]
         assert "base_cost" not in out["hand"][1]
         assert "stable_cost" not in out["hand"][1]
+
+
+class TestGeneratedFreeStarCard:
+    """``star_cost`` / ``persistent_star_cost``: the star half of a free card.
+
+    C# ``SetToFreeThisTurn`` (Splash, Discovery, Infernal Blade, the
+    generative potions) zeroes the STAR cost as well as the energy cost
+    (``CardModel.cs:1267-1271``). Splash on a Silent offers the other
+    characters' Attacks, Regent's star cards among them, so its pick is often a
+    Falling Star or Gamma Blast that the game lets the Silent play for nothing.
+    The bridge only ever shipped the energy half, so the rebuild charged the
+    printed star cost, a star-less character could never pay it, and the
+    advisor recommended End Turn over a free attack (the user's hands-free
+    Silent run, 2026-10-31).
+
+    The doctored card is that pick: a Falling Star (printed 1 energy + 2 stars)
+    in hand after Splash, at 0 energy, on a board with no stars.
+    """
+
+    def _bridge_state(self, **star: Any) -> dict[str, Any]:
+        state = _load_fixture("single_enemy_ironclad.json")["state"]
+        card = dict(state["hand"][0])
+        card.update(
+            {
+                "id": "FALLING_STAR",
+                "name": "Falling Star",
+                "type": "Attack",
+                "target_type": "AnyEnemy",
+                "cost": 0,
+                "effective_cost": 0,
+                "base_cost": 0,
+                "persistent_cost": 1,
+                "played_cost": 1,
+                "stable_cost": 1,
+                "costs_x": False,
+                "playable": True,
+                "valid_target_indices": [0],
+                **star,
+            }
+        )
+        state["hand"].append(card)
+        state["player"]["energy"] = 0
+        return state
+
+    def test_star_cost_fields_survive_to_the_wire(self) -> None:
+        from sts2_hint import adapter
+
+        out = to_headless_combat_play(self._bridge_state(star_cost=0, persistent_star_cost=2))
+        assert out["hand"][-1]["star_cost"] == 0
+        assert out["hand"][-1]["persistent_star_cost"] == 2
+        wire = adapter.translate(out, character="Ironclad")
+        assert wire["deck"]["hand"][-1]["star_cost"] == 0
+        assert wire["deck"]["hand"][-1]["persistent_star_cost"] == 2
+
+    def test_a_card_without_a_star_cost_grows_no_star_keys(self) -> None:
+        """The bridge sends null for every card but the Regent star cards; it
+        must stay off the wire, where a forwarded ``None`` is a schema error."""
+        out = to_headless_combat_play(self._bridge_state(star_cost=None, persistent_star_cost=None))
+        for card in out["hand"]:
+            assert "star_cost" not in card
+            assert "persistent_star_cost" not in card
+
+    @pytest.mark.skipif(_SKIP_ENGINE_REASON is not None, reason=_SKIP_ENGINE_REASON or "")
+    def test_the_free_star_card_is_playable_in_the_rebuild(self) -> None:
+        from sts2_hint import adapter
+
+        def playable(bridge: dict[str, Any]) -> bool:
+            wire = adapter.translate(to_headless_combat_play(bridge), character="Ironclad")
+            idx = len(wire["deck"]["hand"]) - 1
+            cs = sts2_rs.state_from_dict(wire)
+            return any(
+                a.get("action") == "play" and a.get("card_index") == idx for a in cs.legal_actions()
+            )
+
+        # Before: energy fields only -- the free attack is gated on 2 stars.
+        assert not playable(self._bridge_state())
+        # After: the star rider rides along, and the attack is the play it is.
+        assert playable(self._bridge_state(star_cost=0, persistent_star_cost=2))
+        # A star card at its printed cost stays gated (nothing over-grants).
+        assert not playable(self._bridge_state(star_cost=2, persistent_star_cost=2))
 
 
 class TestEnvelopeFieldsFromDialectAudit:

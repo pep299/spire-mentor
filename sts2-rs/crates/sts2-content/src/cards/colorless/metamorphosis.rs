@@ -8,10 +8,9 @@ use super::prelude::*;
 /// `sts2-rl-agent@01c094d:sts2_env/cards/status.py::metamorphosis_effect`:
 /// `create_character_cards(.., card_type=ATTACK, distinct=False)` then
 /// `set_combat_cost(0)` + `insert_card_into_draw_pile(random_position=True)`
-/// per generated card. The Rust port elides the `set_combat_cost(0)`
-/// step (no per-card cost-override surface yet — Phase 7) so the
-/// generated attacks land at their native costs. Bead
-/// `sts2-rs-6ynt.8-metamorphosis`.
+/// per generated card. Each generated attack is
+/// `SetToFreeThisCombat` (Metamorphosis.cs:35) — energy AND star cost 0
+/// for the rest of combat. Bead `sts2-rs-6ynt.8-metamorphosis`.
 ///
 /// C# `Metamorphosis.cs` `CardsVar(3)` with `OnUpgrade UpgradeValueBy(2)`
 /// → 3 attacks base / 5 attacks upgraded. Bead `sts2-rs-k2rzs` lifts the
@@ -29,6 +28,17 @@ pub(crate) fn play_metamorphosis(state: &mut CombatState, _t: Option<CreatureUid
         false,
     );
     for uid in uids {
+        // Metamorphosis.cs:35 `item.SetToFreeThisCombat()`. Its energy half
+        // (`SetThisCombat(0)`, CardEnergyCost.cs:240) is a no-op on an X-cost
+        // card (`Canonical < 0`), so keep the X sentinel there and free only
+        // the star cost. Defect act23 seed 1001: the native-cost attacks were
+        // discarded by Scrape where C# kept the 0-cost copies.
+        let card = &mut state.cards[uid.0.get() as usize - 1];
+        if card.cost >= 0 {
+            card.set_free_this_combat();
+        } else {
+            card.set_combat_var(sts2_core::cards::VarKey::StarCostFreeThisCombat, 1);
+        }
         state.player.generated_cards_this_combat =
             state.player.generated_cards_this_combat.saturating_add(1);
         let len = state.player.draw.len();

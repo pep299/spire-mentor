@@ -342,7 +342,13 @@ impl Game {
                 .map(|(c, r)| MapCoord::new(c, r))
                 .collect();
             let act = u8::try_from(snapshot.act.max(1)).unwrap_or(1);
-            let total_floor = i32::try_from(snapshot.floor).unwrap_or(0);
+            // The paste carries the game's floor, which counts each act's
+            // start room; the engine's counter does not (`rmx::game_floor`).
+            let total_floor = i32::try_from(sts2_core::runstate::engine_total_floor(
+                snapshot.floor,
+                i64::from(act),
+            ))
+            .unwrap_or(0);
             rm.debug_place_on_map(act, MapCoord::new(col, row), visited, row + 1, total_floor)
                 .map_err(|e| GameError(format!("could not place the run on the map: {e}")))?;
             notes.extend(map_disagreements(&rm, snapshot));
@@ -613,6 +619,26 @@ impl Game {
         if self.shop_removal_pick && (action == "select_cards" || action == "skip_select") {
             return self.resolve_shop_removal_pick(action, args);
         }
+        // Skipping an "up to N" enchant screen is confirming it with no card:
+        // C# `CardSelectorPrefs(prompt, 0, N)` with `Cancelable = false`
+        // (Kifuda.cs:24-26) still accepts an empty confirm, and the oracle
+        // offers `skip_select` for it (min_select 0). Twin of `RustGame.act`.
+        if action == "skip_select" {
+            let rm = self.rm()?;
+            if rmx::pending_deck_enchants(rm) > 0 && rmx::pending_enchant_optional(rm) {
+                if let Some(rm) = self.rm.as_mut() {
+                    rm.decline_optional_deck_enchants();
+                }
+                return Ok(self.serialize());
+            }
+            // Skipping the optional grant grid (Orobas SeaGlass,
+            // `FromSimpleGridForRewards` MinSelect 0) confirms it with no
+            // pick: `GrantDeckCard` at idx == option count.
+            if rmx::pending_card_grants(rm) > 0 && rmx::pending_card_grant_min(rm) == 0 {
+                let total = rmx::card_grant_options(rm).len();
+                return self.take_all(action, vec![RunAction::GrantDeckCard { idx: total }]);
+            }
+        }
         if action == "select_cards" {
             let rm = self.rm()?;
             // Interactive deck removal: resolve EVERY chosen index in this one
@@ -648,28 +674,49 @@ impl Game {
             // the eligible subset).
             if rmx::pending_deck_enchants(rm) > 0 {
                 let idxs = sorted_unique(parse_indices(args.get("indices"))?, true);
-                if idxs.is_empty() {
+                // "Up to N" (Kifuda / Gnarled Hammer) may confirm fewer, or none.
+                let optional = rmx::pending_enchant_optional(rm);
+                if idxs.is_empty() && !optional {
                     return err("select_cards requires an index");
                 }
                 let acts = idxs
                     .into_iter()
                     .map(|i| RunAction::EnchantDeckCard { idx: usize_of(i) })
                     .collect();
-                return self.take_all(action, acts);
+                let out = self.take_all(action, acts)?;
+                if optional {
+                    if let Some(rm) = self.rm.as_mut() {
+                        if rmx::pending_enchant_optional(rm) {
+                            rm.decline_optional_deck_enchants();
+                            return Ok(self.serialize());
+                        }
+                    }
+                }
+                return Ok(out);
             }
             // Multi-pick card grant: ascending with shift, like transforms.
             if rmx::pending_card_grants(rm) > 0 {
                 let idxs = sorted_unique(parse_indices(args.get("indices"))?, false);
-                if idxs.is_empty() {
+                let optional = rmx::pending_card_grant_min(rm) == 0;
+                if idxs.is_empty() && !optional {
                     return err("select_cards requires an index");
                 }
-                let acts = idxs
+                let total = rmx::card_grant_options(rm).len();
+                let picked = idxs.len();
+                let mut acts: Vec<RunAction> = idxs
                     .into_iter()
                     .enumerate()
                     .map(|(n, i)| RunAction::GrantDeckCard {
                         idx: usize_of(i - n as i64),
                     })
                     .collect();
+                // Optional grid (SeaGlass, min 0): confirm the picks made, unless
+                // every card was taken (the grid then closes by itself).
+                if optional && picked < total {
+                    acts.push(RunAction::GrantDeckCard {
+                        idx: total - picked,
+                    });
+                }
                 return self.take_all(action, acts);
             }
             // Multi-pick in-combat pending choice: MULTIPLE indices at once
@@ -840,6 +887,14 @@ impl Game {
                 if phase == "shop" {
                     return Ok(RunAction::LeaveShop);
                 }
+                // A MiniatureTent rest site with options still open: leaving
+                // is the C# `BeforeLocalRestSiteExited` skip, which the engine
+                // offers as `LeaveShop` once one option was taken.
+                if phase == "rest_site"
+                    && rmx::available_actions(self.rm()?).contains(&RunAction::LeaveShop)
+                {
+                    return Ok(RunAction::LeaveShop);
+                }
                 self.first_action(phase)
             }
             "proceed" => self.first_action(phase),
@@ -976,7 +1031,7 @@ impl Game {
         json!({
             "decision": decision,
             "player": self.player(),
-            "floor": rmx::total_floor(rm),
+            "floor": rmx::game_floor(rm),
             "act": rm.run_state.act_index,
             "ascension": rm.run_state.ascension_level,
         })
@@ -1184,7 +1239,12 @@ impl Game {
         let rm = self.rm.as_ref().expect("run");
         let cards = self.deck_subset_cards(&rmx::enchant_select_deck_indices(rm));
         let count = Self::clamp_count(rmx::pending_deck_enchants(rm), cards.len());
-        Self::set_select(state, cards, count, count, false, "enchant");
+        let min = if rmx::pending_enchant_optional(rm) {
+            0
+        } else {
+            count
+        };
+        Self::set_select(state, cards, min, count, false, "enchant");
     }
 
     /// `_fill_card_grant`.
@@ -1196,7 +1256,13 @@ impl Game {
             .map(|(i, (cid, up))| deck_card(i as i64, cid, *up))
             .collect();
         let count = Self::clamp_count(rmx::pending_card_grants(rm), cards.len());
-        Self::set_select(state, cards, count, count, false, "grant");
+        // Optional grid (SeaGlass, `MinSelect 0`): any 0..=count.
+        let min = if rmx::pending_card_grant_min(rm) == 0 {
+            0
+        } else {
+            count
+        };
+        Self::set_select(state, cards, min, count, false, "grant");
     }
 
     /// `_deck_subset_cards`: master-deck cards at `deck_indices`, indexed by
@@ -1707,11 +1773,8 @@ pub fn build_run_manager(
     let mut rm = rm.with_neow_start();
     // Present on-obtain card removals / upgrades / transforms as player
     // card_selects, matching C#; grant the chosen Neow relic directly.
-    rm.run_state.interactive_card_removal = true;
-    rm.run_state.interactive_card_upgrade = true;
-    rm.run_state.interactive_card_transform = true;
+    rm.run_state.set_agent_decisions();
     rm.run_state.interactive_potion_swap = false;
-    rm.run_state.direct_event_relic_grant = true;
     // GH #544: which of the two Act-1 models this run walks — set BEFORE
     // `initialize_run_setup`, which pre-generates every act's rooms.
     let mut rm = match act1 {
@@ -1748,11 +1811,8 @@ fn build_import_run_manager(
     use sts2_content::run_callbacks::initialize_run_setup;
     // No `with_neow_start`: not a fresh run.
     let mut rm = new_string_seed_run(version, cid, seed, ascension);
-    rm.run_state.interactive_card_removal = true;
-    rm.run_state.interactive_card_upgrade = true;
-    rm.run_state.interactive_card_transform = true;
+    rm.run_state.set_agent_decisions();
     rm.run_state.interactive_potion_swap = false;
-    rm.run_state.direct_event_relic_grant = true;
     // The game rolled this Act-1 for the player; `with_rolled_act1` rolls the
     // same, and must run BEFORE `initialize_run_setup` pre-generates rooms.
     let mut rm = rm.with_rolled_act1();
@@ -2005,11 +2065,8 @@ pub fn build_faithful_run_manager(
         .with_game_version(version)
         .with_run_seed(u64::from(seed as u32));
     let mut rm = rm.with_neow_start();
-    rm.run_state.interactive_card_removal = true;
-    rm.run_state.interactive_card_upgrade = true;
-    rm.run_state.interactive_card_transform = true;
+    rm.run_state.set_agent_decisions();
     rm.run_state.interactive_potion_swap = false;
-    rm.run_state.direct_event_relic_grant = true;
     let mut rm = rm.with_act1(ActVariant::Overgrowth);
     initialize_run_setup(&mut rm);
     rm
@@ -2313,5 +2370,51 @@ mod tests {
         let e = game.act("end_turn", &json!({})).unwrap_err();
         assert!(e.0.contains("rejected by engine"), "{e}");
         assert!(game.act("bogus", &json!({})).is_err());
+    }
+
+    /// Kifuda's "up to 3" enchant screen accepts `skip_select` (twin of the
+    /// Python `test_skip_select_declines_an_up_to_n_enchant`).
+    #[test]
+    fn skip_select_declines_an_up_to_n_enchant() {
+        let mut game = Game::new();
+        game.start("Defect", "1001", 0, "roll").expect("start");
+        let deck_before = format!("{:?}", game.rm.as_ref().unwrap().run_state.master_deck);
+        {
+            let rs = &mut game.rm.as_mut().unwrap().run_state;
+            rs.relics.push(sts2_core::RelicId::Kifuda);
+            rs.last_obtained_relic = Some(sts2_core::RelicId::Kifuda);
+            let _ = sts2_core::run_effects::dispatch_after_obtained(rs);
+            rs.last_obtained_relic = None;
+        }
+        let rm = game.rm.as_ref().unwrap();
+        assert!(rmx::pending_deck_enchants(rm) > 0 && rmx::pending_enchant_optional(rm));
+        game.act("skip_select", &Value::Null)
+            .expect("skip_select accepted");
+        let rm = game.rm.as_ref().unwrap();
+        assert_eq!(rmx::pending_deck_enchants(rm), 0);
+        assert_eq!(format!("{:?}", rm.run_state.master_deck), deck_before);
+    }
+
+    /// Orobas' Sea Glass grid (MinSelect 0) accepts `skip_select` (twin of the
+    /// Python `test_skip_select_declines_the_optional_sea_glass_grid`).
+    #[test]
+    fn skip_select_declines_the_optional_sea_glass_grid() {
+        let mut game = Game::new();
+        game.start("Ironclad", "4023", 0, "roll").expect("start");
+        let deck_before = format!("{:?}", game.rm.as_ref().unwrap().run_state.master_deck);
+        {
+            let rs = &mut game.rm.as_mut().unwrap().run_state;
+            rs.relics.push(sts2_core::RelicId::SeaGlass);
+            rs.last_obtained_relic = Some(sts2_core::RelicId::SeaGlass);
+            let _ = sts2_core::run_effects::dispatch_after_obtained(rs);
+            rs.last_obtained_relic = None;
+        }
+        let rm = game.rm.as_ref().unwrap();
+        assert!(rmx::pending_card_grants(rm) > 0 && rmx::pending_card_grant_min(rm) == 0);
+        game.act("skip_select", &Value::Null)
+            .expect("skip_select accepted");
+        let rm = game.rm.as_ref().unwrap();
+        assert_eq!(rmx::pending_card_grants(rm), 0);
+        assert_eq!(format!("{:?}", rm.run_state.master_deck), deck_before);
     }
 }

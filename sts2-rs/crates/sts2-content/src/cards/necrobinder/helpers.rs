@@ -132,6 +132,23 @@ pub(crate) fn apply_power_signed_to_creature(
     kind: PowerKind,
     amount: i32,
 ) {
+    // A landed player drain fires SleightOfFlesh & co. (C#
+    // `Hook.AfterPowerAmountChanged` runs for silent applies too).
+    sts2_core::card_effects::signed_power_apply_with_reactors(
+        state,
+        target_uid,
+        kind,
+        amount,
+        |s| apply_power_signed_to_creature_raw(s, target_uid, kind, amount),
+    );
+}
+
+fn apply_power_signed_to_creature_raw(
+    state: &mut CombatState,
+    target_uid: CreatureUid,
+    kind: PowerKind,
+    amount: i32,
+) {
     if amount == 0 {
         return;
     }
@@ -341,5 +358,38 @@ mod tests {
             -3,
             "2 + (−5) = −3 persists (Strength can go negative)"
         );
+    }
+
+    /// A player Strength drain on an enemy triggers SleightOfFlesh: C#
+    /// `SleightOfFleshPower.AfterPowerAmountChanged` sees `GetTypeForAmount(-2)
+    /// == Debuff` (SharedFate — Necrobinder full seed 1875, quick seed 201).
+    /// The same drain on the player does not (`power.Owner.IsEnemy`).
+    #[test]
+    fn signed_enemy_drain_triggers_sleight_of_flesh() {
+        use sts2_core::MonsterKind;
+        let mut state = CombatState::default();
+        state.player.current_hp = 50;
+        state.player.max_hp = 50;
+        let player_uid = state.init_player_creature();
+        let enemy = state.spawn_enemy(MonsterKind::Nibbit);
+        let hp = |s: &CombatState, u: CreatureUid| {
+            s.creatures.iter().find(|c| c.id == u.0).unwrap().current_hp
+        };
+        if let Some(c) = state.creatures.iter_mut().find(|c| c.id == enemy.0) {
+            c.current_hp = 40;
+            c.max_hp = 40;
+        }
+        sts2_core::card_effects::apply_power_to_creature(
+            &mut state,
+            player_uid,
+            PowerKind::SleightOfFlesh,
+            13,
+        );
+
+        apply_power_signed_to_creature(&mut state, player_uid, PowerKind::Strength, -2);
+        assert_eq!(hp(&state, enemy), 40, "a self-drain is not an enemy debuff");
+
+        apply_power_signed_to_creature(&mut state, enemy, PowerKind::Strength, -2);
+        assert_eq!(hp(&state, enemy), 27, "13 Unpowered SleightOfFlesh damage");
     }
 }

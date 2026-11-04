@@ -2,7 +2,8 @@ import { describe, it, expect, vi } from "vitest";
 import { render, act } from "@testing-library/react";
 import { useRef } from "react";
 import SoundBridge from "../SoundBridge";
-import { SoundFixture, type SoundValue } from "../SoundContext";
+import { SoundFixture } from "../SoundContext";
+import type { SoundValue } from "../useSound";
 import type { CombatState, Step } from "../../api";
 import type { SfxMap } from "../sfxMap";
 

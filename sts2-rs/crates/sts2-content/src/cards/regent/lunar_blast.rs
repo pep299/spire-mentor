@@ -4,7 +4,6 @@ use super::prelude::*;
 /// LunarBlast — multi-hit damage scaling with Skills played this
 /// turn. Single-hit baseline at this pin; full per-turn skill
 /// counter deferred to `sts2-rs-r6l9`.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L417
 /// `CalculatedHits`: the Skills you have already finished playing this turn.
 /// Shared with the card face — see `crate::cards::preview`.
 pub(crate) fn preview_lunar_blast(

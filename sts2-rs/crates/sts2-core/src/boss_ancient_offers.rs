@@ -16,7 +16,9 @@
 //! `Orobas.cs`, `Pael.cs`, `Tezcatara.cs` (act 2);
 //! `Nonupeipe.cs`, `Tanx.cs`, `Vakuu.cs` (act 3); `Darv.cs` (shared).
 //!
-//! These functions return the 3 offered [`RelicId`]s in C# option order.
+//! These functions return the 3 offered [`RelicId`]s in C# option order
+//! (only 2 for Orobas when its third slot is locked, see
+//! [`AncientConditions::orobas_pool3`]).
 //! Pickup side effects (DistinguishedCape −9 MaxHP, SeaGlass character
 //! variant, TouchOfOrobas/ArchaicTooth/DustyTome setup) are handled at the
 //! pick site, not here.
@@ -37,8 +39,8 @@ pub struct AncientConditions {
     pub goopy_eligible_count: usize,
     /// Pael: `Deck.Cards.Count(c.IsRemovable) >= 5` adds PaelsTooth.
     pub removable_count: usize,
-    /// Pael: `!Owner.HasEventPet()` adds PaelsLegion. Ironclad never holds
-    /// an event pet at this pin, so this is normally `false`.
+    /// Pael: `!Owner.HasEventPet()` adds PaelsLegion. Fed from
+    /// `RunState::has_event_pet` (Byrdpip / PaelsLegion / ByrdonisEgg).
     pub has_event_pet: bool,
     /// Tanx: `Deck.Cards.Count(Instinct.CanEnchant) >= 3` adds TriBoomerang.
     pub instinct_eligible_count: usize,
@@ -52,10 +54,10 @@ pub struct AncientConditions {
     /// 5-character `UnlockState.all`.
     pub num_other_characters: usize,
     /// Orobas `OptionPool3`: TouchOfOrobas / ArchaicTooth, each present iff
-    /// its `SetupForPlayer` holds (a starter relic / transcendence starter
-    /// card exists). Computed content-side; never empty in practice
-    /// (TouchOfOrobas's starter relic always exists), so the C# LOCKED
-    /// placeholder is unreachable here.
+    /// its `SetupForPlayer` holds (a Starter-rarity relic / transcendence
+    /// starter card exists). EMPTY when neither holds: C# then offers the
+    /// `OPTION_POOL_3_LOCKED` placeholder (`Orobas.cs:88-91`), a relic-less
+    /// slot that [`roll_offers`] still draws for but does not return.
     pub orobas_pool3: Vec<RelicId>,
     /// Darv: PandorasBox is offered unless a run modifier clears the deck
     /// (`!Modifiers.Any(ClearsPlayerDeck)`). Standard runs → `true`.
@@ -192,11 +194,17 @@ fn roll_orobas(
             &[AlchemicalCoffer, Driftwood, RadiantPearl, SandCastle],
         ),
     };
-    vec![
-        next_item(rng, list),
-        next_item(rng, pool2),
-        next_item(rng, &cond.orobas_pool3),
-    ]
+    let mut offers = vec![next_item(rng, list), next_item(rng, pool2)];
+    if cond.orobas_pool3.is_empty() {
+        // `OPTION_POOL_3_LOCKED` (`Orobas.cs:88-91`): `NextItem` over the
+        // one-element locked list still draws; the slot holds no relic and
+        // cannot be picked, so it is left off the offer list (it is the last
+        // slot, so the other two keep their indices).
+        let _ = rng.next_int_exclusive(0, 1);
+    } else {
+        offers.push(next_item(rng, &cond.orobas_pool3));
+    }
+    offers
 }
 
 /// `Pael.GenerateInitialOptions`. OptionPool2 starts `[PaelsWing]`, gains

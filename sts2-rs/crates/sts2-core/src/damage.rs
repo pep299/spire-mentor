@@ -560,9 +560,10 @@ pub fn compute_modified_damage(
     // `modify_damage` floors once at the end via `DamageMul::apply` (rational
     // `div_euclid`), matching Python's `math.floor` exactly.
     //
-    // Bead `sts2-rs-6jk` (j87-a): fold the relic_effects-family additive
-    // contribution INTO `raw_damage` before the hooks-family pipeline runs so
-    // multiplicative + cap + floor apply to the combined sum. Mirrors Python
+    // Bead `sts2-rs-6jk` (j87-a): add the relic_effects-family additive
+    // contribution to the pipeline's additive term (after the card
+    // enchantment's stage, GH #1054) so multiplicative + cap + floor apply to
+    // the combined sum. Mirrors Python
     // `hooks.py:79-82` where all `modify_damage_additive` owners sum to a
     // single delta consumed by the multi-stage pipeline. Hooks-family relic
     // listeners (legacy `iter_relic_listeners` arms) still run inside
@@ -588,8 +589,7 @@ pub fn compute_modified_damage(
     } else {
         0
     };
-    let raw_damage_with_relic_additive = raw_damage.saturating_add(relic_additive);
-    hooks::modify_damage(state, raw_damage_with_relic_additive, &ctx)
+    hooks::modify_damage_with_relic_additive(state, raw_damage, relic_additive, &ctx)
 }
 
 /// [`compute_modified_damage`], plus the `AfterModifyingDamageAmount` flashes
@@ -759,6 +759,24 @@ fn apply_damage_with_final_impl(
         props,
     };
 
+    // C# never hits a corpse: `CreatureCmd.Damage` skips `IsDead` targets
+    // before `BeforeDamageReceived` (CreatureCmd.cs:256), and a multi-hit
+    // `AttackCommand` breaks once its single target is dead
+    // (AttackCommand.cs:545-550). Without this a Twin Strike / Thrash second
+    // hit on a just-killed Toadpole re-fired its Thorns at the player
+    // (Ironclad fuzz seeds 3516, 4853; Defect full 1405 / 5656 via Gunk Up and
+    // an echoed Gold Axe; Necrobinder full 1503 Rattle → SicEm, 3909 Eradicate
+    // → Thorns). Returning here also skips `AfterDamageGiven` (SicEm).
+    if !bypass_hp_loss_cap && state.creatures[creature_index_for(state, target)].current_hp <= 0 {
+        return DamageOutcome {
+            hp_loss: 0,
+            blocked: 0,
+            overkill: 0,
+            total_damage: 0,
+            was_target_killed: false,
+        };
+    }
+
     // Step 2: before-damage-received event hook. Bead sts2-rs-3to (P2-2b)
     // promoted the dispatcher to `(state: &mut CombatState, ...)`: listeners
     // produce deferred-effect queue entries (Thorns: reflective
@@ -788,15 +806,30 @@ fn apply_damage_with_final_impl(
     // re-resolving it per step was three identical linear scans per hit.
     let creature_idx = creature_index_for(state, target);
 
+    // C# absorbs a pet's damage with its OWNER's block
+    // (CreatureCmd.cs:264: `creature = originalTarget.PetOwner?.Creature ??
+    // originalTarget; creature.DamageBlockInternal(..)`), so a Thorns
+    // reflect onto the player's Osty eats the player's block first
+    // (Necrobinder full seed 3674).
+    let pet_of_player = state.player.pet_uid == Some(target);
     let (unblocked, target_fully_blocked_arm) = {
-        let creature = &mut state.creatures[creature_idx];
         let unblockable = props.contains(hooks::ValueProps::UNBLOCKABLE);
-        let absorbed = if unblockable {
+        let owner_absorbed = if pet_of_player && !unblockable {
+            let a = final_damage.min(state.player.block).max(0);
+            state.player.block -= a;
+            a
+        } else {
             0
+        };
+        let creature = &mut state.creatures[creature_idx];
+        let absorbed = if unblockable || pet_of_player {
+            owner_absorbed
         } else {
             final_damage.min(creature.block).max(0)
         };
-        creature.block -= absorbed;
+        if !pet_of_player {
+            creature.block -= absorbed;
+        }
         // C# `WasFullyBlocked` block-arm (CreatureCmd.cs:154): `!Unblockable &&
         // (blockedDamage > 0 || target.Block > 0)` against the post-absorption
         // block. The `unblockedDamage == 0` residual is folded in at the
@@ -934,6 +967,20 @@ fn apply_damage_with_final_impl(
             },
         );
     }
+    // C# fires `Hook.AfterCurrentHpChanged(target, -UnblockedDamage)` for every
+    // result before `AfterDamageGiven` and the `Kill` (CreatureCmd.cs:402-405),
+    // so the player's Osty losing HP to a direct hit — a Thorns reflect off a
+    // High Five (ThornsPower.cs:22) — reflects through
+    // `NecroMasteryPower.AfterCurrentHpChanged` (NecroMasteryPower.cs:17-23)
+    // like the enemy-attack redirect in `combat_loop` already does
+    // (Necrobinder full seed 4536). The reflect's dealer is the player, and a
+    // Damage from a dead dealer no-ops (CreatureCmd.cs:264). `UnblockedDamage`
+    // is the HP actually lost (`Creature.LoseHpInternal`, Creature.cs:446-457:
+    // `currentHp - CurrentHp`), so an overkill reflects only what the Osty had:
+    // Thorns 5 into a 2-HP Osty reflects 2 (act23 Necrobinder:1008).
+    if pet_of_player && hp_loss > 0 && state.player.current_hp > 0 {
+        hooks::dispatch_after_current_hp_changed(state, target, -hp_loss);
+    }
     if just_died
         && state.player.creature_uid != Some(target)
         && !state.combat_log.newly_dead_this_turn.contains(&target)
@@ -945,12 +992,19 @@ fn apply_damage_with_final_impl(
     // chokepoint so a killed `ThievingHopper`'s stolen card is NOT removed
     // from the run deck at `exit_combat`; escapes never reach this point and
     // so stay un-reclaimed (= permanently removed, matching C#).
-    if just_died {
-        state.reclaim_swipe_on_death(target);
-        // GH #604: C# `HeistPower.BeforeDeath` hands the stolen gold back as a
-        // combat reward when the carrier is KILLED. Same chokepoint, same
-        // kill-vs-escape distinction as the Swipe reclaim above.
-        state.recover_heist_on_death(target);
+    // An enemy killed by one hit of a multi-target damage call dies only after
+    // every target is hit (see `with_deferred_enemy_deaths`).
+    let defer_death = just_died
+        && state.enemy_uids.contains(&target)
+        && state.player.creature_uid != Some(target)
+        && state.combat_log.deferred_enemy_deaths.is_some();
+    if defer_death {
+        if let Some(q) = state.combat_log.deferred_enemy_deaths.as_mut() {
+            q.push(target);
+        }
+    }
+    if just_died && !defer_death {
+        kill_before_death(state, target);
     }
     // Bead `sts2-rs-q6bix` (ConstrictPower.AfterDeath): when the creature
     // that APPLIED a Constrict dies, the Constrict drops off its target.
@@ -974,58 +1028,8 @@ fn apply_damage_with_final_impl(
     } else {
         crate::Side::Player
     };
-    // The death power whose `AfterDeath` handler fired below; its kill tail
-    // (`enemy_death_effects::finish_kill`) runs after the AfterDamageGiven
-    // hooks further down.
-    let mut death_power_fired: Option<crate::PowerKind> = None;
-    if just_died {
-        remove_constrict_from_dead_applier(state, target);
-        remove_shrink_from_dead_applier(state, target);
-        remove_hex_from_dead_applier(state, target);
-        remove_dampen_from_dead_applier(state, target);
-        // C# `IllusionPower.ShouldPowerBeRemovedOnDeath` strips the dying
-        // illusion's Debuff powers before the revive arms (bead sts2-rs-9fygi).
-        remove_debuffs_from_dead_illusion(state, target);
-        // …and then `IllusionPower.AfterDeath` arms REVIVE_MOVE, whose single
-        // `HealIntent` is what the corpse telegraphs until it revives. Ordered
-        // after the strip above to match C#, where `RemoveAllPowersAfterDeath`
-        // runs before the `AfterDeath` witnesses.
-        arm_illusion_revive_telegraph(state, target);
-        // C# `RemoveAllPowersAfterDeath` on a TestSubject corpse strips Enrage
-        // (and any player debuff) so the form-1/form-2 corpse holds only its
-        // survivor powers while it awaits the next-turn RESPAWN revive
-        // (bead sts2-rs-jnf4a). Scoped to Adaptable carriers (TestSubject only).
-        strip_powers_on_adaptable_death(state, target);
-        // …and `TriggerDeadState` arms RESPAWN_MOVE, whose leading `HealIntent`
-        // is what the corpse telegraphs until it respawns (TestSubject.cs:167-193).
-        arm_adaptable_respawn_telegraph(state, target);
-        // C# `ReattachPower.AfterDeath` arms the dead Decimillipede
-        // segment's revive cycle (bead sts2-rs-8lwnq).
-        arm_reattach_dead_state(state, target);
-        // Bead `sts2-rs-ybtmu`: cross-creature power `AfterDeath` witness
-        // dispatch (CrabRagePower / SurroundedPower). Fired from the same
-        // death-record chokepoint so it triggers on every kill path.
-        hooks::dispatch_after_death(
-            state,
-            &hooks::AfterDeathCtx {
-                dead: target,
-                dead_side,
-            },
-        );
-        // Bead `sts2-rs-zo6fk`: per-death on-death spawn for the just-killed
-        // enemy. C# `CreatureCmd.Kill` fires the dying creature's power
-        // `AfterDeath` immediately (CreatureCmd.cs:285), and
-        // `StockPower.AfterDeath` spawns a fresh Axebot at the dead bot's
-        // slot the instant it dies — so a mid-combat kill of one of two
-        // Axebots keeps two live enemies. The combat-end `fire_pending`
-        // sweep (check_combat_end) only runs when every enemy is dead, which
-        // is too late for a respawn that must happen while a sibling is
-        // still alive. `fire_for_owner` zeroes the triggering power, so the
-        // combat-end sweep never double-fires it. Enemy deaths only (the
-        // player carries no enemy-death-spawn power).
-        if dead_side == crate::Side::Enemy {
-            death_power_fired = crate::enemy_death_effects::fire_for_owner(state, target);
-        }
+    if just_died && !defer_death {
+        kill_after_death_powers(state, target, dead_side);
     }
 
     // Bead `sts2-rs-c7ak`: record per-target hit into the in-flight
@@ -1109,7 +1113,11 @@ fn apply_damage_with_final_impl(
             && state.player_power_amount(crate::PowerKind::Vigor) > 0
         {
             state.player.vigor_latch_card = crate::card_effects::resolving_card_uid(state);
+            if state.player.vigor_latch_card.is_some() {
+                crate::hooks::latch_vigor_start_amount(state);
+            }
         }
+        crate::hooks::latch_gigantification(state);
     }
 
     // Necrobinder: tally an Osty-as-dealer attack so Rattle's hit count
@@ -1119,12 +1127,19 @@ fn apply_damage_with_final_impl(
     // Bead `sts2-rs-osty-attacks-this-turn`.
     if let (CreatureRef::Enemy(dealer_uid), Some(pet_uid)) = (dealer, state.player.pet_uid) {
         if dealer_uid == pet_uid {
-            state.combat_log.osty_attacks_this_turn =
-                state.combat_log.osty_attacks_this_turn.saturating_add(1);
+            // One entry per command: a multi-hit command counts itself once
+            // when it ends (`card_effects::osty_attack_command`).
+            if !state.combat_log.osty_attack_command_open {
+                state.combat_log.osty_attacks_this_turn =
+                    state.combat_log.osty_attacks_this_turn.saturating_add(1);
+            }
             // GH #806: per-target powered-hit tally for GangUp (GangUp.cs:24-29
             // counts the target's powered `DamageReceivedEntry`s from a
             // same-side, non-owner dealer — the Osty).
             if props.is_powered() {
+                // GigantificationPower.BeforeAttack keys on the card's owner, so
+                // an Osty-attack card's command latches it too (GH #806).
+                crate::hooks::latch_gigantification(state);
                 let tally = &mut state.combat_log.osty_powered_hits_by_target_this_turn;
                 if let Some(entry) = tally.iter_mut().find(|(uid, _)| *uid == target) {
                     entry.1 = entry.1.saturating_add(1);
@@ -1174,6 +1189,31 @@ fn apply_damage_with_final_impl(
         was_fully_blocked,
     );
 
+    // Co-op Underworld (v0.111.0 `UnderworldPower.AfterDamageGiven`,
+    // UnderworldPower.cs:23-25): a powered hit by another player, or by their
+    // Osty, puts Doom equal to its total damage × Amount on the target, from
+    // the Underworld's owner. The seated player is the dealer, so only a
+    // teammate waiting in their seat can hold the Underworld that answers.
+    let total = blocked.saturating_add(hp_loss);
+    let players_hit = match dealer {
+        CreatureRef::Player => true,
+        CreatureRef::Enemy(uid) => state.player.pet_uid == Some(uid),
+        _ => false,
+    };
+    if players_hit && props.is_powered() && total > 0 {
+        crate::coop::each_unseated_holder(state, crate::PowerKind::Underworld, |state, amount| {
+            // The owner, now seated, is the applier (`base.Owner`), as for
+            // ReaperForm's Doom.
+            crate::card_effects::apply_power_to_creature_with_applier(
+                state,
+                target,
+                crate::PowerKind::Doom,
+                total.saturating_mul(amount),
+                state.player.creature_uid,
+            );
+        });
+    }
+
     // Bead `sts2-rs-6jk` (j87-a): parallel relic_effects channel. The
     // `DamageGivenCtx` payload uses non-optional `CreatureUid` for both
     // slots, so we skip the dispatch entirely if either ref can't resolve
@@ -1207,14 +1247,14 @@ fn apply_damage_with_final_impl(
     // so this is placed after the damage-given dispatches, not at the early
     // power-side chokepoint above. Gated on `just_died` so it fires exactly
     // once per death (GremlinHorn: enemy death → +1 energy + draw 1).
-    if just_died {
-        let _ = crate::relic_effects::dispatch_after_death(
-            state,
-            &hooks::AfterDeathCtx {
-                dead: target,
-                dead_side,
-            },
-        );
+    // Co-op: C# walks every player's relics, so each teammate's hear it too,
+    // seated (a teammate's Gremlin Horn draws them a card, GH #989).
+    // The death power whose `AfterDeath` handler fires here; its kill tail
+    // (`enemy_death_effects::finish_kill`) follows.
+    let mut death_power_fired: Option<crate::PowerKind> = None;
+    if just_died && !defer_death {
+        kill_relic_after_death(state, target, dead_side);
+        death_power_fired = kill_dying_enemy_after_death(state, target, dead_side);
     }
 
     // The kill's tail, after this hit's AfterDamageGiven hooks and the relic
@@ -1264,6 +1304,181 @@ fn apply_damage_with_final_impl(
     }
 }
 
+/// The `BeforeDeath` reactions of a killed creature (C# `Hook.BeforeDeath`,
+/// CreatureCmd.cs:503): a SwipePower thief returns its stolen card, a
+/// HeistPower carrier its gold.
+fn kill_before_death(state: &mut CombatState, target: CreatureUid) {
+    state.reclaim_swipe_on_death(target);
+    // GH #604: C# `HeistPower.BeforeDeath` hands the stolen gold back as a
+    // combat reward when the carrier is KILLED. Same chokepoint, same
+    // kill-vs-escape distinction as the Swipe reclaim above.
+    state.recover_heist_on_death(target);
+}
+
+/// The power-side death teardown and `AfterDeath` witnesses of a killed
+/// creature. The dying enemy's own on-death power (Stock, Surprise, ...) runs
+/// later, in [`kill_dying_enemy_after_death`].
+fn kill_after_death_powers(state: &mut CombatState, target: CreatureUid, dead_side: crate::Side) {
+    remove_constrict_from_dead_applier(state, target);
+    remove_shrink_from_dead_applier(state, target);
+    remove_hex_from_dead_applier(state, target);
+    remove_dampen_from_dead_applier(state, target);
+    // C# `IllusionPower.ShouldPowerBeRemovedOnDeath` strips the dying
+    // illusion's Debuff powers before the revive arms (bead sts2-rs-9fygi).
+    remove_debuffs_from_dead_illusion(state, target);
+    // …and then `IllusionPower.AfterDeath` arms REVIVE_MOVE, whose single
+    // `HealIntent` is what the corpse telegraphs until it revives. Ordered
+    // after the strip above to match C#, where `RemoveAllPowersAfterDeath`
+    // runs before the `AfterDeath` witnesses.
+    arm_illusion_revive_telegraph(state, target);
+    // C# `RemoveAllPowersAfterDeath` on a TestSubject corpse strips Enrage
+    // (and any player debuff) so the form-1/form-2 corpse holds only its
+    // survivor powers while it awaits the next-turn RESPAWN revive
+    // (bead sts2-rs-jnf4a). Scoped to Adaptable carriers (TestSubject only).
+    strip_powers_on_adaptable_death(state, target);
+    // …and `TriggerDeadState` arms RESPAWN_MOVE, whose leading `HealIntent`
+    // is what the corpse telegraphs until it respawns (TestSubject.cs:167-193).
+    arm_adaptable_respawn_telegraph(state, target);
+    // C# `ReattachPower.AfterDeath` arms the dead Decimillipede
+    // segment's revive cycle (bead sts2-rs-8lwnq).
+    arm_reattach_dead_state(state, target);
+    // Bead `sts2-rs-ybtmu`: the player side's power `AfterDeath` witnesses
+    // (SurroundedPower). The enemies' (CrabRage, Ravenous) come after the
+    // player's relics, in [`kill_dying_enemy_after_death`].
+    hooks::dispatch_after_death_player_powers(
+        state,
+        &hooks::AfterDeathCtx {
+            dead: target,
+            dead_side,
+        },
+    );
+}
+
+/// The enemy half of the `AfterDeath` walk, after the player's relics and
+/// cards have heard the death: each enemy's powers (a sibling's CrabRage or
+/// Ravenous, the dying enemy's own on-death power), then its monster
+/// (`Queen.AfterDeath`), in `_enemies` order. Then the dying enemy's minions
+/// collapse. Returns the death power whose kill tail
+/// (`enemy_death_effects::finish_kill`) is still owed.
+///
+/// C# `Hook.AfterDeath` is one sequential walk over `IterateHookListeners`
+/// (`Hook.cs:606-619`) in creature order, allies before enemies, each
+/// creature's powers then its monster (`CombatState.cs:115-170`), so a player
+/// relic's `AfterDeath` — Gremlin Horn's draw and the Hellraiser auto-play it
+/// awaits inline — resolves before the dying Axebot's `StockPower.AfterDeath`
+/// spawns its replacement (act23 Ironclad:2169) and before the surviving
+/// Kaiser Crab arm's `CrabRagePower` grants its 99 block (act23
+/// Ironclad:4187). The teammates' `Kill` follows the whole walk
+/// (`CreatureCmd.cs:553-562`; v0.107.1 `:519-529`).
+fn kill_dying_enemy_after_death(
+    state: &mut CombatState,
+    target: CreatureUid,
+    dead_side: crate::Side,
+) -> Option<crate::PowerKind> {
+    let mut fired: Option<crate::PowerKind> = None;
+    let ctx = hooks::AfterDeathCtx {
+        dead: target,
+        dead_side,
+    };
+    // The list is built when the walk starts: a creature Stock spawns
+    // mid-walk does not hear this death.
+    let enemies: smallvec::SmallVec<[CreatureUid; 8]> = state.enemy_uids.iter().copied().collect();
+    let mut monsters = crate::combat_loop::take_after_death_listeners_for(state, target);
+    let mut own_power_fired = false;
+    for owner in enemies {
+        hooks::dispatch_after_death_enemy_powers(state, &ctx, owner);
+        // Bead `sts2-rs-zo6fk`: the dying enemy's own on-death power (Stock
+        // spawns a fresh Axebot at the dead bot's slot), inside the kill, so
+        // a mid-combat kill of one of two Axebots keeps two live enemies.
+        // `fire_for_owner` zeroes the triggering power, so the combat-end
+        // `fire_pending` sweep never double-fires it. Enemy deaths only.
+        if owner == target && dead_side == crate::Side::Enemy {
+            fired = crate::enemy_death_effects::fire_for_owner(state, target);
+            own_power_fired = true;
+        }
+        if let Some(i) = monsters.iter().position(|(o, _)| *o == owner) {
+            let (o, f) = monsters.remove(i);
+            f(state, target, o);
+        }
+    }
+    for (o, f) in monsters {
+        f(state, target, o);
+    }
+    if dead_side == crate::Side::Enemy && !own_power_fired {
+        fired = crate::enemy_death_effects::fire_for_owner(state, target);
+    }
+    if dead_side == crate::Side::Enemy {
+        // The dying enemy's surviving minions die with it, right away
+        // (CreatureCmd.cs:540-543 `Kill(teammates)` inside this Kill), so
+        // the rest of the card no longer sees them: a random-target hit
+        // after the last primary falls draws no target (AttackCommand.cs:
+        // 545-550) instead of rolling CombatTargets for a minion (act23
+        // Ironclad:1012, Sword Boomerang). Same zeroing as the
+        // `check_combat_end` collapse, which stays the backstop.
+        if state
+            .powers
+            .present_kinds()
+            .contains(crate::PowerKind::Minion)
+        {
+            if let Some(minions) = crate::combat_loop::minion_only_survivors(state) {
+                for uid in minions {
+                    if let Some(c) = state.creatures.iter_mut().find(|c| c.id == uid.0) {
+                        c.current_hp = 0;
+                    }
+                }
+            }
+        }
+    }
+    fired
+}
+
+/// The relic-side `AfterDeath` bus for a killed creature, then the player's
+/// cards (Melancholy), which follow the relics in each player's listener list
+/// (`CombatState.cs:128-160`).
+fn kill_relic_after_death(state: &mut CombatState, target: CreatureUid, dead_side: crate::Side) {
+    let ctx = hooks::AfterDeathCtx {
+        dead: target,
+        dead_side,
+    };
+    let _ = crate::relic_effects::dispatch_after_death(state, &ctx);
+    crate::coop::seat_pass(state, &ctx, |state, ctx| {
+        let _ = crate::relic_effects::dispatch_after_death(state, ctx);
+    });
+    hooks::dispatch_after_death_cards(state, &ctx);
+}
+
+/// Run `body` — the hits of ONE multi-target `CreatureCmd.Damage` — with
+/// enemy deaths deferred to the end, then kill every enemy it felled in hit
+/// order. C# applies all the HP loss, runs the per-result hooks, and only
+/// then calls `Kill(killedCreatures)` (CreatureCmd.cs:351-409), so an AoE
+/// that kills one crab hits its sibling before `CrabRagePower` reacts to the
+/// death (Regent act23 seed 1010). Nested calls join the outer batch.
+pub fn with_deferred_enemy_deaths<R>(
+    state: &mut CombatState,
+    body: impl FnOnce(&mut CombatState) -> R,
+) -> R {
+    if state.combat_log.deferred_enemy_deaths.is_some() {
+        return body(state);
+    }
+    state.combat_log.deferred_enemy_deaths = Some(smallvec::SmallVec::new());
+    let out = body(state);
+    let killed = state
+        .combat_log
+        .deferred_enemy_deaths
+        .take()
+        .unwrap_or_default();
+    for target in killed {
+        kill_before_death(state, target);
+        kill_after_death_powers(state, target, crate::Side::Enemy);
+        kill_relic_after_death(state, target, crate::Side::Enemy);
+        let fired = kill_dying_enemy_after_death(state, target, crate::Side::Enemy);
+        if let Some(kind) = fired {
+            crate::enemy_death_effects::finish_kill(state, target, kind);
+        }
+    }
+    out
+}
+
 /// Single-hit entry point: [`compute_modified_damage`] then
 /// [`apply_damage_with_final`]. Behaviourally identical to the pre-`8gzvn`
 /// monolithic `apply_damage_full`; the split exists only so multi-target
@@ -1283,7 +1498,7 @@ pub fn apply_damage_full(
     apply_damage_with_final(state, dealer, target, final_damage, props)
 }
 
-/// Fractional-base twin of [`compute_modified_damage`]: the relic-additive fold
+/// Fractional-base twin of [`compute_modified_damage`]: the relic additive
 /// plus [`hooks::modify_damage_frac`], over a RATIONAL base `base_num/base_den`
 /// (single floor at the end). Used by Thrash's decimal `Damage.BaseValue`.
 /// Bead `sts2-rs-thrash-decimal`.
@@ -1303,8 +1518,9 @@ pub fn compute_modified_damage_frac(
         target: CreatureRef::Enemy(target),
         props,
     };
-    // Relic-additive (MiniatureCannon &c.) reads the integer base; fold it into
-    // the rational numerator over the same denominator before the pipeline.
+    // Relic-additive (MiniatureCannon &c.) reads the integer base and joins
+    // the "other additive" term, after the card enchantment's stage (see
+    // `hooks::modify_damage_with_relic_additive`).
     let int_base = i32::try_from(base_num.div_euclid(base_den)).unwrap_or(i32::MAX);
     let relic_additive = if relic_channel_live(state, PlannedChannel::ModifyDamageAdditive) {
         let relic_additive_md_ctx = crate::relic_effects::ModifyDamageCtx {
@@ -1319,8 +1535,7 @@ pub fn compute_modified_damage_frac(
     } else {
         0
     };
-    let base_num = base_num.saturating_add(i64::from(relic_additive).saturating_mul(base_den));
-    hooks::modify_damage_frac(state, base_num, base_den, &ctx)
+    hooks::modify_damage_frac(state, base_num, base_den, relic_additive, &ctx)
 }
 
 /// Fractional-base twin of [`apply_damage_full`]: composes
@@ -1558,6 +1773,38 @@ mod tests {
         assert_eq!(hp_loss, 9);
         assert_eq!(state.creatures[0].current_hp, 39);
         assert_eq!(state.creatures[0].block, 0);
+    }
+
+    /// C# `CreatureCmd.Damage` skips a dead target before
+    /// `BeforeDamageReceived` (CreatureCmd.cs:256-259): a hit on a corpse whose
+    /// Thorns is still attached reflects nothing (Defect full parity seeds
+    /// 1405 / 5656, a third Gunk Up hit on a killed Toadpole).
+    #[test]
+    fn hit_on_dead_target_is_skipped_entirely() {
+        let mut state = vulnerable_scenario();
+        let _ = state.init_player_creature();
+        if let Some(p) = state
+            .powers
+            .iter_mut()
+            .find(|p| p.kind == PowerKind::Vulnerable)
+        {
+            p.kind = PowerKind::Thorns;
+        }
+        state.creatures[0].current_hp = 0;
+        let out = apply_damage_full(
+            &mut state,
+            CreatureRef::Player,
+            cultist_uid(),
+            6,
+            ValueProps::MOVE,
+            None,
+        );
+        assert_eq!(out.hp_loss, 0);
+        assert!(!out.was_target_killed);
+        assert_eq!(
+            state.player.current_hp, 50,
+            "the corpse's Thorns does not fire"
+        );
     }
 
     /// Bead `sts2-rs-8gzvn`: the `compute_modified_damage` +
@@ -2159,6 +2406,81 @@ mod tests {
             50 - 3,
             "player takes 3 HP-loss from Thorns reflection"
         );
+    }
+
+    /// A hit on an already-dead target is skipped entirely — C#
+    /// `CreatureCmd.Damage` `continue`s past `IsDead` (CreatureCmd.cs:257-260),
+    /// so the corpse's Thorns does not reflect (Necrobinder full seed 3909:
+    /// Eradicate's hits after the kill).
+    #[test]
+    fn hit_on_a_dead_target_is_skipped() {
+        use crate::PowerUid;
+        let mut state = CombatState::default();
+        state.player.current_hp = 50;
+        state.player.max_hp = 50;
+        let thorns_uid = PowerUid::new(1).expect("non-zero");
+        state.powers.push(Power {
+            id: thorns_uid.0,
+            kind: PowerKind::Thorns,
+            amount: 3,
+            counter: 0,
+            applier: None,
+            skip_next_tick: false,
+        });
+        let mut powers: SmallVec<[PowerUid; 8]> = SmallVec::new();
+        powers.push(thorns_uid);
+        state.creatures.push(Creature {
+            id: NonZeroU32::new(1).expect("non-zero"),
+            current_hp: 0,
+            max_hp: 48,
+            block: 0,
+            powers,
+            species: Some(MonsterKind::Nibbit),
+            intent: None,
+            intent_history: IntentHistory::default(),
+            monster_id: crate::MonsterId("Nibbit"),
+            ai: None,
+        });
+        state.enemy_uids.push(cultist_uid());
+
+        let hp_loss = apply_damage(
+            &mut state,
+            CreatureRef::Player,
+            cultist_uid(),
+            5,
+            ValueProps::MOVE,
+            None,
+        );
+        assert_eq!(hp_loss, 0);
+        assert_eq!(state.player.current_hp, 50, "no Thorns off a corpse");
+    }
+
+    /// Damage to the player's pet is absorbed by the PLAYER's block
+    /// (CreatureCmd.cs:264, `PetOwner?.Creature ?? target`) — Necrobinder full
+    /// seed 3674: a Spiny Toad's Thorns reflect onto the Osty.
+    #[test]
+    fn pet_damage_is_absorbed_by_the_owners_block() {
+        let mut state = CombatState::default();
+        state.player.current_hp = 50;
+        state.player.max_hp = 50;
+        state.player.block = 10;
+        let osty = state.summon_osty(3).expect("osty summoned");
+        let hp_loss = apply_damage(
+            &mut state,
+            CreatureRef::Nobody,
+            osty,
+            5,
+            ValueProps::UNPOWERED,
+            None,
+        );
+        assert_eq!(hp_loss, 0);
+        assert_eq!(state.player.block, 5, "the owner's block absorbed it");
+        let osty_hp = state
+            .creatures
+            .iter()
+            .find(|c| c.id == osty.0)
+            .map(|c| c.current_hp);
+        assert_eq!(osty_hp, Some(3));
     }
 
     /// **Thorns recursion termination**: even when the attacker also has
@@ -2810,6 +3132,69 @@ mod tests {
             state.powers[0].amount, 9,
             "no stack consumed when UnblockedDamage == 0"
         );
+    }
+
+    /// A hit on an already-dead enemy is a no-op: C# `CreatureCmd.Damage`
+    /// skips `IsDead` targets before `BeforeDamageReceived`
+    /// (CreatureCmd.cs:256), so a Thorns corpse reflects nothing. A Twin
+    /// Strike / Thrash second hit on a just-killed Toadpole used to re-fire
+    /// its Thorns (Ironclad fuzz seeds 3516, 4853).
+    #[test]
+    fn hit_on_dead_enemy_does_not_reflect_thorns() {
+        use crate::PowerUid;
+        let mut state = CombatState::default();
+        state.player.current_hp = 50;
+        state.player.max_hp = 50;
+        let thorns_uid = PowerUid::new(1).expect("non-zero");
+        state.powers.push(Power {
+            id: thorns_uid.0,
+            kind: PowerKind::Thorns,
+            amount: 2,
+            counter: 0,
+            applier: None,
+            skip_next_tick: false,
+        });
+        let mut powers: SmallVec<[PowerUid; 8]> = SmallVec::new();
+        powers.push(thorns_uid);
+        state.creatures.push(Creature {
+            id: NonZeroU32::new(1).expect("non-zero"),
+            current_hp: 5,
+            max_hp: 48,
+            block: 0,
+            powers,
+            species: Some(MonsterKind::Nibbit),
+            intent: None,
+            intent_history: IntentHistory::default(),
+            monster_id: crate::MonsterId("Nibbit"),
+            ai: None,
+        });
+        state.enemy_uids.push(cultist_uid());
+
+        let first = apply_damage_full(
+            &mut state,
+            CreatureRef::Player,
+            cultist_uid(),
+            20,
+            ValueProps::MOVE,
+            None,
+        );
+        assert!(first.was_target_killed, "first hit kills");
+        assert_eq!(
+            state.player.current_hp, 48,
+            "the killing hit reflects Thorns once"
+        );
+
+        let second = apply_damage_full(
+            &mut state,
+            CreatureRef::Player,
+            cultist_uid(),
+            20,
+            ValueProps::MOVE,
+            None,
+        );
+        assert_eq!(second.hp_loss, 0);
+        assert!(!second.was_target_killed);
+        assert_eq!(state.player.current_hp, 48, "a corpse reflects no Thorns");
     }
 
     /// **Multi-hit attack: per-hit Vulnerable amplification + Thorns
@@ -4265,13 +4650,36 @@ mod tests {
                 must_perform_once: false,
             }),
         );
+        // The Tunneler's stun: must-perform-once, resuming BITE_MOVE (the
+        // `Stun(Owner, …, "BITE_MOVE")` target, BurrowedPower.cs:23-31).
         states.insert(
             "DIZZY_MOVE",
             MonsterState::Move(MoveState {
                 id: "DIZZY_MOVE",
                 effect: dead_state_noop,
-                intents: smallvec::smallvec![crate::Intent::Unknown],
-                follow_up: Some("DIZZY_MOVE"),
+                intents: smallvec::smallvec![crate::Intent::Stun],
+                follow_up: Some("BITE_MOVE"),
+                must_perform_once: true,
+            }),
+        );
+        states.insert(
+            "BITE_MOVE",
+            MonsterState::Move(MoveState {
+                id: "BITE_MOVE",
+                effect: dead_state_noop,
+                intents: smallvec::smallvec![crate::Intent::Attack { damage: 1 }],
+                follow_up: Some("atk"),
+                must_perform_once: false,
+            }),
+        );
+        // The stun resumes at BITE_MOVE (BurrowedPower.cs:27).
+        states.insert(
+            "BITE_MOVE",
+            MonsterState::Move(MoveState {
+                id: "BITE_MOVE",
+                effect: dead_state_noop,
+                intents: smallvec::smallvec![crate::Intent::Attack { damage: 1 }],
+                follow_up: Some("BITE_MOVE"),
                 must_perform_once: false,
             }),
         );

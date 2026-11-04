@@ -70,10 +70,6 @@
    "kind": "ppo_policy"
   },
   {
-   "at": 31,
-   "kind": "last_move_regret"
-  },
-  {
    "at": 35,
    "kind": "reward_preview"
   },
@@ -146,10 +142,6 @@
   {
    "at": 55,
    "kind": "search_tree"
-  },
-  {
-   "at": 56,
-   "kind": "last_move_regret"
   },
   {
    "at": 60,
@@ -237,10 +229,6 @@
    "kind": "ppo_policy"
   },
   {
-   "at": 81,
-   "kind": "last_move_regret"
-  },
-  {
    "at": 85,
    "kind": "reward_preview"
   },
@@ -296,10 +284,6 @@
    "kind": "search_tree"
   },
   {
-   "at": 106,
-   "kind": "last_move_regret"
-  },
-  {
    "at": 110,
    "kind": "ppo_policy"
   },
@@ -326,10 +310,6 @@
   {
    "at": 130,
    "kind": "ppo_policy"
-  },
-  {
-   "at": 131,
-   "kind": "last_move_regret"
   },
   {
    "at": 140,

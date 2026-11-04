@@ -63,6 +63,10 @@ def _opt_float(v: Any) -> float | None:
     return None if v is None else float(v)
 
 
+def _opt_int(v: Any) -> int | None:
+    return None if v is None else int(v)
+
+
 def score(state: dict[str, Any], config: dict[str, Any] | None = None) -> dict[str, Any]:
     """Return per-action MCTS scores or a graceful error payload.
 
@@ -151,8 +155,25 @@ def rows_from_mcts(result: dict[str, Any], state: dict[str, Any]) -> list[dict[s
                 "mean_final_hp": _opt_float(entry.get("mean_final_hp")),
                 "hp_sd": _opt_float(entry.get("hp_sd")),
                 "hp_n": int(entry.get("hp_n", 0) or 0),
+                # Co-op `PlayCardAtAlly` (GH #1017): which teammate. Absent
+                # otherwise, so every other row keeps its shape.
+                **({"ally_index": int(a["ally_index"])} if a.get("ally_index") is not None else {}),
+                "pick_rank": _opt_int(entry.get("pick_rank")),
+                "in_band": bool(entry.get("in_band", False)),
+                # Why the engine took this move (`mcts_recommend()["pick"]`),
+                # on the engine's own pick only -- an heir crowned below has none.
+                "pick_reason": (result.get("pick") or {}).get("reason")
+                if entry.get("is_best")
+                else None,
             }
         )
+    # The engine's pick was a row this boundary does not surface: the star
+    # goes to the engine's own next choice, the lowest surviving `pick_rank`
+    # (GH #1022), not to the highest win probability.
+    if not any(r["is_best"] for r in rows):
+        ranked = [r for r in rows if r["pick_rank"] is not None]
+        if ranked:
+            min(ranked, key=lambda r: r["pick_rank"])["is_best"] = True
     rows.sort(key=lambda r: (not r["is_best"], -r["win_prob"]))
     return rows
 

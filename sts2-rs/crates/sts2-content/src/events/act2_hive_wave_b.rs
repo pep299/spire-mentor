@@ -9,9 +9,6 @@
 //! `RanwidTheElder`; the M–R boundary is bead-bookkeeping, not a clean
 //! alphabet split.
 //!
-//! Port pin: `sts2-rl-agent@01c094d:sts2_env/events/act2.py:763`+
-//! (`RelicTrader` through `WhisperingHollow`).
-//!
 //! ## Deferred surfaces
 //!
 //! **Status corrected 2026-06-26** (verified against current bodies; the
@@ -101,7 +98,7 @@ fn relic_trader_owned(state: &RunState) -> Vec<RelicId> {
         .relics
         .iter()
         .copied()
-        .filter(|&id| crate::relics::tradable::relic_is_tradable(id))
+        .filter(|&id| crate::relics::tradable::relic_is_tradable_in(state, id))
         .collect();
     let mut rng = state.rng.named(RELIC_TRADER_STREAM);
     rng.stable_shuffle_by(&mut valid, &|a: RelicId, b: RelicId| {
@@ -622,12 +619,74 @@ fn stone_lift(state: &mut RunState) -> EventOutcome {
     }
 }
 
+/// `StoneOfAllTime.push` Vigorous amount (`PushVigorousAmount`).
+pub const STONE_PUSH_VIGOROUS: i32 = 8;
+
+/// C# `Vigorous.CanEnchant`: the base `EnchantmentModel.CanEnchant` narrowed
+/// by `Vigorous.CanEnchantCardType` (Attack only, Vigorous.cs:13-16) — the
+/// same filter as Corrupted, so it shares [`symbiote_can_enchant`].
+fn vigorous_can_enchant(c: &sts2_core::cards::Card) -> bool {
+    symbiote_can_enchant(c)
+}
+
 fn stone_push(state: &mut RunState) -> EventOutcome {
+    // C# `StoneOfAllTime.Push` (StoneOfAllTime.cs:103-113): Damage(6,
+    // Unblockable|Unpowered), then `FromDeckForEnchantment(Vigorous, 8)`
+    // pick-1 → `CardCmd.Enchant(vigorous, item, 8)`. Same interactive shape
+    // as `symbiote_approach`: queue the pick when the grid has a real choice,
+    // otherwise enchant the only eligible card.
+    use sts2_core::cards::EnchantmentId;
     let lost = state.lose_hp(STONE_PUSH_DAMAGE);
-    // Python enchants a deck card with Vigorous +8. Enchant deferred.
-    EventOutcome::finished(format!(
-        "Took {lost} damage — Vigorous +8 enchant deferred."
-    ))
+    let eligible = state
+        .master_deck
+        .iter()
+        .filter(|c| vigorous_can_enchant(c))
+        .count();
+    if state.interactive_card_transform && eligible > 1 {
+        state
+            .pending_deck_enchants
+            .push(sts2_core::PendingDeckEnchant {
+                enchantment: EnchantmentId::Vigorous,
+                amount: STONE_PUSH_VIGOROUS,
+                // The deck grid lists only Attacks (Vigorous.cs:13-16).
+                type_restriction: Some(CardType::Attack),
+                secondary_type: None,
+                optional: false,
+            });
+        EventOutcome::finished(format!(
+            "Took {lost} damage. Pick a card to enchant with Vigorous {STONE_PUSH_VIGOROUS}."
+        ))
+    } else {
+        if let Some(card) = state
+            .master_deck
+            .iter_mut()
+            .find(|c| vigorous_can_enchant(c))
+        {
+            card.enchantments
+                .push((EnchantmentId::Vigorous, STONE_PUSH_VIGOROUS));
+        }
+        EventOutcome::finished(format!(
+            "Took {lost} damage. Enchanted a card with Vigorous {STONE_PUSH_VIGOROUS}."
+        ))
+    }
+}
+
+/// `StoneOfAllTime.GenerateInitialOptions` (StoneOfAllTime.cs:89): Push is
+/// replaced by the null-handler `PUSH_LOCKED` option, in the same slot, when
+/// no deck card passes `Vigorous.CanEnchant`.
+fn stone_of_all_time_generate_options(state: &RunState, spec: &EventSpec) -> Vec<EventOptionInfo> {
+    let mut opts = default_option_info_from_spec(state, spec);
+    if !state.master_deck.iter().any(vigorous_can_enchant) {
+        for opt in opts.iter_mut().filter(|o| o.option_id == "push") {
+            opt.enabled = false;
+            opt.loc_key = "STONE_OF_ALL_TIME.pages.INITIAL.options.PUSH_LOCKED";
+            opt.label = "Locked".to_string();
+            opt.description = "Requires an Attack.".to_string();
+            opt.vars = Vec::new();
+            opt.title_vars = Vec::new();
+        }
+    }
+    opts
 }
 
 const STONE_OF_ALL_TIME_OPTIONS: &[EventOptionSpec] = &[
@@ -664,7 +723,10 @@ const STONE_OF_ALL_TIME_OPTIONS: &[EventOptionSpec] = &[
         default_description: "Take 6 damage, enchant a card with Vigorous +8.",
         default_vars: &[
             ("PushHpLoss", EventVarSpec::Int(STONE_PUSH_DAMAGE as i64)),
-            ("PushVigorousAmount", EventVarSpec::Int(8)),
+            (
+                "PushVigorousAmount",
+                EventVarSpec::Int(STONE_PUSH_VIGOROUS as i64),
+            ),
         ],
         vars_fn: None,
         title_vars_fn: None,
@@ -677,7 +739,7 @@ pub const STONE_OF_ALL_TIME: EventSpec = EventSpec {
     python_name: "StoneOfAllTime",
     // C# `CurrentActIndex == 1 && Potions.Any()` (Act 2 + ≥1 potion). Bead `sts2-rs-1hiht`.
     is_allowed: stone_of_all_time_allowed,
-    generate_options: default_option_info_from_spec,
+    generate_options: stone_of_all_time_generate_options,
     options: STONE_OF_ALL_TIME_OPTIONS,
 };
 
@@ -686,13 +748,14 @@ pub const STONE_OF_ALL_TIME: EventSpec = EventSpec {
 /// `Symbiote` event-RNG stream name (C# `Id.Entry`, UPPER_SNAKE).
 const SYMBIOTE_STREAM: &str = "SYMBIOTE";
 
-/// C# `Symbiote.CanEnchant(card) => Corrupted.CanEnchant(card)`. Corrupted has
-/// no `CanEnchant` override, so this is the base `EnchantmentModel.CanEnchant`:
-/// not Status/Curse, no existing enchantment, concrete cost (X-cost stays
-/// eligible) — identical to [`super::shared_wave_b`]'s `sown_can_enchant`.
+/// C# `Symbiote.CanEnchant(card) => Corrupted.CanEnchant(card)`: the base
+/// `EnchantmentModel.CanEnchant` (no existing enchantment, concrete cost —
+/// X-cost stays eligible) narrowed by `Corrupted.CanEnchantCardType`, which
+/// admits only Attacks (Corrupted.cs:15-18, same in v0.111.0).
 fn symbiote_can_enchant(c: &sts2_core::cards::Card) -> bool {
     use sts2_core::cards::CardType;
-    !matches!(c.card_type, CardType::Status | CardType::Curse)
+    c.card_type == CardType::Attack
+        && !c.is_quest()
         && c.enchantments.is_empty()
         && (c.cost >= 0 || c.is_x_cost())
 }
@@ -714,8 +777,12 @@ fn symbiote_approach(state: &mut RunState) -> EventOutcome {
             .push(sts2_core::PendingDeckEnchant {
                 enchantment: EnchantmentId::Corrupted,
                 amount: 1,
-                type_restriction: None,
+                // The deck grid lists only Attacks (Corrupted.cs:15-18); with
+                // every card listed, the picked index landed on a different
+                // card (Necrobinder act23 seed 1008: C# Corrupted the Snap).
+                type_restriction: Some(sts2_core::cards::CardType::Attack),
                 secondary_type: None,
+                optional: false,
             });
         EventOutcome::finished("Pick a card to enchant with Corrupted.")
     } else {
@@ -871,12 +938,16 @@ fn future_of_potions_pool(
 /// C# `TheFutureOfPotions.Trade(potion)`: discard it, then offer three cards
 /// of the matched rarity and type, every one UPGRADED.
 ///
-/// The offer goes on `pending_card_selects` rather than
-/// `pending_rewards`, because that is the only surface carrying per-option
-/// upgrade flags — a `CardReward` is a bare id list and would hand the player
-/// an unupgraded card. The run loop moves it into `card_reward_options` and
-/// fans it out as the usual pick-or-skip, so the decision the policy sees is
-/// unchanged in kind (`RewardsCmd.OfferCustom` is skippable in C# too).
+/// C# builds a real `CardReward` and offers it with `RewardsCmd.OfferCustom`
+/// (`TheFutureOfPotions.cs`, same in v0.111.0), so it is a card-REWARD screen
+/// — pick one or skip — not a choose-a-card select: queue it on
+/// `pending_rewards` as a pre-resolved [`CardReward::from_cards`] (which
+/// carries the per-option upgrade flags) like Colorful Philosophers. It used
+/// to go on `pending_card_selects` and surface as a `card_select` where C#
+/// shows `card_reward` (act23 probe: Ironclad seed 1017). The slate runs the
+/// card-reward hooks (`CreateForReward` → `TryModifyCardRewardOptions`, no
+/// `NoModifyHooks`; `IsCardReward` set by the constructor), then
+/// `AfterGenerated` upgrades every card.
 fn the_future_of_potions_trade(state: &mut RunState, slot: usize) -> EventOutcome {
     let Some(&kind) = state.potions.get(slot) else {
         return EventOutcome::finished("That slot was empty.");
@@ -902,14 +973,22 @@ fn the_future_of_potions_trade(state: &mut RunState, slot: usize) -> EventOutcom
         return EventOutcome::finished("The machine had nothing to give.");
     }
     let count = options.len();
+    let version = state.game_version;
+    let cards: Vec<sts2_core::cards::Card> = options
+        .into_iter()
+        .filter_map(|id| crate::cards::v0111::card_pod_for(id, false, version))
+        .collect();
+    let mut cards = state.offer_card_slate(cards, true);
+    for card in &mut cards {
+        if !card.upgraded {
+            card.upgrade_for(version);
+        }
+    }
     state
-        .pending_card_selects
-        .push(sts2_core::runstate::PendingCardSelect {
-            upgraded: vec![true; count],
-            enchantments: Vec::new(),
-            options,
-            post_add: Vec::new(),
-        });
+        .pending_rewards
+        .push(sts2_core::runstate::Reward::Card(
+            sts2_core::runstate::CardReward::from_cards(&cards),
+        ));
     EventOutcome::finished(format!(
         "Fed the machine a potion for {count} upgraded cards to choose from."
     ))
@@ -1703,6 +1782,30 @@ mod tests {
         assert!(super::super::relic_trader_allowed(&rs), "now 5 tradable");
     }
 
+    /// C# `IsTradable` is false for a melted relic (`RelicModel.cs:188`), so
+    /// `GetValidRelics` drops a Toy Box wax relic once it has melted — both
+    /// from the five-relic `IsAllowed` count (`RelicTrader.cs:104-110`) and
+    /// from the list `StableShuffle` deals the three slots from (`:51`).
+    #[test]
+    fn relic_trader_skips_melted_relics() {
+        let mut rs = trader_state();
+        rs.relics.push(RelicId::AmethystAubergine);
+        rs.wax_relics.insert(RelicId::AmethystAubergine);
+        rs.melted_relics.insert(RelicId::AmethystAubergine);
+        let mut unmelted = rs.clone();
+        unmelted.relics.pop();
+        assert_eq!(
+            relic_trader_owned(&rs),
+            relic_trader_owned(&unmelted),
+            "a melted relic must not lengthen the shuffled list"
+        );
+        rs.relics.remove(0);
+        assert!(
+            !super::super::relic_trader_allowed(&rs),
+            "four live tradable relics plus a melted one is not five"
+        );
+    }
+
     #[test]
     fn slippery_bridge_hold_on_takes_base_damage() {
         let mut rs = fresh();
@@ -1766,6 +1869,56 @@ mod tests {
         assert_eq!(rs.current_hp, 40 - STONE_PUSH_DAMAGE);
     }
 
+    /// Push enchants a deck Attack with Vigorous 8 (StoneOfAllTime.cs:103-113).
+    /// It used to take only the HP, so an act-2 Strike dealt 6 where C# dealt
+    /// 14 (GH #1054 round 7, Defect-3004-a0-act2#b2).
+    #[test]
+    fn stone_push_enchants_an_attack_with_vigorous() {
+        crate::cards::dispatch::ensure_installed();
+        use sts2_core::cards::EnchantmentId;
+        let card = |id| crate::cards::spec_index::card_pod_from_id(id, false).unwrap();
+        // Auto mode: the first eligible card (the Defend is skipped).
+        let mut rs = fresh();
+        rs.master_deck = vec![card(CardId::DefendDefect), card(CardId::StrikeDefect)];
+        run(&STONE_OF_ALL_TIME, "push", &mut rs);
+        assert_eq!(rs.current_hp, 40 - STONE_PUSH_DAMAGE);
+        assert!(rs.master_deck[0].enchantments.is_empty());
+        assert_eq!(
+            rs.master_deck[1].enchantments.as_slice(),
+            &[(EnchantmentId::Vigorous, STONE_PUSH_VIGOROUS)]
+        );
+
+        // Interactive with >1 Attack: an Attack-only pick is queued.
+        let mut rs = fresh();
+        rs.interactive_card_transform = true;
+        rs.master_deck = vec![card(CardId::StrikeDefect), card(CardId::StrikeDefect)];
+        run(&STONE_OF_ALL_TIME, "push", &mut rs);
+        assert_eq!(rs.pending_deck_enchants.len(), 1);
+        let pick = &rs.pending_deck_enchants[0];
+        assert_eq!(pick.enchantment, EnchantmentId::Vigorous);
+        assert_eq!(pick.amount, STONE_PUSH_VIGOROUS);
+        assert_eq!(pick.type_restriction, Some(CardType::Attack));
+    }
+
+    /// `PUSH_LOCKED` (StoneOfAllTime.cs:89): no Vigorous-eligible Attack in
+    /// the deck locks Push in its slot.
+    #[test]
+    fn stone_push_locked_without_an_enchantable_attack() {
+        crate::cards::dispatch::ensure_installed();
+        let card = |id| crate::cards::spec_index::card_pod_from_id(id, false).unwrap();
+        let mut rs = fresh();
+        rs.master_deck = vec![card(CardId::DefendDefect)];
+        let opts = (STONE_OF_ALL_TIME.generate_options)(&rs, &STONE_OF_ALL_TIME);
+        assert!(!opts[1].enabled);
+        assert_eq!(
+            opts[1].loc_key,
+            "STONE_OF_ALL_TIME.pages.INITIAL.options.PUSH_LOCKED"
+        );
+        rs.master_deck.push(card(CardId::StrikeDefect));
+        let opts = (STONE_OF_ALL_TIME.generate_options)(&rs, &STONE_OF_ALL_TIME);
+        assert!(opts[1].enabled);
+    }
+
     #[test]
     fn symbiote_both_options_open_deck_card_selects() {
         crate::cards::dispatch::ensure_installed();
@@ -1783,6 +1936,11 @@ mod tests {
         assert_eq!(
             rs.pending_deck_enchants[0].enchantment,
             EnchantmentId::Corrupted
+        );
+        // Corrupted enchants Attacks only (Corrupted.cs:15-18).
+        assert_eq!(
+            rs.pending_deck_enchants[0].type_restriction,
+            Some(sts2_core::cards::CardType::Attack)
         );
         run(&SYMBIOTE, "kill_fire", &mut rs);
         assert_eq!(rs.pending_deck_transforms.len(), 1);
@@ -1814,11 +1972,15 @@ mod tests {
 
         run(&THE_FUTURE_OF_POTIONS, "trade_0", &mut rs);
         assert_eq!(rs.potions, vec![PotionKind::FirePotion], "slot 0 consumed");
-        assert!(rs.pending_rewards.is_empty(), "not a generic reward");
-        let select = rs.pending_card_selects.first().expect("an offer");
+        // A real card reward (C# `RewardsCmd.OfferCustom(CardReward)`), not
+        // a choose-a-card select.
+        assert!(rs.pending_card_selects.is_empty());
+        let Some(sts2_core::runstate::Reward::Card(select)) = rs.pending_rewards.first() else {
+            panic!("an offered card reward");
+        };
         assert!(!select.options.is_empty());
         assert!(
-            select.upgraded.iter().all(|&u| u),
+            select.upgraded.len() == select.options.len() && select.upgraded.iter().all(|&u| u),
             "C# upgrades every card in the offer"
         );
         for &id in &select.options {

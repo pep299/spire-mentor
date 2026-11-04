@@ -6,16 +6,15 @@ use super::prelude::*;
 ///
 /// [decompiled C# omitted — see the cited path]
 ///
-/// `GetTeammatesOf` includes the owner (`CombatState.cs:656-659`), so in
-/// single-player one clone goes into the owner's discard pile — the Anger
-/// shape.
+/// `GetTeammatesOf` includes the owner (`CombatState.cs:656-659`): one clone
+/// into the discard pile of every living player, the owner's included.
 pub(crate) fn play_outrage(state: &mut CombatState, target: Option<CreatureUid>) -> EffectResult {
     let t = target.expect("Outrage: Enemy-targeted");
     let _ = deal_damage_player_to_enemy(state, t, current_damage(state));
-    // v0.111.0: a clone into the discard of every living player on the side —
-    // the owner in SP (decomp Outrage.cs:30-38).
     if let Some(template) = sts2_core::card_effects::resolving_card_inst(state).copied() {
-        let _ = spawn_card_into_pile(state, template, PileKind::Discard);
+        sts2_core::coop::every_player(state, |state| {
+            let _ = spawn_card_into_pile(state, template, PileKind::Discard);
+        });
     }
     EffectResult::Resolved
 }

@@ -16,7 +16,6 @@ use super::prelude::*;
 /// `OnPlayWrapper` finishes, so deferring the move to the single
 /// move-out-of-Play step keeps the card resolvable across replays and lands
 /// the same net pile state. Bead `sts2-rs-a649q`.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L526
 pub(crate) fn play_shining_strike(
     state: &mut CombatState,
     target: Option<CreatureUid>,

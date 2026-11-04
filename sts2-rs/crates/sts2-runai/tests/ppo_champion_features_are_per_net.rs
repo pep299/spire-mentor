@@ -77,6 +77,8 @@ const FEATURE_CHAMPIONS: [(CharacterId, Features); 1] = [(
     Features {
         reward_upgrade: true,
         card_mods: true,
+        card_bundles: false,
+        card_kind: false,
     },
 )];
 
@@ -145,6 +147,8 @@ fn a_committed_champion_ignores_a_hostile_process_wide_feature_flag() {
         Features {
             reward_upgrade: true,
             card_mods: false,
+            card_bundles: false,
+            card_kind: false,
         },
         "the env var this test exists to defeat is not actually set"
     );
@@ -239,6 +243,8 @@ fn an_explicit_model_override_still_reads_the_environment() {
             Features {
                 reward_upgrade: true,
                 card_mods: false,
+                card_bundles: false,
+                card_kind: false,
             },
             "{character:?}: with STS2_RUNAI_PPO pointing at a net no manifest \
              describes, STS2_PPO_FEATURES is the only schema declaration there \

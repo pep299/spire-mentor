@@ -165,26 +165,30 @@ pub(crate) fn ironclad_combat_generatable_specs() -> [CardSpec; 78] {
     ]
 }
 
-/// Pick a random Ironclad Attack `CardSpec` the way C# does: shuffle the
-/// whole combat-generatable attack pool (`UnstableShuffle` over
-/// [`ironclad_attack_specs`]) off the `CombatCardGeneration` stream and
-/// take the first. This consumes `pool.len() - 1` reads (32 at this pin),
-/// matching C# `InfernalBlade.OnPlay` / `CardFactory.GetDistinctForCombat`
-/// read-for-read — a single `NextItem` pick (the prior behavior) consumed
-/// 1 read and desynced the stream for the rest of combat. Bead
-/// `sts2-rs-q6bix`. Returns `None` only if the pool is empty (defensive;
-/// non-empty at this pin).
+/// Pick Infernal Blade's random Attack `CardSpec` the way C# does: shuffle
+/// the OWNER's combat-generatable Attack pool off the `CombatCardGeneration`
+/// stream and take the first (`TakeRandom(1)` = `UnstableShuffle(list).Take(1)`,
+/// consuming `pool.len() - 1` reads; bead `sts2-rs-q6bix`). C# reads
+/// `Owner.Character.CardPool` (InfernalBlade.cs:22-24, same in v0.111.0), so a
+/// Defect who picked Infernal Blade up draws a DEFECT Attack (QX85: C#
+/// Adaptive Strike, Rust drew Ironclad's Pommel Strike). [`fight_pool`]
+/// carries the co-op filter too (GH #991). Its Ironclad Attack subset is
+/// [`ironclad_attack_specs`] in order, the fallback when no character is
+/// seated. Returns `None` only for an empty pool.
+///
+/// [`fight_pool`]: crate::cards::colorless::helpers::fight_pool
 pub(crate) fn random_ironclad_attack_spec(state: &mut CombatState) -> Option<CardSpec> {
-    let mut pool = ironclad_attack_specs();
-    debug_assert!(
-        pool.iter().all(|s| s.card_type == CardType::Attack),
-        "ironclad_attack_specs must contain only Attack-typed specs"
-    );
+    let mut pool: smallvec::SmallVec<[CardSpec; 48]> = match state.player.character {
+        Some(character) => crate::cards::colorless::helpers::fight_pool(state, character)
+            .iter()
+            .copied()
+            .filter(|s| s.card_type == CardType::Attack)
+            .collect(),
+        None => ironclad_attack_specs().into_iter().collect(),
+    };
     if pool.is_empty() {
         return None;
     }
-    // C# `TakeRandom(1)` = `UnstableShuffle(list).Take(1)`: shuffle the
-    // entire pool (consuming len-1 reads), then take index 0.
     state.run_rng.combat_card_generation.shuffle(&mut pool);
     Some(pool[0])
 }

@@ -11,11 +11,12 @@ pub(crate) fn on_after_turn_end_parrying_shield(
     if !player_owns_relic(state, crate::RelicKind::ParryingShield) {
         return EffectResult::NotImplemented;
     }
-    // C# `ParryingShield.AfterSideTurnEnd` (early phase) checks Block before
-    // any late `AfterSideTurnEndLate` power (e.g. Disintegration) consumes it.
-    // Rust runs the late powers first in a single after_turn_end pass, so test
-    // the pre-late snapshot captured in `end_player_turn_phase_two` rather than
-    // the live (possibly already-decremented) value. (sweep seed 5003.)
+    // C# `ParryingShield.AfterSideTurnEnd` reads Block after the player's own
+    // `AfterSideTurnEnd` powers (Constrict's self-damage, act23 Necrobinder
+    // 1016) but before other creatures' listeners (CombatState.cs:115-131).
+    // Rust applies every power bucket before the relic bus, so test the
+    // snapshot `hooks::dispatch_after_turn_end` records between them. The late
+    // Disintegration (`AfterSideTurnEndLate`) runs after this relic.
     if state.combat_log.block_before_late_turn_end < PARRYING_SHIELD_BLOCK_THRESHOLD {
         return EffectResult::Resolved;
     }

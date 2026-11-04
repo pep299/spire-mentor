@@ -1736,12 +1736,12 @@ mod embed_parity_tests {
 pub enum LeafEval {
     /// Texel-tuned `evaluate_in_progress` — the narrow 29-feature leaf.
     Texel,
-    /// Wide 172-feature Texel leaf (`sts2_core::evaluate_in_progress_wide`).
+    /// Wide 216-feature Texel leaf (`sts2_core::evaluate_in_progress_wide`).
     /// Default as of Phase 1 (L2-regularized fit beats narrow on the gate).
     #[default]
     TexelWide,
     /// Wide Texel leaf with **runtime-loaded** weights (Phase 2 ExpI). Same
-    /// scoring as [`LeafEval::TexelWide`] but reads the 172-weight vector from
+    /// scoring as [`LeafEval::TexelWide`] but reads the 216-weight vector from
     /// an `Arc` instead of the baked-in `EVAL_FEATURE_WEIGHTS_WIDE` const, so a
     /// round's freshly-fit value leaf can be gated against the const champion
     /// in one binary without a rebuild. Load via [`load_wide_leaf_weights`].
@@ -1803,7 +1803,7 @@ impl LeafEval {
 }
 
 /// Load wide-leaf weights from a `texel_tune.py --target value` output
-/// (`{"fitted_weights_ordered": [..172 floats..]}`). Used to build a
+/// (`{"fitted_weights_ordered": [..216 floats..]}`). Used to build a
 /// [`LeafEval::TexelWideRuntime`] for Phase-2 expert-iteration rounds (gate a
 /// round's freshly-fit leaf against the const champion without a rebuild).
 /// Errors on read/parse failure or a width that is not

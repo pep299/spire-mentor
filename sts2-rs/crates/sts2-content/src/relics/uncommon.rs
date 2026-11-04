@@ -1,7 +1,6 @@
 //! Uncommon-rarity relic dispatch — bead `sts2-rs-l22` (P7-3).
 //!
-//! Ported from `sts2-rl-agent@01c094d:sts2_env/relics/uncommon.py`
-//! (40 relics). This file registers a Phase-7 on-trigger handler
+//! This file registers a Phase-7 on-trigger handler
 //! for every uncommon-rarity [`RelicId`] variant. Handler bodies
 //! are intentionally minimal markers (`EffectResult::Resolved`)
 //! that satisfy the dispatch-table acceptance criterion: every
@@ -44,8 +43,7 @@ use sts2_core::relic_effects::{
 use sts2_core::relics::RelicId;
 use sts2_core::run_effects::{
     register_after_obtained, register_after_room_entered, register_on_card_added_to_deck,
-    register_on_gold_gained, register_should_gain_gold, AfterObtainedRunFn, AfterRoomEnteredRunFn,
-    CardAddedRunCtx, OnCardAddedToDeckRunFn, OnGoldGainedRunFn, ShouldGainGoldRunFn,
+    AfterObtainedRunFn, AfterRoomEnteredRunFn, CardAddedRunCtx, OnCardAddedToDeckRunFn,
 };
 use sts2_core::runstate::{RoomType, RunState};
 use sts2_core::{CardUid, CombatState, RelicKind, Side};
@@ -127,8 +125,19 @@ pub fn install_pool() {
     // has been removed; do NOT re-add a content-side GremlinHorn listener.
     // Bead `sts2-rs-gpsvo`.
 
-    // PenNib.cs: BeforeCardPlayed increments modulo ten and marks that
-    // card source; an awaited selection must keep the mark until its tail.
+    // Bead `sts2-rs-cr4y8`: PenNib doubles the 10th attack's damage.
+    // C# `PenNib.ModifyDamageMultiplicative` returns `2m` — a TRUE
+    // multiplicative on the FULLY-computed attack damage (base +
+    // Strength + other additive bonuses), so it composes a `×2` alongside
+    // Vulnerable etc. and floors once.
+    //
+    // 1. `before_card_played` counts the Attack (`AttacksPlayed` modulo 10)
+    //    and, when the count wraps to 0, marks that card as the one to
+    //    double (`PenNib.BeforeCardPlayed`).
+    // 2. `modify_damage_multiplicative` returns `×2` only for the marked
+    //    card's powered damage (or, with no mark, for a not-yet-played card
+    //    previewed on the 9th count).
+    // 3. `after_card_played` clears the mark once that card's play ends.
     sts2_core::relic_effects::register_before_card_played(
         RelicId::PenNib,
         listener_pen_nib_before_card_played,
@@ -144,23 +153,8 @@ pub fn install_pool() {
     // Bead `sts2-rs-u8qa`: real `after_obtained` listener for Pear's
     // `MAX_HP = 10` (Python `uncommon.py::Pear.MAX_HP`).
     register_after_obtained(RelicId::Pear, listener_pear as AfterObtainedRunFn);
-    // Bead `sts2-rs-b31s6`: BowlerHat — 25% bonus on every positive
-    // gold gain (`sts2-rs-oim25` corrected the Python-pin's 20% to
-    // C# `GoldIncrease = 1.25m`). Two-listener wire:
-    // - should_gain_gold latches the integer-floored bonus into
-    //   rs.relic_counters[BowlerHat] (never cancels the gain).
-    // - on_gold_gained reads the latch and re-calls gain_gold(bonus),
-    //   guarded by rs.bowler_hat_applying_bonus so other gold
-    //   listeners (DragonFruit, ...) observe the bonus once while
-    //   BowlerHat itself doesn't compound geometrically.
-    register_should_gain_gold(
-        RelicId::BowlerHat,
-        listener_bowler_hat_should_gain_gold as ShouldGainGoldRunFn,
-    );
-    register_on_gold_gained(
-        RelicId::BowlerHat,
-        listener_bowler_hat_on_gold_gained as OnGoldGainedRunFn,
-    );
+    // BowlerHat has no listener: its C# `ModifyGoldGained` x1.25 is folded
+    // into `RunState::gain_gold` (and `gain_gold_in_combat` in combat).
     // Bead `sts2-rs-onyo`: real `after_room_entered` listener for
     // Pantograph's boss-room heal (Python `uncommon.py::Pantograph`).
     register_after_room_entered(
@@ -442,7 +436,12 @@ fn listener_miniature_cannon(state: &CombatState, ctx: &ModifyDamageCtx) -> i32 
     let Some(player_uid) = state.player.creature_uid else {
         return 0;
     };
-    if ctx.dealer != Some(player_uid) {
+    // C# `MiniatureCannon.ModifyDamageAdditive` gates `dealer != Owner.Creature
+    // && cardSource.Owner != Owner` — so the player's own card attacking
+    // through the Osty (`FromOsty`) still qualifies (Necrobinder full seed
+    // 3002: an upgraded Fetch's Osty hit got +3 in C#).
+    if ctx.dealer != Some(player_uid) && ctx.dealer.is_none_or(|d| state.player.pet_uid != Some(d))
+    {
         return 0;
     }
     if !ctx.props.contains(ValueProps::MOVE) || ctx.props.contains(ValueProps::UNPOWERED) {
@@ -556,94 +555,6 @@ fn listener_pear(rs: &mut RunState) -> EffectResult {
     EffectResult::Resolved
 }
 
-/// `BowlerHat::should_gain_gold` — stash the pending bonus
-/// (`amount * MULTIPLIER`, integer-floored). Python pin
-/// `sts2-rl-agent@01c094d:sts2_env/relics/uncommon.py::BowlerHat`:
-/// ```text
-/// def should_gain_gold(self, owner, amount):
-///     if self._is_applying_bonus:
-///         return True
-///     self._pending_bonus_gold = int(amount * self.MULTIPLIER)
-///     return True
-/// ```
-///
-/// The Rust port stashes the pending bonus on
-/// `rs.relic_counters[BowlerHat]` (per-relic state-on-RunState
-/// idiom, same as PumpkinCandle's act snapshot in `f0438`). During
-/// bonus application, the re-entry guard
-/// [`RunState::bowler_hat_applying_bonus`] is `true` and the
-/// listener short-circuits — matching Python's
-/// `_is_applying_bonus` early-return so the bonus doesn't compound
-/// geometrically. Ownership-gated. Never cancels the gain. Bead
-/// `sts2-rs-b31s6`.
-fn listener_bowler_hat_should_gain_gold(
-    rs: &mut RunState,
-    amount: i32,
-    _cancel: &mut bool,
-) -> EffectResult {
-    if !rs.owns_active_relic(RelicId::BowlerHat) {
-        return EffectResult::NotImplemented;
-    }
-    if rs.bowler_hat_applying_bonus {
-        return EffectResult::Resolved;
-    }
-    if amount <= 0 {
-        return EffectResult::NotImplemented;
-    }
-    // Integer-floor `amount * MULTIPLIER` exactly as Python's
-    // `int(amount * 0.2)`. Using `amount * 20 / 100` keeps the
-    // arithmetic in i32 and avoids the f64 round-trip; for the
-    // canonical 20% pin the two are identical for all positive
-    // i32 amounts.
-    let bonus = amount.saturating_mul(BOWLER_HAT_MULTIPLIER_PCT) / 100;
-    rs.relic_counters.insert(RelicId::BowlerHat, bonus);
-    EffectResult::Resolved
-}
-
-/// `BowlerHat::on_gold_gained` — apply the stashed bonus by
-/// calling [`RunState::gain_gold`] again, guarded by
-/// [`RunState::bowler_hat_applying_bonus`] so the recursive
-/// re-fire of the same listener is a no-op. Python pin:
-/// ```text
-/// def on_gold_gained(self, owner, amount):
-///     if self._is_applying_bonus or self._pending_bonus_gold <= 0:
-///         return
-///     bonus = self._pending_bonus_gold
-///     self._pending_bonus_gold = 0
-///     self._is_applying_bonus = True
-///     try:
-///         owner.gain_gold(bonus)
-///     finally:
-///         self._is_applying_bonus = False
-/// ```
-///
-/// The recursive `gain_gold(bonus)` is intentional: other gold-
-/// channel listeners (e.g. DragonFruit's `+1 Max HP per positive
-/// gold gain`) MUST observe the bonus too. The re-entry guard
-/// only suppresses BowlerHat's own re-fire, matching Python.
-/// Ownership-gated. Bead `sts2-rs-b31s6`.
-fn listener_bowler_hat_on_gold_gained(rs: &mut RunState, _amount: i32) -> EffectResult {
-    if !rs.owns_active_relic(RelicId::BowlerHat) {
-        return EffectResult::NotImplemented;
-    }
-    if rs.bowler_hat_applying_bonus {
-        return EffectResult::NotImplemented;
-    }
-    let bonus = rs
-        .relic_counters
-        .get(&RelicId::BowlerHat)
-        .copied()
-        .unwrap_or(0);
-    if bonus <= 0 {
-        return EffectResult::NotImplemented;
-    }
-    rs.relic_counters.insert(RelicId::BowlerHat, 0);
-    rs.bowler_hat_applying_bonus = true;
-    rs.gain_gold(bonus);
-    rs.bowler_hat_applying_bonus = false;
-    EffectResult::Resolved
-}
-
 /// `Pantograph::after_room_entered` — `if room_type.is_boss and
 /// owner.current_hp > 0: owner.heal(25)`. Python pin
 /// `sts2-rl-agent@01c094d:sts2_env/relics/uncommon.py::Pantograph`
@@ -666,42 +577,24 @@ fn listener_pantograph(rs: &mut RunState, room_type: RoomType) -> EffectResult {
     EffectResult::Resolved
 }
 
-/// `Planisphere::after_room_entered` — heal `PLANISPHERE_HEAL`
-/// (= 4) on entry to an unknown room, gated on `current_hp > 0`
-/// (Python pin
-/// `sts2-rl-agent@01c094d:sts2_env/relics/uncommon.py::Planisphere`).
+/// `Planisphere::after_room_entered` — heal `PLANISPHERE_HEAL` (= 5) on
+/// entering a `?` map point, gated on `current_hp > 0`. C# keys on the map
+/// node, not the room it resolves to: `CurrentMapPoint.PointType == Unknown`
+/// (Planisphere.cs:22-27), so a `?` that rolls a treasure or monster room
+/// heals too (Defect whole-run PARITY176). The point type is read off
+/// `current_room` (set by `enter_room` before this dispatch).
 ///
-/// Python has a two-branch predicate: the `room_type.is_unknown`
-/// fast path + a fallback via `run_state.visited_map_coords[-1]
-/// .point_type.name == "UNKNOWN"`. The Rust port resolves both
-/// to `matches!(room_type, RoomType::Unknown)` because RunState
-/// doesn't track `visited_map_coords` or the act_map yet — when
-/// that surface lands, the fallback branch can be wired separately.
-/// Bead `sts2-rs-3wb0`.
-fn listener_planisphere(rs: &mut RunState, room_type: RoomType) -> EffectResult {
+/// v0.111.0 adds `CurrentRoomCount <= 1` (decomp Planisphere.cs:28). Rust
+/// enters exactly one room per map point (an event's combat does not
+/// re-enter), so every dispatch at a `?` point is its first room and both
+/// builds share this body.
+fn listener_planisphere(rs: &mut RunState, _room_type: RoomType) -> EffectResult {
     if !rs.owns_active_relic(RelicId::Planisphere) {
         return EffectResult::NotImplemented;
     }
-    if rs.game_version >= sts2_core::GameVersion::V0_111_0 {
-        // v0.111.0: heal only on the FIRST room of a `?` map point:
-        // `CurrentMapPoint.PointType == Unknown && CurrentRoomCount <= 1`
-        // (decomp Planisphere.cs:28). The point type is the map node's, not
-        // the resolved room's, so it is read off `current_room` (set by
-        // `enter_room` before this dispatch). Rust enters exactly one room
-        // per map point (an event's combat does not re-enter), so every
-        // dispatch at a `?` point is its first room.
-        let at_unknown_point = rs.current_room.and_then(|r| r.map_point_type)
-            == Some(sts2_core::map::MapPointType::Unknown);
-        if !at_unknown_point || rs.current_hp <= 0 {
-            return EffectResult::NotImplemented;
-        }
-        rs.heal(PLANISPHERE_HEAL);
-        return EffectResult::Resolved;
-    }
-    if !matches!(room_type, RoomType::Unknown) {
-        return EffectResult::NotImplemented;
-    }
-    if rs.current_hp <= 0 {
+    let at_unknown_point = rs.current_room.and_then(|r| r.map_point_type)
+        == Some(sts2_core::map::MapPointType::Unknown);
+    if !at_unknown_point || rs.current_hp <= 0 {
         return EffectResult::NotImplemented;
     }
     rs.heal(PLANISPHERE_HEAL);
@@ -758,11 +651,9 @@ pub const BAG_OF_MARBLES_VULNERABLE: i32 = 1;
 /// (`uncommon.py:85`).
 pub const BOOK_REPAIR_KNIFE_HEAL_PER: i32 = 3;
 /// `BowlerHat` gold-gain bonus — C# `BowlerHat.cs`
-/// `DynamicVar("GoldIncrease", 1.25m)` with
-/// `PendingBonusGold = Math.Floor(amount * (GoldIncrease - 1))` →
-/// 25% bonus, not 20%. Python pin `uncommon.py:107`'s 0.2 multiplier
-/// drifted from the shipped game; corrected per bead `sts2-rs-oim25`.
-/// Stored as integer percent to keep [`RelicSpec`] `Copy`-friendly.
+/// `DynamicVar("GoldIncrease", 1.25m)`, applied as `ModifyGoldGained`
+/// (`amount * 1.25`) inside `RunState::gain_gold`. Stored as integer percent
+/// to keep [`RelicSpec`] `Copy`-friendly.
 pub const BOWLER_HAT_MULTIPLIER_PCT: i32 = 25;
 /// `Candelabra.ENERGY` — round-2 energy gain (`uncommon.py:138`).
 pub const CANDELABRA_ENERGY: i32 = 2;
@@ -1042,9 +933,13 @@ fn listener_eternal_feather(rs: &mut RunState, room_type: RoomType) -> EffectRes
     EffectResult::Resolved
 }
 
-/// C# PenNib.ModifyDamageMultiplicative: only powered damage from the
-/// marked card source is doubled. Outside an in-flight play, the ninth
-/// counter previews the upcoming tenth attack.
+/// `PenNib::modify_damage_multiplicative` listener body — bead
+/// `sts2-rs-cr4y8`. Port of C# `PenNib.ModifyDamageMultiplicative`:
+///
+/// [decompiled C# omitted — see the cited path]
+///
+/// The marked card source doubles, including across a suspended choice.
+/// With no mark, a source outside Play previews the next attack on count 9.
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn listener_pen_nib_modify_damage(state: &CombatState, ctx: &hooks::DamageCtx) -> hooks::DamageMul {
     use hooks::DamageMul;
@@ -1066,20 +961,41 @@ fn listener_pen_nib_modify_damage(state: &CombatState, ctx: &hooks::DamageCtx) -
     if !is_player_or_osty {
         return DamageMul::ONE;
     }
-    let Some(source) = ctx.card_source else {
-        return DamageMul::ONE;
-    };
-    let active = match state.combat_log.pen_nib_attack_to_double {
-        Some(marked) => source == marked,
-        None => !state.player.play.contains(&source) && relic.counter == PEN_NIB_THRESHOLD - 1,
-    };
-    if active {
+    let source = ctx.card_source;
+    if source.is_some()
+        && pen_nib_doubles(
+            state,
+            relic.counter,
+            source,
+            source.is_some_and(|uid| state.player.play.contains(&uid)),
+        )
+    {
         DamageMul::new(2, 1)
     } else {
         DamageMul::ONE
     }
 }
 
+/// Pen Nib's card gate for a `cardSource` that is (`source_in_play`) or is
+/// not on the Play pile: the marked card doubles; with no mark, a source
+/// outside Play doubles on the 9th count (`PenNib.ModifyDamageMultiplicative`).
+fn pen_nib_doubles(
+    state: &CombatState,
+    counter: i32,
+    source: Option<sts2_core::CardUid>,
+    source_in_play: bool,
+) -> bool {
+    match state.combat_log.pen_nib_attack_to_double {
+        Some(marked) => source == Some(marked),
+        None => !source_in_play && counter.rem_euclid(PEN_NIB_THRESHOLD) == PEN_NIB_THRESHOLD - 1,
+    }
+}
+
+/// `PenNib::before_card_played` — C# `PenNib.BeforeCardPlayed` →
+/// `NotifyAttackPlayed`: an owner Attack bumps `AttacksPlayed` (stored
+/// modulo 10, `[SavedProperty]`), and the play that wraps it to 0 becomes
+/// `AttackToDouble`. Fires per play iteration and for auto-plays (C#
+/// `OnPlayWrapper`, CardModel.cs:1923).
 fn listener_pen_nib_before_card_played(
     state: &mut CombatState,
     ctx: &CardEventCtx,
@@ -1087,29 +1003,33 @@ fn listener_pen_nib_before_card_played(
     let Some(uid) = ctx.card_uid else {
         return EffectResult::NotImplemented;
     };
-    if !sts2_core::card_by_uid(&state.cards, uid)
-        .is_some_and(|c| c.card_type == sts2_core::cards::CardType::Attack)
-    {
+    let is_attack = sts2_core::card_by_uid(&state.cards, uid)
+        .is_some_and(|c| c.card_type == sts2_core::cards::CardType::Attack);
+    if !is_attack {
         return EffectResult::NotImplemented;
     }
-    let Some(relic) = state
+    let Some(r) = state
         .relics
         .iter_mut()
         .find(|r| !r.is_melted && r.kind == RelicKind::PenNib)
     else {
         return EffectResult::NotImplemented;
     };
-    relic.counter = (relic.counter.rem_euclid(PEN_NIB_THRESHOLD) + 1) % PEN_NIB_THRESHOLD;
-    if relic.counter == 0 {
+    r.counter = (r.counter.rem_euclid(PEN_NIB_THRESHOLD) + 1) % PEN_NIB_THRESHOLD;
+    if r.counter == 0 {
         state.combat_log.pen_nib_attack_to_double = Some(uid);
     }
     EffectResult::Resolved
 }
 
+/// `PenNib::after_card_played` — C# `PenNib.AfterCardPlayed`: the marked
+/// Attack's play is over, so the mark clears (its replays are separate
+/// `CardPlay`s and are not doubled).
 fn listener_pen_nib_after_card_played(state: &mut CombatState, ctx: &CardEventCtx) -> EffectResult {
-    if ctx.card_uid.is_some() && state.combat_log.pen_nib_attack_to_double == ctx.card_uid {
-        state.combat_log.pen_nib_attack_to_double = None;
+    if ctx.card_uid.is_none() || state.combat_log.pen_nib_attack_to_double != ctx.card_uid {
+        return EffectResult::NotImplemented;
     }
+    state.combat_log.pen_nib_attack_to_double = None;
     EffectResult::Resolved
 }
 
@@ -1572,6 +1492,97 @@ mod tests {
             26,
             "10th attack doubles base+Strength: (10+3)×2 = 26"
         );
+    }
+
+    /// C# `PenNib` doubles the MARKED Attack only (`AttackToDouble`, set in
+    /// `BeforeCardPlayed` when the count wraps to 0, cleared in its
+    /// `AfterCardPlayed`). An Attack auto-played inside the 10th one (Uproar /
+    /// BeatDown) counts as the 11th and is NOT doubled; the 10th's own hits
+    /// after the nested play still are. The old "counter == 9 until the
+    /// after-play increment" window doubled the nested Attack and dropped the
+    /// ×2 from the 10th's later hits.
+    #[test]
+    fn pen_nib_doubles_only_the_marked_tenth_attack() {
+        use std::num::NonZeroU32;
+        use sts2_core::hooks::{CreatureRef, DamageCtx, DamageMul, ValueProps};
+        use sts2_core::relic_effects::{dispatch_after_card_played, dispatch_before_card_played};
+        use sts2_core::relics::RelicId as CoreRelicId;
+        use sts2_core::{Relic, RelicKind as CoreRelicKind};
+
+        crate::relics::dispatch::ensure_installed();
+        let mut state = CombatState::default();
+        state.player.current_hp = 80;
+        state.player.max_hp = 80;
+        state.init_player_creature();
+        state.sync_player_creature();
+        state.relics.push(Relic {
+            id: NonZeroU32::new(202).expect("non-zero"),
+            kind: CoreRelicKind::PenNib,
+            counter: 9,
+            is_wax: false,
+            is_melted: false,
+        });
+        let attack = |state: &mut CombatState| {
+            let uid = sts2_core::CardUid::new(u32::try_from(state.cards.len() + 1).unwrap())
+                .expect("non-zero");
+            let mut card = sts2_core::cards::Card::pod_defaults();
+            card.uid = uid;
+            card.card_type = sts2_core::cards::CardType::Attack;
+            state.cards.push(card);
+            uid
+        };
+        let tenth = attack(&mut state);
+        let nested = attack(&mut state);
+        let ctx_for = |uid| CardEventCtx {
+            card_id: sts2_core::cards::CardId::StrikeIronclad,
+            card_uid: Some(uid),
+            target: None,
+            card_tags: sts2_core::cards::CardTags::NONE,
+            energy_spent: 1,
+        };
+        let listener =
+            sts2_core::relic_effects::lookup_modify_damage_multiplicative(CoreRelicId::PenNib)
+                .expect("PenNib multiplicative listener registered");
+        let mut hit = DamageCtx {
+            card_source: Some(tenth),
+            dealer: CreatureRef::Player,
+            target: CreatureRef::Player,
+            props: ValueProps::MOVE,
+        };
+        let counter = |state: &CombatState| {
+            state
+                .relics
+                .iter()
+                .find(|r| r.kind == CoreRelicKind::PenNib)
+                .unwrap()
+                .counter
+        };
+
+        // The 10th Attack starts: count wraps to 0 and the card is marked.
+        state.player.play.push(tenth);
+        let _ = dispatch_before_card_played(&mut state, &ctx_for(tenth));
+        assert_eq!(counter(&state), 0);
+        assert_eq!(listener(&state, &hit), DamageMul::new(2, 1), "10th: ×2");
+
+        // It auto-plays another Attack: the 11th, not doubled.
+        state.player.play.push(nested);
+        hit.card_source = Some(nested);
+        let _ = dispatch_before_card_played(&mut state, &ctx_for(nested));
+        assert_eq!(counter(&state), 1);
+        assert_eq!(listener(&state, &hit), DamageMul::ONE, "nested 11th: ×1");
+        let _ = dispatch_after_card_played(&mut state, &ctx_for(nested));
+        state.player.play.pop();
+        hit.card_source = Some(tenth);
+
+        // Back in the 10th: still doubled, until its own play finishes.
+        assert_eq!(
+            listener(&state, &hit),
+            DamageMul::new(2, 1),
+            "10th again: ×2"
+        );
+        let _ = dispatch_after_card_played(&mut state, &ctx_for(tenth));
+        assert_eq!(state.combat_log.pen_nib_attack_to_double, None);
+        assert_eq!(listener(&state, &hit), DamageMul::ONE, "mark cleared");
     }
 
     // --- Spec-pin tests — A–K wave (bead `sts2-rs-6ynt.5.5`) -------------
@@ -2070,8 +2081,23 @@ mod tests {
         // recursion so the final total is exactly 1250.
         rs.gain_gold(1000);
         assert_eq!(rs.gold, 1250, "single-level bonus, no compounding");
-        // Guard left clean for subsequent gains.
-        assert!(!rs.bowler_hat_applying_bonus);
+    }
+
+    /// C# `PlayerCmd.GainGold` (v0.111.0 `PlayerCmd.cs:141-170`) folds
+    /// Bowler Hat in as `Hook.ModifyGoldGained` (`BowlerHat.cs:25`, x1.25)
+    /// and credits once, so `Hook.AfterGoldGained` fires ONCE per gain: Dragon
+    /// Fruit (`DragonFruit.cs:22-28`) gives +1 Max HP, not +2.
+    #[test]
+    fn bowler_hat_with_dragon_fruit_fires_after_gold_gained_once() {
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = sts2_core::runstate::RunState::new();
+        rs.gold = 0;
+        rs.relics.push(RelicId::BowlerHat);
+        rs.relics.push(RelicId::DragonFruit);
+        let before_max = rs.max_hp;
+        rs.gain_gold(15);
+        assert_eq!(rs.gold, 18, "floor(15 * 1.25) = 18");
+        assert_eq!(rs.max_hp, before_max + 1, "AfterGoldGained fires once");
     }
 
     /// No-ownership: no bonus.
@@ -2184,15 +2210,20 @@ mod tests {
     /// (C# `HealVar(5m)`, bead `sts2-rs-5ri31`).
     #[test]
     fn listener_planisphere_heals_five_on_unknown_room_entry() {
+        // v0.107.1 keys on the map point too (Planisphere.cs:22-27): a `?`
+        // that resolves to a treasure room heals (Defect whole-run PARITY176).
+        use sts2_core::map::{MapCoord, MapPointType};
+        use sts2_core::runstate::{Room, RoomType};
         crate::relics::dispatch::ensure_installed();
         let mut rs = sts2_core::runstate::RunState::new();
         rs.current_hp = rs.max_hp - 20;
         let before_hp = rs.current_hp;
         rs.relics.push(RelicId::Planisphere);
-        let _ = sts2_core::run_effects::dispatch_after_room_entered(
-            &mut rs,
-            sts2_core::runstate::RoomType::Unknown,
-        );
+        rs.enter_room(Room::at(
+            MapCoord::new(0, 7),
+            MapPointType::Unknown,
+            RoomType::Treasure,
+        ));
         assert_eq!(rs.current_hp, before_hp + PLANISPHERE_HEAL);
     }
 
@@ -2602,6 +2633,33 @@ mod tests {
         assert!(card_upgraded(&state, a));
         assert!(card_upgraded(&state, b));
         assert!(card_upgraded(&state, c));
+    }
+
+    /// **Bellows #1b** — a card that can't be upgraded stays as it is: C#
+    /// `CardCmd.Upgrade` skips a card whose `IsUpgradable` is false
+    /// (`CardCmd.cs:273`), so Bellows leaves Ascender's Bane (a Curse)
+    /// un-upgraded while it upgrades the rest of the hand.
+    #[test]
+    fn listener_bellows_leaves_ascenders_bane_unupgraded() {
+        use sts2_core::relic_effects::dispatch_after_player_turn_start;
+        crate::relics::dispatch::ensure_installed();
+        let mut state = CombatState::default();
+        bellows_setup(&mut state, true, 1);
+        let strike = bellows_push_hand_card(&mut state);
+        let bane = bellows_push_hand_card(&mut state);
+        {
+            let c = &mut state.cards[bane.0.get() as usize - 1];
+            c.card_id = sts2_core::cards::CardId::AscendersBane;
+            c.card_type = sts2_core::cards::CardType::Curse;
+            c.cost = -1;
+            c.base_damage = 0;
+        }
+        let _ = dispatch_after_player_turn_start(&mut state);
+        assert!(card_upgraded(&state, strike));
+        assert!(
+            !card_upgraded(&state, bane),
+            "Ascender's Bane can't be upgraded"
+        );
     }
 
     /// **Bellows #2** — round 2 inert.

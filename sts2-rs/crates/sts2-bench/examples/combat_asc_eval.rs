@@ -22,7 +22,8 @@
 //!     endturn_widening_c/alpha, tie_eps (0.02),
 //!     loss_gradient (1), loss_w_removed (0.6), loss_w_hp (0.25),
 //!     loss_w_turns (0.15), loss_turns_half_life (8.0), loss_span (0.8),
-//!     loot_weight (1.0), root_guards (1), dominance_pruning (0)
+//!     loot_weight (1.0), root_guards (1), tie_rules (block+free+junk),
+//!     dominance_pruning (0)
 //! ```
 //!
 //! Output: one JSONL line per fight, `--out.partial` streamed +
@@ -132,6 +133,8 @@ struct Knobs {
     loss_span: f32,
     loot_weight: f32,
     root_guards: bool,
+    /// `MctsConfig::tie_rules` (GH #1022), a `+`-joined rule list.
+    tie_rules: sts2_mcts::TieRules,
     /// `MctsConfig::dominance_pruning` (default off, as deployed).
     dominance_pruning: bool,
 }
@@ -162,6 +165,7 @@ impl Default for Knobs {
             loss_span: d.loss_span,
             loot_weight: d.loot_weight,
             root_guards: true,
+            tie_rules: d.tie_rules,
             dominance_pruning: d.dominance_pruning,
         }
     }
@@ -207,6 +211,10 @@ impl Knobs {
             "loss_span" => self.loss_span = f32_of(key, val),
             "loot_weight" => self.loot_weight = f32_of(key, val),
             "root_guards" => self.root_guards = bool_of(key, val),
+            "tie_rules" => {
+                self.tie_rules =
+                    sts2_mcts::TieRules::parse(val).unwrap_or_else(|e| panic!("knob {key}: {e}"));
+            }
             "dominance_pruning" => self.dominance_pruning = bool_of(key, val),
             other => panic!(
                 "unknown knob {other:?} — typo? known knobs: sims, depth, c_puct, \
@@ -214,7 +222,7 @@ impl Knobs {
                  draw_widening_alpha, endturn_widening_c, endturn_widening_alpha, \
                  tie_eps, loss_gradient, loss_w_removed, loss_w_hp, \
                  loss_w_turns, loss_turns_half_life, loss_span, loot_weight, \
-                 root_guards, dominance_pruning"
+                 root_guards, tie_rules, dominance_pruning"
             ),
         }
     }
@@ -240,7 +248,8 @@ Knobs (bare k=v tokens): sims (1000), depth (200), c_puct (2.5), \
 chance_widening_c/alpha, draw_widening_c (2.0)/alpha, endturn_widening_c/alpha, \
 tie_eps (0.02), loss_gradient (1), loss_w_removed (0.6), \
 loss_w_hp (0.25), loss_w_turns (0.15), loss_turns_half_life (8.0), \
-loss_span (0.8), loot_weight (1.0), root_guards (1), dominance_pruning (0)";
+loss_span (0.8), loot_weight (1.0), root_guards (1), tie_rules (block+free+junk), \
+dominance_pruning (0)";
 
 fn parse_args() -> Args {
     let mut corpus: Option<PathBuf> = None;
@@ -330,6 +339,7 @@ fn deployed_config(k: &Knobs, seed: u64) -> MctsConfig {
     c.loss_span = k.loss_span;
     c.loot_weight = k.loot_weight;
     c.root_guards = k.root_guards;
+    c.tie_rules = k.tie_rules;
     c.dominance_pruning = k.dominance_pruning;
     c
 }

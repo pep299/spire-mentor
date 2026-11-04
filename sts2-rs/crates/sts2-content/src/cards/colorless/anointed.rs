@@ -13,10 +13,12 @@ use super::prelude::*;
 /// recovers rarity from the per-character spec slices. Bead `sts2-rs-6ynt.8`.
 pub(crate) fn play_anointed(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     // Free hand slots = MaxCardsInHand(10) - current hand size.
+    // NO early return on a full hand: C# `TakeRandom(0, rng)` still runs the
+    // full `UnstableShuffle` (`IEnumerableExtensions.cs:19`,
+    // `ListExtensions.cs:45`), consuming `CombatCardSelection` reads even when
+    // nothing is taken (History Course replaying Anointed into a retained
+    // 10-card hand).
     let free = sts2_core::cards::HAND_LIMIT.saturating_sub(state.player.hand.len());
-    if free == 0 {
-        return EffectResult::Resolved;
-    }
     // Rares in draw-pile order (the input order TakeRandom's UnstableShuffle
     // permutes — order is load-bearing for RNG parity).
     let mut rare_uids: Vec<CardUid> = state

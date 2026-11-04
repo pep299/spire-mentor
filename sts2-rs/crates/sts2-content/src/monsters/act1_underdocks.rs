@@ -5,8 +5,6 @@
 
 //! Act-4 monster ports (bead sts2-rs-rgm).
 //!
-//! Ported from sts2-rl-agent@01c094d:sts2_env/monsters/act4.py
-//!
 //! Ports the 22 monsters from
 //! `sts2-rl-agent@01c094d:sts2_env/monsters/act4.py` (630 LOC) to
 //! data-driven `MonsterAi` instances. Conventions match [`super::act1_overgrowth`],
@@ -168,7 +166,8 @@ fn phantasmal_gardener_enlarge_effect(state: &mut CombatState, owner: sts2_core:
 /// AFTER the whole `AttackCommand` — so none of that command's own hits are
 /// absorbed by the fresh block. This hook therefore only LATCHES
 /// (`Power::skip_next_tick = true`); the grant runs in the core
-/// `dispatch_after_card_played` Skittish lane, which is the engine's
+/// `hooks::grant_latched_skittish`, from the `dispatch_after_card_played`
+/// lane (or before a mid-play selection surfaces), which is the engine's
 /// established surrogate for C#'s per-command `AfterAttack` boundary (the same
 /// collapse Vigor / Gigantification / CurlUp use). The residual difference is
 /// a card that issues TWO separate attack commands — C# would grant between
@@ -192,7 +191,16 @@ fn skittish_after_damage(
 ) -> sts2_core::card_effects::EffectResult {
     use sts2_core::hooks::{CreatureRef, ValueProps};
     // C# `ValuePropExtensions.IsCardOrMonsterMove` = `props.HasFlag(Move)`.
-    if unblocked_damage == 0 || !props.contains(ValueProps::MOVE) {
+    // Skittish keys off an `AttackCommand`'s results (`AfterAttack`), whose
+    // `DamageProps` start at `Move` and only ever gain `Unpowered`
+    // (AttackCommand.cs:121,339) — never `Unblockable`. An Unblockable card
+    // hit is a bare `CreatureCmd.Damage` with no attack command (Capture
+    // Spirit, CaptureSpirit.cs OnPlay), so it does not trigger Skittish
+    // (Necrobinder full seeds 4719/4900/5481).
+    if unblocked_damage == 0
+        || !props.contains(ValueProps::MOVE)
+        || props.contains(ValueProps::UNBLOCKABLE)
+    {
         return sts2_core::card_effects::EffectResult::NotImplemented;
     }
     // `command.ModelSource is CardModel` — the player's own card, or a card
@@ -1194,8 +1202,9 @@ const LIVING_FOG_BOMB_SLOTS: usize = 5;
 /// bomb already placed — exactly where the owner sits once the earlier bombs
 /// are in front of it.
 ///
-/// C# spawns just before the attack; the effect_fn fires post-damage, which is
-/// state-equivalent here (the spawn does not alter the 5-damage hit).
+/// C# spawns just before the attack (LivingFog.cs:86-102); `perform_intent`
+/// runs this effect_fn BEFORE the hit for LivingFog's BLOAT, so the bomb is
+/// already present for the hit's reactions (NecroMastery AoE).
 fn living_fog_bloat_effect(state: &mut CombatState, owner: sts2_core::CreatureUid) {
     // `GetNextSlot` returning "" makes `BloatMove` skip the spawn entirely
     // (`LivingFog.cs:91-97`). Counts the dead, per the slot-retention note on
@@ -4066,6 +4075,63 @@ mod tests {
             state.enemy_uids.last(),
             Some(&owner),
             "and the summoner stays last"
+        );
+    }
+
+    /// C# `BloatMove` adds the GasBomb BEFORE the attack (LivingFog.cs:86-102),
+    /// so the hit's reactions already see the bomb: NecroMastery's AoE on the
+    /// Osty's HP loss also hits it (Necrobinder full seed 2047).
+    #[test]
+    fn living_fog_bloat_spawns_bomb_before_its_hit() {
+        use sts2_core::{
+            CombatPhase, Creature, CreatureUid, IntentHistory, MonsterId, MonsterKind,
+        };
+        let owner = CreatureUid::new(100).expect("nz");
+        let mut state = CombatState {
+            rng: sts2_core::dotnet_rng::Rng::new(0_i32),
+            ..Default::default()
+        };
+        state.player.current_hp = 50;
+        state.player.max_hp = 50;
+        let player_uid = state.init_player_creature();
+        let mut ai = create_living_fog_ai();
+        ai.set_owner(owner);
+        ai.force_current_state("BLOAT");
+        state.creatures.push(Creature {
+            id: owner.0,
+            current_hp: 80,
+            max_hp: 80,
+            block: 0,
+            powers: smallvec::SmallVec::new(),
+            species: Some(MonsterKind::LivingFog),
+            intent: Some(Intent::Attack { damage: 5 }),
+            intent_history: IntentHistory::default(),
+            monster_id: MonsterId("LivingFog"),
+            ai: Some(ai),
+        });
+        state.enemy_uids.push(owner);
+        let _ = state.summon_osty(10);
+        sts2_core::card_effects::apply_power_to_creature(
+            &mut state,
+            player_uid,
+            PowerKind::NecroMastery,
+            1,
+        );
+        state.phase = CombatPhase::EnemyTurnExec;
+        state.side = sts2_core::Side::Enemy;
+
+        let _ = sts2_core::combat_loop::enemy_turn_exec(&mut state);
+
+        let bomb = state
+            .creatures
+            .iter()
+            .find(|c| c.species == Some(MonsterKind::GasBomb))
+            .expect("bomb spawned");
+        assert!(
+            bomb.current_hp < bomb.max_hp,
+            "the bomb was present for the NecroMastery AoE ({} / {})",
+            bomb.current_hp,
+            bomb.max_hp
         );
     }
 

@@ -5,8 +5,6 @@
 
 //! Act-2 monster ports (bead sts2-rs-txk).
 //!
-//! Ported from sts2-rl-agent@01c094d:sts2_env/monsters/act2.py
-//!
 //! Ports the 27 monsters from
 //! `sts2-rl-agent@01c094d:sts2_env/monsters/act2.py` (772 LOC) to
 //! data-driven `MonsterAi` instances using the DSL skeleton from P5-1
@@ -74,7 +72,7 @@ use sts2_core::powers::PowerKind;
 use sts2_core::{CombatState, CreatureKind, CreatureUid, MonsterKind};
 
 use super::apply_power_to_player_via_legacy_surface;
-use super::dsl::{always_true, br, cb, mv, mv_eff, proto_ai, proto_ais, ProtoAis};
+use super::dsl::{always_true, br, cb, mv, mv_eff, proto_ai, proto_ais, stun_mv, ProtoAis};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Telegraph-only Buff/Debuff power-apply effects (bead sts2-rs-pdsdl).
@@ -571,7 +569,7 @@ fn decimillipede_reattach_effect(state: &mut CombatState, owner: CreatureUid) {
 /// (out-of-combat deck restoration, `SwipePower.cs:53-67`) — zero combat /
 /// PILE_COUNT impact — but its PRESENCE is observable in `monsters[*].powers`,
 /// so it must be modelled for state parity (bead `sts2-rs-ybtmu`).
-fn thieving_hopper_thievery_effect(state: &mut CombatState, owner: CreatureUid) {
+pub(crate) fn thieving_hopper_thievery_effect(state: &mut CombatState, owner: CreatureUid) {
     // Co-op: one card from every living player (`foreach (target in targets)`),
     // then one Swipe stack per stolen card.
     let mut stolen = 0;
@@ -677,20 +675,17 @@ fn thievery_steal_from_seated(state: &mut CombatState, owner: CreatureUid) -> bo
     // does `SwipePower.Steal(card)` → `CardPileCmd.RemoveFromDeck(card
     // .DeckVersion)` (`SwipePower.cs:70`): the steal PERMANENTLY removes the
     // card from the RUN DECK, not just the combat pile. Record the stolen
-    // card's master-deck identity (`(card_id, upgraded)`) here so `exit_combat`
-    // removes it from `master_deck`; a killed thief reclaims it
+    // card's master-deck link (its `DeckVersion`, `CombatState::deck_link`)
+    // here so `exit_combat` removes it from `master_deck` even when an
+    // Armaments upgrade changed the combat copy; a killed thief reclaims it
     // (`SwipePower.BeforeDeath` → `CombatState::reclaim_swipe_on_death`). The
     // candidate filter above already excludes combat-generated cards
     // (`DeckVersion == null`), so the stolen card always has a master-deck
     // counterpart. Bead `sts2-rs-RP13`.
-    let (stolen_card_id, stolen_upgraded) = {
-        let c = &state.cards[stolen.get() as usize - 1];
-        (c.card_id, c.upgraded)
-    };
     let _ = sts2_core::card_effects::remove_card_from_any_pile(state, stolen);
     // The run deck is seat 0's; a teammate's deck lives only for the fight.
     if state.coop.seated == 0 {
-        state.record_swipe_steal(owner, stolen_card_id, stolen_upgraded);
+        state.record_swipe_steal_of(owner, stolen);
     }
     true
 }
@@ -1268,10 +1263,13 @@ pub fn create_tunneler_ai() -> MonsterAi {
             "BELOW_MOVE_1",
         ),
     );
-    s.insert(
-        "DIZZY_MOVE",
-        mv("DIZZY_MOVE", smallvec![Intent::Stun], "BITE_MOVE"),
-    );
+    // The analogue of the `MoveState("STUNNED", …)` that `BurrowedPower`'s
+    // `CreatureCmd.Stun(Owner, StillDizzyMove, "BITE_MOVE")` synthesizes
+    // (BurrowedPower.cs:23-31, Creature.cs:537-541): must-perform-once, so a
+    // stun landed mid-move (Thorns breaking the shell during BELOW) is still
+    // served next turn instead of being rolled away to BITE (Regent full 5384, Defect full 879,
+    // Necrobinder full 1263).
+    s.insert("DIZZY_MOVE", stun_mv("DIZZY_MOVE", "BITE_MOVE"));
     MonsterAi::new(s, "BITE_MOVE")
 }
 
@@ -5462,6 +5460,84 @@ mod tests {
         }
     }
 
+    /// The shell breaking DURING the Tunneler's own BELOW move (the player's
+    /// Thorns reflecting its attack) installs the stun mid-move. C#'s stun is
+    /// `MustPerformOnceBeforeTransitioning` (Creature.cs:537-541), so this
+    /// turn's end-of-turn roll keeps it and the Tunneler is stunned NEXT turn;
+    /// rolling straight past it let it bite (Regent full seed 5384).
+    #[test]
+    fn burrowed_break_during_own_move_still_serves_the_stun() {
+        use sts2_core::card_effects::apply_power_to_creature;
+        use sts2_core::damage::apply_damage;
+        use sts2_core::hooks::{CreatureRef, ValueProps};
+
+        let mut state = CombatState::default();
+        state.player.current_hp = 70;
+        state.player.max_hp = 70;
+        let _ = state.init_player_creature();
+        let uid = spawn_monster(&mut state, MK::Tunneler);
+        if let Some(c) = state.creatures.iter_mut().find(|c| c.id == uid.0) {
+            c.ai = Some(create_tunneler_ai());
+            c.ai.as_mut().unwrap().set_owner(uid);
+            c.block = 2;
+        }
+        apply_power_to_creature(&mut state, uid, PowerKind::Burrowed, 1);
+        {
+            let c = state.creatures.iter_mut().find(|c| c.id == uid.0).unwrap();
+            let ai = c.ai.as_mut().unwrap();
+            ai.on_move_performed(); // BITE
+            ai.roll_move_seeded(0); // → BURROW
+            ai.on_move_performed();
+            ai.roll_move_seeded(0); // → BELOW
+            ai.begin_move(); // performing BELOW now
+        }
+        // Thorns (unpowered, from the player) breaks the 2-block shell.
+        apply_damage(
+            &mut state,
+            CreatureRef::Player,
+            uid,
+            3,
+            ValueProps::UNPOWERED,
+            None,
+        );
+        let c = state.creatures.iter_mut().find(|c| c.id == uid.0).unwrap();
+        let ai = c.ai.as_mut().unwrap();
+        assert_eq!(ai.current_state_id(), "DIZZY_MOVE");
+        ai.on_move_performed_state("BELOW_MOVE_1");
+        assert_eq!(
+            ai.roll_move_seeded(0).id,
+            "DIZZY_MOVE",
+            "the unserved stun survives this turn's roll",
+        );
+        ai.begin_move();
+        ai.on_move_performed_state("DIZZY_MOVE");
+        assert_eq!(ai.roll_move_seeded(0).id, "BITE_MOVE");
+    }
+
+    /// A shell broken DURING the Tunneler's own BELOW move (Thorns
+    /// retaliation) keeps it stunned for the next turn: C# `StunInternal`
+    /// marks the STUNNED state `MustPerformOnceBeforeTransitioning`
+    /// (Creature.cs:537-541), so the end-of-move roll cannot leave it.
+    /// Necrobinder full seed 1263.
+    #[test]
+    fn tunneler_stunned_mid_own_move_holds_dizzy_for_next_turn() {
+        let mut ai = create_tunneler_ai();
+        ai.on_move_performed(); // BITE
+        ai.roll_move_seeded(0); // → BURROW
+        ai.on_move_performed();
+        ai.roll_move_seeded(0); // → BELOW
+                                // BELOW begins; Thorns breaks the shell mid-move → forced DIZZY.
+        ai.on_move_performed();
+        ai.force_current_state("DIZZY_MOVE");
+        assert_eq!(
+            ai.roll_move_seeded(0).id,
+            "DIZZY_MOVE",
+            "the unserved stun survives the end-of-move roll",
+        );
+        ai.on_move_performed();
+        assert_eq!(ai.roll_move_seeded(0).id, "BITE_MOVE");
+    }
+
     /// **EXPOSE breaks the burrowed shell** (issue #179, `MONSTER_STATE|EXPOSE`,
     /// TUNNELER_WEAK seed 851). C# `Expose.OnPlay` strips block via
     /// `CreatureCmd.LoseBlock`, which fires `Hook.AfterBlockBroken` on a >0→0
@@ -5545,6 +5621,58 @@ mod tests {
             Some("DIZZY_MOVE"),
             "unburrow redirects the Tunneler to its stun (DIZZY_MOVE)",
         );
+    }
+
+    /// A shell broken during the Tunneler's OWN move (Thorns reflecting its
+    /// BELOW attack) still stuns it for the next turn: C#'s STUNNED move is
+    /// `MustPerformOnceBeforeTransitioning` (Creature.cs:537-541), so the
+    /// turn-end roll cannot skip it (Defect full parity seed 879).
+    #[test]
+    fn tunneler_shell_broken_mid_move_stays_stunned_through_the_roll() {
+        use sts2_core::card_effects::apply_power_to_creature;
+        use sts2_core::hooks::{dispatch_after_block_broken, AfterBlockBrokenCtx};
+
+        let mut state = CombatState::default();
+        let uid = spawn_monster(&mut state, MK::Tunneler);
+        if let Some(c) = state.creatures.iter_mut().find(|c| c.id == uid.0) {
+            c.ai = Some(create_tunneler_ai());
+            c.ai.as_mut().unwrap().set_owner(uid);
+        }
+        apply_power_to_creature(&mut state, uid, PowerKind::Burrowed, 1);
+        fn ai_of(s: &mut CombatState, uid: CreatureUid) -> &mut sts2_core::MonsterAi {
+            s.creatures
+                .iter_mut()
+                .find(|c| c.id == uid.0)
+                .unwrap()
+                .ai
+                .as_mut()
+                .unwrap()
+        }
+        {
+            let ai = ai_of(&mut state, uid);
+            ai.on_move_performed();
+            ai.roll_move_seeded(0); // → BURROW
+            ai.on_move_performed();
+            ai.roll_move_seeded(0); // → BELOW
+            ai.begin_move(); // BELOW is being performed
+        }
+        dispatch_after_block_broken(
+            &mut state,
+            &AfterBlockBrokenCtx {
+                broken: uid,
+                breaker: None,
+            },
+        );
+        {
+            let ai = ai_of(&mut state, uid);
+            ai.on_move_performed_state("BELOW_MOVE_1");
+            ai.roll_move_seeded(0);
+            assert_eq!(ai.current_state_id(), "DIZZY_MOVE", "stunned next turn");
+            ai.begin_move();
+            ai.on_move_performed_state("DIZZY_MOVE");
+            ai.roll_move_seeded(0);
+            assert_eq!(ai.current_state_id(), "BITE_MOVE", "then bites");
+        }
     }
 
     /// **FlutterPower reactive behavior** (`sts2-rs-ybtmu` / `sts2-rs-r9075`):
@@ -6004,6 +6132,33 @@ mod tests {
             "hive(1) → exactly one Dazed into draw",
         );
         assert_eq!(draw_dazed_count(&state), 1, "the new draw card is Dazed");
+    }
+
+    /// C# skips `AfterDamageReceived` for the hit that killed its target
+    /// (CreatureCmd.cs:392): the killing blow on an Entomancer floods no
+    /// Dazed.
+    #[test]
+    fn entomancer_personal_hive_silent_on_killing_blow() {
+        use sts2_core::damage::apply_damage;
+        use sts2_core::hooks::{CreatureRef, ValueProps};
+
+        let mut state = CombatState::default();
+        state.player.current_hp = 70;
+        state.player.max_hp = 70;
+        let _ = state.init_player_creature();
+        let uid = spawn_real_entomancer(&mut state);
+        let pre_draw = state.player.draw.len();
+
+        apply_damage(
+            &mut state,
+            CreatureRef::Player,
+            uid,
+            10_000,
+            ValueProps::MOVE,
+            None,
+        );
+
+        assert_eq!(state.player.draw.len(), pre_draw, "no Dazed on the kill");
     }
 
     /// **PersonalHive floods Dazed on an OSTY (pet) attack too**

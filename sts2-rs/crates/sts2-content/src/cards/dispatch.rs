@@ -1,4 +1,3 @@
-// port-pin-skip — dispatch registry glue (no Python counterpart).
 //! `PlayCard` dispatch registry — bead `sts2-rs-ov4` (P6-1).
 //!
 //! The function-pointer **registry storage** lives in

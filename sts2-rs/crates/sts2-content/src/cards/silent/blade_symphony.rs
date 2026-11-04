@@ -13,11 +13,13 @@ pub(crate) fn play_blade_symphony(
     state: &mut CombatState,
     _t: Option<CreatureUid>,
 ) -> EffectResult {
-    // v0.111.0: 2 Shivs into the hand of every living player on the side —
-    // the owner alone in SP (decomp BladeSymphony.cs:29-41).
-    for _ in 0..2 {
-        let _ = spawn_shiv(state, PileKind::Hand);
-    }
+    // v0.111.0: 2 Shivs into the hand of every living player on the side
+    // (decomp BladeSymphony.cs:29-41).
+    sts2_core::coop::every_player(state, |state| {
+        for _ in 0..2 {
+            let _ = spawn_shiv(state, PileKind::Hand);
+        }
+    });
     EffectResult::Resolved
 }
 

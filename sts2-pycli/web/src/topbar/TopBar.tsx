@@ -1,7 +1,8 @@
 import { gameVersionBody } from "../gameVersion";
 import { useMemo, type ReactNode } from "react";
 import Menu, { type MenuItemSpec } from "./Menu";
-import CommandPalette, { type PaletteEntry } from "./CommandPalette";
+import CommandPalette from "./CommandPalette";
+import type { PaletteEntry } from "./paletteEntries";
 import type { Command } from "./commands";
 
 /**
@@ -91,7 +92,7 @@ function toMenuItem(c: Command): MenuItemSpec {
 }
 
 /** The Run menu: everything but the destructive item, a rule, then it. */
-export function runMenuItems(cmds: Command[]): (MenuItemSpec | null)[] {
+function runMenuItems(cmds: Command[]): (MenuItemSpec | null)[] {
   const run = cmds.filter((c) => c.group === "run" && c.id !== "play-from-here");
   const safe = run.filter((c) => !c.danger).map(toMenuItem);
   const danger = run.filter((c) => c.danger).map(toMenuItem);

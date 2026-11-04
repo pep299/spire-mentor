@@ -3,7 +3,6 @@ use super::prelude::*;
 
 /// `BigBang` — draw 1, +1 energy, +1 star, Forge 5. All four
 /// effects real (forge wired by `sts2-rs-5o9w`).
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L609
 pub(crate) fn play_big_bang(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     let _ = sts2_core::cards::draw_via_state(state, 1);
     state.player.energy = state.player.energy.saturating_add(1);

@@ -7,10 +7,10 @@
  "meta": {
   "act": 2,
   "act_name": "Hive",
-  "bg_col": 1,
+  "bg_col": 2,
   "bg_row": 2,
   "bg_seed": 1772253313,
-  "floor": 18,
+  "floor": 20,
   "step_no": 0,
   "turn": 4
  },
@@ -22,7 +22,7 @@
   "act1": "overgrowth",
   "act_name": "Hive",
   "ascension": 0,
-  "bg_col": 1,
+  "bg_col": 2,
   "bg_row": 2,
   "bg_seed": 1772253313,
   "decision": "combat_play",
@@ -376,7 +376,7 @@
   "energy_image": "https://assets.test/sprite_fonts/defect_energy_icon.png",
   "exhaust_pile": [],
   "exhaust_pile_count": 0,
-  "floor": 18,
+  "floor": 20,
   "hand": [
    {
     "base_cost": 2,
@@ -822,7 +822,7 @@
      "upgraded": false
     }
    ],
-   "gold": 277,
+   "gold": 276,
    "hp": 62,
    "image": "https://assets.test/character_sprites/defect.png",
    "max_hp": 75,

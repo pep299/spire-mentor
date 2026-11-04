@@ -13,7 +13,6 @@ use super::prelude::*;
 /// number of `combat_card_generation` reads. Use the full 50-card pool
 /// (`distinct_colorless_modifier_ids`, same `UnstableShuffle` consumption
 /// as ColorlessPotion) and the upgrade-scaled count.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L625
 pub(crate) fn play_bundle_of_joy(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     let count = if current_card_upgraded(state) { 4 } else { 3 };
     let ids = crate::cards::colorless::distinct_colorless_modifier_ids(state, count);

@@ -159,6 +159,10 @@ export default function SpineSprite({ rigBase, animation = "idle_loop", holdSetu
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stateRef = useRef<spine.AnimationState | null>(null);
   const idleRef = useRef<string>(animation);
+  // The load effect deliberately does not re-run on these (see its deps);
+  // it reads their latest values when the rig finishes loading.
+  const actionAnimRef = useRef(actionAnim); actionAnimRef.current = actionAnim;
+  const onClipsRef = useRef(onClips); onClipsRef.current = onClips;
   const prevNonce = useRef<number | undefined>(undefined);
   const inActionRef = useRef(false);
   // Frame margins (WORLD units) around the idle body, sized to contain EVERY
@@ -294,7 +298,7 @@ export default function SpineSprite({ rigBase, animation = "idle_loop", holdSetu
               ?? idleCandidates.map((c) => names.find((n) => n.startsWith(c))).find(Boolean)
               ?? names[0];
           idleRef.current = idle ?? "";
-          onClips?.((n: string) => !!data.findAnimation(n));
+          onClipsRef.current?.((n: string) => !!data.findAnimation(n));
           // Measure the IDLE pose (FX hidden) to know the body box for framing.
           const st = new spine.AnimationState(new spine.AnimationStateData(data));
           if (idle) st.setAnimation(0, idle, true);
@@ -316,7 +320,7 @@ export default function SpineSprite({ rigBase, animation = "idle_loop", holdSetu
           // numbered variants ("attack_big1", "hurt2") still gets its real
           // action envelope contained instead of silently skipping the scan.
           const scanNames = Array.from(new Set(
-            [idleRef.current, actionAnim, "attack", "hurt", "hit", "die"]
+            [idleRef.current, actionAnimRef.current, "attack", "hurt", "hit", "die"]
               .filter((c): c is string => !!c)
               .map((c) => names.find((n) => n === c || n.startsWith(c)))
               .filter((n): n is string => !!n)

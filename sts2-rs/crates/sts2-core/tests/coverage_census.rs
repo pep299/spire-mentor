@@ -1,4 +1,3 @@
-// port-pin-skip — coverage-census fence (bead sts2-rs-pmf, P6-1b).
 //! Per-character card-dispatch coverage census.
 //!
 //! For each character, partition every `CardId` of that character into

@@ -7,7 +7,6 @@ use super::prelude::*;
 /// Three drifts vs Python-pin port: (1) stars not upgrade-scaled,
 /// (2) draws 2 (should be 1), (3) DrawCardsNextTurn rider missing.
 /// Bead `sts2-rs-tc2ah`.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L190
 pub(crate) fn play_glow(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     let stars = if current_card_upgraded(state) { 2 } else { 1 };
     gain_stars(state, stars);

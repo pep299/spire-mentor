@@ -246,13 +246,19 @@ fn run_hint<W: Write>(
         seed: 0,
         ..MctsConfig::default()
     };
-    let mut outcomes = if threads <= 1 {
+    let (mut outcomes, pick) = if threads <= 1 {
         let mut mcts = Mcts::new(state.clone(), config);
         let _best = mcts.search_n(sims);
-        mcts.root_outcomes()
+        let pick = mcts.explain_root_pick().ok();
+        (mcts.root_outcomes(), pick)
     } else {
-        par_search(state.clone(), config, threads).outcomes
+        let r = par_search(state.clone(), config, threads);
+        (r.outcomes, Some(r.pick))
     };
+    let pick_action = pick.as_ref().map(|p| p.action.clone());
+    let band: Vec<Action> = pick.as_ref().map_or_else(Vec::new, |p| {
+        p.band.iter().map(|&i| outcomes[i].action.clone()).collect()
+    });
     // Primary sort: Q descending (the actual "best" signal). Secondary
     // sort: visits descending (tiebreaker — more visits = more
     // confidence). Q-first ranking matters on saturated states where
@@ -264,6 +270,15 @@ fn run_hint<W: Write>(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(b.visits.cmp(&a.visits))
     });
+    // The move the search itself plays (`Mcts::explain_root_pick`) leads,
+    // so `#1` is the run agent's move, not a Q re-rank that disagrees with
+    // it on ties and guards (GH #1022).
+    if let Some(pos) = pick_action
+        .as_ref()
+        .and_then(|a| outcomes.iter().position(|o| o.action == *a))
+    {
+        outcomes[..=pos].rotate_right(1);
+    }
     let total: u32 = outcomes.iter().map(|o| o.visits).sum();
     let denom = f64::from(total.max(1));
     // Q-saturation detection: if Q-spread across root children is
@@ -332,6 +347,20 @@ fn run_hint<W: Write>(
             rank = rank + 1,
             v = o.visits,
             q = o.mean_value,
+        )?;
+    }
+    if let Some(p) = pick.as_ref().filter(|_| band.len() > 1) {
+        let others: Vec<String> = band
+            .iter()
+            .filter(|a| **a != p.action)
+            .map(|a| print::format_action_for_menu(state, a))
+            .collect();
+        writeln!(
+            out,
+            "    pick: {} — {} (about equal: {})",
+            print::format_action_for_menu(state, &p.action),
+            p.rule.reason(),
+            others.join(", "),
         )?;
     }
     if any_low_confidence {

@@ -6,7 +6,6 @@ use super::prelude::*;
 ///   OnUpgrade: Block.UpgradeValueBy(3m) → 15; Forge.UpgradeValueBy(3m);
 /// Block upgrade rides the base spec / `current_block`; the +3-forge
 /// upgrade rider was dropped in the original port. Bead `sts2-rs-w8a3s`.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L287
 pub(crate) fn play_bulwark(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     gain_block_player(state, current_block(state));
     let forge = if current_card_upgraded(state) { 13 } else { 10 };

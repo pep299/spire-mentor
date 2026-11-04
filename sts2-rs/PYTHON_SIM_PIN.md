@@ -7,10 +7,16 @@
 > nextest/clippy/fmt are the only gates).
 > The parity target today is the C# decompilation at
 > `../sts2-wiki/decompiled/v0.107.1/` via the C# oracle harness in
-> `../sts2-pycli` (see `docs/parity-suite.md` there). This file is kept
-> because the port-pin header convention below is still load-bearing as
-> *provenance*: many crate files carry `// Ported from sts2-rl-agent@01c094d:…`
-> headers, and `crates/sts2-core/src/lib.rs` cites this document.
+> `../sts2-pycli` (see `docs/parity-suite.md` there).
+>
+> **2026-10-30: the per-file port-pin headers are gone.** The
+> `// Ported from sts2-rl-agent@…` / `Port-pin:` header lines, the
+> `// port-pin-skip` markers and `scripts/check-port-pins.sh` were removed:
+> the engine has been rewritten against the C# decomp, and only its early
+> combat-loop scaffolding followed the Python sim. Inline doc comments that
+> cite a `sts2-rl-agent@01c094d:…` path remain as historical
+> cross-references; they are not a statement of where the current code
+> comes from, and the C# decomp wins wherever the two disagree.
 
 The Rust port originally parity-tested against the Python simulator at
 `sts2-rl-agent/sts2_env/`. The commit was pinned so port targets didn't
@@ -24,31 +30,10 @@ drift under the port.
 - Pinned date: 2026-05-06
 - Commit subject: "Expand parity coverage and align gameplay semantics"
 
-The pin was never bumped and never will be — do not "fix" the headers to a
-newer sha, and do not resurrect the old bump rule (which predated the
+The pin was never bumped and never will be — do not "fix" the remaining
+inline citations to a newer sha, do not add new ones, and do not resurrect
+the old bump rule (which predated the
 nextest-only rule and instructed `cargo test`).
-
-## Per-port-file convention (still enforced)
-
-Every Rust port file references its Python source path AND the pinned commit
-short sha in a header comment:
-
-```rust
-// Ported from sts2-rl-agent@01c094d:sts2_env/cards/effects/strike.py
-```
-
-This makes provenance greppable: `rg -n 'sts2-rl-agent@01c094d'` finds every
-file whose combat-loop scaffolding came from the Python port.
-
-Glue files (registration shims, dispatch tables, DSL re-exports) without a
-direct Python counterpart opt out by placing `// port-pin-skip` in the first
-20 lines.
-
-`scripts/check-port-pins.sh` (and the `.fish` wrapper) enforces the header
-convention — it scans every `.rs` file under
-`crates/sts2-content/src/{cards,relics,monsters}` and fails on a missing
-header. To extend the scan set, set `PORT_PIN_DIRS` to a space-separated list
-of repo-relative paths.
 
 ## Retired verification (tooling deleted)
 

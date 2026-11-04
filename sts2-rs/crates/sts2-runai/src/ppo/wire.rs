@@ -31,10 +31,15 @@
 //!   made `mapfeat` compute real forward cones where training saw the
 //!   degenerate act-start encoding, flipping the act-start route on 27 of 42
 //!   exactly-reproduced live decisions (2026-08-02 pathing diagnosis).
-//! * **`total_floor` is `floor - 1`, `act_index` is 1-based.** The engine's
-//!   `rm.total_floor()` is 0 at Neow where the DLL's `context.total_floor` is
-//!   1. Both fed the encoder off-by-one on every meta decision — 4735/4735 in
-//!   the v3x sweeps.
+//! * **`total_floor` is `floor - act`, `act_index` is 1-based.** The DLL's
+//!   `RunState.TotalFloor` sums `MapPointHistory`, which counts every act's
+//!   start room (Neow, the Ancients) as a floor; the engine's
+//!   `rm.total_floor()` counts none of them. So the offset is the 1-based act
+//!   number: 1 at Neow (where it fed the encoder off-by-one on every meta
+//!   decision — 4735/4735 in the v3x sweeps), 2 through act 2, 3 through act
+//!   3 and the A10 second boss. A flat `- 1` left acts 2–3 one and two floors
+//!   too deep (GH #1051; `shadow_replay.py` measured +1 / +2, a won A0 run
+//!   reads 45 in the engine and 48 in the game).
 //! * **`_STATUS` vocab suffix.** The registry disambiguates ids colliding
 //!   with another registry kind by a suffix (`SLOTH` → `SLOTH_STATUS`) and
 //!   the bridge sends the plain id. 407/6074 deck tokens went OOV before the
@@ -378,6 +383,12 @@ fn base_obs(state: &Value) -> PpoObs {
         })
     };
     let coord = current_coord(state);
+    // A missing, zero or negative act reads as act 1, in both fields and in
+    // the Python twin (`floors.act_number`).
+    let act_index = obj(state, "act")
+        .and_then(Value::as_i64)
+        .unwrap_or(1)
+        .max(1);
 
     PpoObs {
         phase: s(state, "type"),
@@ -395,9 +406,10 @@ fn base_obs(state: &Value) -> PpoObs {
         map,
         map_coord: coord.map(|c| (c.col, c.row)),
 
-        // `total_floor`: the engine is 0 at Neow where the DLL is 1.
-        total_floor: (i(state, "floor") - 1).max(0),
-        act_index: obj(state, "act").and_then(Value::as_i64).unwrap_or(1),
+        // `total_floor`: the DLL counts each act's start room, the engine
+        // does not, so subtract the 1-based act (module doc, GH #1051).
+        total_floor: sts2_core::runstate::engine_total_floor(i(state, "floor"), act_index),
+        act_index,
         // `act_floor` is the engine's `row + 1` off the same coord, 0 when
         // there is no map node under the player.
         act_floor: coord.map_or(0, |c| c.row + 1),
@@ -721,6 +733,7 @@ fn build_shop(state: &Value) -> Option<WireDecision> {
                     on_sale: false,
                     is_colorless: false,
                     available: true,
+                    upgraded: is_upgraded(&item),
                 });
                 actions.push(ActionDesc::ShopBuyCard {
                     idx: shop_cards.len() as i64 - 1,
@@ -1300,8 +1313,10 @@ mod tests {
         assert_eq!(d.obs.act_floor, 3, "act_floor is row + 1");
     }
 
-    /// `total_floor` is the DLL floor minus one and never negative; the engine
-    /// is 0 at Neow where the DLL says 1.
+    /// `total_floor` is the DLL floor minus the 1-based act and never
+    /// negative: the DLL counts each act's start room (Neow, the Ancients),
+    /// the engine counts none. Act 1: the engine is 0 at Neow where the DLL
+    /// says 1.
     #[test]
     fn total_floor_is_offset_and_clamped() {
         let mut s = map_state(2);
@@ -1314,6 +1329,38 @@ mod tests {
             build_decision(&s, "map_select").unwrap().obs.total_floor,
             11
         );
+    }
+
+    /// GH #1051: past act 1 the offset is the act number, not 1. Engine 45 is
+    /// game 48 at the act-3 boss (a won A0 run); act 2's first map choice
+    /// after a 17-floor act 1 is engine 17, game 19 (Neow + Ancient).
+    #[test]
+    fn total_floor_offset_is_the_act_number() {
+        let mut s = map_state(2);
+        s["act"] = json!(2);
+        s["floor"] = json!(19);
+        let obs = build_decision(&s, "map_select").unwrap().obs;
+        assert_eq!((obs.total_floor, obs.act_index), (17, 2));
+        s["act"] = json!(3);
+        s["floor"] = json!(48);
+        let obs = build_decision(&s, "map_select").unwrap().obs;
+        assert_eq!((obs.total_floor, obs.act_index), (45, 3));
+        // A missing, zero or negative act reads as act 1 in BOTH fields, like
+        // the Python twin (`floors.act_number`).
+        s["floor"] = json!(12);
+        for act in [json!(0), json!(-1), Value::Null] {
+            s["act"] = act;
+            let obs = build_decision(&s, "map_select").unwrap().obs;
+            assert_eq!(
+                (obs.total_floor, obs.act_index),
+                (11, 1),
+                "act {}",
+                s["act"]
+            );
+        }
+        s.as_object_mut().unwrap().remove("act");
+        let obs = build_decision(&s, "map_select").unwrap().obs;
+        assert_eq!((obs.total_floor, obs.act_index), (11, 1));
     }
 
     /// Token-for-token agreement with `realgame_ppo._vocab_card_id`, checked

@@ -41,19 +41,49 @@ Usage::
     # sweep
     python python/act23_state_parity.py --all-characters -n 20
     python python/act23_state_parity.py --character Defect -n 50 --max-steps 3000
+
+Checkpoints (start at act 2 or 3 instead of replaying act 1 every trial)::
+
+    # build: play each seed to the first act-2 map, save, stop
+    python python/act23_state_parity.py --all-characters -n 20 \
+        --checkpoint-dir ckpts --checkpoint-acts 2 --stop-at-checkpoint
+
+    # branch: 8 different walks from every act-2 checkpoint; the branches that
+    # reach act 3 save act-3 checkpoints (named after their parent)
+    python python/act23_state_parity.py --from-checkpoints ckpts \
+        --checkpoint-act 2 --branches 8 --checkpoint-dir ckpts --checkpoint-acts 3
+
+    # deep act 3 only
+    python python/act23_state_parity.py --from-checkpoints ckpts \
+        --checkpoint-act 3 --branches 8
+
+A checkpoint is the C# oracle's continue save plus the logged Rust calls (see
+``write_checkpoint``); ``save_load_identity.py`` checks that a reload is
+lossless. A checkpoint goes stale when the Rust engine changes (the replay is
+checked against the recorded view and the run ends ``checkpoint_stale``):
+rebuild it then.
+
+The walk is the seeded random picker, except that it always plays
+``SURVIVAL_CARDS`` and doesn't end a turn early under ``TIMER_KILL_POWERS``,
+because The Insatiable's Sandpit kills whatever the HP (``--uniform-policy``
+turns that off).
 """
 
 from __future__ import annotations
 
 import argparse
+import functools
+import json
 import random
 import sys
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
-from parity_audit import assert_wheel_fresh
+from full_state_diff import diff_full, path_class, project_csharp, project_rust
+from parity_audit import assert_wheel_fresh, cs_version_namespace
 from run_parity import (
     Divergence,
     RunResult,
@@ -63,7 +93,9 @@ from run_parity import (
     enumerate_choices,
     map_signature,
     run_signature,
+    rust_finalize_atomic_select,
 )
+from split_trace import explain, suspects
 from sts2_client import add_game_version_arg, apply_game_version_arg
 from workbench.backends.base import make_backend
 
@@ -73,6 +105,16 @@ from workbench.backends.base import make_backend
 INVINCIBLE_HP = 100_000
 
 ALL_CHARACTERS = ["Ironclad", "Silent", "Defect", "Regent", "Necrobinder"]
+
+# The Rust engine carries a combat choice's option index as ``u8``
+# (``Action::ResolveChoice``, ``PendingChoice::picked``), so a pick at option
+# 256 or past it is rejected (``do_combat_resolve_choice``'s ``u8::try_from`` →
+# ``invalid_for_phase``). C# ``CardSelectCmd`` has no such cap. Only this walk's
+# ``INVINCIBLE_HP`` fights reach it: a 150-round fight lets Anger fill the
+# discard pile, and Headbutt then offers 445 cards. The walk picks among the
+# first 256 options so the run keeps going; that limit is the harness's, not a
+# parity signal.
+MAX_SELECT_INDEX = 255
 
 
 def _act_of(view: dict[str, Any] | None) -> int | None:
@@ -114,6 +156,20 @@ def _floor_of(view: dict[str, Any] | None) -> int | None:
         if isinstance(src, dict) and src.get("floor") is not None:
             return int(src["floor"])
     return None
+
+
+def _is_architect_event(view: dict[str, Any] | None) -> bool:
+    """Whether a C# ``event_choice`` view is TheArchitect's post-act-3 victory
+    event (option text keys ``THE_ARCHITECT.…``, or its display name)."""
+    if not isinstance(view, dict):
+        return False
+    name = str(view.get("event_name") or view.get("event_id") or "")
+    if "architect" in name.lower():
+        return True
+    return any(
+        str((o or {}).get("text_key") or "").startswith("THE_ARCHITECT")
+        for o in (view.get("options") or [])
+    )
 
 
 def _current_coord(backend: Any) -> tuple[int, int] | None:
@@ -226,6 +282,133 @@ def _is_err(view: Any) -> bool:
     return isinstance(view, dict) and (view.get("error") or view.get("type") == "error")
 
 
+# Cards the walk plays whenever they are legal, because pinned HP can't save
+# the run otherwise. The Insatiable (act-2 boss) applies Sandpit, which
+# force-kills its target when it counts down to 0 (``SandpitPower.cs:121``,
+# ``CreatureCmd.Kill(..., force: true)``) whatever its HP; only playing
+# Frantic Escape pushes it back up (``FranticEscape.cs:43``). A uniform random
+# policy rarely does, so before this every invincible walk died to it and
+# act 3 was almost never reached. Both engines get the same action, so the
+# lockstep stays a fair parity check.
+SURVIVAL_CARDS = frozenset({"CARD.FRANTIC_ESCAPE"})
+
+# Enemy powers that kill on a timer. While one is up, the walk doesn't end its
+# turn while it can still play a card: random play ended turns with energy
+# left, so the boss outlived the Sandpit timer.
+TIMER_KILL_POWERS = frozenset({"SANDPIT_POWER"})
+
+
+def _survival_choice(
+    choices: list[tuple[str, dict[str, Any]]], cs_view: dict[str, Any]
+) -> int | None:
+    """Index into ``choices`` of a legal play of a ``SURVIVAL_CARDS`` card."""
+    ids = {c.get("index"): c.get("id") for c in (cs_view.get("hand") or []) if isinstance(c, dict)}
+    for i, (verb, kw) in enumerate(choices):
+        if verb == "play_card" and ids.get(kw.get("card_index")) in SURVIVAL_CARDS:
+            return i
+    return None
+
+
+# Claws (Tanx Ancient relic) opens a min-0/max-6 ``FromDeckForTransformation``
+# select (``Claws.cs:22-29``). Rust surfaces no select: ``listener_claws``
+# transforms the first 6 candidates in deck order, with C#'s candidate filter
+# (not Quest, not Eternal). C# lists exactly those candidates in deck order, so
+# Rust's pick is C# indices ``0..min(6, n)``. The generic first-legal pick
+# (``select_cards "0"``) transforms ONE card and splits the deck one step
+# later. Both picks are legal in the real game; this only makes the two
+# engines pick the same cards.
+CLAWS_PROMPT = "CLAWS.selectionScreenPrompt"
+CLAWS_CARDS = 6
+
+
+def claws_atomic_choice(cs_view: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """The C# ``select_cards`` matching Rust's automatic Claws pick, or ``[]``."""
+    if cs_view.get("prompt_key") != CLAWS_PROMPT:
+        return []
+    cards = cs_view.get("cards") or []
+    n = min(CLAWS_CARDS, int(cs_view.get("max_select") or CLAWS_CARDS), len(cards))
+    if n == 0:
+        return []
+    return [("select_cards", {"indices": ",".join(str(c["index"]) for c in cards[:n])})]
+
+
+def _cs_alone_select(cs_phase: str, rs_phase: str) -> bool:
+    """True when C# is at a ``card_select`` Rust has already resolved
+    atomically (Rust is no longer selecting), so the driver advances C# alone
+    through it.
+    """
+    return cs_phase == "card_select" and rs_phase != "card_select"
+
+
+def _cs_select_still_pending(g: Any) -> bool:
+    """True when the C# headless holds a pending card select its last view hid.
+
+    The combat fallback in ``RunSimulator.DetectDecisionPoint`` ("combat phase
+    settle") returns ``combat_play`` without re-checking
+    ``_cardSelector.HasPending``, so a turn-start select (Toasty Mittens'
+    ``AfterPlayerTurnStart`` exhaust pick, ``ToastyMittens.cs:31-43``) that
+    opens during that wait is reported as ``combat_play``. Probe with an
+    argument-less ``select_cards``: ``DoSelectCards`` answers "No pending card
+    selection" when nothing is pending and "requires 'indices'" when something
+    is, before touching any state.
+    """
+    probe = g.act("select_cards")
+    if not _is_err(probe):
+        return False
+    msg = str(probe.get("message") or probe.get("error") or "")
+    return "requires 'indices'" in msg
+
+
+def _stale_cs_select_pick(rs_view: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """The pick both engines take at a select C#'s view hid.
+
+    The same option prefix ``rust_finalize_atomic_select`` takes: the first
+    ``min_select`` options, or ``skip_select`` when the select is optional.
+    """
+    cards = rs_view.get("cards") or []
+    min_sel = int(rs_view.get("min_select") or 0)
+    if min_sel >= 1 and cards:
+        idxs = [str(c["index"]) for c in cards[: min(min_sel, len(cards))]]
+        return "select_cards", {"indices": ",".join(idxs)}
+    return "skip_select", {}
+
+
+def _within_select_index_cap(
+    choices: list[tuple[str, dict[str, Any]]],
+) -> list[tuple[str, dict[str, Any]]]:
+    """Drop ``select_cards`` choices that name an option past ``MAX_SELECT_INDEX``.
+
+    A no-op for every select of 256 options or fewer, so it changes neither the
+    choice list nor the walk's RNG draws on any other run.
+    """
+
+    def fits(verb: str, kw: dict[str, Any]) -> bool:
+        if verb != "select_cards":
+            return True
+        idxs = [i for i in str(kw.get("indices", "")).split(",") if i.strip()]
+        return all(int(i) <= MAX_SELECT_INDEX for i in idxs)
+
+    return [(verb, kw) for verb, kw in choices if fits(verb, kw)]
+
+
+def _timer_kill_active(cs_view: dict[str, Any]) -> bool:
+    return any(
+        (p or {}).get("id") in TIMER_KILL_POWERS
+        for e in (cs_view.get("enemies") or [])
+        for p in ((e or {}).get("powers") or [])
+    )
+
+
+def _survival_pool(
+    choices: list[tuple[str, dict[str, Any]]], cs_view: dict[str, Any]
+) -> list[tuple[str, dict[str, Any]]]:
+    """``choices`` minus ``end_turn`` while a timer kill is up and a play is left."""
+    if not _timer_kill_active(cs_view):
+        return choices
+    plays = [c for c in choices if c[0] != "end_turn"]
+    return plays or choices
+
+
 def _pin(g: Any, r: Any, hp: int) -> None:
     """Pin both engines' current+max HP to ``hp`` (mirror of C# ``set_player``)."""
     g.set_player(hp=hp, max_hp=hp)
@@ -242,9 +425,205 @@ class InvRun:
     max_act: int = 1
     repicks: int = 0
     atomic_select_skips: int = 0
+    # Shared selects the C# view hid (``_cs_select_still_pending``).
+    stale_cs_selects: int = 0
+    # Steps whose ``select_cards`` choices were trimmed to ``MAX_SELECT_INDEX``.
+    select_index_caps: int = 0
     event_skips: int = 0
     hp_artifacts: int = 0
     max_hp_artifact: int = 0
+    # ``--full-state``: the first combat step where the full-state diff
+    # (``full_state_diff``) found any field mismatch, and those fields.
+    full_split: FullSplit | None = None
+    # Acts whose checkpoint this run wrote (``checkpoint_dir``).
+    checkpoints: list[int] = field(default_factory=list)
+
+
+@dataclass
+class FullSplit:
+    """The earliest full-state combat divergence of a run."""
+
+    step: int
+    act: int
+    paths: list[str]  # ``path: cs=.. rs=..`` lines, first few
+    # ``--trace-split``: each diverging field's C# change history over the
+    # split step (``split_trace.explain``) and the sources behind it.
+    trace: list[str] = field(default_factory=list)
+    suspects: list[str] = field(default_factory=list)
+
+    @property
+    def classes(self) -> str:
+        """The diverging fields with list indices stripped, for bucketing."""
+        seen: list[str] = []
+        for line in self.paths:
+            c = path_class(line.split(":", 1)[0])
+            if c not in seen:
+                seen.append(c)
+        return ",".join(seen[:3])
+
+    def __str__(self) -> str:
+        sus = f" src={self.suspects}" if self.suspects else ""
+        return f"act{self.act} combat@{self.step}: {self.paths[:3]}{sus}"
+
+
+# Lines of a full-state split kept per run (the first is what triage needs).
+FULL_SPLIT_MAX_PATHS = 8
+
+
+def full_state_divs(g: Any, r: Any) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """The C# ``get_state`` and the full-state divergences for the current
+    combat step (no divergences == match)."""
+    cs_state = g.get_state()
+    if _is_err(cs_state):
+        return {}, []
+    combat = r.combat_state()
+    if combat is None:
+        return cs_state, []
+    return cs_state, diff_full(project_csharp(cs_state), project_rust(combat))
+
+
+def _split_lines(divs: list[dict[str, Any]]) -> list[str]:
+    return [f"{d['path']}: cs={d['csharp']!r} rs={d['rust']!r}" for d in divs]
+
+
+def full_state_split(g: Any, r: Any) -> list[str]:
+    """Full-state diff lines for the current combat step (empty == match)."""
+    return _split_lines(full_state_divs(g, r)[1])
+
+
+# --------------------------------------------------------------------------- #
+# Checkpoints: start runs at act 2/3 instead of replaying act 1 every trial
+# --------------------------------------------------------------------------- #
+# A checkpoint is one directory holding the C# oracle's own continue save
+# (``cs.save``) and ``meta.json``: the run's identity, the exact Rust backend
+# calls that led there, and the Rust view they produced. Resuming loads the
+# save into a fresh C# process and replays the calls into a fresh Rust run.
+# The Rust side has no loader for C# saves (and the run-lane state import
+# doesn't restore RNG streams), but it runs a step in microseconds, so a
+# replay costs well under a second. ``save_load_identity.py`` is the check
+# that a C# reload continues exactly like the process that wrote it.
+CHECKPOINT_FORMAT = 1
+
+
+class CheckpointStale(RuntimeError):
+    """The Rust replay no longer reproduces the checkpoint's Rust view."""
+
+
+class _RustRecorder:
+    """Pass-through over the Rust backend that logs every state-changing call.
+
+    ``start``, ``act`` and ``set_player`` are the only calls the lockstep makes
+    that move the Rust run (``rust_finalize_atomic_select`` goes through
+    ``act``); everything else it reads is a query. Replaying the log on a fresh
+    backend rebuilds the same run, because the engine is deterministic.
+    """
+
+    _MUTATORS = frozenset({"start", "act", "set_player"})
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self.calls: list[list[Any]] = []
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._inner, name)
+        if name not in self._MUTATORS or not callable(attr):
+            return attr
+
+        def call(*args: Any, **kwargs: Any) -> Any:
+            self.calls.append([name, list(args), kwargs])
+            return attr(*args, **kwargs)
+
+        return call
+
+
+def _canon(obj: Any) -> str:
+    return json.dumps(obj, sort_keys=True, default=str)
+
+
+@functools.lru_cache(maxsize=1)
+def _build_stamp() -> dict[str, str]:
+    """Which oracle and engine wrote a checkpoint (recorded, checked on load)."""
+    import sts2_rs
+
+    return {"cs_namespace": cs_version_namespace(), "rs_src_hash": sts2_rs.src_hash()}  # ty: ignore[unresolved-attribute]
+
+
+def checkpoint_name(character: str, seed: str, ascension: int, act: int, parent: str = "") -> str:
+    """``Ironclad-1000-a0-act2``; a checkpoint written by a branch run carries
+    its parent and branch, e.g. ``Ironclad-1000-a0-act2.b3-act3``."""
+    if parent:
+        return f"{parent}-act{act}"
+    return f"{character}-{seed}-a{ascension}-act{act}"
+
+
+def write_checkpoint(
+    root: Path,
+    *,
+    character: str,
+    seed: str,
+    ascension: int,
+    act: int,
+    step: int,
+    g: Any,
+    rec: _RustRecorder,
+    rs_view: dict[str, Any],
+    parent: str = "",
+) -> Path:
+    """Save the current lockstep position as checkpoint ``root/<name>``."""
+    d = root / checkpoint_name(character, seed, ascension, act, parent)
+    d.mkdir(parents=True, exist_ok=True)
+    saved = g.write_continue_save(str(d / "cs.save"))
+    if not saved.get("success"):
+        raise RuntimeError(f"C# checkpoint save failed: {saved}")
+    meta = {
+        "format": CHECKPOINT_FORMAT,
+        "character": character,
+        "seed": seed,
+        "ascension": ascension,
+        "act": act,
+        "step": step,
+        **_build_stamp(),
+        "rust_calls": rec.calls,
+        "rs_view": json.loads(_canon(rs_view)),
+    }
+    (d / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    return d
+
+
+def read_checkpoint_meta(d: Path) -> dict[str, Any]:
+    meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+    if meta.get("format") != CHECKPOINT_FORMAT:
+        raise CheckpointStale(
+            f"{d.name}: checkpoint format {meta.get('format')} != {CHECKPOINT_FORMAT}"
+        )
+    return meta
+
+
+def list_checkpoints(root: Path) -> list[Path]:
+    return sorted(p.parent for p in root.glob("*/meta.json"))
+
+
+def resume_checkpoint(
+    d: Path, g: Any, rec: _RustRecorder, meta: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Load checkpoint ``d`` into fresh backends; return ``(cs_view, rs_view)``.
+
+    Raises :class:`CheckpointStale` when the replayed Rust view differs from
+    the recorded one: the engine changed since the checkpoint was written, so
+    the act-1 prefix it encodes is no longer what this engine plays.
+    """
+    cs_view = g.load_save(path=str(d / "cs.save"))
+    if _is_err(cs_view):
+        raise RuntimeError(f"{d.name}: C# load_save failed: {cs_view}")
+    rs_view: Any = None
+    for name, args, kwargs in meta["rust_calls"]:
+        rs_view = getattr(rec, name)(*args, **kwargs)
+    if _canon(rs_view) != _canon(meta["rs_view"]):
+        raise CheckpointStale(
+            f"{d.name}: the Rust replay no longer reproduces the checkpoint "
+            "(engine changed since it was written) — rebuild it"
+        )
+    return cs_view, rs_view
 
 
 def run_one_invincible(
@@ -255,22 +634,68 @@ def run_one_invincible(
     invincible: bool = True,
     verbose: bool = False,
     peel_hp_artifacts: bool = True,
+    full_state: bool = False,
+    full_state_blocking: bool = False,
+    trace_split: bool = False,
+    checkpoint_dir: Path | None = None,
+    checkpoint_acts: frozenset[int] = frozenset(),
+    stop_at_checkpoint: bool = False,
+    from_checkpoint: Path | None = None,
+    branch: int = 0,
+    survival_policy: bool = True,
 ) -> InvRun:
     """Drive a single invincible lockstep run; return an :class:`InvRun`.
 
     Mirrors ``run_parity.run_one`` (same Snap/diff/choice logic) with two
     additions: out-of-combat HP pinning and both-reject re-picking.
+
+    ``full_state`` also runs the full-state combat diff (``full_state_diff``)
+    at every step where both engines are in combat, and records the first
+    mismatch on ``InvRun.full_split`` while the run carries on to its coarse
+    verdict. ``full_state_blocking`` ends the run at that first mismatch
+    instead (signature ``combat/full/<fields>``). ``trace_split`` (implies
+    ``full_state``) turns on the C# oracle's state trace and explains the
+    split with each diverging field's C# change history (``split_trace``).
+
+    Checkpoints (see ``write_checkpoint``): with ``checkpoint_dir`` set, the
+    run saves a checkpoint at the first ``map_select`` of each act in
+    ``checkpoint_acts`` where both engines still agree, and with
+    ``stop_at_checkpoint`` it ends (terminal ``checkpointed``) once all are
+    saved. ``from_checkpoint`` starts the run at a checkpoint instead of at
+    Neow. ``branch`` picks the walk from there: each branch seeds the random
+    policy differently, so one checkpoint yields many act-2/3 trials. With
+    ``from_checkpoint``, ``max_steps`` counts the steps after the checkpoint.
     """
-    rng = random.Random(f"act23state:{seed}")
+    full_state = full_state or trace_split
+    meta: dict[str, Any] | None = None
+    if from_checkpoint is not None:
+        meta = read_checkpoint_meta(from_checkpoint)
+        character, seed, ascension = meta["character"], meta["seed"], meta["ascension"]
+        rng = random.Random(f"act23state:{seed}:act{meta['act']}:branch{branch}")
+    else:
+        rng = random.Random(f"act23state:{seed}")
     g = make_backend("csharp")()
-    r = make_backend("rust", target_convention="csharp")()
+    r = _RustRecorder(make_backend("rust", target_convention="csharp")())
     res = RunResult(seed=seed, steps=0, terminal="error")
     out = InvRun(result=res, character=character)
+    saved_acts: set[int] = set()
+    step0 = 0
     try:
-        cs_view = g.start(character=character, seed=seed, ascension=ascension)
-        rs_view = r.start(character=character, seed=seed, ascension=ascension)
+        if meta is not None and from_checkpoint is not None:
+            cs_view, rs_view = resume_checkpoint(from_checkpoint, g, r, meta)
+            step0 = int(meta["step"])
+            out.max_act = int(meta["act"])
+            saved_acts = {a for a in checkpoint_acts if a <= out.max_act}
+        else:
+            cs_view = g.start(character=character, seed=seed, ascension=ascension)
+            rs_view = r.start(character=character, seed=seed, ascension=ascension)
+        # The trace segment (one per C# action) current at the last clean
+        # full-state check: on a split, ``get_trace`` returns what came after.
+        trace_seq = 0
+        if trace_split:
+            g.send({"cmd": "trace", "on": True})
 
-        for step in range(max_steps):
+        for step in range(step0, step0 + max_steps):
             res.steps = step
             # Track the deepest act EITHER engine reached. They can briefly
             # disagree at an act boundary (one advances a step before the
@@ -309,8 +734,8 @@ def run_one_invincible(
             # normally through the shared lockstep. Beads `sts2-rs-RP25` (original,
             # rs=combat only) / `sts2-rs-RP28` (generalized to any non-select Rust
             # phase: ForegoneConclusion → card_reward, Amalgamator removal → map).
-            if cs_snap.phase == "card_select" and rs_snap.phase != "card_select":
-                cs_choices = enumerate_choices(g, cs_view)
+            if _cs_alone_select(cs_snap.phase, rs_snap.phase):
+                cs_choices = claws_atomic_choice(cs_view) or enumerate_choices(g, cs_view)
                 if cs_choices:
                     verb, kw = cs_choices[0]
                     nxt_cs = g.act(verb, **kw)
@@ -340,9 +765,34 @@ def run_one_invincible(
             # driven normally. Bounded so a select that never clears (finalize
             # rejected, e.g. unmet ``min_select``) falls through to the diff
             # instead of wedging. Oracle-artifact "run-combat-cardselect".
+            #
+            # Before that, rule out a C# view that HID its pending select
+            # (``_cs_select_still_pending``): then the select is shared, and
+            # finalizing Rust alone would leave C# to resolve it later with a
+            # different pick. Drive both engines through the same pick.
+            if (
+                rs_snap.phase == "card_select"
+                and cs_snap.phase == "combat"
+                and _cs_select_still_pending(g)
+            ):
+                verb, kw = _stale_cs_select_pick(rs_view)
+                nxt_cs = g.act(verb, **kw)
+                nxt_rs = r.act(verb, **kw)
+                if not _is_err(nxt_cs) and not _is_err(nxt_rs):
+                    if verbose:
+                        res.trace.append(
+                            f"[{step:04d}] act{out.max_act} "
+                            f"stale-cs-select both:{verb}({kw}) (c# view hid its select)"
+                        )
+                    out.stale_cs_selects += 1
+                    cs_view, rs_view = nxt_cs, nxt_rs
+                    continue
+                cs_view = nxt_cs if not _is_err(nxt_cs) else cs_view
+                rs_view = nxt_rs if not _is_err(nxt_rs) else rs_view
+                cs_snap, rs_snap = Snap.of(cs_view, "cs"), Snap.of(rs_view, "rs")
             guard = 0
             while rs_snap.phase == "card_select" and cs_snap.phase != "card_select" and guard < 8:
-                nxt_rs = r.act("skip_select")
+                nxt_rs = rust_finalize_atomic_select(r, rs_view)
                 if _is_err(nxt_rs):
                     break  # not skippable / min_select unmet — let the diff report it
                 if verbose:
@@ -360,11 +810,13 @@ def run_one_invincible(
             # "no options, auto-skipping" → ``EnterRoom(new MapRoom())``), so C# is
             # already on the ``map`` while Rust correctly surfaces the FakeMerchant
             # ``event``. Drive RUST ALONE through its no-op ``leave`` option so it
-            # re-aligns to the map, then re-snap. Sound because FakeMerchant
-            # consumes NO shared run RNG — its inventory shuffle uses a private
-            # ``Rng.with_name(seed, "FAKE_MERCHANT")`` stream — so leaving cannot
-            # desync the shared trajectory; a genuine "Rust a room behind" desync
-            # still surfaces in the subsequent map/nav diff. Bead sts2-rs-1hiht.
+            # re-aligns to the map, then re-snap. Sound because leaving draws
+            # nothing: FakeMerchant's only shared-RNG reads (6 ``Shops`` price
+            # rolls, ``MerchantRelicEntry.CalcCost``) happen in
+            # ``BeforeEventStarted``, which both engines run on entry; its
+            # inventory shuffle uses a private ``FAKE_MERCHANT`` stream. A
+            # genuine "Rust a room behind" desync still surfaces in the
+            # subsequent map/nav diff. Bead sts2-rs-1hiht.
             if rs_snap.phase == "event" and cs_snap.phase == "map":
                 leave = next(
                     (
@@ -386,6 +838,34 @@ def run_one_invincible(
                         rs_view = nxt_rs
                         rs_snap = Snap.of(rs_view, "rs")
 
+            # Final-victory event granularity: after the act-3 boss C# enters
+            # TheArchitect's VICTORY event room — a single-option dialogue chain
+            # (THREATEN → dialogue → PROCEED) whose last PROCEED calls
+            # ``RunManager.WinRun`` (see ``RunSimulator.cs``'s TheArchitect
+            # note) — while Rust ends the run at the boss kill. Drive C# ALONE
+            # through that chain, then re-snap; the ``game_over`` check below
+            # still compares the outcome on both sides. Gated on Rust being over
+            # and the C# event being TheArchitect, so any other event-vs-over
+            # split still surfaces.
+            if (
+                rs_snap.phase == "game_over"
+                and cs_snap.phase == "event"
+                and _is_architect_event(cs_view)
+            ):
+                cs_choices = enumerate_choices(g, cs_view)
+                if len(cs_choices) == 1:
+                    verb, kw = cs_choices[0]
+                    nxt_cs = g.act(verb, **kw)
+                    if not _is_err(nxt_cs):
+                        if verbose:
+                            res.trace.append(
+                                f"[{step:04d}] act{out.max_act} "
+                                f"victory-event-skip cs:{verb}({kw}) (rust ended at the boss)"
+                            )
+                        out.event_skips += 1
+                        cs_view = nxt_cs
+                        continue
+
             # Finer per-step nav instrumentation (issue #158 step 1): act +
             # current map-node coord for BOTH engines, surfaced every step in the
             # verbose trace so the Act-1→Act-2 "C# a room ahead" desync is
@@ -394,6 +874,17 @@ def run_one_invincible(
             cs_nav, rs_nav = Nav.of(cs_view, g), Nav.of(rs_view, r)
 
             fields = diff_snaps(cs_snap, rs_snap)
+            # A WON run ends in C# through ``RunManager.WinRun → OnEnded(isVictory:
+            # true) → GuaranteeKillAllPlayers`` (see ``RunSimulator.cs``'s
+            # game-over note), so its victory ``game_over`` view reports hp 0
+            # while Rust keeps the post-boss HP. Not a parity signal: drop the hp
+            # field when both sides are over and C# says it won.
+            if (
+                cs_snap.phase == "game_over"
+                and rs_snap.phase == "game_over"
+                and (cs_view.get("victory") or cs_view.get("won"))
+            ):
+                fields = [f for f in fields if not f.startswith("hp:")]
             if cs_snap.phase == "map" and rs_snap.phase == "map":
                 fields += diff_maps(map_signature(g), map_signature(r))
                 # Nav (act + current-node) is BLOCKING only while both engines
@@ -433,6 +924,32 @@ def run_one_invincible(
                         f"(Δ{abs((cs_snap.hp or 0) - (rs_snap.hp or 0))}, tolerated)"
                     )
                 fields = []
+
+            if (
+                (full_state or full_state_blocking)
+                and out.full_split is None
+                and cs_snap.phase == "combat"
+                and rs_snap.phase == "combat"
+            ):
+                cs_state, divs = full_state_divs(g, r)
+                split = _split_lines(divs)
+                if not split and trace_split:
+                    trace_seq = cs_state.get("trace_seq") or trace_seq
+                if split:
+                    out.full_split = FullSplit(step, out.max_act, split[:FULL_SPLIT_MAX_PATHS])
+                    if trace_split:
+                        segs = (
+                            g.send({"cmd": "get_trace", "since": trace_seq}).get("segments") or []
+                        )
+                        out.full_split.trace = explain(segs, divs[:FULL_SPLIT_MAX_PATHS])
+                        out.full_split.suspects = suspects(segs, divs[:FULL_SPLIT_MAX_PATHS])
+                    if verbose:
+                        res.trace.append(f"[{step:04d}] act{out.max_act} FULL-STATE SPLIT:")
+                        res.trace.extend(f"       {line}" for line in split[:FULL_SPLIT_MAX_PATHS])
+                    if full_state_blocking and not fields:
+                        res.divergence = Divergence(step, "combat", split, "full")
+                        res.terminal = "diverged"
+                        return out
 
             if verbose:
                 res.trace.append(
@@ -475,6 +992,33 @@ def run_one_invincible(
                     )
                 return out
 
+            # Checkpoint here: the diff above just passed, and HP isn't pinned
+            # for this step yet, so a resume replays the pin exactly as now.
+            ck_act = _act_of(cs_view) or 0
+            if (
+                checkpoint_dir is not None
+                and cs_dec == "map_select"
+                and ck_act in checkpoint_acts
+                and ck_act not in saved_acts
+            ):
+                write_checkpoint(
+                    checkpoint_dir,
+                    character=character,
+                    seed=seed,
+                    ascension=ascension,
+                    act=ck_act,
+                    step=step,
+                    g=g,
+                    rec=r,
+                    rs_view=rs_view,
+                    parent=f"{from_checkpoint.name}.b{branch}" if from_checkpoint else "",
+                )
+                saved_acts.add(ck_act)
+                out.checkpoints.append(ck_act)
+                if stop_at_checkpoint and saved_acts >= checkpoint_acts:
+                    res.terminal = "checkpointed"
+                    return out
+
             choices = enumerate_choices(g, cs_view)
             if not choices:
                 res.divergence = Divergence(
@@ -482,19 +1026,52 @@ def run_one_invincible(
                 )
                 res.terminal = "error"
                 return out
+            capped = _within_select_index_cap(choices)
+            if not capped:
+                # Every pick names an option past the u8 cap (cannot happen
+                # for a single pick, whose options 0..255 always survive).
+                # End as a harness cap, not a divergence.
+                res.divergence = Divergence(
+                    step,
+                    cs_snap.phase,
+                    [f"every {cs_dec!r} pick is past option {MAX_SELECT_INDEX}"],
+                    "harness",
+                )
+                res.terminal = "select_index_cap"
+                return out
+            if len(capped) < len(choices):
+                out.select_index_caps += 1
+            choices = capped
 
             # Pin HP out of combat (AFTER the genuine diff above): the next
             # combat then seeds from INVINCIBLE_HP on both engines so the random
             # policy survives, while in-combat HP stays an un-masked parity check.
-            if invincible and cs_snap.phase != "combat":
+            #
+            # Never pin BETWEEN the pages of an event either: an event can bake
+            # the player's max HP into a page's option at page-build time, and a
+            # pin between that page and the click changes max HP under it in a
+            # way the real game cannot. Tablet of Truth's last Decipher page
+            # sets ``DecipherMaxHpLoss = MaxHp - 1`` when the page is built
+            # (TabletOfTruth.cs:88) and the click pays that stored value
+            # (TabletOfTruth.cs:109); Rust computes ``MaxHp - 1`` at the click.
+            # Both agree in a real run, but with a pin in between C# ended at
+            # 25 max HP and Rust at 1 (Defect:1002, Regent:1007 at v0.107.1).
+            # The map step before the event already pinned, so the event and
+            # anything it leads to still start from INVINCIBLE_HP.
+            if invincible and cs_snap.phase not in ("combat", "event"):
                 _pin(g, r, INVINCIBLE_HP)
 
             # Pick a choice; on a both-reject (benign illegal move) drop it and
             # re-pick so one bad enumerated move doesn't truncate the run.
             pool = list(choices)
+            if invincible and survival_policy:
+                pool = _survival_pool(pool, cs_view)
             advanced = False
             while pool:
-                idx = rng.randrange(len(pool))
+                # The survival pick draws no RNG, so a walk that never meets a
+                # survival card is unchanged.
+                sidx = _survival_choice(pool, cs_view) if invincible and survival_policy else None
+                idx = sidx if sidx is not None else rng.randrange(len(pool))
                 verb, kw = pool.pop(idx)
                 nxt_cs = g.act(verb, **kw)
                 nxt_rs = r.act(verb, **kw)
@@ -522,6 +1099,10 @@ def run_one_invincible(
                 return out
 
         res.terminal = "max_steps"
+        return out
+    except CheckpointStale as exc:
+        res.divergence = Divergence(res.steps, "?", [str(exc)], "harness")
+        res.terminal = "checkpoint_stale"
         return out
     except Exception as exc:  # pragma: no cover - harness-level failure
         import traceback
@@ -553,33 +1134,35 @@ class SweepReport:
     hp_artifact_runs: int = 0  # runs that tolerated >=1 mid-combat HP artifact
     hp_artifacts: int = 0  # total artifacts peeled across the sweep
     max_hp_artifact: int = 0  # largest tolerated |Δhp| (sanity-checks the bound)
+    # ``--full-state``: earliest full-state split per run, bucketed by field.
+    full_buckets: dict[str, list[str]] = field(default_factory=dict)
+    full_clean: int = 0
+    checkpointed: int = 0  # runs that ended at their last checkpoint
 
 
 def _worker(
-    args: tuple[str, str, int, int, bool, bool],
-) -> tuple[str, str, int, str, str | None, int, int]:
-    seed, character, ascension, max_steps, invincible, peel = args
-    out = run_one_invincible(
-        seed,
-        character,
-        ascension=ascension,
-        max_steps=max_steps,
-        invincible=invincible,
-        peel_hp_artifacts=peel,
-    )
+    job: dict[str, Any],
+) -> tuple[str, str, int, str, str | None, int, int, FullSplit | None]:
+    """Run one sweep job: ``label`` plus ``run_one_invincible`` keyword args."""
+    kwargs = dict(job)
+    label = kwargs.pop("label")
+    out = run_one_invincible(**kwargs)
     res = out.result
     sig = run_signature(res)
     div = None
     if res.divergence is not None:
         div = f"{res.divergence.phase}@{res.divergence.step}: {res.divergence.fields[:2]}"
+    if out.checkpoints:
+        sig += f" [ckpt act{','.join(map(str, out.checkpoints))}]"
     return (
-        f"{character}:{seed}",
+        label,
         sig,
         out.max_act,
         res.terminal,
         div,
         out.hp_artifacts,
         out.max_hp_artifact,
+        out.full_split,
     )
 
 
@@ -592,22 +1175,65 @@ def sweep(
     workers: int,
     invincible: bool,
     peel_hp_artifacts: bool = True,
+    full_state: bool = False,
+    full_state_blocking: bool = False,
+    trace_split: bool = False,
+    checkpoint_dir: Path | None = None,
+    checkpoint_acts: frozenset[int] = frozenset(),
+    stop_at_checkpoint: bool = False,
+    from_checkpoints: list[Path] | None = None,
+    branches: int = 1,
+    survival_policy: bool = True,
 ) -> SweepReport:
     rep = SweepReport()
-    jobs = [
-        (str(start + i), ch, ascension, max_steps, invincible, peel_hp_artifacts)
-        for ch in characters
-        for i in range(n)
-    ]
+    common: dict[str, Any] = {
+        "max_steps": max_steps,
+        "invincible": invincible,
+        "peel_hp_artifacts": peel_hp_artifacts,
+        "full_state": full_state,
+        "full_state_blocking": full_state_blocking,
+        "trace_split": trace_split,
+        "checkpoint_dir": checkpoint_dir,
+        "checkpoint_acts": checkpoint_acts,
+        "stop_at_checkpoint": stop_at_checkpoint,
+        "survival_policy": survival_policy,
+    }
+    if from_checkpoints is not None:
+        # Every branch of every checkpoint is its own trial.
+        jobs = [
+            {
+                **common,
+                "label": f"{ck.name}#b{b}",
+                "seed": "",
+                "from_checkpoint": ck,
+                "branch": b,
+            }
+            for ck in from_checkpoints
+            for b in range(branches)
+        ]
+    else:
+        jobs = [
+            {
+                **common,
+                "label": f"{ch}:{start + i}",
+                "seed": str(start + i),
+                "character": ch,
+                "ascension": ascension,
+            }
+            for ch in characters
+            for i in range(n)
+        ]
     with ProcessPoolExecutor(max_workers=workers) as ex:
-        futs = {ex.submit(_worker, j): j for j in jobs}
+        futs = {ex.submit(_worker, j): j["label"] for j in jobs}
         for fut in as_completed(futs):
-            label, sig, max_act, term, div, hp_arts, max_hp_art = fut.result()
+            label, sig, max_act, term, div, hp_arts, max_hp_art, split = fut.result()
             rep.runs += 1
             rep.act_hist[max_act] += 1
             rep.term_hist[term] += 1
             if max_act >= 2:
                 rep.reached_act2 += 1
+            if term == "checkpointed":
+                rep.checkpointed += 1
             if max_act >= 3:
                 rep.reached_act3 += 1
             if hp_arts:
@@ -620,7 +1246,17 @@ def sweep(
                 rep.buckets[sig].append(f"{label} act{max_act} {div}{art}")
             else:
                 rep.buckets[sig].append(f"{label} act{max_act}{art}")
-            print(f"  {label:24s} act{max_act} {term:16s} {sig}{art}", flush=True)
+            full = ""
+            if full_state or full_state_blocking or trace_split:
+                if split is None:
+                    rep.full_clean += 1
+                    full = "  full=clean"
+                else:
+                    rep.full_buckets.setdefault(split.classes, []).append(f"{label} {split}")
+                    full = f"  full@{split.step}={split.classes}"
+                    if split.suspects:
+                        full += f" src={','.join(split.suspects)}"
+            print(f"  {label:24s} act{max_act} {term:16s} {sig}{art}{full}", flush=True)
     return rep
 
 
@@ -633,6 +1269,8 @@ def print_report(rep: SweepReport) -> None:
     print(f"reached act>=3:  {rep.reached_act3} ({pct3:.0f}%)")
     print(f"max-act hist:    {dict(sorted(rep.act_hist.items()))}")
     print(f"terminal hist:   {dict(rep.term_hist.most_common())}")
+    if rep.checkpointed:
+        print(f"checkpointed:    {rep.checkpointed}")
     print(
         f"hp-artifacts:    {rep.hp_artifacts} peeled across {rep.hp_artifact_runs} runs "
         f"(max |Δhp|={rep.max_hp_artifact}, tolerance={HP_ARTIFACT_TOLERANCE})"
@@ -645,15 +1283,31 @@ def print_report(rep: SweepReport) -> None:
         if not clean:
             for ex in examples[:4]:
                 print(f"        e.g. {ex}")
+    if rep.full_buckets or rep.full_clean:
+        print("\n=== FULL-STATE FIRST SPLITS (by diverging fields) ===")
+        print(f"full-state clean: {rep.full_clean}/{rep.runs}")
+        for cls, examples in sorted(rep.full_buckets.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+            print(f"[{len(examples):3d}] {cls}")
+            for ex in examples[:4]:
+                print(f"        e.g. {ex}")
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--character", default="Ironclad")
+    ap.add_argument(
+        "--character",
+        default=None,
+        help="default Ironclad; with --from-checkpoints, default every character",
+    )
     ap.add_argument("--all-characters", action="store_true")
-    ap.add_argument("--ascension", type=int, default=0)
+    ap.add_argument(
+        "--ascension",
+        type=int,
+        default=None,
+        help="default 0; with --from-checkpoints, default every ascension",
+    )
     ap.add_argument("-n", "--num", type=int, default=10, help="seeds per character")
     ap.add_argument("--start", type=int, default=1000, help="first seed (ints, stringified)")
     ap.add_argument("--max-steps", type=int, default=2500)
@@ -664,6 +1318,63 @@ def main() -> int:
         action="store_true",
         help="do NOT classify out the C# mid-combat-snapshot HP artifact (raw reach, for A/B)",
     )
+    ap.add_argument(
+        "--full-state",
+        action="store_true",
+        help="also diff the full combat state (piles in order, RNG cursors, move "
+        "states, ...) every combat step and report each run's first split",
+    )
+    ap.add_argument(
+        "--full-state-blocking",
+        action="store_true",
+        help="like --full-state, but end the run at its first full-state split",
+    )
+    ap.add_argument(
+        "--trace-split",
+        action="store_true",
+        help="--full-state plus the C# oracle's state trace: explain each run's "
+        "first split with every diverging field's C# change history and source",
+    )
+    ap.add_argument(
+        "--checkpoint-dir",
+        type=Path,
+        help="save a checkpoint at the first map of each --checkpoint-acts act "
+        "(where both engines still agree) into this directory",
+    )
+    ap.add_argument(
+        "--checkpoint-acts",
+        default="2",
+        help="comma list of acts to checkpoint (default 2)",
+    )
+    ap.add_argument(
+        "--stop-at-checkpoint",
+        action="store_true",
+        help="end each run once its last checkpoint is saved (build mode)",
+    )
+    ap.add_argument(
+        "--from-checkpoints",
+        type=Path,
+        help="start every run from the checkpoints in this directory instead "
+        "of at Neow; -n/--start are ignored. Every checkpoint runs unless "
+        "--character, --ascension or --checkpoint-act narrows it",
+    )
+    ap.add_argument(
+        "--checkpoint-act",
+        type=int,
+        help="with --from-checkpoints: only use checkpoints of this act",
+    )
+    ap.add_argument(
+        "--branches",
+        type=int,
+        default=4,
+        help="with --from-checkpoints: random walks per checkpoint (default 4)",
+    )
+    ap.add_argument(
+        "--uniform-policy",
+        action="store_true",
+        help="pick uniformly at random even when a SURVIVAL_CARDS card is "
+        "playable (the pre-2026-11 walk, which dies to The Insatiable)",
+    )
     ap.add_argument("--seed", help="single verbose run for this seed (overrides sweep)")
     ap.add_argument("--verbose", action="store_true", help="dump per-step trace (single run)")
     add_game_version_arg(ap)
@@ -673,7 +1384,30 @@ def main() -> int:
     assert_wheel_fresh()
     invincible = not args.no_invincible
     peel = not args.no_hp_peel
+    # With --from-checkpoints, the checkpoints carry their own character and
+    # ascension, so an unset --character / --ascension filters nothing.
+    # (Defaulting to Ironclad there silently dropped 4 of 5 characters.)
+    ckpt_chars = [args.character] if args.character and not args.all_characters else None
+    ckpt_asc = args.ascension
+    args.character = args.character or "Ironclad"
+    args.ascension = 0 if args.ascension is None else args.ascension
     chars = ALL_CHARACTERS if args.all_characters else [args.character]
+    ckpt_acts = frozenset(int(a) for a in args.checkpoint_acts.split(",") if a.strip())
+    from_ckpts: list[Path] | None = None
+    if args.from_checkpoints is not None:
+        from_ckpts = []
+        for ck in list_checkpoints(args.from_checkpoints):
+            m = read_checkpoint_meta(ck)
+            if ckpt_chars is not None and m["character"] not in ckpt_chars:
+                continue
+            if ckpt_asc is not None and m["ascension"] != ckpt_asc:
+                continue
+            if args.checkpoint_act is not None and m["act"] != args.checkpoint_act:
+                continue
+            from_ckpts.append(ck)
+        if not from_ckpts:
+            print(f"no matching checkpoints in {args.from_checkpoints}", file=sys.stderr)
+            return 2
 
     if args.seed is not None:
         out = run_one_invincible(
@@ -684,6 +1418,13 @@ def main() -> int:
             invincible=invincible,
             verbose=args.verbose,
             peel_hp_artifacts=peel,
+            full_state=args.full_state,
+            full_state_blocking=args.full_state_blocking,
+            trace_split=args.trace_split,
+            checkpoint_dir=args.checkpoint_dir,
+            checkpoint_acts=ckpt_acts,
+            stop_at_checkpoint=args.stop_at_checkpoint,
+            survival_policy=not args.uniform_policy,
         )
         res = out.result
         if args.verbose:
@@ -693,9 +1434,20 @@ def main() -> int:
             f"\nseed={args.seed} char={args.character} max_act={out.max_act} "
             f"steps={res.steps} terminal={res.terminal} repicks={out.repicks} "
             f"atomic_select_skips={out.atomic_select_skips} "
+            f"stale_cs_selects={out.stale_cs_selects} "
+            f"select_index_caps={out.select_index_caps} "
             f"event_skips={out.event_skips} "
             f"hp_artifacts={out.hp_artifacts} (max |Δhp|={out.max_hp_artifact})"
         )
+        if out.full_split is not None:
+            fs = out.full_split
+            print(f"FULL-STATE SPLIT @step {fs.step} act{fs.act}")
+            for line in fs.paths:
+                print(f"  {line}")
+            if fs.trace:
+                print("C# CHANGES OVER THE SPLIT STEP (state trace):")
+                for line in fs.trace:
+                    print(f"  {line}")
         if res.divergence:
             d = res.divergence
             print(f"DIVERGENCE @step {d.step} phase={d.phase} kind={d.kind}")
@@ -707,6 +1459,7 @@ def main() -> int:
     print(
         f"invincible={invincible} peel_hp_artifacts={peel} chars={chars} n={args.num} "
         f"start={args.start} max_steps={args.max_steps}"
+        + (f" from_checkpoints={len(from_ckpts)}x{args.branches}" if from_ckpts else "")
     )
     rep = sweep(
         chars,
@@ -717,6 +1470,15 @@ def main() -> int:
         args.workers,
         invincible,
         peel_hp_artifacts=peel,
+        full_state=args.full_state,
+        full_state_blocking=args.full_state_blocking,
+        trace_split=args.trace_split,
+        checkpoint_dir=args.checkpoint_dir,
+        checkpoint_acts=ckpt_acts,
+        stop_at_checkpoint=args.stop_at_checkpoint,
+        from_checkpoints=from_ckpts,
+        branches=args.branches,
+        survival_policy=not args.uniform_policy,
     )
     print_report(rep)
     n_div = sum(len(v) for k, v in rep.buckets.items() if not k.startswith("clean:"))

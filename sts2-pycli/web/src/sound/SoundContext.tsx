@@ -1,10 +1,11 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useEffectsMode } from "../effects/EffectsContext";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffectsMode } from "../effects/useEffectsMode";
 import { loadSfxMap, type SfxMap } from "./sfxMap";
 import { SoundPlayer } from "./player";
 import { createWebAudioBackend } from "./webAudioBackend";
 import { filterForMode } from "./triggers";
 import type { SoundCue } from "./types";
+import { SoundCtx } from "./useSound";
 
 /**
  * Game sound effects — **on by default** (user decision 2026-09-09; the
@@ -34,24 +35,6 @@ const VOLUME_KEY = "soundVolume";
  * value once; from then on `soundOn` is a real choice and is obeyed.
  */
 const CHOICE_KEY = "soundChoiceV2";
-
-export interface SoundValue {
-  on: boolean;
-  volume: number;
-  setOn: (v: boolean) => void;
-  setVolume: (v: number) => void;
-  /** Play a derived cue list, mode-filtered. No-op while sound is off. */
-  emit: (cues: SoundCue[]) => void;
-  map: SfxMap | null;
-}
-
-const Ctx = createContext<SoundValue>({
-  on: false, volume: 0.7, setOn: () => {}, setVolume: () => {}, emit: () => {}, map: null,
-});
-
-export function useSound(): SoundValue {
-  return useContext(Ctx);
-}
 
 function readStored(): boolean {
   // Absent (a first visit) and "1" both mean on; only an explicit "0" is off.
@@ -148,7 +131,7 @@ export function SoundProvider({ children, gameVersion }: {
     () => ({ on, volume, setOn, setVolume, emit, map }),
     [on, volume, emit, map],
   );
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+  return <SoundCtx.Provider value={value}>{children}</SoundCtx.Provider>;
 }
 
 /**
@@ -158,8 +141,8 @@ export function SoundProvider({ children, gameVersion }: {
  * only needs `on` (most of them) gets the old zero-config behaviour. A test
  * that needs to OBSERVE emitted cues passes its own `vi.fn()` for `emit` and
  * a real `map` (Board's effect only calls `sound.emit` when `sound.map` is
- * truthy), rather than reaching for `Ctx.Provider` directly — `Ctx` itself
- * stays unexported so this fixture remains the one sanctioned way in.
+ * truthy), rather than reaching for `SoundCtx.Provider` (useSound.ts)
+ * directly — this fixture is the one sanctioned way in.
  */
 export function SoundFixture({ on, emit, map, children }: {
   on: boolean;
@@ -171,5 +154,5 @@ export function SoundFixture({ on, emit, map, children }: {
     () => ({ on, volume: 0.7, setOn: () => {}, setVolume: () => {}, emit: emit ?? (() => {}), map: map ?? null }),
     [on, emit, map],
   );
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+  return <SoundCtx.Provider value={value}>{children}</SoundCtx.Provider>;
 }

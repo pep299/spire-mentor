@@ -9,7 +9,6 @@ use super::prelude::*;
 ///
 /// **Bead `sts2-rs-j9x8`**: shipped the late-effect bus and wired
 /// MakeItSo as the first consumer.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L774
 pub(crate) fn play_make_it_so(
     state: &mut CombatState,
     target: Option<CreatureUid>,

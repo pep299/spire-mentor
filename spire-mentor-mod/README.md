@@ -154,7 +154,7 @@ settings. Fields (authoritative docs: `SimConfig.cs`):
 | `port` | `9002` | TCP listen port (loopback only) |
 | `auto_start` | `false` | Launch Autopilot at boot (the unattended sweep lane). `false` = Off, or Advisor if the "Turn the coach on when the game starts" setting is ticked (default; Windows only) |
 | `advisor_autoplay` | `false` | Testing: once a run is live, switch to Advisor mode and toggle AI autoplay (the F8+F7 path) unattended. Forces `pause_on` empty |
-| `pause_on` | `"unsupported"` | Where F7 stops and hands the decision back (F7 resumes). `unsupported` = decisions the AI has no real policy for (the advisor's `hand_back`, the crystal sphere); add event ids / `advice_for` values to always play those yourself, e.g. `"unsupported, Neow"`; `""` = never pause. A JSON array works too |
+| `pause_on` | `"unsupported"` | Where F7 stops and hands the decision back (F7 resumes). `unsupported` = decisions the AI has no real policy for (the advisor's `hand_back`); add event ids / `advice_for` values to always play those yourself, e.g. `"unsupported, Neow"`; `""` = never pause. A JSON array works too |
 | `character` / `ascension` / `seed` | `"Ironclad"` / `0` / `null` | Run setup for Autopilot; `seed: null` = fresh random seed |
 | `num_runs` | `1` | Runs to play in sequence before going idle |
 | `resume_run` | `false` | Click Continue instead of starting a new run (recover a run after a game crash) |
@@ -181,17 +181,18 @@ settings. Fields (authoritative docs: `SimConfig.cs`):
   speed) are flat buttons; the one-shot verbs sit in three dropdowns
   (`SimUiKit.MakeMenuButton`): **Rewind ▾** (`⟲ Turn` / `⟲ Room` /
   `⟲⟲ Back`), **Panels ▾** (log, HUD, help, mid-run **Settings** —
-  `SimSettingsPanel.cs`) and **Workbench ▾** (open the browser view, copy
-  state). Click the pill to collapse the strip.
+  `SimSettingsPanel.cs` — and **Report a bug**) and **Workbench ▾** (open
+  the browser view, copy state). Click the pill to collapse the strip.
 - **Hotkeys** (`SimHotkeys.cs`) — `F1` help panel (the in-game documentation:
-  current mode, every key, file locations), `F3` action-log panel, `F4` HUD
+  current mode, every key, file locations), `Ctrl+L` action-log panel, `Ctrl+H` hides every
+  panel down to the toolbar pill (again, or click the pill, to show them), `F4` HUD
   on/off, `F6` AI takes this one decision, `F7` AI plays until you stop,
   `F8` turns the AI on / off in the current style (from Autopilot: stops the
   AI and hands you the controls; the toolbar's Hints / Coach button switches
   style), `F5` peeks at the AI's next pick in the Coach style,
   `F9`/`F10` game speed −/+, `Ctrl+Z` undo to the start of the
-  combat turn, `Ctrl+Shift+Z` restart the room. `F2` and `F11` belong to the
-  game.
+  combat turn, `Ctrl+Shift+Z` restart the room, `Ctrl+Shift+C` copy state,
+  `Ctrl+Shift+B` report a bug. `F2` and `F11` belong to the game.
 - **Rewind** (`SimSnapshots.cs` / `SimRestore.cs` / `SimCombatUndo.cs`) —
   the mod snapshots every game save (room entry + post-combat) under
   `%LOCALAPPDATA%\SpireMentor\snapshots\` and can reload any of them
@@ -203,8 +204,50 @@ settings. Fields (authoritative docs: `SimConfig.cs`):
   recorded combat turn — and tracks forks.
 - **Console** (`F11`) — `spirementor` (status), `spirementor mode off|advisor|hints|coach`,
   `spirementor speed <0.1-4.0>`, `spirementor hud on|off`, `spirementor log`,
+  `spirementor bugreport [note...]` (no note: the dialog; a note: send now),
   `spirementor waitmult <f>` / `spirementor animmult <f>` (Autopilot-only
   multipliers).
+
+## Bug reports
+
+**Report a bug** (`Ctrl+Shift+B`, Panels ▾, `spirementor bugreport`;
+`SimBugReport.cs`) captures the moment the dialog OPENS — the position the
+player saw the bug in, not wherever the run went while they typed — and
+builds the workbench's schema-1 bug-report dump (`BugReportDump.cs`, unit
+tested) from:
+
+- the Copy-state payload (`state.game_state`), which the workbench's
+  **Import state** rebuilds, exact fight included;
+- the game's save at the start of this room (`repro.run_save`, from
+  `SimSnapshots`), which a rewind can restore;
+- the advisor's run log (`repro.run_log`, through the control plane's
+  `GET /log`) when the advisor is up and the log is under 8 MiB, so the
+  workbench can replay every decision with the advice given at the time;
+- tails of the action log, `godot.log` and `advisor_stdout.log` (`logs`),
+  with the Windows account name taken out of `\Users\<name>\` paths;
+- mod / game version, OS, coach mode and style, the mod's settings
+  (`meta`, `settings`).
+
+Every report is written to `%LOCALAPPDATA%\SpireMentor\bugreports\` first.
+**Send report** then posts it to the hosted workbench's store, through its
+intake `<site>/intake/bugreport` (`sts2-pycli/web/functions/intake/`): the one
+path the site's sign-in (Cloudflare Access) leaves open, which takes a post
+with no `Origin` and only writes. The upload follows no redirect: a redirect
+there is the sign-in page, and the dialog says so and keeps the file. The
+reply's link goes on the clipboard and its id into the file name; opening it
+needs the sign-in. **Save to file only** sends nothing.
+
+The site is private, so no source file names it. A release build carries it
+as assembly metadata: `package.ps1 -BugReportSite <origin>` (default:
+`$env:STS2_WORKBENCH_SITE`, else the export in `sts2-pycli/deploy/justfile`)
+passes `-p:SpireMentorBugReportSite=…` to the build. The advanced setting
+**Bug report site** overrides it. A plain dev build has none and offers only
+the file. The mod passes the same site to the advisor as
+`--bug-report-site`, so the bundled workbench's **🐞 Report** button
+(forwarded by the control plane, `realgame_control.BugReportForward`) lands in
+the same store, with the game's latest position added. Reading reports back:
+`just bug-reports` / `just bug-report <id>` in `sts2-pycli/`
+(`docs/browser-workbench.md`, "Bug reports").
 
 ## Advisor backend
 

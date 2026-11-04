@@ -363,6 +363,8 @@ fn slimed_costs_1_and_exhausts() {
     assert_eq!(r, EffectResult::Resolved);
     // Play with 3 cards in draw — hand grows by 1.
     let mut state = CombatState::default();
+    // A live player: a dead one makes the combat ending, so draws move no card.
+    state.player.current_hp = 80;
     for n in 1..=3u32 {
         state
             .player
@@ -529,7 +531,7 @@ fn play_luminesce_grants_two_energy_three_when_upgraded() {
     use sts2_core::cards::{Card, CardType, TargetType};
     install_pool();
 
-    let gained = |upgraded: bool| -> i8 {
+    let gained = |upgraded: bool| -> i32 {
         let mut state = CombatState::default();
         let card_uid = NonZeroU32::new(1).expect("nz");
         state.cards.push(Card {

@@ -7,6 +7,7 @@ using MegaCrit.Sts2.Core.Events;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.Entities.Actions;
 using MegaCrit.Sts2.Core.GameActions;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Map;
@@ -16,6 +17,7 @@ using MegaCrit.Sts2.Core.Models.Characters;
 using MegaCrit.Sts2.Core.Models.Acts;
 using MegaCrit.Sts2.Core.Random;
 using MegaCrit.Sts2.Core.Multiplayer;
+using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.CardSelection;
 using MegaCrit.Sts2.Core.Entities.CardRewardAlternatives;
 using MegaCrit.Sts2.Core.Entities.Merchant;
@@ -313,6 +315,45 @@ public class RunSimulator
     // Pending rewards for card selection (populated after combat, before proceeding)
     private List<Reward>? _pendingRewards;
     private CardReward? _pendingCardReward;
+    // The room's further CardRewards, offered one after another once the
+    // first resolves (TheHunt's Fatal extra, PrayerWheel's / WhiteStar's second reward).
+    private readonly Queue<CardReward> _queuedCardRewards = new();
+    // A rest-site option was already taken in the current room (MiniatureTent).
+    private bool _restSiteOptionTaken;
+
+    // `CardReward`'s constructor subscribes `Player.RelicObtained += OnRelicObtained`
+    // (CardReward.cs:118), and only `OnSelect` / `OnSkipped` unsubscribe it
+    // (:293, :319). The real game reaches one of the two for every reward:
+    // a pick runs `OnSelect`, and `SkipRewardsSet` runs `OnSkipped` on every
+    // unselected reward at room exit (RewardsSetSynchronizer.cs:498-505). The
+    // harness picks by adding the card itself and drops leftovers by clearing
+    // the fields, so the handler leaked: every later relic (WING_CHARM) re-ran
+    // `TryModifyCardRewardOptions` on each dead reward and drew extra Rng.Niche.
+    private static void ReleaseCardReward(CardReward? reward)
+    {
+        if (reward == null) return;
+        try
+        {
+            var handler = (Action<RelicModel>)Delegate.CreateDelegate(
+                typeof(Action<RelicModel>), reward, "OnRelicObtained");
+            reward.Player.RelicObtained -= handler;
+        }
+        catch (Exception ex) { LogException("ReleaseCardReward", ex); }
+    }
+
+    /// <summary>Drop the room's pending + queued card rewards, releasing each.</summary>
+    private void DropCardRewards()
+    {
+        ReleaseCardReward(_pendingCardReward);
+        _pendingCardReward = null;
+        foreach (var r in _queuedCardRewards) ReleaseCardReward(r);
+        _queuedCardRewards.Clear();
+    }
+    // The room's CardRemovalRewards (ForbiddenGrimoirePower's AddExtraReward),
+    // offered after the card rewards; _removalRewardTask is the one whose
+    // deck select is open.
+    private readonly Queue<CardRemovalReward> _queuedRemovalRewards = new();
+    private Task? _removalRewardTask;
     private bool _rewardsProcessed;
     private int _goldBeforeCombat;
     private int _lastKnownHp;
@@ -324,6 +365,9 @@ public class RunSimulator
     // Pending shop card removal: the OnTryPurchaseWrapper task that finishes
     // the removal AFTER the player resolves the card selection.
     private Task? _pendingPurchaseTask;
+    // Pending shop map-entry task: an EnterMapCoord whose AfterRoomEntered
+    // (Lord's Parasol buying an Orrery) parked at a card reward. See DoMapSelect.
+    private Task? _pendingMapEntryTask;
     // Pending rest-site task (Smith): the ChooseLocalOption task that finishes
     // the upgrade AFTER the player resolves the card selection.
     private Task? _pendingRestSiteTask;
@@ -338,14 +382,101 @@ public class RunSimulator
     // / `_pendingPurchaseTask`.
     private Task? _pendingEventOptionTask;
 
-    public Dictionary<string, object?> StartRun(string character, int ascension = 0, string? seed = null, string lang = "en", bool playedSave = false, string? act1 = null) =>
-        _gameThread.Submit(() => StartRunImpl(character, ascension, seed, lang, playedSave, act1));
+    // GH #1069: the real reward screen leaves a potion reward that found a
+    // full belt claimable (`PotionReward.OnSelect` returns false on TooFull),
+    // so the player can discard a held potion and click it again, or leave
+    // it. With `interactive_potion_swap` on, every such potion parks here and
+    // DetectDecisionPoint surfaces a `potion_swap` decision before anything
+    // else -- the Rust `pending_potion_swaps` preempt. Off (the default)
+    // keeps the historical silent drop.
+    private bool _interactivePotionSwap;
+    private readonly List<PotionModel> _pendingPotionSwaps = new();
 
-    private Dictionary<string, object?> StartRunImpl(string character, int ascension, string? seed, string lang, bool playedSave = false, string? act1 = null)
+    /// <summary>
+    /// After a reward was selected, park a potion reward that bounced off a
+    /// full belt (TooFull leaves <c>ClaimedPotion</c> null; a Sozu-style
+    /// NotAllowed sets it, so that one is consumed, not parked).
+    /// </summary>
+    internal void NotePotionRewardOutcome(Reward reward)
+    {
+        if (_interactivePotionSwap && reward is PotionReward pr
+            && pr.Potion != null && pr.ClaimedPotion == null)
+        {
+            Log($"Potion reward {pr.Potion.Id.Entry} found a full belt; parking a potion_swap decision");
+            _pendingPotionSwaps.Add(pr.Potion);
+        }
+    }
+
+    private Dictionary<string, object?> PotionSwapState(Player player)
+    {
+        var incoming = _pendingPotionSwaps[0];
+        var options = new List<Dictionary<string, object?>>
+        {
+            new() { ["index"] = 0, ["discard_slot"] = null, ["label"] = "decline" },
+        };
+        var held = player.Potions?.ToList() ?? new();
+        for (int i = 0; i < held.Count; i++)
+        {
+            options.Add(new()
+            {
+                ["index"] = i + 1,
+                ["discard_slot"] = i,
+                ["label"] = $"discard {held[i]?.Id.Entry}",
+            });
+        }
+        return new Dictionary<string, object?>
+        {
+            ["type"] = "decision",
+            ["decision"] = "potion_swap",
+            ["context"] = RunContext(),
+            ["potion"] = incoming.Id.Entry,
+            ["options"] = options,
+            ["player"] = PlayerSummary(player),
+        };
+    }
+
+    /// <summary>
+    /// Resolve the front parked potion: <c>discard_slot</c> null declines it;
+    /// an index discards that held potion (<c>PotionCmd.Discard</c>, the
+    /// potion-popup discard the real game allows on the reward screen) and
+    /// procures the parked one into the freed slot.
+    /// </summary>
+    private Dictionary<string, object?> DoPotionSwap(Player player, Dictionary<string, object?>? args)
+    {
+        if (_pendingPotionSwaps.Count == 0)
+            return Error("potion_swap: no pending potion reward");
+        object? raw = null;
+        args?.TryGetValue("discard_slot", out raw);
+        if (raw == null)
+        {
+            Log($"potion_swap: declined {_pendingPotionSwaps[0].Id.Entry}");
+            _pendingPotionSwaps.RemoveAt(0);
+            return DetectDecisionPoint();
+        }
+        var slot = Convert.ToInt32(raw);
+        var held = player.Potions?.ToList() ?? new();
+        if (slot < 0 || slot >= held.Count || held[slot] == null)
+            return Error($"potion_swap: invalid discard_slot {slot}");
+        var incoming = _pendingPotionSwaps[0];
+        _pendingPotionSwaps.RemoveAt(0);
+        Log($"potion_swap: discard {held[slot]!.Id.Entry}, take {incoming.Id.Entry}");
+        PotionCmd.Discard(held[slot]!).GetAwaiter().GetResult();
+        _syncCtx.Pump();
+        PotionCmd.TryToProcure(incoming, player).GetAwaiter().GetResult();
+        _syncCtx.Pump();
+        return DetectDecisionPoint();
+    }
+
+    public Dictionary<string, object?> StartRun(string character, int ascension = 0, string? seed = null, string lang = "en", bool playedSave = false, string? act1 = null, bool interactivePotionSwap = false) =>
+        _gameThread.Submit(() => StartRunImpl(character, ascension, seed, lang, playedSave, act1, interactivePotionSwap));
+
+    private Dictionary<string, object?> StartRunImpl(string character, int ascension, string? seed, string lang, bool playedSave = false, string? act1 = null, bool interactivePotionSwap = false)
     {
         try
         {
             _loc.Lang = lang;
+            _interactivePotionSwap = interactivePotionSwap;
+            _pendingPotionSwaps.Clear();
             EnsureModelDbInitialized();
 
             var player = CreatePlayer(character, playedSave);
@@ -900,6 +1031,26 @@ public class RunSimulator
                     // (MaxUpgradeLevel 0), which also guards the
                     // CurrentUpgradeLevel setter's throw — mirroring Rust's
                     // is_upgradable() check.
+                    // GH #1021: optional enchantment suffix "ID[+1]@ENCH[:amount]"
+                    // (the Rust scenario builder's syntax, amount default 1),
+                    // applied with CardCmd.Enchant after the upgrade so
+                    // OnEnchant / ModifyCard run as in the game.
+                    string? enchId = null;
+                    int enchAmount = 1;
+                    int at = id.IndexOf('@');
+                    if (at >= 0)
+                    {
+                        var spec = id[(at + 1)..];
+                        id = id[..at];
+                        int colon = spec.IndexOf(':');
+                        if (colon >= 0)
+                        {
+                            if (!int.TryParse(spec[(colon + 1)..], out enchAmount) || enchAmount < 1)
+                                return Error($"bad enchantment amount in card id '{cEl.GetString()}'");
+                            spec = spec[..colon];
+                        }
+                        enchId = spec;
+                    }
                     int upgrades = 0;
                     int plus = id.IndexOf('+');
                     if (plus >= 0)
@@ -921,6 +1072,20 @@ public class RunSimulator
                             card.FinalizeUpgradeInternal();
                         }
                         player.Deck.AddInternal(card, silent: true);
+                        // Enchant once the card is in the deck: C# `CanEnchant`
+                        // rejects Unplayable cards only in the Deck pile.
+                        if (enchId != null)
+                        {
+                            var ench = ModelDb.GetByIdOrNull<EnchantmentModel>(
+                                new ModelId(ModelId.SlugifyCategory<EnchantmentModel>(), enchId));
+                            if (ench == null)
+                                return Error($"unknown enchantment '{enchId}' in card id '{cEl.GetString()}'");
+                            try { CardCmd.Enchant(ench.ToMutable(), card, enchAmount); }
+                            catch (InvalidOperationException refused)
+                            {
+                                return Error($"cannot enchant '{cEl.GetString()}': {refused.Message}");
+                            }
+                        }
                     }
                 }
             }
@@ -1157,7 +1322,13 @@ public class RunSimulator
                 if (!card.CanPlay(out _, out _)) continue;
 
                 var needsTarget = card.TargetType == TargetType.AnyEnemy;
-                if (needsTarget && aliveCount > 0)
+                // No living enemy (a pending-revive TestSubject keeps combat
+                // open): an AnyEnemy card has no legal target, and a null-target
+                // play is cancelled by PlayCardAction. Listing it made the act23
+                // probe pick an unplayable move (GH #1054 item 7); Rust's
+                // legal_actions already omits it (bead sts2-rs-e5bsp).
+                if (needsTarget && aliveCount == 0) continue;
+                if (needsTarget)
                 {
                     for (int t = 0; t < aliveCount; t++)
                     {
@@ -1423,6 +1594,15 @@ public class RunSimulator
                 // many reads — visible even when a value diff is masked by a
                 // constant (e.g. a fixed-HP monster). See sts2-rs parity docs.
                 ["rng_counters"] = RngCounters(),
+                // GH #1088: the state trace's current action segment, so the
+                // parity driver can ask `get_trace` for what came after.
+                ["trace_seq"] = StateTrace.Enabled ? StateTrace.Seq : null,
+                // The floor the encounter rolled its roster at (EncounterModel's
+                // Rng(Seed + TotalFloor + hash(id))). The parity harness hands it
+                // to Rust so RNG-branched rosters (SLIMES_NORMAL's small-slime
+                // order) roll natively instead of being copied from the living
+                // monsters, which miss any a setup AoE already killed (GH #1054).
+                ["total_floor"] = _runState?.TotalFloor,
                 // Defect orb belt (parity surface, bead orb-parity). `orb_slots`
                 // is the belt capacity; `orbs` is the ordered list of channelled
                 // (non-empty) orbs with their Focus-folded passive/evoke values
@@ -1518,6 +1698,37 @@ public class RunSimulator
     }
 
     /// <summary>
+    /// The named RNG streams (the <see cref="RngCounters"/> keys) by instance,
+    /// so the state trace (<see cref="StateTrace"/>) can label each draw.
+    /// </summary>
+    internal Dictionary<Rng, string> RngStreamMap()
+    {
+        var d = new Dictionary<Rng, string>(ReferenceEqualityComparer.Instance);
+        var rng = _runState?.Rng;
+        if (rng == null) return d;
+        d[rng.UpFront] = "up_front";
+        d[rng.Shuffle] = "shuffle";
+        d[rng.CombatCardGeneration] = "combat_card_generation";
+        d[rng.CombatPotionGeneration] = "combat_potion_generation";
+        d[rng.CombatCardSelection] = "combat_card_selection";
+        d[rng.CombatEnergyCosts] = "combat_energy_costs";
+        d[rng.CombatTargets] = "combat_targets";
+        d[rng.MonsterAi] = "monster_ai";
+        d[rng.Niche] = "niche";
+        d[rng.CombatOrbGeneration] = "combat_orbs";
+        var prng = (_runState?.Players != null && _runState.Players.Count > 0)
+            ? _runState.Players[0].PlayerRng
+            : null;
+        if (prng != null)
+        {
+            d[prng.Rewards] = "rewards";
+            d[prng.Shops] = "shops";
+            d[prng.Transformations] = "transformations";
+        }
+        return d;
+    }
+
+    /// <summary>
     /// The mirror's `$.rng` block: `run_seed` and `counters`, together or not at
     /// all.
     ///
@@ -1590,6 +1801,14 @@ public class RunSimulator
 
             var netService = new NetSingleplayerGameService();
             RunManager.Instance.SetUpSavedSingleplayer(_runState, save);
+            // SetUpSavedSingleplayer sets ShouldSave = true (RunManager.cs:502);
+            // a fresh oracle run uses SetUpTest(shouldSave: false). With it on,
+            // WinRun -> OnEnded runs the profile progress update
+            // (RunManager.cs:1656), whose epoch save NREs against the NGame
+            // stub inside an event option, so a reloaded run could never finish
+            // TheArchitect. The harness never writes saves: clear it.
+            AccessTools.Property(typeof(RunManager), nameof(RunManager.ShouldSave))
+                .SetValue(RunManager.Instance, false);
             LocalContext.NetId = netService.NetId;
 
             CombatManager.Instance.TurnStarted += _ => _turnStarted.Set();
@@ -1886,6 +2105,8 @@ public class RunSimulator
                     return DoUsePotion(player, args);
                 case "discard_potion":
                     return DoDiscardPotion(player, args);
+                case "potion_swap":
+                    return DoPotionSwap(player, args);
                 case "leave_room":
                     return DoLeaveRoom(player);
                 case "proceed":
@@ -1909,7 +2130,10 @@ public class RunSimulator
 
         // Reset tracking for new room
         _rewardsProcessed = false;
-        _pendingCardReward = null;
+        _restSiteOptionTaken = false;
+        DropCardRewards();
+        _queuedRemovalRewards.Clear();
+        _removalRewardTask = null;
         _eventOptionChosen = false;
         ResetEventAdvanceTracking();
         _pendingRewards = null;
@@ -1937,9 +2161,36 @@ public class RunSimulator
         WaitForActionExecutor();
         _syncCtx.Pump();
 
-        // Call EnterMapCoord directly (same as what MoveToMapCoordAction does in TestMode)
-        // This avoids the action executor which can swallow errors silently.
-        RunManager.Instance.EnterMapCoord(coord).GetAwaiter().GetResult();
+        // Shop entry can open a player decision INSIDE EnterMapCoord: Lord's
+        // Parasol buys the whole stock in AfterRoomEntered, and a bought Orrery's
+        // AfterObtained offers its card rewards (Orrery.cs:19-27). Blocking the
+        // game thread on that reward deadlocked the headless selector until its
+        // 300 s timeout skipped every Orrery card (GH #1054, Ironclad-2100 act2
+        // b0: C# deck one card short, Rust correctly parked at card_reward). Run
+        // shop entry on the thread pool like a relic purchase, and stash it in
+        // `_pendingMapEntryTask` if it parks at a selection; the selection
+        // handlers drive it on. Other rooms keep the synchronous call, so combat
+        // starts are untouched.
+        var point = _runState?.Map.GetPoint(coord);
+        if (point?.PointType == MapPointType.Shop)
+        {
+            var task = Task.Run(() => RunManager.Instance.EnterMapCoord(coord));
+            WaitUntilOptionTaskSettles(task, "shop map-entry task or selection");
+            if (!task.IsCompleted && AnySelectionPending())
+            {
+                _pendingMapEntryTask = task;
+                WaitForActionExecutor();
+                return DetectDecisionPoint();
+            }
+            WaitForTask(task, 2000, "shop map-entry task");
+            if (task.IsFaulted) task.GetAwaiter().GetResult();
+        }
+        else
+        {
+            // Call EnterMapCoord directly (same as what MoveToMapCoordAction does in TestMode)
+            // This avoids the action executor which can swallow errors silently.
+            RunManager.Instance.EnterMapCoord(coord).GetAwaiter().GetResult();
+        }
         _syncCtx.Pump();
         WaitForActionExecutor();
 
@@ -2269,6 +2520,7 @@ public class RunSimulator
             // the task the pick resolved but the deck never gained the card
             // (run-parity RP0: cs deck 10 vs rs 11 across all characters).
             DrainEventOptionTaskIfDue();
+            DrivePurchaseTask();
             return DetectDecisionPoint();
         }
 
@@ -2296,7 +2548,9 @@ public class RunSimulator
         }
         catch (Exception ex) { LogException("Add card to deck", ex); }
 
-        _pendingCardReward = null;
+        // The pick is this reward's `OnSelect` (CardReward.cs:293 unsubscribes).
+        ReleaseCardReward(_pendingCardReward);
+        _pendingCardReward = _queuedCardRewards.Count > 0 ? _queuedCardRewards.Dequeue() : null;
         // Check if more rewards pending
         return DetectDecisionPoint();
     }
@@ -2314,13 +2568,14 @@ public class RunSimulator
             // GetSelectedCardReward unblocks inside the stashed event-option
             // task whose post-await effects (e.g. follow-up grants) must run.
             DrainEventOptionTaskIfDue();
+            DrivePurchaseTask();
             return DetectDecisionPoint();
         }
         if (_pendingCardReward != null)
         {
             Log("Skipping card reward");
             _pendingCardReward.OnSkipped();
-            _pendingCardReward = null;
+            _pendingCardReward = _queuedCardRewards.Count > 0 ? _queuedCardRewards.Dequeue() : null;
         }
         return DetectDecisionPoint();
     }
@@ -2391,13 +2646,10 @@ public class RunSimulator
             // the player resolves the selection.
             var task = Task.Run(() => entry.OnTryPurchaseWrapper(merchantRoom.GetLocalInventory()));
             WaitUntilOptionTaskSettles(task, "relic-purchase task or selection");
-            // Only `HasPending` (a `select_cards` screen) is stashed here: the
-            // MerchantRoom branch of DoSelectCards is the sole driver of
-            // `_pendingPurchaseTask`. (PARITY118's relic opens exactly such a deck
-            // card-select.) A relic AfterObtained that instead opened a card-reward
-            // or a bundle would need its resolver to drive the task too — not
-            // wired, and no shipped shop relic hits it.
-            if (_cardSelector.HasPending)
+            // A `select_cards` screen (PARITY118's deck card-select) or a card
+            // reward (Orrery's 5) parks the task in `_pendingPurchaseTask`;
+            // DrivePurchaseTask carries it on after each resolution.
+            if (_cardSelector.HasPending || _cardSelector.HasPendingReward)
             {
                 _pendingPurchaseTask = task;
                 WaitForActionExecutor();
@@ -2603,9 +2855,13 @@ public class RunSimulator
                 _pendingRestSiteTask = null;
                 if (restSiteTask != null) WaitForTask(restSiteTask, 2000, "rest-site task");
                 WaitForActionExecutor();
-                Log("Card selection in rest site (SMITH), forcing to map");
-                ForceToMap();
-                return MapSelectState();
+                // RestSiteSynchronizer.ChooseOption (:202-215) keeps the other
+                // options open when a relic (MiniatureTent) declines
+                // ShouldDisableRemainingRestSiteOptions; RestSiteState only
+                // leaves for the map once none remain.
+                _restSiteOptionTaken = true;
+                Log("Card selection in rest site (SMITH) resolved");
+                return DetectDecisionPoint();
             }
 
             // Extra wait for shop card removal: the purchase task needs to finish.
@@ -2613,10 +2869,7 @@ public class RunSimulator
             // deadlock — WaitForTask drives them.
             if (_runState?.CurrentRoom is MerchantRoom)
             {
-                var purchaseTask = _pendingPurchaseTask;
-                _pendingPurchaseTask = null;
-                if (purchaseTask != null) WaitForTask(purchaseTask, 2000, "shop purchase task");
-                WaitForActionExecutor();
+                DrivePurchaseTask();
                 Log("Card selection in shop (card removal), refreshing shop state");
             }
 
@@ -2790,12 +3043,13 @@ public class RunSimulator
             // Wait for the action to complete (heal/dig), then force transition to map.
             if (!_cardSelector.HasPending)
             {
-                Log("Rest site: option chosen (non-Smith), waiting for action then forcing to map");
+                Log("Rest site: option chosen (non-Smith), waiting for action");
                 WaitForActionExecutor();
                 _syncCtx.Pump();
                 WaitForActionExecutor();
-                ForceToMap();
-                return MapSelectState();
+                // Same as the Smith path: MiniatureTent keeps the rest open.
+                _restSiteOptionTaken = true;
+                return DetectDecisionPoint();
             }
         }
         // For events — use EventSynchronizer
@@ -2976,6 +3230,11 @@ public class RunSimulator
         {
             return GameOverState(_runState.CurrentRoom?.IsVictoryRoom ?? false);
         }
+
+        // GH #1069: a parked full-belt potion reward preempts every other
+        // decision, like Rust's `pending_potion_swaps`.
+        if (_pendingPotionSwaps.Count > 0)
+            return PotionSwapState(player);
 
         // Check if there's a pending bundle selection (Scroll Boxes: pick 1 of N packs)
         if (_pendingBundles != null && _pendingBundleTcs != null && !_pendingBundleTcs.Task.IsCompleted)
@@ -3479,7 +3738,18 @@ public class RunSimulator
             // Relic.counter too. Rebuilt unspent, a co-op replay drew the 3
             // again on the next hit.
             ["CENTENNIAL_PUZZLE"] = LatchField("CentennialPuzzle", "_usedThisCombat"),
+            // First debuffing card of a combat doubles its debuffs; spent, it
+            // is the engine's UNSETTLING_LAMP_FINISHED (RelicLatchSpent).
+            // Rebuilt unspent, a co-op replay doubled a later Bash+ (GH #989).
+            ["UNSETTLING_LAMP"] = LatchField("UnsettlingLamp", "_isFinishedTriggering"),
         };
+
+    /// <summary>The counter a spent latch reads as, where the engine's is not
+    /// 1: UnsettlingLamp's 1 is "a card captured, mid-play", its 2 "finished".</summary>
+    private static readonly Dictionary<string, int> RelicLatchSpent = new()
+    {
+        ["UNSETTLING_LAMP"] = 2,
+    };
 
     private static System.Reflection.FieldInfo? LatchField(string typeName, string fieldName)
     {
@@ -3516,7 +3786,9 @@ public class RunSimulator
             // exactly the state a reconstruction must not lose.
             if (RelicLatchFields.TryGetValue(r.Id.Entry, out var f) && f != null)
             {
-                return (f.GetValue(r) is bool b && b) ? 1 : 0;
+                return (f.GetValue(r) is bool b && b)
+                    ? RelicLatchSpent.GetValueOrDefault(r.Id.Entry, 1)
+                    : 0;
             }
             return null;
         }
@@ -3532,6 +3804,18 @@ public class RunSimulator
             var d = new Dictionary<string, object?>();
             foreach (var dv in vars)
                 d[dv.Name] = (int)dv.BaseValue;
+            // Skittish blocks once a turn and keeps whether it did in private
+            // data, behind a public getter; a rebuilt board let it block a
+            // second time (GH #989). Not a DynamicVar, but carried as one.
+            if (pw.GetType().Name == "SkittishPower"
+                && pw.GetType().GetProperty("HasGainedBlockThisTurn")?.GetValue(pw) is bool gained)
+                d["HasGainedBlockThisTurn"] = gained ? 1 : 0;
+            // Surrounded's Facing (Right 0, Left 1) is a public getter, not a
+            // DynamicVar: which crab arm is behind a player. Ours can be read
+            // off the arms' intents; a teammate's cannot (GH #989).
+            if (pw.GetType().Name == "SurroundedPower"
+                && pw.GetType().GetProperty("Facing")?.GetValue(pw) is System.Enum facing)
+                d["Facing"] = Convert.ToInt32(facing, System.Globalization.CultureInfo.InvariantCulture);
             return d.Count > 0 ? d : null;
         }
         catch { return null; }
@@ -3841,9 +4125,23 @@ public class RunSimulator
         }
         if (starCost > 0)
         {
-            cardInfo["star_cost"] = starCost;
-            // BUG-007: Override can_play for star-cost cards when player lacks stars
-            if (includePlayability && pcs != null && pcs.Stars < starCost)
+            // The CURRENT star cost (`CurrentStarCost`), not the printed one,
+            // plus what it becomes once this turn's temporary costs expire
+            // (`GetStarCostThisCombat()`). `SetToFreeThisTurn` (Splash,
+            // Discovery, Infernal Blade, the generative potions) zeroes the
+            // star cost with the energy cost; shipping `BaseStarCost` here told
+            // the consumer a free Splash'd Falling Star still cost 2 stars, so
+            // the rebuild listed it unplayable. Same fields, same meaning, as
+            // the mod's `SimStateExtractor.SafeStarCost` /
+            // `SafePersistentStarCost` (PROTOCOL.md "Card object").
+            cardInfo["star_cost"] = Math.Max(0, c.CurrentStarCost);
+            cardInfo["persistent_star_cost"] = Math.Max(0, c.GetStarCostThisCombat());
+            // BUG-007: Override can_play for star-cost cards when player lacks
+            // stars. Judged on the cost the play would actually spend
+            // (`GetStarCostWithModifiers`, the number `SpendResources` uses),
+            // so a card made free -- or zeroed by VoidForm / Brilliant Scarf --
+            // is not vetoed over a star price it no longer has.
+            if (includePlayability && pcs != null && pcs.Stars < Math.Max(0, c.GetStarCostWithModifiers()))
                 cardInfo["can_play"] = false;
         }
         var kws = c.Keywords?.Where(k => k != CardKeyword.None).Select(k => k.ToString()).ToList();
@@ -4237,7 +4535,9 @@ public class RunSimulator
             // reward surfaces / drains cleanly on the next decision detect.
             _rewardsProcessed = false;
             _pendingRewards = null;
-            _pendingCardReward = null;
+            DropCardRewards();
+            _queuedRemovalRewards.Clear();
+            _removalRewardTask = null;
             // Recursion guard: only re-detect if the resume actually advanced off
             // this finished combat room. A real event-spawned combat transitions
             // CurrentRoom to its parent EventRoom here; but a combat that merely
@@ -4268,6 +4568,14 @@ public class RunSimulator
                 rewardsSet.GenerateWithoutOffering().GetAwaiter().GetResult();
                 var rewards = rewardsSet.Rewards;
                 _syncCtx.Pump();
+#if GAME_V0111
+                // CombatRoom.OfferRoomEndRewards fires this hook between
+                // generating and offering each set (CombatRoom.cs:274). Skipping
+                // it left LastingCandy's CombatRewardsSeen at 0, so its extra
+                // Power card never joined a card reward (GH #1054 item 2).
+                MegaCrit.Sts2.Core.Hooks.Hook.BeforeCombatRewardOffered(rewardsSet, _runState!, combatRoom).GetAwaiter().GetResult();
+                _syncCtx.Pump();
+#endif
 
                 // Auto-collect gold and potions, but present card choices to agent
                 var cardRewards = new List<CardReward>();
@@ -4282,19 +4590,35 @@ public class RunSimulator
                         || reward is MegaCrit.Sts2.Core.Rewards.PotionReward
                         || reward is MegaCrit.Sts2.Core.Rewards.SpecialCardReward)
                     {
-                        try { reward.SelectUnsynchronized().GetAwaiter().GetResult(); _syncCtx.Pump(); }  // v0.107.1: OnSelectWrapper->SelectUnsynchronized
+                        try { reward.SelectUnsynchronized().GetAwaiter().GetResult(); _syncCtx.Pump(); NotePotionRewardOutcome(reward); }  // v0.107.1: OnSelectWrapper->SelectUnsynchronized
                         catch (Exception ex) { LogException("Auto-collect reward", ex); }
                     }
                     else if (reward is CardReward cr)
                     {
                         cardRewards.Add(cr);
                     }
+                    else if (reward is CardRemovalReward rr)
+                    {
+                        _queuedRemovalRewards.Enqueue(rr);
+                    }
                 }
 
                 if (cardRewards.Count > 0)
                 {
+                    // Every CardReward in the set is offered, in set order:
+                    // the room's own, then its ExtraRewards (TheHunt.cs:47
+                    // `AddExtraReward(CardReward)`), then hook additions. Only
+                    // the first used to be surfaced, so a second reward was
+                    // populated (its Rewards-stream draws taken) but never
+                    // offered (run_parity Silent PARITY193 at v0.111.0).
+                    DropCardRewards();
                     _pendingCardReward = cardRewards[0];
+                    foreach (var extra in cardRewards.Skip(1)) _queuedCardRewards.Enqueue(extra);
                     _pendingRewards = rewards;
+                    // GH #1069: a potion that bounced off a full belt is
+                    // decided first; the card reward re-surfaces afterwards
+                    // through the `_pendingCardReward` check.
+                    if (_pendingPotionSwaps.Count > 0) return PotionSwapState(player);
                     return CardRewardState(player, combatRoom);
                 }
 
@@ -4304,9 +4628,11 @@ public class RunSimulator
         }
 
         // No more pending rewards — proceed
-        _pendingCardReward = null;
+        DropCardRewards();
         _pendingRewards = null;
         _rewardsProcessed = true;
+
+        if (OfferNextCardRemovalReward()) return DetectDecisionPoint();
 
         // Boss → next act
         if (combatRoom.RoomType == RoomType.Boss)
@@ -4349,6 +4675,31 @@ public class RunSimulator
         // Normal → go to map
         ForceToMap();
         return MapSelectState();
+    }
+
+    /// <summary>
+    /// Selects the room's queued CardRemovalRewards one at a time. Each opens a
+    /// deck select (RewardSynchronizer.DoUnsyncedCardRemoval); returns true
+    /// while one is waiting on the client, false once all are taken. These
+    /// rewards used to fall through the reward loop unselected, so Forbidden
+    /// Grimoire's removal never happened (GH #1054 item 4).
+    /// </summary>
+    private bool OfferNextCardRemovalReward()
+    {
+        while (true)
+        {
+            if (_removalRewardTask != null)
+            {
+                _syncCtx.Pump();
+                if (_cardSelector.HasPending) return true;
+                try { WaitForTask(_removalRewardTask, 2000, "card removal reward"); }
+                catch (Exception ex) { LogException("Card removal reward", ex); }
+                WaitForActionExecutor();
+                _removalRewardTask = null;
+            }
+            if (_queuedRemovalRewards.Count == 0) return false;
+            _removalRewardTask = _queuedRemovalRewards.Dequeue().SelectUnsynchronized();
+        }
     }
 
     private Dictionary<string, object?> CardRewardState(Player player, CombatRoom? combatRoom)
@@ -4674,6 +5025,9 @@ public class RunSimulator
             ["decision"] = "rest_site",
             ["context"] = RunContext(),
             ["options"] = optionList,
+            // Options still open after one was taken (MiniatureTent): the
+            // player may leave instead (`leave_room`).
+            ["can_leave"] = _restSiteOptionTaken,
             ["player"] = PlayerSummary(player),
         };
     }
@@ -4988,6 +5342,36 @@ public class RunSimulator
     /// The cap below is a deadlock guard only (a genuinely hung handler), not the
     /// expected exit: in the common case we return the instant the task settles.
     /// </summary>
+    /// <summary>
+    /// Carry the stashed shop purchase task on after the client resolved one of
+    /// its selections: re-stash it if it parks at a further selection (Orrery's
+    /// next card reward), otherwise let it finish. The event-option analogue is
+    /// <see cref="DriveEventOptionTask"/>.
+    /// </summary>
+    private void DrivePurchaseTask()
+    {
+        DriveStashedTask(ref _pendingPurchaseTask, "shop purchase task");
+        DriveStashedTask(ref _pendingMapEntryTask, "shop map-entry task");
+    }
+
+    private void DriveStashedTask(ref Task? slot, string what)
+    {
+        var task = slot;
+        slot = null;
+        if (task == null) return;
+        WaitUntilOptionTaskSettles(task, $"{what} (until next selection or completion)");
+        if (!task.IsCompleted && AnySelectionPending())
+        {
+            slot = task;
+            WaitForActionExecutor();
+            return;
+        }
+        if (task.IsFaulted) { try { task.GetAwaiter().GetResult(); } catch (Exception ex) { LogException($"{what} fault", ex); } }
+        WaitForActionExecutor();
+        _syncCtx.Pump();
+        WaitForActionExecutor();
+    }
+
     private void WaitUntilOptionTaskSettles(Task task, string reason)
     {
         const int settleCapMs = 30000;
@@ -5444,6 +5828,11 @@ public class RunSimulator
         // null-deref) — they abort an event option's `Chosen()` task before its state
         // effect runs, silently dropping it from the recorded oracle trajectory.
         PatchEventVfxAudio();
+
+        // Gameplay paths the real game (TestMode off) runs differently: relic
+        // upon-pickup rewards with a TestMode-only fixed list, and the shop
+        // potion price jitter.
+        PatchTestModeRelicRewards();
 
         // Same failure mode, different singleton: event legs that deref
         // `NGame.Instance` (screen shake/rumble) unguarded. DenseVegetation loses its
@@ -6265,6 +6654,83 @@ public class RunSimulator
     // event is force-finished, so the effect is silently dropped from the
     // recorded oracle trajectory (the run-parity sweep then flags Rust — which
     // is correct — as the diverging side). No-op the offending VFX/audio.
+    // `TestMode.IsOn = true` (EnsureModelDbInitialized) is what keeps the headless
+    // free of Godot, but two relics read it to build their upon-pickup rewards from a
+    // FIXED test list instead of the real random ones:
+    //   Cauldron.GenerateRewards    (Cauldron.cs:40)    -> Flex/Weak/Vulnerable/
+    //                                                      Strength/Dexterity potions
+    //   CallingBell.GenerateRewards (CallingBell.cs:39) -> Anchor/GremlinHorn/
+    //                                                      MummifiedHand
+    // The live game takes the random branch (5 `PotionReward(Owner)`, a Common /
+    // Uncommon / Rare `RelicReward`), so the oracle disagreed with Rust there for no
+    // game reason (act23 probe Silent:1004 shop/state/potions,
+    // Ironclad:1001 / Regent:1007 / Necrobinder:1001 map/state/relics at v0.111.0).
+    // Turn TestMode off for just those two calls; the finalizer restores it. The
+    // rewards only roll later, in `Populate`, which has no TestMode branch beyond
+    // the icon (`PotionReward.cs:65`).
+    private static void PatchTestModeRelicRewards()
+    {
+        try
+        {
+            var harmony = new Harmony("sts2headless.testmoderelicrewards");
+            var pre = typeof(YieldPatches).GetMethod(nameof(YieldPatches.TestModeOffPrefix),
+                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public);
+            var fin = typeof(YieldPatches).GetMethod(nameof(YieldPatches.TestModeRestoreFinalizer),
+                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public);
+            foreach (var t in new[]
+                     {
+                         typeof(MegaCrit.Sts2.Core.Models.Relics.Cauldron),
+                         typeof(MegaCrit.Sts2.Core.Models.Relics.CallingBell),
+                     })
+            {
+                var m = t.GetMethod("GenerateRewards",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                if (m == null)
+                {
+                    Console.Error.WriteLine($"[WARN] {t.Name}.GenerateRewards not found; TestMode reward list stays");
+                    continue;
+                }
+                harmony.Patch(m, prefix: new HarmonyMethod(pre), finalizer: new HarmonyMethod(fin));
+            }
+            Console.Error.WriteLine("[INFO] Patched Cauldron/CallingBell.GenerateRewards (TestMode off)");
+
+            // Shop potion prices: `MerchantPotionEntry.CalcCost` rolls
+            // `Shops.NextFloat(0.95f, 1.05f)` only when TestMode is off, which is
+            // how the real game runs. Under TestMode the price is flat AND the
+            // three Shops reads are skipped, so every later shop's cards, relics
+            // and prices differ from the real game. CalcCost is synchronous, so
+            // flipping TestMode for its duration touches nothing else.
+            var calcCost = typeof(MerchantPotionEntry).GetMethod("CalcCost",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
+            if (calcCost == null)
+            {
+                Console.Error.WriteLine("[WARN] MerchantPotionEntry.CalcCost not found; potion prices stay flat");
+            }
+            else
+            {
+                harmony.Patch(calcCost, prefix: new HarmonyMethod(pre), finalizer: new HarmonyMethod(fin));
+                Console.Error.WriteLine("[INFO] Patched MerchantPotionEntry.CalcCost (TestMode off)");
+            }
+
+            // ActionQueueSet.PopAction: tolerate a FINISHED action that combat end
+            // already removed (see YieldPatches.PopFinishedOrphanPrefix).
+            var pop = AccessTools.Method(typeof(ActionQueueSet), "PopAction");
+            if (pop == null)
+            {
+                Console.Error.WriteLine("[WARN] ActionQueueSet.PopAction not found; finished-orphan pops still throw");
+            }
+            else
+            {
+                harmony.Patch(pop, prefix: new HarmonyMethod(typeof(YieldPatches), nameof(YieldPatches.PopFinishedOrphanPrefix)));
+                Console.Error.WriteLine("[INFO] Patched ActionQueueSet.PopAction (finished-orphan no-op)");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[WARN] Failed to patch TestMode relic rewards: {ex.Message}");
+        }
+    }
+
     private static void PatchEventVfxAudio()
     {
         // NDebugAudioManager.Instance (=> NGame.Instance?.DebugAudio) is null in
@@ -7078,6 +7544,7 @@ public class RunSimulator
                     // a real throw, in the code path installed to stop a throw.
                     if (sync.IsRewardsSetCompleted(set)) break;
                     await sync.SelectLocalReward(reward);
+                    LocPatches._bundleSimRef?.NotePotionRewardOutcome(reward);
                 }
 
                 if (sync.IsRewardsSetCompleted(set)) return;
@@ -7295,6 +7762,20 @@ public class RunSimulator
         /// agent could decline a card the game requires it to take.
         /// </summary>
         public static bool? Cancelable;
+        /// <summary>
+        /// The entry point's `PlayerChoiceContext` + chooser. Without a
+        /// Selector the game brackets every context-taking selection with
+        /// `SignalPlayerChoiceBegun` / `SignalPlayerChoiceEnded`
+        /// (CardSelectCmd.cs:398-402, :436-439). With one (TestMode) it skips
+        /// both, so a hook listener that opens a choice ran to completion
+        /// before the next listener instead of pausing into a queued hook
+        /// action (HookPlayerChoiceContext.SignalPlayerChoiceBegun) and
+        /// letting the remaining listeners run first. The selector re-adds
+        /// the bracket (HeadlessCardSelector.GetSelectedCards).
+        /// </summary>
+        public static PlayerChoiceContext? ChoiceContext;
+        public static Player? ChoicePlayer;
+        public static PlayerChoiceOptions ChoiceOptions;
 
         public static (string? source, string? promptKey, string? sourceModel, bool? cancelable)
             Consume()
@@ -7305,6 +7786,28 @@ public class RunSimulator
             SourceModel = null;
             Cancelable = null;
             return v;
+        }
+
+        public static (PlayerChoiceContext?,
+            Player?,
+            PlayerChoiceOptions) ConsumeChoice()
+        {
+            var v = (ChoiceContext, ChoicePlayer, ChoiceOptions);
+            ChoiceContext = null;
+            ChoicePlayer = null;
+            ChoiceOptions = default;
+            return v;
+        }
+
+        private static void CaptureChoice(object?[]? args, System.Reflection.MethodBase m)
+        {
+            ChoiceContext = args?.OfType<PlayerChoiceContext>().FirstOrDefault();
+            ChoicePlayer = args?.OfType<Player>().FirstOrDefault();
+            // FromHand / FromHandForDiscard signal CancelPlayCardActions
+            // (CardSelectCmd.cs:837, :928); every other entry point None.
+            ChoiceOptions = m.Name is "FromHand" or "FromHandForDiscard"
+                ? PlayerChoiceOptions.CancelPlayCardActions
+                : PlayerChoiceOptions.None;
         }
 
         /// <summary>
@@ -7346,6 +7849,7 @@ public class RunSimulator
                 PromptKey = prefs.Prompt.LocEntryKey;
                 SourceModel = ModelEntryFrom(__args);
                 Cancelable = prefs.Cancelable;
+                CaptureChoice(__args, __originalMethod);
             }
             catch { /* capture-only: never break the game's selection flow */ }
         }
@@ -7365,6 +7869,7 @@ public class RunSimulator
                 Cancelable = __originalMethod.Name == "FromChooseACardScreen"
                     ? (__args?.OfType<bool>().Cast<bool?>().FirstOrDefault() ?? false)
                     : false;
+                CaptureChoice(__args, __originalMethod);
             }
             catch { }
         }
@@ -7422,6 +7927,7 @@ public class RunSimulator
             // would carry a stale prompt_key.
             (string? ctxSource, string? ctxPromptKey, string? ctxSourceModel, bool? ctxCancelable) =
                 HeadlessCardSelectContext.Consume();
+            var (choiceCtx, choicePlayer, choiceOpts) = HeadlessCardSelectContext.ConsumeChoice();
             var optList = options.ToList();
             // Pile tracer (STS2_TRACE_PILES): emit the option list IN PRESENTATION
             // ORDER — for a Draw-pile select `CardSelectCmd.FromCombatPile` has
@@ -7447,12 +7953,50 @@ public class RunSimulator
             // pick the option-0 prefix [0 .. max(minSelect,1)) — identical to
             // `_drain_csharp_choices`'s `range(max(min_select, 1))` — so a
             // chained auto-play's follow-on choice resolves without stranding.
-            if (AutoResolveInline)
+            // A hook listener's choice (HookPlayerChoiceContext: GamblingChip's
+            // turn-start mulligan after ChoicesParadox's pick) is exempt: the
+            // game pauses it into its own queued hook action, which the pump
+            // starts after the resumed play, so it surfaces as a normal pending
+            // selection instead of being auto-picked.
+            bool hookChoice = choiceCtx is HookPlayerChoiceContext
+                && choicePlayer != null;
+            if (AutoResolveInline && !hookChoice)
             {
                 int count = Math.Min(Math.Max(minSelect, 1), optList.Count);
                 return Task.FromResult<IEnumerable<CardModel>>(optList.Take(count).ToList());
             }
 
+            if (choiceCtx != null && choicePlayer != null)
+                return SignalledSelection(choiceCtx, choicePlayer, choiceOpts, optList, minSelect, maxSelect,
+                    ctxPromptKey, ctxSource, ctxSourceModel, ctxCancelable);
+            return OpenPending(optList, minSelect, maxSelect, ctxPromptKey, ctxSource, ctxSourceModel, ctxCancelable);
+        }
+
+        // The real game's bracket around a context-taking selection
+        // (CardSelectCmd.cs:398-402, :436-439). The selection opens only once
+        // `SignalPlayerChoiceBegun` returns, i.e. once the paused hook action
+        // starts executing, exactly when the game would show its screen.
+        private async Task<IEnumerable<CardModel>> SignalledSelection(
+            PlayerChoiceContext ctx,
+            Player player,
+            PlayerChoiceOptions opts,
+            List<CardModel> optList, int minSelect, int maxSelect,
+            string? promptKey, string? source, string? sourceModel, bool? cancelable)
+        {
+#if GAME_V0111
+            await ctx.SignalPlayerChoiceBegun(player, opts);
+#else
+            await ctx.SignalPlayerChoiceBegun(opts);
+#endif
+            var result = await OpenPending(optList, minSelect, maxSelect, promptKey, source, sourceModel, cancelable);
+            await ctx.SignalPlayerChoiceEnded();
+            return result;
+        }
+
+        private Task<IEnumerable<CardModel>> OpenPending(
+            List<CardModel> optList, int minSelect, int maxSelect,
+            string? ctxPromptKey, string? ctxSource, string? ctxSourceModel, bool? ctxCancelable)
+        {
             // Store pending selection and wait
             PendingOptions = optList;
             PendingMinSelect = minSelect;
@@ -7469,11 +8013,18 @@ public class RunSimulator
             return _pendingTcs.Task;
         }
 
+        // Clear the pending state BEFORE completing the TCS: `TrySetResult` runs
+        // the awaiting continuation inline, and that continuation can open the
+        // NEXT selection (LordsParasol: Kifuda's enchant select resolves, the
+        // walk buys the potions, then opens its forced card removal,
+        // LordsParasol.cs:106-111). Clearing afterwards wiped that new pending
+        // selection and stranded the removal, which the real game shows.
         public void ResolvePending(IEnumerable<CardModel> selected)
         {
-            _pendingTcs?.TrySetResult(selected);
+            var tcs = _pendingTcs;
             PendingOptions = null;
             _pendingTcs = null;
+            tcs?.TrySetResult(selected);
         }
 
         public void ResolvePendingByIndices(int[] indices)
@@ -7488,9 +8039,11 @@ public class RunSimulator
 
         public void CancelPending()
         {
-            _pendingTcs?.TrySetResult(Array.Empty<CardModel>());
+            // Same ordering as ResolvePending.
+            var tcs = _pendingTcs;
             PendingOptions = null;
             _pendingTcs = null;
+            tcs?.TrySetResult(Array.Empty<CardModel>());
         }
 
         // Pending card reward from events (GetSelectedCardReward blocks until resolved)
@@ -7512,16 +8065,22 @@ public class RunSimulator
             if (options.Count == 0) return default;  // skip (card=null, alternative=null)
 
             // Store pending and block until main loop resolves
-            PendingRewardCards = options.ToList();
+            var wait = new ManualResetEventSlim(false);
             _rewardChoice = -1;
-            _rewardWait = new ManualResetEventSlim(false);
+            PendingRewardCards = options.ToList();
+            _rewardWait = wait;
 
             Console.Error.WriteLine($"[SIM] Card reward pending: {options.Count} cards (blocking)");
-            _rewardWait.Wait(TimeSpan.FromSeconds(300)); // Wait up to 5 min
+            wait.Wait(TimeSpan.FromSeconds(300)); // Wait up to 5 min
 
             var choice = _rewardChoice;
-            PendingRewardCards = null;
-            _rewardWait = null;
+            // Resolve/SkipReward already cleared the pending state; only the
+            // timeout path still holds it.
+            if (ReferenceEquals(_rewardWait, wait))
+            {
+                PendingRewardCards = null;
+                _rewardWait = null;
+            }
 
             if (choice >= 0 && choice < options.Count)
                 return new MegaCrit.Sts2.Core.TestSupport.CardRewardSelection { card = options[choice].Card };
@@ -7530,21 +8089,74 @@ public class RunSimulator
 
         public bool HasPendingReward => PendingRewardCards != null && _rewardWait != null;
 
-        public void ResolveReward(int index)
-        {
-            _rewardChoice = index;
-            _rewardWait?.Set();
-        }
+        public void ResolveReward(int index) => Release(index);
 
-        public void SkipReward()
+        public void SkipReward() => Release(-1);
+
+        // Clears the pending state on the resolving (main) thread before waking
+        // the blocked one. It used to be cleared by the woken thread, so a
+        // re-detect right after the pick could still see the resolved reward as
+        // pending — or, once cleared, miss the next one the same task was about
+        // to open (Orrery's 5 rewards, GH #1054 item 3).
+        private void Release(int choice)
         {
-            _rewardChoice = -1;
-            _rewardWait?.Set();
+            var wait = _rewardWait;
+            _rewardChoice = choice;
+            PendingRewardCards = null;
+            _rewardWait = null;
+            wait?.Set();
         }
     }
 
     internal static class YieldPatches
     {
+        /// <summary>Turns TestMode off for one call; the previous value goes to
+        /// `__state` for <see cref="TestModeRestoreFinalizer"/>.</summary>
+        public static void TestModeOffPrefix(out bool __state)
+        {
+            __state = TestMode.IsOn;
+            TestMode.IsOn = false;
+        }
+
+        public static Exception? TestModeRestoreFinalizer(Exception? __exception, bool __state)
+        {
+            TestMode.IsOn = __state;
+            return __exception;
+        }
+
+        /// <summary>
+        /// Skip <c>ActionQueueSet.PopAction</c> for an action that already FINISHED and
+        /// is in no queue any more. <see cref="GameSyncContext"/> runs a posted
+        /// continuation inline, so when a paused hook action (Stampede auto-playing
+        /// Headbutt at turn end, which opens a pick) completes, the awaiter of its
+        /// <c>CompletionTask</c> runs inside <c>GameAction.Execute</c>'s
+        /// <c>_completionSource.TrySetResult()</c>, BEFORE <c>AfterFinished</c> pops
+        /// it. If that play killed the last enemy, combat end's
+        /// <c>ActionQueueSet.CombatEnded</c> removes the now non-executing action
+        /// first, and the pop throws "Tried to pop action ... didn't find it in any
+        /// queue". The fault tears down <c>ActionExecutor.ExecuteActions</c> and the
+        /// NEXT combat ends as a phantom win with live enemies (GH #1054,
+        /// Ironclad-2153 act2 b0). Godot queues every Post, so in the real game the
+        /// pop runs first and CombatEnded finds nothing; both orders leave the same
+        /// queues, so skipping the orphan pop matches the real game.
+        /// </summary>
+        public static bool PopFinishedOrphanPrefix(ActionQueueSet __instance, GameAction action)
+        {
+            // CombatEnded Cancel()s the orphan after it finished, so it reads Canceled
+            // here (Cancel only flips State; its CompletionTask already succeeded).
+            if (action.State is not (GameActionState.Finished or GameActionState.Canceled)) return true;
+            if (AccessTools.Field(typeof(ActionQueueSet), "_actionQueues")?.GetValue(__instance)
+                is not System.Collections.IEnumerable queues) return true;
+            foreach (var q in queues)
+            {
+                if (AccessTools.Field(q.GetType(), "actions")?.GetValue(q) is System.Collections.IList acts
+                    && acts.Contains(action))
+                    return true;
+            }
+            Console.Error.WriteLine($"[SIM] PopAction: {action} already left its queue (combat end); skipping");
+            return false;
+        }
+
         /// <summary>
         /// Replaces Crusher/Rocket's private `Background` getter: returns an
         /// uninitialized NKaiserCrabBossBackground so the callers' anim
@@ -7881,7 +8493,13 @@ public class RunSimulator
             {
                 var card = (MegaCrit.Sts2.Core.Models.CardModel)cardObj;
                 int num = card.ResolveEnergyXValue();
-                if (num > 0 && card.CombatState != null)
+                // Only the VFX/SFX sit behind `num > 0` in Whirlwind.cs (both
+                // builds); the DamageCmd runs even at X=0, and AttackCommand
+                // fires BeforeAttack/AfterAttack around its 0-hit loop, so Vigor
+                // latches and is spent (VigorPower.cs:30-54, :80-85). Gating the
+                // attack on `num > 0` kept the Vigor in C# (GH #1054,
+                // Ironclad-2024 act3 b0 / 4143 b3: player.powers cs=+1).
+                if (card.CombatState != null)
                 {
                     await MegaCrit.Sts2.Core.Commands.DamageCmd
                         .Attack(card.DynamicVars.Damage.BaseValue)
@@ -8011,7 +8629,7 @@ public class RunSimulator
         public static bool RollingBoulderAfterPlayerTurnStartPrefix(
             object __instance,
             MegaCrit.Sts2.Core.GameActions.Multiplayer.PlayerChoiceContext choiceContext,
-            MegaCrit.Sts2.Core.Entities.Players.Player player,
+            Player player,
             ref Task __result)
         {
             __result = RollingBoulderAfterPlayerTurnStartSafe(__instance, choiceContext, player);
@@ -8060,7 +8678,7 @@ public class RunSimulator
         public static bool EntropyAfterPlayerTurnStartPrefix(
             object __instance,
             MegaCrit.Sts2.Core.GameActions.Multiplayer.PlayerChoiceContext choiceContext,
-            MegaCrit.Sts2.Core.Entities.Players.Player player,
+            Player player,
             ref Task __result)
         {
             __result = EntropyAfterPlayerTurnStartSafe(__instance, player);
@@ -8437,7 +9055,7 @@ public class RunSimulator
         /// Intercept bundle selection — store bundles and wait for player to pick a pack index.
         /// </summary>
         public static bool BundleScreenPrefix(
-            MegaCrit.Sts2.Core.Entities.Players.Player player,
+            Player player,
             IReadOnlyList<IReadOnlyList<CardModel>> bundles,
             ref Task<IEnumerable<CardModel>> __result)
         {

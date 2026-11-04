@@ -20,7 +20,6 @@ use super::prelude::*;
 /// `combat` while C# entered `card_select`). Same recurring
 /// pick-first/inline-resolve class as Begone / Guards / Transfigure / Seance /
 /// Charge.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L658
 // C# source: ../sts2-wiki/decompiled/v0.103.2/MegaCrit.Sts2.Core.Models.Cards/DecisionsDecisions.cs
 pub(crate) fn play_decisions_decisions(
     state: &mut CombatState,
@@ -31,61 +30,18 @@ pub(crate) fn play_decisions_decisions(
     let draws = if current_card_upgraded(state) { 5 } else { 3 };
     let _ = sts2_core::cards::draw_via_state(state, draws);
 
-    // Collect playable Skill candidates from hand, in hand order (C# `FromHand`
-    // passes the hand with NO OrderBy). Filter mirrors C#:
-    // `c.Type == Skill && !c.Keywords.Contains(Unplayable)`. Unplayability is
-    // resolved via the engine-side `card_unplayable` registry (same source the
-    // Catastrophe / HiddenGem filters use).
-    let candidates: Vec<sts2_core::CardUid> = state
-        .player
-        .hand
-        .iter()
-        .copied()
-        .filter(|uid| {
-            let idx = uid.0.get() as usize - 1;
-            let card = &state.cards[idx];
-            card.card_type == CardType::Skill
-                && !sts2_core::card_effects::card_unplayable(card.card_id)
-        })
-        .collect();
-
-    match candidates.as_slice() {
-        // Count == 0 → FromHand's FirstOrDefault() is null → no replay.
-        [] => {}
-        // Count <= MinSelect(1) → FromHand auto-applies the lone Skill with NO
-        // prompt; auto-play it 3 times inline (RepeatVar(3), not upgrade-scaled).
-        &[uid] => {
-            for _ in 0..3 {
-                // Re-locate the card each repeat (hand on the 1st play, discard
-                // on the 2nd/3rd for non-Exhaust Skills) — see
-                // `auto_play_specific_card_from_discard`.
-                sts2_core::combat_loop::auto_play_specific_card_from_discard(state, uid, false);
-            }
-        }
-        // 2+ candidate Skills → surface a single-pick choice in hand order. The
-        // resolver auto-plays the chosen Skill 3 times.
-        _ => {
-            let options: Vec<sts2_core::ChoiceOption> = candidates
-                .iter()
-                .map(|&uid| {
-                    let idx = uid.0.get() as usize - 1;
-                    sts2_core::ChoiceOption {
-                        card_id: state.cards[idx].card_id,
-                        upgraded: state.cards[idx].upgraded,
-                        card_uid: Some(uid),
-                        source_pile: Some(sts2_core::cards::PileKind::Hand),
-                    }
-                })
-                .collect();
-            state.request_card_choice(
-                sts2_core::ChoiceKind::AutoPlaySkillFromHand,
-                options,
-                1,
-                1,
-                false,
-            );
-        }
+    // C# awaits the whole `CardPileCmd.Draw` — including a Stratagem
+    // reshuffle grid-select and the rest of the draw — before
+    // `CardSelectCmd.FromHand` (DecisionsDecisions.cs:29-34). A suspended
+    // Rust draw defers the Skill pick to the draw's resume; picking now ran
+    // the repeats against the pre-draw hand/draw piles (Regent full seed 2902,
+    // v0.111.0: Anointed pulled the reshuffled Rares the select had not yet
+    // claimed).
+    if let Some(pdr) = state.pending_draw_resume.as_mut() {
+        pdr.then_auto_play_skill_from_hand = true;
+        return EffectResult::Resolved;
     }
+    state.open_auto_play_skill_from_hand();
     EffectResult::Resolved
 }
 

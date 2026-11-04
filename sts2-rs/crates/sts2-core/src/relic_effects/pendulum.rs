@@ -55,7 +55,9 @@ const PENDULUM_TURNS: i32 = 3;
 /// `TurnsSeen = (TurnsSeen + 1) % Turns` (:76-86) just before. C# computes
 /// the draw AFTER `BeforeHandDraw`; Rust folds `modify_hand_draw` just before
 /// the relic `before_hand_draw` walk, so read the value this turn's tick is
-/// about to store. Nothing between the two touches the counter.
+/// about to store. Nothing between the two touches the counter. The one read
+/// that comes AFTER the walk (a turn setup that paused in `BeforeHandDraw`)
+/// goes through [`read_hand_draw_after_tick`].
 pub(crate) fn on_modify_hand_draw_pendulum(state: &CombatState, current_draw: i32) -> i32 {
     if state.game_version < crate::GameVersion::V0_111_0 {
         return current_draw;
@@ -89,6 +91,37 @@ pub(crate) fn on_before_hand_draw_pendulum(state: &mut CombatState) -> EffectRes
     };
     relic.counter = relic.counter.saturating_add(1) % PENDULUM_TURNS;
     EffectResult::Resolved
+}
+
+/// Run a turn-start `modify_hand_draw` fold that happens AFTER this turn's
+/// relic `before_hand_draw` walk, i.e. after [`on_before_hand_draw_pendulum`]
+/// has already stored the tick. [`on_modify_hand_draw_pendulum`] looks one
+/// tick ahead, so for the duration of `read` the counter is rewound by one
+/// tick; the look-ahead then reads exactly the stored value, as C#'s
+/// `TurnsSeen == 0` does (decomp v0.111.0 Pendulum.cs:91-102). Without this a
+/// setup paused in `BeforeHandDraw` (Toolbox, Foregone Conclusion) counted
+/// the tick twice: entry counter 1 ticked to 2, then `(2 + 1) % 3 == 0` added
+/// a card C# (`TurnsSeen` 2) did not draw.
+pub(crate) fn read_hand_draw_after_tick(
+    state: &mut CombatState,
+    read: impl FnOnce(&CombatState) -> i32,
+) -> i32 {
+    let idx = (state.game_version >= crate::GameVersion::V0_111_0)
+        .then(|| {
+            state
+                .relics
+                .iter()
+                .position(|r| !r.is_melted && r.kind == crate::RelicKind::Pendulum)
+        })
+        .flatten();
+    let Some(idx) = idx else {
+        return read(state);
+    };
+    let ticked = state.relics[idx].counter;
+    state.relics[idx].counter = (ticked + PENDULUM_TURNS - 1) % PENDULUM_TURNS;
+    let draw = read(state);
+    state.relics[idx].counter = ticked;
+    draw
 }
 
 pub(crate) fn install() {

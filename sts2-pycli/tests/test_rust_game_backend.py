@@ -8,6 +8,7 @@ The whole module skips if that extension isn't importable.
 from __future__ import annotations
 
 import pytest
+import sts2_client
 
 pytest.importorskip("sts2_rs", reason="rust backend requires the sts2_rs extension")
 
@@ -120,7 +121,10 @@ def test_required_keys_per_decision() -> None:
             assert {"hand", "enemies", "energy", "round"} <= state.keys()
             pc = [c for c in state["hand"] if c["can_play"]]
             if pc:
-                t = 0 if pc[0]["target_type"] == "AnyEnemy" else None
+                # Native convention: the FULL encounter slot of a live enemy
+                # (slot 0 may be a corpse; GH #1119 made that a rejection).
+                live = state["enemies"][0]["index"]
+                t = live if pc[0]["target_type"] == "AnyEnemy" else None
                 state = g.act("play_card", card_index=pc[0]["index"], target_index=t)
             else:
                 state = g.act("end_turn")
@@ -624,7 +628,10 @@ def test_closed_loop_legality() -> None:
         if dec == "combat_play":
             pc = [c for c in state["hand"] if c["can_play"]]
             if pc:
-                t = 0 if pc[0]["target_type"] == "AnyEnemy" else None
+                # Native convention: the FULL encounter slot of a live enemy
+                # (slot 0 may be a corpse; GH #1119 made that a rejection).
+                live = state["enemies"][0]["index"]
+                t = live if pc[0]["target_type"] == "AnyEnemy" else None
                 res = sess.apply("play_card", {"card_index": pc[0]["index"], "target_index": t})
             else:
                 res = sess.apply("end_turn", {})
@@ -647,7 +654,10 @@ def test_replay_determinism() -> None:
         if state["decision"] == "combat_play":
             pc = [c for c in state["hand"] if c["can_play"]]
             if pc:
-                t = 0 if pc[0]["target_type"] == "AnyEnemy" else None
+                # Native convention: the FULL encounter slot of a live enemy
+                # (slot 0 may be a corpse; GH #1119 made that a rejection).
+                live = state["enemies"][0]["index"]
+                t = live if pc[0]["target_type"] == "AnyEnemy" else None
                 res = sess.apply("play_card", {"card_index": pc[0]["index"], "target_index": t})
             else:
                 res = sess.apply("end_turn", {})
@@ -935,8 +945,24 @@ def test_fill_combat_lifts_osty_to_top_level(monkeypatch) -> None:
     }
 
 
+#: Per game build: a Necrobinder seed whose Neow offers Scroll Boxes, and the
+#: two packs it rolls. v0.111.0 rehashed every seed (XxHash64), so ECHO rolls a
+#: different Neow there; ECHO1's packs were checked against the v0.111.0 C#
+#: headless (same ids, same order).
+_SCROLL_BOXES = {
+    "v0.107.1": (
+        "ECHO",
+        [["POKE", "REAP", "HIGH_FIVE"], ["REAVE", "DRAIN_POWER", "DEATH_MARCH"]],
+    ),
+    "v0.111.0": (
+        "ECHO1",
+        [["REAVE", "SCOURGE", "LETHALITY"], ["DEFILE", "NEGATIVE_PULSE", "NO_ESCAPE"]],
+    ),
+}
+
+
 def test_scroll_boxes_renders_bundle_select_and_adds_whole_pack() -> None:
-    """Scroll Boxes (Necrobinder Neow, seed ECHO) must surface as a
+    """Scroll Boxes (Necrobinder Neow, `_SCROLL_BOXES` seed) must surface as a
     ``bundle_select`` (pick 1 of 2 packs), not two single-card rewards.
     Picking a pack adds all 3 of its cards to the deck and advances — matching
     the real game's ``ScrollBoxes.AfterObtained``. (v0.107.1 dropped the
@@ -946,22 +972,20 @@ def test_scroll_boxes_renders_bundle_select_and_adds_whole_pack() -> None:
     (`GenerateRandomBundles`), captured against the v0.107.1 build (the
     v0.103.2 RNG/pool produced a different pair).
     """
+    seed, expected_packs = _SCROLL_BOXES[sts2_client.GAME_VERSION]
     g = RustGame()
-    g.start(character="Necrobinder", seed="ECHO", ascension=0)
+    g.start(character="Necrobinder", seed=seed, ascension=0)
     state = g.get_state()
     opts = normalize_options(state)
     sb = [i for i, o in enumerate(opts) if "SCROLL_BOX" in (o.get("label") or "").upper()]
-    assert sb, "ECHO/Necrobinder Neow should offer Scroll Boxes"
+    assert sb, f"{seed}/Necrobinder Neow should offer Scroll Boxes"
     deck_before = len((state.get("player") or {}).get("deck") or [])
     gold_before = (state.get("player") or {}).get("gold")
 
     state = g.act("choose_option", option_index=sb[0])
     assert state["decision"] == "bundle_select"
     packs = [[c["id"] for c in b["cards"]] for b in state["bundles"]]
-    assert packs == [
-        ["POKE", "REAP", "HIGH_FIVE"],
-        ["REAVE", "DRAIN_POWER", "DEATH_MARCH"],
-    ]
+    assert packs == expected_packs
     assert (state.get("player") or {}).get("gold") == gold_before, (
         "Scroll Boxes does not cost gold in v0.107.1 (LoseGold removed from AfterObtained)"
     )
@@ -981,6 +1005,13 @@ def test_scroll_boxes_renders_bundle_select_and_adds_whole_pack() -> None:
 # workbench showed nothing at all for a treasure room until `room_reveal`.
 
 TREASURE_SEED = "SEEDTEST"  # Ironclad A0: greedy play reaches an act-1 chest
+
+#: What that first chest holds, per game build: (gold, relic). v0.111.0
+#: rehashed every seed (XxHash64), so the same seed walks a different act 1.
+_TREASURE_CHEST = {
+    "v0.107.1": (43, "HORN_CLEAT.title"),
+    "v0.111.0": (47, "MANGO.title"),
+}
 
 
 def _walk_to_chest(g: RustGame, max_steps: int = 400) -> tuple[dict, list[dict]]:
@@ -1014,7 +1045,11 @@ def _walk_to_chest(g: RustGame, max_steps: int = 400) -> tuple[dict, list[dict]]
         elif dec == "combat_play":
             playable = [c for c in state["hand"] if c["can_play"]]
             if playable:
-                target = 0 if playable[0]["target_type"] == "AnyEnemy" else None
+                # Aim at a LIVE enemy: once enemy 0 dies (a split slime's
+                # parent), a play aimed at index 0 is a silent no-op, and the
+                # walk spins on it until the step budget runs out.
+                live = [e["index"] for e in state.get("enemies") or [] if e.get("hp", 0) > 0]
+                target = live[0] if playable[0]["target_type"] == "AnyEnemy" else None
                 state = g.act("play_card", card_index=playable[0]["index"], target_index=target)
             else:
                 state = g.act("end_turn")
@@ -1035,12 +1070,13 @@ def test_walking_into_a_chest_reveals_what_it_held() -> None:
     reveal = state["room_reveal"]
     assert reveal["kind"] == "treasure"
     assert reveal["act"] == 1
-    # Pinned to the seed: this chest pays 43 gold and holds Horn Cleat.
-    assert reveal["gold"] == 43
-    assert reveal["relic"]["name"] == "HORN_CLEAT.title"
+    # Pinned to the seed: at v0.107.1 this chest pays 43 gold and holds Horn Cleat.
+    gold, relic = _TREASURE_CHEST[sts2_client.GAME_VERSION]
+    assert reveal["gold"] == gold
+    assert reveal["relic"]["name"] == relic
     # The relic really is the player's already — the panel reports, never gates.
     owned = [r["name"] for r in (state.get("player") or {}).get("relics") or []]
-    assert "HORN_CLEAT.title" in owned
+    assert relic in owned
 
 
 def test_only_the_chest_room_reveals() -> None:
@@ -1066,3 +1102,36 @@ def test_leaving_the_chest_room_clears_the_reveal() -> None:
     choices = state["choices"]
     state = g.act("select_map_node", col=choices[0]["col"], row=choices[0]["row"])
     assert state.get("room_reveal") is None
+
+
+def test_skip_select_declines_an_up_to_n_enchant() -> None:
+    """Kifuda's enchant screen is "up to 3" (``CardSelectorPrefs(prompt, 0, 3)``,
+    not cancelable): the oracle offers ``skip_select`` for it, which confirms
+    with no card. It must drop the whole optional batch, not be rejected
+    (act-2 checkpoint branch ``Defect-1001-a0-act2#b0``, v0.111.0)."""
+    g = _new()
+    g.start(character="Defect", seed="1001", ascension=0)
+    deck_before = repr(g.rm.master_deck())
+    assert g.rm.force_add_relic("KIFUDA")
+    assert g.rm.pending_deck_enchants > 0 and g.rm.pending_enchant_optional
+    view = g.act("skip_select")
+    assert not view.get("error"), view
+    assert g.rm.pending_deck_enchants == 0
+    assert repr(g.rm.master_deck()) == deck_before
+
+
+def test_skip_select_declines_the_optional_sea_glass_grid() -> None:
+    """Orobas' Sea Glass grid is ``FromSimpleGridForRewards`` with MinSelect 0:
+    the oracle offers ``skip_select``, which leaves the deck unchanged. The
+    adapter must route it to the engine's grant decline (``grant_deck_card`` at
+    idx == option count) instead of rejecting it (Ironclad:4023, act 2)."""
+    g = RustGame(target_convention="csharp")
+    g.start(character="Ironclad", seed="4023", ascension=0)
+    assert g.rm.force_add_relic("SEA_GLASS")
+    assert g.rm.pending_card_grants > 0 and g.rm.pending_card_grant_min == 0
+    deck_before = repr(g.rm.master_deck())
+    view = g.act("skip_select")
+    assert not view.get("error"), view
+    assert g.rm.pending_card_grants == 0
+    assert view.get("decision") != "card_select"
+    assert repr(g.rm.master_deck()) == deck_before

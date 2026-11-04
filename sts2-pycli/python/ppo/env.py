@@ -51,6 +51,9 @@ surface can never arrive as a list of blank tokens.
 
 from __future__ import annotations
 
+import json
+import os
+import random
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -358,6 +361,17 @@ class PpoRunEnv:
     # (`STS2_GAME_VERSION`, or `--game-version` on the entry point), which
     # defaults to v0.107.1, so every existing caller keeps its engine.
     game_version: str | None = None
+    # GH #977 curriculum, TRAINING ONLY: the probability that this run starts
+    # with one random removable curse added to its deck. The nets almost never
+    # remove a curse when offered one (P ~0.001 for Injury vs ~0.94 Defend):
+    # removable curses are rare at A10, where the usual one is the Eternal
+    # Ascender's Bane, so the removal heads get almost no signal. Injecting one
+    # gives the shop and card-select removal surfaces real curse decisions
+    # with their real cost. 0.0 (the default) leaves every run, fixture and G1
+    # comparison untouched; nothing outside the trainer may set it.
+    curse_inject_p: float = 0.0
+    # The curse injected into this run, or None.
+    injected_curse: str | None = None
     # Resolution log: (step_index, phase, surface|None, class) — the G1
     # ownership-audit record. Classes: 'combat-agent', 'combat-surrogate',
     # 'single-option-auto', 'net' (policy mode), 'expert' (expert mode).
@@ -390,23 +404,44 @@ class PpoRunEnv:
         # normal encoded decision and the net picks (#379 gave it a real
         # `potion_swap` surface). `_advance` mirrors that split, and both
         # sides must agree or G1 (`tests/test_ppo_env_parity.py`) breaks.
+        # `STS2_STRING_SEED_FMT` (e.g. ``RT{:04d}``) maps the integer seed to
+        # a game seed STRING, hashed the way the real game hashes a typed
+        # seed. Lets a probe replay an external seed list (AlphaDefect's
+        # RT0000-RT0999) while the integer seed keeps seeding the agent.
+        fmt = os.environ.get("STS2_STRING_SEED_FMT")
+        string_seed = fmt.format(self.seed) if fmt else None
+        # `STS2_ACT1_MAP` (JSON file, ``{"<int seed>": "overgrowth"|"underdocks"}``)
+        # pins act 1 per seed, so a probe can walk the same act-1 variant an
+        # external engine recorded for that seed.
+        act1_map = os.environ.get("STS2_ACT1_MAP")
+        if act1_map:
+            with open(act1_map, encoding="utf-8") as f:
+                self.act1 = json.load(f).get(str(self.seed), self.act1)
         self.rm = sts2_client.rs_engine_call(
             sts2_rs.RunManager,
             version=self.game_version,
             seed=self.seed,
+            string_seed=string_seed,
             character=self.character,
             ascension_level=self.ascension,
             neow_start=True,
-            interactive_card_removal=True,
-            interactive_card_upgrade=True,
-            interactive_card_transform=True,
-            direct_event_relic_grant=True,
+            # GH #981: the deck-decision bundle (removal / upgrade / transform,
+            # which also gates enchant, + direct relic grant) is ONE definition
+            # shared with `arena::new_arena_run_manager`.
+            mode="agent",
             interactive_potion_swap=sts2_rs.resolve_potion_swap_flag(),
             # GH #545: the act this run walks. `arena::run_cell` takes the same
             # token from `--act1`, and G1 compares the two per token, so the
             # training env and the measurement arm cannot silently disagree.
             act1=self.act1,
         )
+        if self.curse_inject_p > 0.0:
+            # A string seed keeps the draw deterministic per game seed and
+            # independent of PYTHONHASHSEED and of the action-sampling RNG.
+            rng = random.Random(f"curse-inject:{self.seed}")
+            if rng.random() < self.curse_inject_p:
+                self.injected_curse = rng.choice(sorted(sts2_rs.removable_curse_cards()))
+                self.rm.force_add_card(self.injected_curse)
         # Combat agent. Policy mode (expert=False) uses the combat-only
         # MctsCombatAgent (combat MCTS only — every meta decision is yielded
         # to the caller; GH #220). It builds the same combat cell as the
@@ -419,8 +454,6 @@ class PpoRunEnv:
         # STS2_PPO_EXPERT=heuristic is accepted for back-compat; the removed
         # learned ranker ("ranker") raises.
         if self.expert:
-            import os
-
             expert_kind = os.environ.get("STS2_PPO_EXPERT", "heuristic").lower()
             if expert_kind == "ranker":
                 raise ValueError(
@@ -635,7 +668,13 @@ class PpoRunEnv:
             raise IndexError(f"candidate idx {idx} out of range 0..{len(actions) - 1}")
         self._pending_actions = None
         result = self.rm.take_action(actions[idx])
-        if result in ("shop_purchase_failed", "shop_remove_card_failed", "invalid_for_phase"):
+        if result in (
+            "shop_purchase_failed",
+            "shop_remove_card_failed",
+            "invalid_for_phase",
+            "invalid_target",
+            "illegal_play",
+        ):
             # Tripwire: masking should make this unreachable; a silent
             # no-op here becomes a greedy-policy deadlock, so fail loud
             # (workers fault-isolate the run as outcome='error').

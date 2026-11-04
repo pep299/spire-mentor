@@ -154,12 +154,17 @@ def hint_tag_to_action(tag: HintTag) -> dict[str, Any] | None:
         action: dict[str, Any] = {"action": "play", "card_index": tag.stable_idx}
         if tag.target_index is not None:
             action["target_index"] = tag.target_index
+        if tag.ally_index is not None:
+            action["ally_index"] = tag.ally_index
         return action
     if CHANNEL_STABLE_IDX < tag.stable_idx <= POTION_STABLE_IDX_BASE:
         slot = POTION_STABLE_IDX_BASE - tag.stable_idx
         action = {"action": "potion", "slot": slot}
         if tag.target_index is not None:
             action["target_index"] = tag.target_index
+        if tag.ally_index is not None:
+            # Thrown at that teammate (GH #1017).
+            action["ally_index"] = tag.ally_index
         return action
     return None
 

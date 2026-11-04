@@ -2,7 +2,6 @@
 use super::prelude::*;
 
 /// Genesis — apply 2 Genesis to self (stars-per-side-turn).
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L696
 pub(crate) fn play_genesis(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     // C# Genesis.cs: StarsPerTurn var 2, +1 on upgrade → 3. Bead `sts2-rs-rjnca`.
     let amount = if current_card_upgraded(state) { 3 } else { 2 };

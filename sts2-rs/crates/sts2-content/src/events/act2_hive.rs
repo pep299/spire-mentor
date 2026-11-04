@@ -113,6 +113,26 @@ fn crystal_sphere_debt(state: &mut RunState) -> EventOutcome {
     EventOutcome::finished("Took the Payment Plan and gazed into the sphere.")
 }
 
+/// The part of a CrystalSphere option the player can see before taking it:
+/// the gold paid, or the Debt curse. The divination haul is rolled on the
+/// event Rng only once an option is taken, so the preview must not play the
+/// minigame — doing so handed the policy the exact gold / potions / cards it
+/// was about to win. Returns `false` for an unknown `option_id`.
+pub(super) fn crystal_sphere_apply_visible(state: &mut RunState, option_id: &str) -> bool {
+    match option_id {
+        "pay" => {
+            let cost = crystal_sphere_pay_cost(state);
+            state.gold = state.gold.saturating_sub(cost).max(0);
+            true
+        }
+        "debt" => {
+            super::crystal_sphere::add_curse_to_deck(state, sts2_core::cards::CardId::Debt);
+            true
+        }
+        _ => false,
+    }
+}
+
 const CRYSTAL_SPHERE_OPTIONS: &[EventOptionSpec] = &[
     EventOptionSpec {
         option_id: "pay",
@@ -266,8 +286,17 @@ fn doll_room_generate_options(state: &RunState, spec: &EventSpec) -> Vec<EventOp
             })
             .collect();
     }
-    super::default_option_info_from_spec(state, spec)
+    // Page 0 is only the three approaches (C# `GenerateInitialOptions`,
+    // `DollRoom.cs:84`, same in both builds). The static list also holds
+    // the three page-1 doll picks (so `resolve_by_index` can key their
+    // handlers); presenting the whole list offered 6 options instead of 3.
+    let mut opts = super::default_option_info_from_spec(state, spec);
+    opts.truncate(DOLL_ROOM_INITIAL_OPTION_COUNT);
+    opts
 }
+
+/// Page-0 option count: Random / Take Some Time / Examine.
+const DOLL_ROOM_INITIAL_OPTION_COUNT: usize = 3;
 
 const DOLL_ROOM_OPTIONS: &[EventOptionSpec] = &[
     // ── page 0: the three approaches ──
@@ -438,7 +467,6 @@ const ENDLESS_CONVEYOR_OPTIONS: &[EventOptionSpec] = &[
     },
 ];
 
-/// Port pin: `sts2-rl-agent@01c094d:sts2_env/events/act2.py:179`.
 /// `is_allowed`: `endless_conveyor_allowed` (`gold >= 105`) — wired.
 /// `observe` (1-card upgrade) wired via the event-RNG replay
 /// (`CalculateVars→RollDish` NextFloat + `ObserveChef` NextItem) — bead
@@ -454,7 +482,9 @@ pub const ENDLESS_CONVEYOR: EventSpec = EventSpec {
 
 // ── FakeMerchant ─────────────────────────────────────────────────────
 
-/// `FakeMerchant::buy` per-relic cost (C# `FakeMerchant.relicCost`, `act2.py:380`).
+/// Every fake relic's `MerchantCost` (`FakeAnchor.cs:15` and its eight
+/// siblings). The price actually charged is this jittered once per stocked
+/// slot at event start — see [`fake_merchant_before_event_started`].
 pub const FAKE_MERCHANT_BUY_COST: i32 = 50;
 
 /// `Id.Entry` for FakeMerchant's own RNG stream, used to shuffle the merchant
@@ -500,16 +530,54 @@ fn fake_merchant_stock(state: &RunState) -> Vec<RelicId> {
         .collect()
 }
 
-/// `Buy a Relic`: purchase one stocked fake relic for 50 gold. The custom C#
-/// merchant UI lets the player pick any of the 6 displayed; the option-model
-/// purchases the first stocked (shuffle-order) entry. Mirrors the
-/// `MerchantRelicEntry` buy → `RelicCmd.Obtain`.
+/// C# `FakeMerchant.BeforeEventStarted` side effect on the SHARED run RNG:
+/// each of the 6 stocked `new MerchantRelicEntry(relic, Owner)` runs
+/// `SetModel → CalcCost`, i.e. `Math.Round(MerchantCost *
+/// PlayerRng.Shops.NextFloat(0.85f, 1.15f))` (`MerchantRelicEntry.cs:45`,
+/// `FakeMerchant.cs:116`; identical in v0.111.0). That is 6 `Shops` draws
+/// on event START, whatever option is then taken, so skipping them shifts
+/// every later shop (act23 probe: Ironclad/Regent 1009, Ironclad/Defect
+/// 1015, Necrobinder 1004). The rolled prices, in stock order, go to
+/// `event_state.scratch` for the buy option. Idempotent per event visit.
+pub fn fake_merchant_before_event_started(state: &mut RunState) {
+    use sts2_core::shop::{MERCHANT_RELIC_PRICE_VARIANCE_MAX, MERCHANT_RELIC_PRICE_VARIANCE_MIN};
+    if !state.event_state.scratch.is_empty() {
+        return;
+    }
+    for _ in 0..FAKE_MERCHANT_STOCK_SIZE {
+        let jitter = state.rng.shops.next_float_range(
+            MERCHANT_RELIC_PRICE_VARIANCE_MIN,
+            MERCHANT_RELIC_PRICE_VARIANCE_MAX,
+        );
+        let price = (f64::from(FAKE_MERCHANT_BUY_COST) * jitter).round_ties_even() as i16;
+        state.event_state.scratch.push(price);
+    }
+}
+
+/// Price of the first stocked fake relic: its event-start roll, or the bare
+/// `MerchantCost` when the event was bound without
+/// [`fake_merchant_before_event_started`] (test scaffolding).
+fn fake_merchant_first_price(state: &RunState) -> i32 {
+    state
+        .event_state
+        .scratch
+        .first()
+        .map_or(FAKE_MERCHANT_BUY_COST, |&p| i32::from(p))
+}
+
+/// `Buy a Relic`: purchase one stocked fake relic at its rolled price. The
+/// custom C# merchant UI lets the player pick any of the 6 displayed; the
+/// option-model purchases the first stocked (shuffle-order) entry. Mirrors
+/// the `MerchantRelicEntry` buy → `LoseGold(Cost)` → `RelicCmd.Obtain`
+/// (no `ModifyMerchantPrice` — the event room is not a `MerchantRoom`,
+/// `MerchantEntry.cs:24`).
 fn fake_merchant_buy(state: &mut RunState) -> EventOutcome {
-    state.gold = state.gold.saturating_sub(FAKE_MERCHANT_BUY_COST);
+    let price = fake_merchant_first_price(state);
+    state.gold = state.gold.saturating_sub(price);
     let stock = fake_merchant_stock(state);
     let relic = stock.first().copied().unwrap_or(RelicId::FakeAnchor);
     state.grant_event_relic(relic);
-    EventOutcome::finished(format!("Bought a fake relic ({FAKE_MERCHANT_BUY_COST}g)."))
+    EventOutcome::finished(format!("Bought a fake relic ({price}g)."))
 }
 
 /// `Throw Foul Potion`: C# `FakeMerchant.FoulPotionThrown` →
@@ -566,7 +634,8 @@ fn fake_merchant_throw_foul(state: &mut RunState) -> EventOutcome {
 /// disabled option keeps its slot: the live bridge and the policy index by
 /// position.
 fn fake_merchant_generate_options(state: &RunState, spec: &EventSpec) -> Vec<EventOptionInfo> {
-    let can_buy = state.gold >= FAKE_MERCHANT_BUY_COST && !fake_merchant_stock(state).is_empty();
+    let can_buy =
+        state.gold >= fake_merchant_first_price(state) && !fake_merchant_stock(state).is_empty();
     let has_foul = state
         .potions
         .contains(&sts2_core::potions::PotionKind::FoulPotion);
@@ -618,7 +687,6 @@ const FAKE_MERCHANT_OPTIONS: &[EventOptionSpec] = &[
     },
 ];
 
-/// Port pin: `sts2-rl-agent@01c094d:sts2_env/events/act2.py:303`.
 /// `is_allowed`: `fake_merchant_allowed`
 /// (`current_act_index >= 1 && (gold >= 100 || has_foul)`) — wired.
 /// `buy` needs 50 gold and `throw_foul` a held Foul Potion (GH #885).
@@ -659,6 +727,7 @@ fn field_of_man_sized_holes_resist(state: &mut RunState) -> EventOutcome {
 fn field_of_man_can_enchant(c: &sts2_core::cards::Card) -> bool {
     use sts2_core::cards::CardType;
     !matches!(c.card_type, CardType::Status | CardType::Curse)
+        && !c.is_quest()
         && c.enchantments.is_empty()
         && c.cost >= 0
 }
@@ -682,6 +751,7 @@ fn field_of_man_sized_holes_enter(state: &mut RunState) -> EventOutcome {
                 amount: 1,
                 type_restriction: None,
                 secondary_type: None,
+                optional: false,
             });
         EventOutcome::finished("Pick a card to enchant with Perfect Fit.")
     } else {
@@ -722,7 +792,6 @@ const FIELD_OF_MAN_SIZED_HOLES_OPTIONS: &[EventOptionSpec] = &[
     },
 ];
 
-/// Port pin: `sts2-rl-agent@01c094d:sts2_env/events/act2.py:436`.
 /// `is_allowed`: `any_enchantable_deck_card` (`any(can_enchant_card)`) — wired.
 /// resist (remove 2 + Normality) / enter (PerfectFit enchant) wired via the
 /// deck-mutation surface (`sts2-rs-m3n0g.2`).
@@ -840,7 +909,6 @@ const JUNGLE_MAZE_OPTIONS: &[EventOptionSpec] = &[
     },
 ];
 
-/// Port pin: `sts2-rl-agent@01c094d:sts2_env/events/act2.py:505`.
 pub const JUNGLE_MAZE_ADVENTURE: EventSpec = EventSpec {
     id: EventId::JungleMazeAdventure,
     python_name: "JungleMazeAdventure",
@@ -972,7 +1040,6 @@ const LUMINOUS_CHOIR_OPTIONS: &[EventOptionSpec] = &[
     },
 ];
 
-/// Port pin: `sts2-rl-agent@01c094d:sts2_env/events/act2.py:545`.
 /// `is_allowed`: `luminous_choir_allowed` (`gold >= 149`) — wired.
 pub const LUMINOUS_CHOIR: EventSpec = EventSpec {
     id: EventId::LuminousChoir,
@@ -1083,7 +1150,6 @@ const MORPHIC_GROVE_OPTIONS: &[EventOptionSpec] = &[
     },
 ];
 
-/// Port pin: `sts2-rl-agent@01c094d:sts2_env/events/act2.py:613`.
 /// `is_allowed`: `morphic_grove_allowed` (`gold >= 100`) — wired.
 pub const MORPHIC_GROVE: EventSpec = EventSpec {
     id: EventId::MorphicGrove,
@@ -1158,7 +1224,6 @@ const POTION_COURIER_OPTIONS: &[EventOptionSpec] = &[
     },
 ];
 
-/// Port pin: `sts2-rl-agent@01c094d:sts2_env/events/act2.py:664`.
 /// `is_allowed`: `allowed_act_2_plus` (`current_act_index > 0`) — wired.
 /// grab/ransack potion-add wired via `Reward::Potion` (`sts2-rs-m3n0g.4`).
 pub const POTION_COURIER: EventSpec = EventSpec {
@@ -1196,7 +1261,7 @@ fn ranwid_asks_for(state: &RunState) -> (Option<usize>, Option<RelicId>) {
         .relics
         .iter()
         .copied()
-        .filter(|&id| crate::relics::tradable::relic_is_tradable(id))
+        .filter(|&id| crate::relics::tradable::relic_is_tradable_in(state, id))
         .collect();
     let relic = (!tradable.is_empty()).then(|| {
         let len = i32::try_from(tradable.len()).unwrap_or(1);
@@ -1207,7 +1272,7 @@ fn ranwid_asks_for(state: &RunState) -> (Option<usize>, Option<RelicId>) {
 
 /// One `RelicFactory.PullNextRelicFromFront(owner)` — roll a rarity off the
 /// rewards stream, take the front of that bucket, hand it over.
-fn ranwid_grant_front_relic(state: &mut RunState) {
+pub(super) fn ranwid_grant_front_relic(state: &mut RunState) {
     let rarity = state.roll_reward_relic_rarity();
     if let Some(id) = state.pop_relic_from_grab_bag(rarity) {
         state.grant_event_relic(id);
@@ -1306,7 +1371,6 @@ const RANWID_OPTIONS: &[EventOptionSpec] = &[
     },
 ];
 
-/// Port pin: `sts2-rl-agent@01c094d:sts2_env/events/act2.py:695`.
 /// `is_allowed`: `ranwid_the_elder_allowed`
 /// (`current_act_index > 0 && gold >= 100 && held_potions && relics`) — wired.
 pub const RANWID_THE_ELDER: EventSpec = EventSpec {
@@ -1328,6 +1392,16 @@ mod tests {
     }
 
     // ── DollRoom multi-page (m3n0g.3) ──────────────────────────────
+
+    /// Page 0 presents only the three approaches (`DollRoom.cs:84`), not the
+    /// three page-1 doll picks that share the static option list.
+    #[test]
+    fn doll_room_initial_page_offers_three_approaches() {
+        let rs = RunState::new();
+        let opts = doll_room_generate_options(&rs, &DOLL_ROOM);
+        let ids: Vec<_> = opts.iter().map(|o| o.option_id).collect();
+        assert_eq!(ids, ["random", "take_time", "examine"]);
+    }
 
     #[test]
     fn doll_room_random_obtains_one_doll_and_finishes() {
@@ -1581,6 +1655,32 @@ mod tests {
         assert!(outcome.finished);
         assert_eq!(rs.gold, 200 - FAKE_MERCHANT_BUY_COST);
         assert_eq!(rs.relic_rewards.len(), 1);
+    }
+
+    /// C# rolls each stocked slot's price off the shared `Shops` stream at
+    /// event start (`MerchantRelicEntry.cs:45`): 6 draws, and the buy
+    /// charges the rolled price.
+    #[test]
+    fn fake_merchant_event_start_rolls_six_shop_prices() {
+        let mut rs = rs_with_gold(200);
+        let mut expected = rs.rng.shops.clone();
+        for _ in 0..6 {
+            let _ = expected.next_float_range(0.85, 1.15);
+        }
+        fake_merchant_before_event_started(&mut rs);
+        assert_eq!(rs.rng.shops.counter(), expected.counter());
+        assert_eq!(rs.event_state.scratch.len(), 6);
+        assert!(rs
+            .event_state
+            .scratch
+            .iter()
+            .all(|&p| (43..=57).contains(&p)));
+        // Idempotent: binding the same visit again draws nothing.
+        fake_merchant_before_event_started(&mut rs);
+        assert_eq!(rs.rng.shops.counter(), expected.counter());
+        let price = i32::from(rs.event_state.scratch[0]);
+        let _ = (FAKE_MERCHANT.options[0].handler)(&mut rs);
+        assert_eq!(rs.gold, 200 - price);
     }
 
     #[test]
@@ -1913,6 +2013,23 @@ mod tests {
         assert!(outcome.finished);
         assert!(!rs.relics.contains(&given), "{given:?} handed over");
         assert_eq!(rs.relics.len(), 4, "3 - 1 + 2");
+    }
+
+    /// Ranwid asks only for a TRADABLE relic, and C# `IsTradable` is false
+    /// once a wax relic has melted (`RelicModel.cs:188`,
+    /// `RanwidTheElder.cs:74/94`): the melted one is neither picked nor
+    /// counted toward `IsAllowed`.
+    #[test]
+    fn ranwid_skips_melted_relics() {
+        let mut rs = ranwid_state();
+        rs.relics = vec![RelicId::AmethystAubergine];
+        rs.wax_relics.insert(RelicId::AmethystAubergine);
+        rs.melted_relics.insert(RelicId::AmethystAubergine);
+        assert_eq!(ranwid_asks_for(&rs).1, None, "only relic is melted");
+        assert!(!super::super::ranwid_the_elder_allowed(&rs));
+        rs.melted_relics.clear();
+        assert_eq!(ranwid_asks_for(&rs).1, Some(RelicId::AmethystAubergine));
+        assert!(super::super::ranwid_the_elder_allowed(&rs));
     }
 
     // ── FakeMerchant throw_foul (mutant coverage) ────────────────────

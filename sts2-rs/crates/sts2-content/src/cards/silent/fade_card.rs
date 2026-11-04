@@ -7,11 +7,13 @@ use super::prelude::*;
 /// [decompiled C# omitted — see the cited path]
 ///
 /// `AnyAlly` — unplayable in single-player (`card_effects::card_is_any_ally`).
-pub(crate) fn play_fade(_state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
-    // C# `PowerCmd.Apply<FadePower>(cardPlay.Target, 6 (upg 9))` — all of it lands on the co-op teammate
-    // (`cardPlay.Target`), whose turn is not simulated, so playing it
-    // changes nothing here but the energy and the card's own pile move.
-    // Unplayable without a living teammate (`card_is_any_ally`).
+pub(crate) fn play_fade(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
+    // C# `PowerCmd.Apply<FadePower>(cardPlay.Target, 6 (upg 9))`: the
+    // teammate's Dexterity until their turn ends, stamped on apply and
+    // reverted by the power (`TemporaryDexterityPower`, as Anticipate).
+    let amount = if current_card_upgraded(state) { 9 } else { 6 };
+    sts2_core::coop::apply_power_to_card_target(state, PowerKind::Dexterity, amount);
+    sts2_core::coop::apply_power_to_card_target(state, PowerKind::Fade, amount);
     EffectResult::Resolved
 }
 

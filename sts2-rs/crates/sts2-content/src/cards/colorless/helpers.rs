@@ -11,6 +11,23 @@ pub(crate) fn apply_power_signed_to_creature(
     kind: PowerKind,
     amount: i32,
 ) {
+    // A landed player drain fires SleightOfFlesh & co. (C#
+    // `Hook.AfterPowerAmountChanged` runs for silent applies too).
+    sts2_core::card_effects::signed_power_apply_with_reactors(
+        state,
+        target_uid,
+        kind,
+        amount,
+        |s| apply_power_signed_to_creature_raw(s, target_uid, kind, amount),
+    );
+}
+
+fn apply_power_signed_to_creature_raw(
+    state: &mut CombatState,
+    target_uid: CreatureUid,
+    kind: PowerKind,
+    amount: i32,
+) {
     if amount == 0 {
         return;
     }
@@ -227,15 +244,22 @@ pub(crate) fn move_card_from_draw_to_hand_by_type(
                 cb.card_id,
                 state.game_version,
             ))
-            .then_with(|| ca.card_id.to_python_name().cmp(cb.card_id.to_python_name()))
+            .then_with(|| {
+                sts2_core::cards::card_model_entry(ca.card_id)
+                    .cmp(sts2_core::cards::card_model_entry(cb.card_id))
+            })
     });
     match candidates.as_slice() {
         [] => {}
         [uid] => {
-            // FirstOrDefault: exactly one candidate, no prompt.
+            // FirstOrDefault: exactly one candidate, no prompt. C#
+            // `CardPileCmd.Add(card, Hand)` (`SecretTechnique.cs:25`,
+            // `SecretWeapon.cs:25`) sends it to the discard pile instead
+            // when the hand already holds 10 cards (`CardPileCmd.cs:485-489`),
+            // which an auto-play from the draw pile (Mayhem) can reach.
             if let Some(pos) = state.player.draw.iter().position(|u| u == uid) {
                 let card = state.player.draw.remove(pos);
-                state.player.hand.push(card);
+                let _ = sts2_core::cards::try_add_to_hand(&mut state.player, card);
             }
         }
         _ => {
@@ -279,16 +303,18 @@ pub const HIDDEN_GEM_REPLAY: i32 = 2;
 /// `UpgradeValueBy(1m)` on `Replay`). Bead `sts2-rs-i9wg8`.
 pub const HIDDEN_GEM_REPLAY_UPGRADED: i32 = 3;
 
-/// Stamp the just-played card (top of the Play pile) with the current combat
-/// `round` so the `start_player_turn` sweep can return it to hand next turn
-/// (Bolas / ThrummingHatchet `BeforeHandDraw`). Bead `sts2-rs-219ds`.
+/// Stamp the just-played card (top of the Play pile) with the current player
+/// turn number so the `start_player_turn` sweep can return it to hand next
+/// turn (Bolas / ThrummingHatchet `BeforeHandDraw`). C# `CombatHistoryEntry`
+/// stamps `PlayerCombatState.TurnNumber` (`CombatHistoryEntry.cs:55`), which
+/// an extra turn bumps but the round does not. Bead `sts2-rs-219ds`.
 pub(crate) fn stamp_return_if_played(state: &mut CombatState) {
     if let Some(played) = sts2_core::card_effects::resolving_card_uid(state) {
         sts2_core::card_effects::set_card_var(
             state,
             played,
             VarKey::ReturnIfPlayedRound,
-            i32::from(state.round),
+            i32::from(state.turn_number()),
         );
     }
 }
@@ -466,29 +492,21 @@ pub(crate) fn create_character_ethereal_cards_into_arena(
     character: sts2_core::potions::CharacterId,
     count: usize,
 ) -> SmallVec<[CardUid; 4]> {
-    use sts2_core::card_effects::card_ethereal;
-    use sts2_core::potions::CharacterId;
-
-    use crate::cards::spec_index::{DEFECT_SPECS, IRONCLAD_SPECS, SILENT_SPECS};
-
     if count == 0 {
         return SmallVec::new();
     }
-    let slice: &[fn() -> CardSpec] = match character {
-        CharacterId::Ironclad => IRONCLAD_SPECS,
-        CharacterId::Silent => SILENT_SPECS,
-        CharacterId::Defect => DEFECT_SPECS,
-        // Necrobinder's the canonical BigHat owner per pin `01c094d`,
-        // but `NECROBINDER_SPECS` isn't generated yet (handrolled
-        // installers only). Same fallback as `_for_hook`: empty
-        // SmallVec → caller no-ops. When the Necrobinder pool lands,
-        // BigHat lights up automatically.
-        CharacterId::Regent | CharacterId::Necrobinder => return SmallVec::new(),
-    };
-    let pool: SmallVec<[CardSpec; 96]> = slice
+    // C# `BigHat.AfterSideTurnStart` (BigHat.cs:21-33): the character pool's
+    // Ethereal cards, then `CardFactory.GetDistinctForCombat`
+    // (CardFactory.cs:119-130) = `FilterForPlayerCount` + `FilterForCombat`
+    // + `TakeRandom` (an `UnstableShuffle` on `CombatCardGeneration`). That
+    // is the fight's combat-generatable pool restricted to Ethereal, for
+    // every character: Regent and Necrobinder used to return nothing
+    // (PARITY95 Necrobinder: no Big Hat cards, so a C#-played Lethality was
+    // missing in Rust), and the other three sampled the unfiltered slice.
+    let pool: SmallVec<[CardSpec; 96]> = fight_pool(state, character)
         .iter()
-        .map(|f| f())
-        .filter(|s| card_ethereal(s.id))
+        .filter(|s| s.is_ethereal())
+        .copied()
         .collect();
     if pool.is_empty() {
         return SmallVec::new();
@@ -568,6 +586,37 @@ pub(crate) fn combat_generatable_pool(
         CharacterId::Regent => &POOLS[4],
     };
     slot.get_or_init(|| build_combat_generatable_pool(character))
+}
+
+/// `character`'s generation pool in THIS fight: [`combat_generatable_pool_in`]
+/// solo, and with teammates its co-op counterpart, which keeps the
+/// `MultiplayerOnly` cards (C# `FilterForPlayerCount`, GH #991). Every
+/// in-combat character-pool generation reads this.
+pub(crate) fn fight_pool(
+    state: &CombatState,
+    character: sts2_core::potions::CharacterId,
+) -> &'static [CardSpec] {
+    use crate::cards::pool_order::{coop_combat_pool, is_multiplayer, Pool};
+    if is_multiplayer(state) {
+        coop_combat_pool(Pool::Character(character), state.game_version)
+    } else {
+        combat_generatable_pool_in(character, state.game_version)
+    }
+}
+
+/// The colorless generation pool in THIS fight, as ids:
+/// [`colorless_combat_generatable_card_ids`] solo, its co-op counterpart with
+/// teammates (see [`fight_pool`]).
+pub(crate) fn fight_colorless_ids(state: &CombatState) -> SmallVec<[CardId; 72]> {
+    use crate::cards::pool_order::{coop_combat_pool, is_multiplayer, Pool};
+    if is_multiplayer(state) {
+        coop_combat_pool(Pool::Colorless, state.game_version)
+            .iter()
+            .map(|s| s.id)
+            .collect()
+    } else {
+        SmallVec::from_slice(colorless_combat_generatable_card_ids())
+    }
 }
 
 /// [`combat_generatable_pool`] in game build `version` (GH #793): the
@@ -797,7 +846,7 @@ fn build_combat_generatable_pool(
 /// (grep `MultiplayerOnly` under Models.Cards). Only ids present in the
 /// Rust spec slices matter; extend as ports land. Defect membership:
 /// ENERGY_SURGE + IGNITION.
-fn card_is_multiplayer_only(id: CardId) -> bool {
+pub(crate) fn card_is_multiplayer_only(id: CardId) -> bool {
     matches!(
         id,
         CardId::BeaconOfHope
@@ -854,6 +903,10 @@ fn card_is_multiplayer_only(id: CardId) -> bool {
 ///   The prior port fell through to the character pool and rolled an
 ///   Ironclad common (coverage `card:ENTROPY` hand_ids[0] cs=BECKON
 ///   rs=ANGER). Bead `sts2-rs-01ygn`.
+/// * **Curse original** (e.g. SPORE_MIND picked by Entropy): pool =
+///   `CurseCardPool.GenerateAllCards()` order, `CanBeGeneratedInCombat`
+///   drops AscendersBane, NO rarity filter, minus the original id
+///   (GH #1054 item 7).
 /// * **Other originals**: the *original card's own* character pool —
 ///   resolved from its id via [`crate::cards::spec_index::character_for_card_id`]
 ///   to mirror C# `CardModel.Pool` (the colour pool that lists the id,
@@ -881,14 +934,14 @@ pub fn transform_card_to_random_for_hook(
     // filter), keeps `CanBeGeneratedInCombat`, and excludes the original id —
     // throwing (→ headless swallows → no transform) when the result is empty.
     // Bead `sts2-rs-3tder`:
-    //  * a CURSE original resolves to the CursePool, whose combat-generatable
-    //    set is EMPTY → C# throws → no transform / zero RNG reads.
     //  * an ANCIENT/EVENT original (e.g. BREAK) is FORCED onto the colorless
     //    pool, so it transforms into a colorless Common/Uncommon/Rare card
     //    (fuzz seed 4819: BREAK → JACKPOT vs RS's character-pool FLAME_BARRIER).
-    if matches!(rarity, Some(CardRarity::Curse)) {
-        return None;
-    }
+    //  * a CURSE original resolves to the CurseCardPool (Curse branch below).
+    //    Its combat-generatable set is NOT empty: the prior port returned
+    //    `None` here (no transform, zero RNG reads), so Entropy left a hand
+    //    SPORE_MIND untouched where C# rolls DECAY (GH #1054 item 7, Regent
+    //    seed 1008, THE_KIN_BOSS).
     // Detect a genuinely-colorless original via the authoritative full
     // `COLORLESS_SPECS` set (64 cards) rather than the narrower
     // `is_colorless_card_id` list, which omitted several colorless ids.
@@ -947,6 +1000,37 @@ pub fn transform_card_to_random_for_hook(
         .map(|f| f())
         .filter(|s| s.id != original_id)
         .collect()
+    } else if matches!(rarity, Some(CardRarity::Curse)) {
+        use crate::cards::status_specs_generated as st;
+        // C# `CurseCardPool.GenerateAllCards()` order (CurseCardPool.cs:20-40,
+        // identical in v0.107.1 / v0.111.0). `GetFilteredTransformationOptions`
+        // skips the rarity filter for Status/Curse (CardFactory.cs,
+        // `(uint)(rarity - 8) > 1u`) and `CanBeGeneratedInCombat` drops only
+        // AscendersBane (AscendersBane.cs overrides it to false); no curse has
+        // a multiplayer constraint. Minus the original id that leaves 16.
+        [
+            st::bad_luck,
+            st::clumsy,
+            st::curse_of_the_bell,
+            st::debt,
+            st::decay,
+            st::doubt,
+            st::enthralled,
+            st::folly,
+            st::greed,
+            st::guilty,
+            st::injury,
+            st::normality,
+            st::poor_sleep,
+            st::regret,
+            st::shame,
+            st::spore_mind,
+            st::writhe,
+        ]
+        .iter()
+        .map(|f| f())
+        .filter(|s| s.id != original_id)
+        .collect()
     } else if use_colorless_pool {
         // C# `GetDefaultTransformationOptions` keys the pool on
         // `original.Pool` — for a colorless original that is the
@@ -960,15 +1044,10 @@ pub fn transform_card_to_random_for_hook(
         // C# alphabetical order) minus the original id is exactly
         // [`colorless_combat_generatable_card_ids`] minus self. Beads
         // `sts2-rs-isooo` / `sts2-rs-3tder`.
-        colorless_combat_generatable_card_ids()
-            .iter()
-            .filter(|&&id| id != original_id)
-            .filter_map(|&id| {
-                crate::cards::spec_index::COLORLESS_SPECS
-                    .iter()
-                    .map(|f| f())
-                    .find(|s| s.id == id)
-            })
+        fight_colorless_ids(state)
+            .into_iter()
+            .filter(|&id| id != original_id)
+            .filter_map(crate::cards::spec_index::spec_for_card_id)
             .collect()
     } else {
         // C# `CardFactory.GetDefaultTransformationOptions` keys the pool on
@@ -990,7 +1069,7 @@ pub fn transform_card_to_random_for_hook(
         // character-owned).
         let character = crate::cards::spec_index::character_for_card_id(original_id)
             .or(state.player.character)?;
-        combat_generatable_pool_in(character, state.game_version)
+        fight_pool(state, character)
             .iter()
             .copied()
             .filter(|s| s.id != original_id)
@@ -1042,16 +1121,18 @@ pub(crate) fn create_filtered_character_cards_into_arena(
     if count == 0 {
         return SmallVec::new();
     }
-    let pool: SmallVec<[CardSpec; 96]> = combat_generatable_pool_in(character, state.game_version)
+    // References, not copies: the shuffle and the picks read only the pool's
+    // length and order, and copying every spec was a measurable share of a
+    // search (Infernal Blade et al. in playouts).
+    let pool: SmallVec<[&CardSpec; 96]> = fight_pool(state, character)
         .iter()
-        .copied()
         .filter(|s| card_type.is_none_or(|kt| s.card_type == kt))
         .filter(|s| rarity.is_none_or(|r| s.rarity == r))
         .collect();
     if pool.is_empty() {
         return SmallVec::new();
     }
-    let chosen: SmallVec<[CardSpec; 4]> = if distinct {
+    let chosen: SmallVec<[&CardSpec; 4]> = if distinct {
         let mut shuffled = pool;
         state
             .run_rng
@@ -1070,7 +1151,7 @@ pub(crate) fn create_filtered_character_cards_into_arena(
     };
     let mut uids: SmallVec<[CardUid; 4]> = SmallVec::with_capacity(chosen.len());
     for spec in chosen {
-        let mut card = card_from_spec(&spec);
+        let mut card = card_from_spec(spec);
         let raw = u32::try_from(state.cards.len() + 1).expect("cards arena fits in u32");
         let uid = CardUid::new(raw).expect("non-zero uid");
         card.uid = uid;
@@ -1104,12 +1185,11 @@ pub(crate) fn distinct_character_card_ids(
     if count == 0 {
         return SmallVec::new();
     }
-    let mut pool: SmallVec<[CardId; 96]> =
-        combat_generatable_pool_in(character, state.game_version)
-            .iter()
-            .filter(|s| card_type.is_none_or(|kt| s.card_type == kt))
-            .map(|s| s.id)
-            .collect();
+    let mut pool: SmallVec<[CardId; 96]> = fight_pool(state, character)
+        .iter()
+        .filter(|s| card_type.is_none_or(|kt| s.card_type == kt))
+        .map(|s| s.id)
+        .collect();
     if pool.is_empty() {
         return SmallVec::new();
     }
@@ -1126,19 +1206,28 @@ pub(crate) fn distinct_character_card_ids(
 /// set (grep `CanBeGeneratedInCombat => false`): Alchemize,
 /// Disintegration, Feed, FranticEscape, HandOfGreed, HiddenGem,
 /// MindRot, NeowsFury, NotYet, Royalties, Sloth, Soot, TheHunt,
-/// WasteAway. Only the entries present in the Rust spec slices are
-/// listed; extend as ports land. Bead `sts2-rs-z4jsg` (card:SPLASH —
+/// WasteAway (GH #991 completed the list; the co-op pools of
+/// [`crate::cards::pool_order`] filter every pool through it). Bead `sts2-rs-z4jsg` (card:SPLASH —
 /// `THE_HUNT` was the lone membership delta once all four
 /// cross-character pools were wired). Sibling of the rarity filter in
 /// [`distinct_cross_character_attack_ids`].
-fn card_can_be_generated_in_combat(id: CardId) -> bool {
+pub(crate) fn card_can_be_generated_in_combat(id: CardId) -> bool {
     !matches!(
         id,
         CardId::Alchemize
+            | CardId::Disintegration
             | CardId::Feed
+            | CardId::FranticEscape
             | CardId::HandOfGreed
             | CardId::HiddenGem
+            | CardId::MindRot
+            | CardId::NeowsFury
+            | CardId::NotYet
+            | CardId::RoyaltiesCard
+            | CardId::SlothStatus
+            | CardId::Soot
             | CardId::TheHunt
+            | CardId::WasteAway
     )
 }
 
@@ -1183,8 +1272,30 @@ pub(crate) fn distinct_cross_character_attack_ids(
     }
 
     let own = state.player.character;
+    let coop = crate::cards::pool_order::is_multiplayer(state);
     let mut pool: SmallVec<[CardId; 128]> = SmallVec::new();
-    if own != Some(CharacterId::Ironclad) {
+    if coop {
+        // Co-op (GH #991): the other characters' co-op pools, in the same
+        // `ModelDb.AllCharacters` order.
+        use crate::cards::pool_order::{coop_combat_pool, Pool};
+        for ch in [
+            CharacterId::Ironclad,
+            CharacterId::Silent,
+            CharacterId::Regent,
+            CharacterId::Necrobinder,
+            CharacterId::Defect,
+        ] {
+            if Some(ch) == own {
+                continue;
+            }
+            pool.extend(
+                coop_combat_pool(Pool::Character(ch), state.game_version)
+                    .iter()
+                    .filter(|s| s.card_type == sts2_core::cards::CardType::Attack)
+                    .map(|s| s.id),
+            );
+        }
+    } else if own != Some(CharacterId::Ironclad) {
         for s in crate::cards::ironclad::specs::ironclad_combat_generatable_specs() {
             if eligible(&s) {
                 pool.push(s.id);
@@ -1198,7 +1309,7 @@ pub(crate) fn distinct_cross_character_attack_ids(
         (CharacterId::Defect, DEFECT_SPECS),
     ];
     for (ch, slice) in slices {
-        if Some(ch) == own {
+        if coop || Some(ch) == own {
             continue;
         }
         for f in slice {
@@ -1230,11 +1341,10 @@ pub(crate) fn distinct_colorless_modifier_ids(
     // ColorlessPotion draws from the FULL ColorlessCardPool combat pool
     // (50, C# `GetDistinctForCombat`), NOT the smaller "modifier" subset.
     // Bead `sts2-rs-q6bix`.
-    let pool = colorless_combat_generatable_card_ids();
-    if count == 0 || pool.is_empty() {
+    let mut shuffled = fight_colorless_ids(state);
+    if count == 0 || shuffled.is_empty() {
         return SmallVec::new();
     }
-    let mut shuffled: SmallVec<[CardId; 64]> = SmallVec::from_slice(pool);
     state
         .run_rng
         .combat_card_generation
@@ -1262,13 +1372,30 @@ pub(crate) fn distinct_jack_of_all_trades_ids(
     state: &mut CombatState,
     count: usize,
 ) -> SmallVec<[CardId; 4]> {
+    distinct_colorless_ids_except(state, count, Some(CardId::JackOfAllTrades))
+}
+
+/// `count` distinct cards of the whole combat-generatable colorless pool,
+/// C# `CardFactory.GetDistinctForCombat(player, ColorlessCardPool…, count,
+/// Rng.CombatCardGeneration)` with no filter: Largesse.
+pub(crate) fn distinct_colorless_combat_ids(
+    state: &mut CombatState,
+    count: usize,
+) -> SmallVec<[CardId; 4]> {
+    distinct_colorless_ids_except(state, count, None)
+}
+
+fn distinct_colorless_ids_except(
+    state: &mut CombatState,
+    count: usize,
+    except: Option<CardId>,
+) -> SmallVec<[CardId; 4]> {
     if count == 0 {
         return SmallVec::new();
     }
-    let mut shuffled: SmallVec<[CardId; 64]> = colorless_combat_generatable_card_ids()
-        .iter()
-        .copied()
-        .filter(|&id| id != CardId::JackOfAllTrades)
+    let mut shuffled: SmallVec<[CardId; 72]> = fight_colorless_ids(state)
+        .into_iter()
+        .filter(|&id| Some(id) != except)
         .collect();
     if shuffled.is_empty() {
         return SmallVec::new();
@@ -1642,13 +1769,23 @@ pub const fn is_colorless_card_id(id: CardId) -> bool {
 /// of C# `CardModel.VisualCardPool.IsColorless` (the gate
 /// `HeirloomHammer.cs:33` and other `IsColorless` filters use).
 ///
-/// In C# `IsColorless` is a property of the card's POOL: true for the
-/// Colorless, Token, Event and Deprecated pools, false for every character
-/// pool plus Status and Curse (`*CardPool.cs`). So the predicate is:
-/// membership in the authoritative `COLORLESS_SPECS` set (the full
-/// colorless-proper pool — `is_colorless_card_id` is a narrower hand list
-/// that omits several ids, see its callers) OR a Token/Event rarity
-/// (TokenCardPool / EventCardPool, both `IsColorless`).
+/// `VisualCardPool` is the card's own pool (`CardModel.cs:325`) unless the
+/// card overrides it, and `IsColorless` is a property of the pool: true for
+/// the Colorless, Event, Token and Deprecated pools, false for the
+/// character pools, Status, Curse and Quest (`*CardPool.cs`). Ten Event
+/// cards override `VisualCardPool` with the character pool whose color they
+/// wear, so they do not count: Caltrops, Distraction, Outmaneuver (Silent),
+/// Clash, DualWield, Entrench (Ironclad), HelloWorld, Rebound, RipAndTear,
+/// Stack (Defect). Both the override list and the pools are the same in
+/// v0.107.1 and v0.111.0, apart from the two v0.111.0-only cards
+/// [`crate::cards::pool_order::in_colorless_pool`] describes.
+///
+/// Pool membership comes from the generated C# pool lists. The predicate
+/// used to approximate them with `COLORLESS_SPECS` plus a Token/Event
+/// rarity test, which missed the Ancient-rarity Event cards (Apotheosis,
+/// Apparition, BrightestFlame, Maul, NeowsFury, Relax, Wish, Whistle) and
+/// the Status-rarity Token cards (Disintegration, MindRot, Sloth,
+/// WasteAway), and counted the ten overrides as colorless.
 ///
 /// Bead `sts2-rs-1rv1q`: HeirloomHammer's old `is_colorless_card_id` filter
 /// dropped SOVEREIGN_BLADE (a Token), so when ≥1 other colorless hand card
@@ -1657,23 +1794,22 @@ pub const fn is_colorless_card_id(id: CardId) -> bool {
 /// of the first-in-hand SOVEREIGN_BLADE).
 #[must_use]
 pub fn is_visual_pool_colorless(id: CardId) -> bool {
-    use crate::cards::types::CardRarity;
-    if crate::cards::spec_index::COLORLESS_SPECS
-        .iter()
-        .any(|f| f().id == id)
-    {
-        return true;
-    }
-    // v0.111.0 (GH #793): Abundance is an Ancient-rarity card that lives in
-    // `EventCardPool` (`EventCardPool.cs`, `IsColorless`), so the rarity test
-    // below would miss it. The id exists in no v0.107.1 state.
-    if id == CardId::Abundance {
-        return true;
-    }
-    matches!(
-        crate::cards::spec_index::rarity_for_card_id(id),
-        Some(CardRarity::Token | CardRarity::Event)
-    )
+    // `public override CardPoolModel VisualCardPool => ModelDb.CardPool<..>()`
+    // on these ten Event cards (e.g. `Caltrops.cs:17`, `HelloWorld.cs:12`).
+    let character_colored = matches!(
+        id,
+        CardId::Caltrops
+            | CardId::Clash
+            | CardId::Distraction
+            | CardId::DualWield
+            | CardId::Entrench
+            | CardId::HelloWorldCard
+            | CardId::Outmaneuver
+            | CardId::Rebound
+            | CardId::RipAndTear
+            | CardId::Stack
+    );
+    !character_colored && crate::cards::pool_order::in_colorless_pool(id)
 }
 
 /// Card ids in the "colorless modifier" generation pool. Returned in a

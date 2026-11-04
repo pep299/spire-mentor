@@ -24,6 +24,12 @@ _Avoid_: API, interface, wire format
 The mode where the bridge acts on the advisor's recommendations itself, without a human in the loop.
 _Avoid_: bot mode, auto, AI mode
 
+**Bug report**:
+A frozen moment sent from the game (`Ctrl+Shift+B`) or a workbench (🐞 Report):
+the position, the start-of-room save, the run log and log tails, in the
+workbench's schema-1 dump. One store for all of them, keyed `wb-<16 hex>`.
+_Avoid_: crash report, feedback (the game's own F2 feedback screen goes to Mega Crit)
+
 **Agent gate**:
 The check governing whether an automated client may act on the live game at all.
 _Avoid_: guard, lock, permission

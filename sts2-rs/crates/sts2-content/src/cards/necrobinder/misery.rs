@@ -51,6 +51,15 @@ pub(crate) fn play_misery(state: &mut CombatState, target: Option<CreatureUid>) 
                 .collect()
         })
         .unwrap_or_default();
+    // C# `TemporaryStrengthPower.BeforeApplied` applies the Strength BEFORE the
+    // temporary power itself lands (PowerCmd.cs:131-135), so in C#'s
+    // `Powers` list the Strength precedes e.g. ShacklingPotion; the Rust
+    // ports apply the temporary power first. Restore C#'s copy order — it
+    // decides which copy an Artifact on the receiving enemy negates
+    // (Necrobinder full seed 2643).
+    let mut original_debuffs = original_debuffs;
+    original_debuffs
+        .sort_by_key(|(k, _)| u8::from(sts2_core::afflictions::is_temporary_power_debuff(*k)));
 
     // 2. Deal the attack damage to the target.
     let _ = deal_damage_player_to_enemy(state, t, current_damage(state));

@@ -14,7 +14,7 @@
    "bg_col": 2,
    "bg_row": 7,
    "bg_seed": 1772253313,
-   "floor": 7,
+   "floor": 8,
    "step_no": 0,
    "turn": null
   },
@@ -424,7 +424,7 @@
    ],
    "context": "upgrade",
    "decision": "card_select",
-   "floor": 7,
+   "floor": 8,
    "max_select": 1,
    "min_select": 1,
    "options": [

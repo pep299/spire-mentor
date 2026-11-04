@@ -97,6 +97,13 @@ pub fn blindfold_root(state: &mut CombatState, seed: u64) {
     canonicalize_unknown_middle(&mut state.player);
     let mut pile_rng = Rng::from_search_seed(splitmix64(seed ^ BLINDFOLD_PILE_SALT));
     cards::shuffle(&mut state.player, &mut pile_rng);
+    // Co-op (GH #1046): a teammate's draw order is as hidden as ours. Their
+    // seats shuffle after ours from the same stream, so a solo pile is
+    // byte-identical to what it was.
+    for ally in &mut state.allies {
+        canonicalize_unknown_middle(ally);
+        cards::shuffle(ally, &mut pile_rng);
+    }
 
     // 2. RNG streams: reseed every combat stream + the legacy stream from
     //    a base derived purely from `seed`, abandoning the incoming
@@ -151,6 +158,12 @@ fn reseed_hidden_streams(state: &mut CombatState, seed: u64, salt: u64) {
 pub fn belief_root(state: &mut CombatState, seed: u64) {
     canonicalize_unknown_middle(&mut state.player);
     state.player.deferred_draw_order = true;
+    // Co-op (GH #1046): each teammate's draws are deferred the same way; the
+    // flag travels with their seat through `coop::swap_seat`.
+    for ally in &mut state.allies {
+        canonicalize_unknown_middle(ally);
+        ally.deferred_draw_order = true;
+    }
     reseed_hidden_streams(state, seed, BELIEF_ROOT_STREAM_SALT);
 }
 
@@ -464,6 +477,46 @@ mod tests {
         let mut middle: Vec<CardUid> = p.draw[1..4].to_vec();
         middle.sort_unstable();
         assert_eq!(middle, expected_middle);
+    }
+
+    /// Two co-op boards whose teammate draw piles hold the same cards in
+    /// different orders (GH #1046), ours identical.
+    fn coop_pair() -> (CombatState, CombatState) {
+        let mut a = CombatState {
+            player: player_with_draw(&[3, 1, 2]),
+            ..CombatState::default()
+        };
+        a.allies.push(player_with_draw(&[14, 11, 13, 12, 15]));
+        let mut b = a.clone();
+        b.allies[0].draw = [12u32, 15, 11, 14, 13]
+            .into_iter()
+            .map(uid)
+            .collect::<SmallVec<_>>();
+        (a, b)
+    }
+
+    #[test]
+    fn blindfold_root_hides_a_teammates_draw_order() {
+        let (mut a, mut b) = coop_pair();
+        let mut solo = CombatState {
+            player: a.player.clone(),
+            ..CombatState::default()
+        };
+        blindfold_root(&mut a, 0x5EED);
+        blindfold_root(&mut b, 0x5EED);
+        blindfold_root(&mut solo, 0x5EED);
+        assert_eq!(a.allies[0].draw, b.allies[0].draw);
+        assert_eq!(a.player.draw, solo.player.draw, "our pile is the solo one");
+    }
+
+    #[test]
+    fn belief_root_defers_a_teammates_draws() {
+        let (mut a, mut b) = coop_pair();
+        belief_root(&mut a, 0x5EED);
+        belief_root(&mut b, 0x5EED);
+        assert_eq!(a.allies[0].draw, b.allies[0].draw);
+        assert!(a.allies[0].deferred_draw_order);
+        assert!(unknown_middle_is_canonical(&a.allies[0]));
     }
 
     // ── belief_root (bead `sts2-rs-09x5n`, F2 `HiddenInfoMode::BeliefDraw`) ──

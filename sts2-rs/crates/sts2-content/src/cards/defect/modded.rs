@@ -19,9 +19,8 @@ pub(crate) fn play_modded(state: &mut CombatState, _t: Option<CreatureUid>) -> E
     // hp cs=73 rs=53). Mirror Capacitor's precedent: establish the 3-slot
     // Defect base first. Modded is a Defect-only card, so the unconditional
     // default is correct here.
-    if state.player.orbs.capacity == 0 {
-        state.player.orbs = sts2_core::OrbSlots::with_default_capacity();
-    }
+    // A belt Bulk Up emptied is sized and grows from 0, as in C#.
+    state.player.orbs.ensure_defect_base();
     state.player.orbs.add_slots(1);
     // `Modded.OnPlay`: AddThisCombat(1), after any earlier modifier.
     if let Some(idx) =

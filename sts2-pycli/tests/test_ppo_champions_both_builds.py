@@ -32,10 +32,7 @@ def _play(character: str, seed: int, game_version: str | None) -> sts2_rs.RunMan
         seed=seed,
         character=character,
         neow_start=True,
-        interactive_card_removal=True,
-        interactive_card_upgrade=True,
-        interactive_card_transform=True,
-        direct_event_relic_grant=True,
+        mode="agent",
         **kwargs,
     )
     champ = champions.get(character)

@@ -55,7 +55,7 @@ pub fn build_handful_ex(
     if let Some(c) = state.creatures.iter_mut().find(|c| c.id == enemy_id) {
         c.intent = Some(cultist_intent);
     }
-    state.player.energy = energy;
+    state.player.energy = i32::from(energy);
     state.player.max_energy = energy.max(state.player.max_energy);
     for &p in potions {
         state.player.potions.push(p);
@@ -202,6 +202,7 @@ pub fn build_handful(
         pending_enemy_exec_resume: None,
         combat_log: TurnEvents::default(),
         swipe_stolen: Vec::new(),
+        deck_link: None,
         escaped_creatures: 0,
         coop: sts2_core::coop::CoopState::default(),
         heist_recovered_gold: 0,
@@ -356,6 +357,7 @@ pub fn build_vertical_slice_hp(seed: u64, player_hp: i32, cultist_hp: i32) -> Co
         pending_enemy_exec_resume: None,
         combat_log: TurnEvents::default(),
         swipe_stolen: Vec::new(),
+        deck_link: None,
         escaped_creatures: 0,
         coop: sts2_core::coop::CoopState::default(),
         heist_recovered_gold: 0,

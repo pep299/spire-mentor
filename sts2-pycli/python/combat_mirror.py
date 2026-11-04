@@ -679,6 +679,16 @@ def _cursor_drift(mirror_wire: dict[str, Any], world_wire: dict[str, Any]) -> li
     return out
 
 
+def _turn_history_disclosed(wire: dict[str, Any]) -> bool:
+    """Whether the wire carries our turn's exhausts and card block gains
+    (newer mods, GH #989). Then reality wins on them over the carried
+    mirror's, as on every other observable."""
+    from sts2_hint.adapter import TURN_HISTORY_KEYS
+
+    player = wire.get("player") or {}
+    return all(key in player for key in TURN_HISTORY_KEYS)
+
+
 def _undisclosed_relic_counters(wire: dict[str, Any]) -> list[str]:
     """Relics the wire named but told us no ``counter`` for.
 
@@ -707,6 +717,7 @@ def _undisclosed_power_counters(wire: dict[str, Any]) -> list[str]:
     reconstruction re-zeroed it — the Juggling 3rd-attack clone never fired
     (26 v28wr hand records). Naming them lets the transplant keep the carried
     mirror's accumulation; a counter reality DID report keeps reality's.
+    (Juggling's is now derived from the wire instead, see ``derived``.)
     """
     #: Powers whose counter `state_from_dict` DERIVES from the wire
     #: (`display` for the countdown family) — the wire does disclose those,
@@ -718,7 +729,20 @@ def _undisclosed_power_counters(wire: dict[str, Any]) -> list[str]:
     #: fix in two halves — either alone is a no-op (the carry would overwrite
     #: the derivation) or a regression (the derivation would be dropped for a
     #: mirror counter that has no wire backing).
-    derived = {"SLOW", "WITHERING_PRESENCE", "AUTOMATION", "PANACHE", "ORBIT"}
+    #:
+    #: JUGGLING joined on GH #989: ``state_dict.rs`` seeds its attacks this turn
+    #: from the wire's ``cards_played_this_turn``, as C# ``AfterApplied`` does
+    #: from History. HARDENED_SHELL joined with it: its ``DisplayAmount`` is the
+    #: HP it still lets through this turn.
+    derived = {
+        "SLOW",
+        "WITHERING_PRESENCE",
+        "AUTOMATION",
+        "PANACHE",
+        "ORBIT",
+        "JUGGLING",
+        "HARDENED_SHELL",
+    }
     out: set[str] = set()
     sides = [((wire.get("player") or {}).get("powers")) or []]
     for e in wire.get("encounter") or []:
@@ -1430,6 +1454,7 @@ class CombatMirror:
                 carry_rng=not world_rng,
                 carry_relic_counters=_undisclosed_relic_counters(wire),
                 carry_power_counters=_undisclosed_power_counters(wire),
+                carry_turn_history=not _turn_history_disclosed(wire),
             )
         except Exception as exc:  # re-raised as a divergence below
             self._diverge(
@@ -1561,6 +1586,7 @@ class CombatMirror:
                 carry_rng=not world_rng,
                 carry_relic_counters=_undisclosed_relic_counters(wire),
                 carry_power_counters=_undisclosed_power_counters(wire),
+                carry_turn_history=not _turn_history_disclosed(wire),
             )
         except Exception:
             # The salvage is best-effort by definition; the reseed stands.
@@ -1631,7 +1657,7 @@ class CombatMirror:
         self._last_action = action
         self._last_result = result
 
-        if result == "invalid_target":
+        if result in ("invalid_target", "illegal_play"):
             self._diverge(
                 f"engine rejected an action the world committed: {action!r}",
                 kind="invalid_action",

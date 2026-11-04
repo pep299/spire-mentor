@@ -26,7 +26,7 @@
   "bg_col": null,
   "bg_row": null,
   "bg_seed": null,
-  "floor": 0,
+  "floor": 1,
   "step_no": 1,
   "turn": null
  },
@@ -68,7 +68,7 @@
     "title": "Precarious Shears"
    }
   ],
-  "floor": 0,
+  "floor": 1,
   "options": [
    {
     "description": "",

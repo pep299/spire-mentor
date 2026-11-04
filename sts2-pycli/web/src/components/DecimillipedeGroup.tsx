@@ -1,7 +1,7 @@
 import Combatant from "./Combatant";
 import SpineSprite from "./SpineSprite";
 import type { CrabArm } from "./KaiserCrabGroup";
-import { rigBox } from "../rigBounds";
+import { mirroredBox } from "./decimillipedeLayout";
 
 /**
  * Renders the Decimillipede elite as its real connected body: three segment rigs
@@ -31,28 +31,6 @@ export const SEGMENT_SCALE = 0.45;
 
 /** Draw order, back of the animal first, so the head sits nearest the camera. */
 const ORDER = ["back", "middle", "front"];
-
-/** A segment's mirrored box in rig units, relative to the shared root. */
-function mirroredBox(rig: string | null | undefined) {
-  const box = rigBox(rig);
-  if (!box) return null;
-  // flipX mirrors about the root: [x, x+w] becomes [-(x+w), -x].
-  return { left: -(box.x + box.w), right: -box.x, w: box.w, h: box.h, bottom: box.y };
-}
-
-/** The whole animal's box in rig units, relative to the shared root — what the
- *  scene layout spaces the elite by. */
-export function decimillipedeSpan(rigs: (string | null | undefined)[]): { left: number; right: number } {
-  let left = 0, right = 0, any = false;
-  for (const rig of rigs) {
-    const b = mirroredBox(rig);
-    if (!b) continue;
-    left = any ? Math.min(left, b.left) : b.left;
-    right = any ? Math.max(right, b.right) : b.right;
-    any = true;
-  }
-  return any ? { left, right } : { left: -600, right: 600 };
-}
 
 export default function DecimillipedeGroup({ segments, pxPerScene = 1, locStrings }: {
   segments: CrabArm[];

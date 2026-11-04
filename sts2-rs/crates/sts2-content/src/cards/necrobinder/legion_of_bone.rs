@@ -23,7 +23,10 @@ pub(crate) fn play_legion_of_bone(
     _target: Option<CreatureUid>,
 ) -> EffectResult {
     let amount = if current_card_upgraded(state) { 8 } else { 6 };
-    let _ = state.summon_osty(amount);
+    // C# `LegionOfBone.cs`: every living player summons.
+    sts2_core::coop::every_player(state, |state| {
+        let _ = state.summon_osty(amount);
+    });
     EffectResult::Resolved
 }
 

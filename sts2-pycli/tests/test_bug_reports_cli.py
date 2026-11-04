@@ -85,3 +85,60 @@ def test_unpack_writes_the_dump_and_the_run_it_carries(tmp_path: Path):
         "wb-fedcba9876543210.persist.json",
     ]
     assert json.loads(written[1].read_text()) == {"character": "Silent", "nodes": []}
+
+
+def test_unpack_a_mod_report_yields_the_position_the_save_and_the_logs(tmp_path: Path):
+    position = {"type": "advice_request", "advice_for": "combat_action", "floor": 7}
+    dump = {
+        "schema_version": 1,
+        "meta": {"id": "wb-00000000000000ff", "source": "mod", "mode": "game"},
+        "repro": {
+            "run_save": {"snapshot": {"id": "1-2"}, "save": {"schema_version": 9}},
+            "run_file": "advisor.jsonl",
+            "run_log": '{"type":"meta"}',
+        },
+        "state": {"game_state": position, "map": None},
+        "ui": {"screen": "combat_action", "overlay": None},
+        "logs": {"mod": ["a", "b"], "game": "godot tail", "advisor": None},
+        "note": "orb evoked twice",
+    }
+    rid = "wb-00000000000000ff"
+    written = bug_reports.unpack(dump, tmp_path, rid)
+    assert [p.name for p in written] == [
+        f"{rid}.json",
+        f"{rid}.jsonl",
+        f"{rid}.state.json",
+        f"{rid}.run_save.json",
+        f"{rid}.mod.log",
+        f"{rid}.game.log",
+    ]
+    assert json.loads((tmp_path / f"{rid}.state.json").read_text(encoding="utf-8")) == position
+    assert json.loads((tmp_path / f"{rid}.run_save.json").read_text(encoding="utf-8")) == {
+        "schema_version": 9
+    }
+    assert (tmp_path / f"{rid}.mod.log").read_text(encoding="utf-8") == "a\nb\n"
+
+
+def test_game_position_matches_the_workbench_rule():
+    pos = {"type": "run_snapshot"}
+    assert (
+        bug_reports.game_position({"meta": {"source": "mod"}, "state": {"game_state": pos}}) == pos
+    )
+    assert bug_reports.game_position({"meta": {}, "state": {"live_game": pos}}) == pos
+    # A workbench step is not a game position, whatever the meta says.
+    assert (
+        bug_reports.game_position(
+            {"meta": {"source": "mod"}, "state": {"game_state": {"floor": 1}}}
+        )
+        is None
+    )
+    assert bug_reports.game_position({"meta": {}, "state": {"game_state": pos}}) is None
+
+
+def test_kv_value_parses_past_a_banner():
+    dump = {"schema_version": 1, "meta": {"id": "wb-0123456789abcdef"}}
+    text = "▲ [WARNING] Proxy environment variables detected.\n" + json.dumps(dump, indent=1)
+    assert bug_reports.parse_kv_value(text) == dump
+    assert bug_reports.parse_kv_value(json.dumps(dump)) == dump
+    with pytest.raises(SystemExit):
+        bug_reports.parse_kv_value("Value not found")

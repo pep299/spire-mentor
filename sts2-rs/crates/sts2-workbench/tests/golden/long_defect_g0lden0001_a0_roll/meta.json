@@ -23,7 +23,6 @@
   "route:/api/live/deck-analysis",
   "route:/api/live/from_replay",
   "route:/api/live/hint",
-  "route:/api/live/last-move-regret",
   "route:/api/live/map",
   "route:/api/live/ppo-policy",
   "route:/api/live/quit",
@@ -55,12 +54,12 @@
   "status:409"
  ],
  "engine": {
-  "src_hash": "13941df1bbea7678",
+  "src_hash": "4e5518f56fa396f6",
   "version": "0.0.1"
  },
  "final_act": 2,
- "final_floor": 19,
- "full_responses": 135,
+ "final_floor": 21,
+ "full_responses": 126,
  "full_steps": 40,
  "patches": {
   "assets_base_url": "https://assets.test",
@@ -69,7 +68,7 @@
  },
  "python": "3.13",
  "reached_game_over": true,
- "requests": 517,
+ "requests": 465,
  "scenario": {
   "act1": "roll",
   "ascension": 0,
@@ -99,10 +98,6 @@
    {
     "at": 30,
     "kind": "choice_ranker"
-   },
-   {
-    "at": 31,
-    "kind": "last_move_regret"
    },
    {
     "at": 35,
@@ -146,10 +141,6 @@
     "kind": "search_tree"
    },
    {
-    "at": 56,
-    "kind": "last_move_regret"
-   },
-   {
     "at": 60,
     "kind": "save",
     "name": "golden mid"
@@ -188,10 +179,6 @@
     "kind": "choice_ranker"
    },
    {
-    "at": 81,
-    "kind": "last_move_regret"
-   },
-   {
     "at": 85,
     "kind": "reward_preview"
    },
@@ -220,10 +207,6 @@
     "kind": "search_tree"
    },
    {
-    "at": 106,
-    "kind": "last_move_regret"
-   },
-   {
     "at": 125,
     "kind": "state"
    },
@@ -238,10 +221,6 @@
    {
     "at": 130,
     "kind": "choice_ranker"
-   },
-   {
-    "at": 131,
-    "kind": "last_move_regret"
    },
    {
     "at": 150,
@@ -846,5 +825,5 @@
   ],
   "seed": "G0LDEN0001"
  },
- "steps_played": 427
+ "steps_played": 384
 }

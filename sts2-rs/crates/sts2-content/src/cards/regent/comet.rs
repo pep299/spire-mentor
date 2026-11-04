@@ -2,7 +2,6 @@
 use super::prelude::*;
 
 /// Comet — damage + 3 Weak + 3 Vulnerable on the target.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L638
 pub(crate) fn play_comet(state: &mut CombatState, target: Option<CreatureUid>) -> EffectResult {
     let t = target.expect("Comet: Enemy-targeted");
     let _ = deal_damage_player_to_enemy(state, t, current_damage(state));

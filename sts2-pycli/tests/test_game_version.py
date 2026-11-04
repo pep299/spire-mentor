@@ -54,11 +54,26 @@ def test_resolve_reads_env(monkeypatch) -> None:
 
 
 def test_paths_are_version_keyed() -> None:
+    # The apphost's file name is per-platform and pinned by
+    # `test_headless_bin_names_the_platform_apphost`; this pins the directory.
     root = sts2_client.REPO_ROOT
-    assert sts2_client.headless_bin("v0.111.0") == os.path.join(
-        root, "src", "Sts2Headless", "bin", "v0.111.0", "Debug", "net9.0", "Sts2Headless"
+    assert os.path.dirname(sts2_client.headless_bin("v0.111.0")) == os.path.join(
+        root, "src", "Sts2Headless", "bin", "v0.111.0", "Debug", "net9.0"
     )
     assert sts2_client.lib_dir("v0.111.0") == os.path.join(root, "lib", "v0.111.0")
+
+
+@pytest.mark.parametrize(
+    ("platform", "apphost"), [("win32", "Sts2Headless.exe"), ("linux", "Sts2Headless")]
+)
+def test_headless_bin_names_the_platform_apphost(monkeypatch, platform, apphost) -> None:
+    """GH #506: the Windows apphost is ``Sts2Headless.exe``.
+
+    Without the suffix ``_spawn_cmd``'s ``isfile`` probe never matched there,
+    so every spawn took the slow ``dotnet run`` fallback with the binary built.
+    """
+    monkeypatch.setattr(sts2_client.sys, "platform", platform)
+    assert os.path.basename(sts2_client.headless_bin("v0.107.1")) == apphost
 
 
 def test_set_game_version_moves_globals_and_env(restore_version) -> None:

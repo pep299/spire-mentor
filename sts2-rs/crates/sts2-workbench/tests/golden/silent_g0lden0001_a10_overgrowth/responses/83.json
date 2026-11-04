@@ -10,7 +10,7 @@
   "bg_col": 3,
   "bg_row": 4,
   "bg_seed": 1772253313,
-  "floor": 4,
+  "floor": 5,
   "step_no": 0,
   "turn": 4
  },
@@ -365,7 +365,7 @@
    }
   ],
   "exhaust_pile_count": 2,
-  "floor": 4,
+  "floor": 5,
   "hand": [
    {
     "base_cost": 1,

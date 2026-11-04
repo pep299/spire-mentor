@@ -89,10 +89,13 @@
     "action": "end turn",
     "hp_n": 0,
     "hp_sd": null,
+    "in_band": false,
     "is_best": true,
     "losses": 0,
     "low_confidence": false,
     "mean_final_hp": null,
+    "pick_rank": null,
+    "pick_reason": null,
     "q": 0.0,
     "q_saturated": false,
     "stable_idx": -1,
@@ -116,7 +119,7 @@
    "bg_col": 2,
    "bg_row": 5,
    "bg_seed": 1,
-   "floor": 5,
+   "floor": 6,
    "step_no": 0,
    "turn": 3
   },
@@ -388,7 +391,7 @@
    "energy_image": "https://assets.test/sprite_fonts/ironclad_energy_icon.png",
    "exhaust_pile": [],
    "exhaust_pile_count": 0,
-   "floor": 5,
+   "floor": 6,
    "hand": [
     {
      "base_cost": 2,
@@ -711,7 +714,7 @@
       "upgraded": false
      }
     ],
-    "gold": 31,
+    "gold": 33,
     "hp": 53,
     "image": "https://assets.test/character_sprites/ironclad.png",
     "max_hp": 80,

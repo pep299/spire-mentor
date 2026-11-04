@@ -507,6 +507,7 @@ mod tests {
                 amount: 1,
                 type_restriction: None,
                 secondary_type: None,
+                optional: false,
             });
         let actions = rm.get_available_actions();
         assert!(

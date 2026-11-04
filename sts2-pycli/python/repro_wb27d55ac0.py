@@ -94,11 +94,8 @@ def build_rm(deck: list[tuple[str, bool]]):
     rm = sts2_rs.RunManager(
         seed=SEED,
         character=CHARACTER,
-        interactive_card_removal=True,
-        interactive_card_upgrade=True,
-        interactive_card_transform=True,
+        mode="agent",
         interactive_potion_swap=True,
-        direct_event_relic_grant=True,
     )
     for cid, _ in deck_of(rm):
         rm.force_remove_card(cid)

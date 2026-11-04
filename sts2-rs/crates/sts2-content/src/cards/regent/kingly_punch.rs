@@ -9,7 +9,6 @@ use super::prelude::*;
 /// +3 base_damage once on play). The per-draw +4 rider is wired in
 /// `sts2_core::CombatState::invoke_card_drawn_for_newly_drawn`
 /// (`KINGLY_PUNCH_DRAW_INCREASE`), keyed off `CardId::KinglyPunch`.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L386
 pub(crate) fn play_kingly_punch(
     state: &mut CombatState,
     target: Option<CreatureUid>,

@@ -2,7 +2,11 @@ import { useEffect, useRef, useState } from "react";
 
 export interface BugReportResult {
   id: string;
+  /** The shareable link — or, when the report could not be sent (the
+   *  mod-bundled workbench with no store to reach), the saved file's path. */
   url: string;
+  /** Set when the report was saved locally instead of sent: why, and where. */
+  detail?: string;
 }
 
 /**
@@ -84,9 +88,10 @@ export default function BugReportToast({
               aria-label="report URL" onFocus={(e) => e.currentTarget.select()}
               style={{ flex: "1 1 auto", minWidth: 0 }} />
             <button type="button" onClick={() => void copy()} title="Copy report URL">
-              {copied ? "copied ✓" : "copy link"}
+              {copied ? "copied ✓" : /^https?:/.test(result?.url ?? "") ? "copy link" : "copy path"}
             </button>
           </div>
+          {result?.detail && <span className="wb-hint" data-testid="bugreport-detail">{result.detail}</span>}
           {copied === false && (
             <span className="wb-hint">clipboard refused — the link is selected, copy it with ctrl-C</span>
           )}

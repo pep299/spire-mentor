@@ -117,6 +117,12 @@ fn serialize_action(a: &Action) -> String {
             || format!("{{\"type\":\"play_card\",\"hand_index\":{hand_index}}}"),
             |t| format!("{{\"type\":\"play_card\",\"hand_index\":{hand_index},\"target\":{t}}}"),
         ),
+        Action::PlayCardAtAlly { hand_index, ally } => {
+            format!("{{\"type\":\"play_card\",\"hand_index\":{hand_index},\"ally\":{ally}}}")
+        }
+        Action::DrinkPotionAtAlly { potion_slot, ally } => {
+            format!("{{\"type\":\"drink_potion\",\"slot\":{potion_slot},\"ally\":{ally}}}")
+        }
         Action::EndTurn => "{\"type\":\"end_turn\"}".into(),
         Action::UsePotion { slot, target } => target.as_ref().map_or_else(
             || format!("{{\"type\":\"use_potion\",\"slot\":{slot}}}"),

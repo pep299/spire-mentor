@@ -2,8 +2,18 @@
 use super::prelude::*;
 
 /// Entrench. Cost 2. Double current block.
+///
+/// C# `Entrench.OnPlay`: `CreatureCmd.GainBlock(owner, owner.Block,
+/// ValueProp.Unpowered | ValueProp.Move, cardPlay)`. Unpowered, so
+/// Dexterity / Frail leave it alone; still card-sourced, so a Nimble
+/// enchantment adds to it (v0.107.1 patch note; GH #1021).
 pub(crate) fn play_entrench(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
+    use sts2_core::hooks::ValueProps;
     let extra = state.player.block;
-    gain_block_player(state, extra);
+    sts2_core::card_effects::gain_block_player_with_props(
+        state,
+        extra,
+        ValueProps::UNPOWERED.union(ValueProps::MOVE),
+    );
     EffectResult::Resolved
 }

@@ -222,9 +222,9 @@ to replay every combat decision, diff it against the MCTS line, and surface the
 e.g. *"Turn 3: Strike instead of Defend dropped P(win) 71%→58% (−13 pts)"*.
 It reads each step's recorded MCTS stats when present, and re-runs the search
 (faithful fixture replay when available) otherwise — pass `{"recompute": true}`
-to force a fresh search. In a live run, `POST /api/live/last-move-regret` flags a
-blunder right after you make one, comparing the move you just played against the
-recommended line. Win-probabilities are the same `wins/visits` the hint panel
+to force a fresh search. In a live run, the browser workbench grades each combat
+turn as it ends (`POST /api/live/last-turn-grade`), comparing the line you played
+against the recommended one. Win-probabilities are the same `wins/visits` the hint panel
 shows.
 
 ### Inspecting MCTS runs

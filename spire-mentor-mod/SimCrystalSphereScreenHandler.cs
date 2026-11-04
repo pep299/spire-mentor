@@ -84,6 +84,8 @@ public class SimCrystalSphereScreenHandler : IScreenHandler, IHandler
                 case CrystalSphereChoiceKind.Cell:
                     NCrystalSphereCell cell = choice.Cell!;
                     AutoSlayLog.Info($"[SimCrystalSphere] Divining cell ({cell.Entity.X}, {cell.Entity.Y})");
+                    // The agent's block order assumes the Big tool (PROTOCOL.md).
+                    SimScreenAdvice.SelectBigDivination(screen);
                     cell.EmitSignal(NClickableControl.SignalName.Released, cell);
                     await Task.Delay(CellClickSettleMs, ct);
                     break;

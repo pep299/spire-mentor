@@ -1,6 +1,7 @@
 import { render } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
-import Combatant, { nameplateText } from "../Combatant";
+import Combatant from "../Combatant";
+import { nameplateText } from "../combatantMetrics";
 import { enemyLabeller } from "../../enemyLabels";
 
 vi.mock("../SpineSprite", () => ({

@@ -2,7 +2,6 @@
 use super::prelude::*;
 
 /// MonologueCard — apply 1 Monologue to self.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L441
 pub(crate) fn play_monologue_card(
     state: &mut CombatState,
     _t: Option<CreatureUid>,

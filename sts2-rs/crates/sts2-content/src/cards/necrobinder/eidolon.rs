@@ -83,13 +83,44 @@ fn play_eidolon_v0111(state: &mut CombatState) -> EffectResult {
                 && !sts2_core::card_effects::card_unplayable_inst(card)
         })
         .collect();
-    for uid in picks {
+    eidolon_run(state, &picks);
+    EffectResult::Resolved
+}
+
+/// Auto-play Eidolon's captured exhaust cards in order. C# `await`s each
+/// `CardCmd.AutoPlay`, so a card that opens a surfacing select (Graveblast's
+/// discard pick) fully resolves before the next captured card plays (Seance's
+/// draw-pile pick). On a surfaced select, suspend and hand the rest of the
+/// list to the resolver, like BeatDown. Without this, Seance's select
+/// replaced Graveblast's and the Graveblast pick never happened
+/// (Necrobinder-1001 act-3 `hand_count` split, GH #1054).
+fn eidolon_run(state: &mut CombatState, cards: &[sts2_core::CardUid]) {
+    for (i, &uid) in cards.iter().enumerate() {
         // C# `CardCmd.AutoPlay` returns at once when combat is over or ending
         // (decomp CardCmd.cs:54).
         if sts2_core::combat_loop::combat_is_ending(state) || state.player.current_hp <= 0 {
             break;
         }
         let _ = sts2_core::combat_loop::auto_play_specific_card_from_discard(state, uid, false);
+        if let Some(resume) = state.pending_autoplay_resume.as_mut() {
+            resume.continuation = Some(sts2_core::AutoPlayLoopCont {
+                resume_fn: eidolon_resume,
+                iters: 0,
+                uids: cards[i + 1..].iter().copied().collect(),
+                force_exhaust: false,
+            });
+            return;
+        }
     }
-    EffectResult::Resolved
+}
+
+/// Resume entry point stored on [`sts2_core::AutoPlayLoopCont`]: play the
+/// remaining captured Eidolon cards.
+fn eidolon_resume(
+    state: &mut CombatState,
+    _iters: u32,
+    uids: &[sts2_core::CardUid],
+    _force_exhaust: bool,
+) {
+    eidolon_run(state, uids);
 }

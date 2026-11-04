@@ -1371,14 +1371,29 @@ fn softmax_sample<R: Rng>(rng: &mut R, priorities: &[i16], n_actions: usize) -> 
 }
 
 /// How a simulated co-op teammate plays (`sts2_core::coop::TeammatePolicy`):
-/// the rollout heuristic, from an RNG seeded by the caller so the teammate's
-/// turn is a pure function of the state. Like a rollout it plays every card
-/// it can afford, which is what a teammate who has not ended their turn
-/// usually does.
+/// the playout net of the teammate's own character (they play seated, so
+/// [`crate::rollout_net::net_for`] reads their character), from an RNG seeded
+/// by the caller so the teammate's turn is a pure function of the state. A
+/// character without a net plays the rollout heuristic.
+///
+/// The heuristic alone was the policy until GH #1046: it picks targets at
+/// random, so against several enemies the teammate spread its damage and
+/// rarely killed anything (Phantasmal Gardeners: solo 10/10, co-op 0–1/10).
+/// `STS2_TEAMMATE_POLICY=heuristic` brings it back for an A/B.
 pub fn teammate_policy(state: &CombatState, actions: &[Action], seed: u64) -> usize {
     use rand::SeedableRng;
     let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(seed ^ 0x7EA3_4A7E_5EA7_0000);
-    pick_rollout_action(&mut rng, state, actions)
+    if teammate_plays_heuristic() {
+        pick_rollout_action(&mut rng, state, actions)
+    } else {
+        crate::rollout_net::pick(&mut rng, state, actions, END_TURN_PRIORITY)
+    }
+}
+
+/// `STS2_TEAMMATE_POLICY=heuristic`, read once.
+fn teammate_plays_heuristic() -> bool {
+    static HEURISTIC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *HEURISTIC.get_or_init(|| std::env::var("STS2_TEAMMATE_POLICY").is_ok_and(|v| v == "heuristic"))
 }
 
 /// Fused coverage gate + rollout-policy pick for the per-rollout-step
@@ -1539,7 +1554,9 @@ fn pick_rollout_action_by<R: Rng>(
     let mut covered: u32 = 0;
     for a in actions {
         let slot = match a {
-            Action::PlayCard { hand_index, target } => {
+            Action::PlayCard { .. } | Action::PlayCardAtAlly { .. } => {
+                let (hi, tgt) = a.card_play().expect("a card play");
+                let (hand_index, target) = (&hi, &tgt);
                 play_card_count = play_card_count.saturating_add(1);
                 let card = state
                     .player
@@ -1621,15 +1638,19 @@ pub fn heuristic_priorities_with(
     actions
         .iter()
         .map(|a| match a {
-            Action::PlayCard { hand_index, target } => state
-                .player
-                .hand
-                .get(*hand_index as usize)
-                .and_then(|uid| state.cards.get(uid.0.get() as usize - 1))
-                .map_or(NEUTRAL_PRIORITY, |card| {
-                    let base = play_ordering(card.card_id, state.player.character);
-                    play_card_priority(state, card, *target, base, &ctx)
-                }),
+            Action::PlayCard { .. } | Action::PlayCardAtAlly { .. } => {
+                let (hi, tgt) = a.card_play().expect("a card play");
+                let (hand_index, target) = (&hi, &tgt);
+                state
+                    .player
+                    .hand
+                    .get(*hand_index as usize)
+                    .and_then(|uid| state.cards.get(uid.0.get() as usize - 1))
+                    .map_or(NEUTRAL_PRIORITY, |card| {
+                        let base = play_ordering(card.card_id, state.player.character);
+                        play_card_priority(state, card, *target, base, &ctx)
+                    })
+            }
             Action::EndTurn => end_turn_priority,
             _ => NEUTRAL_PRIORITY,
         })
@@ -1786,7 +1807,9 @@ pub fn rollout_pricing(
     let priced: Vec<PricedAction> = actions
         .iter()
         .map(|a| match a {
-            Action::PlayCard { hand_index, target } => {
+            Action::PlayCard { .. } | Action::PlayCardAtAlly { .. } => {
+                let (hi, tgt) = a.card_play().expect("a card play");
+                let (hand_index, target) = (&hi, &tgt);
                 play_cards += 1;
                 let card = state
                     .player
@@ -2014,7 +2037,7 @@ impl HpAwareCtx {
 /// common case where a Strike or two clears the front enemy.
 fn max_player_attack_damage_this_turn(state: &CombatState) -> i32 {
     use sts2_core::cards::CardType;
-    let energy = i32::from(state.player.energy.max(0));
+    let energy = state.player.energy.max(0);
     if energy <= 0 {
         return 0;
     }
@@ -2168,7 +2191,9 @@ fn debuff_setup_priority_delta(
 /// priority so the heuristic still mixes in scaling/setup plays.
 fn action_priority(state: &CombatState, action: &Action, ctx: &HpAwareCtx) -> i16 {
     match action {
-        Action::PlayCard { hand_index, target } => {
+        Action::PlayCard { .. } | Action::PlayCardAtAlly { .. } => {
+            let (hi, tgt) = action.card_play().expect("a card play");
+            let (hand_index, target) = (&hi, &tgt);
             let Some(card_uid) = state.player.hand.get(*hand_index as usize) else {
                 return NEUTRAL_PRIORITY;
             };
@@ -2185,6 +2210,7 @@ fn action_priority(state: &CombatState, action: &Action, ctx: &HpAwareCtx) -> i1
         // them but doesn't strongly prefer them over card plays.
         Action::UsePotion { .. }
         | Action::DrinkPotion { .. }
+        | Action::DrinkPotionAtAlly { .. }
         | Action::Channel { .. }
         | Action::Evoke { .. }
         | Action::ResolveChoice { .. } => NEUTRAL_PRIORITY,
@@ -2309,7 +2335,8 @@ pub fn rollout_coverage_fraction(state: &CombatState, actions: &[Action]) -> f32
     let mut play_card_count: u32 = 0;
     let mut covered: u32 = 0;
     for a in actions {
-        if let Action::PlayCard { hand_index, .. } = a {
+        if let Some((hand_index, _)) = a.card_play() {
+            let hand_index = &hand_index;
             play_card_count = play_card_count.saturating_add(1);
             let Some(card_uid) = state.player.hand.get(*hand_index as usize) else {
                 continue;
@@ -2408,9 +2435,10 @@ const fn is_strike_basic(id: CardId) -> bool {
 /// have been free to fire first.
 #[must_use]
 pub fn draw_window_root_q_bonus(state: &CombatState, action: &Action) -> f32 {
-    let Action::PlayCard { hand_index, .. } = action else {
+    let Some((hand_index, _)) = action.card_play() else {
         return 0.0;
     };
+    let hand_index = &hand_index;
     let Some(card_uid) = state.player.hand.get(*hand_index as usize) else {
         return 0.0;
     };
@@ -2512,7 +2540,7 @@ fn obvious_kill_action(state: &CombatState, actions: &[Action]) -> Option<usize>
             (strength, weak)
         });
 
-    let energy = i32::from(state.player.energy.max(0));
+    let energy = state.player.energy.max(0);
 
     for (idx, action) in actions.iter().enumerate() {
         let Action::PlayCard { hand_index, target } = action else {
@@ -2591,8 +2619,8 @@ pub enum RolloutPolicyKind {
     Learned,
     /// The playout net ([`crate::rollout_net`], GH #777): the net named by
     /// `STS2_ROLLOUT_NET` when set, else the built-in net for the fight's
-    /// character. A character without one (every character but Ironclad
-    /// today) plays [`Self::Heuristic`] unchanged. The deployed honest
+    /// character. A character without one plays [`Self::Heuristic`]
+    /// unchanged (all five characters ship a net today). The deployed honest
     /// dialect selects it ([`crate::MctsConfig::apply_mode_dialect`]).
     Net,
 }

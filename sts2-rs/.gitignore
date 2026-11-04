@@ -120,6 +120,9 @@ data/run-fixtures-hard/
 # Disjoint-seed pool the fitted rollout priority table trains on
 # (`just harvest-fixtures-rollout`, GH #805).
 data/run-fixtures-rollout/
+# A10 Ironclad + Defect pool the tie-rule probe plays (`just
+# harvest-fixtures-ties`, GH #1022).
+data/run-fixtures-ties/
 
 # MCTS high-ascension (A8-A10) campaign. The loose files stay out of git; the
 # whole campaign — fixture pool AND raw result rows — is committed instead as

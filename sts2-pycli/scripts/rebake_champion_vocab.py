@@ -71,16 +71,23 @@ def sha256_of(path: Path) -> str:
     return h.hexdigest()
 
 
-def random_inputs(rng: np.random.Generator, t_max: int, a_max: int) -> dict:
+def random_inputs(
+    rng: np.random.Generator, t_max: int, a_max: int, cat_dim: int, n_cont: int
+) -> dict:
     """One synthetic decision, valid for BOTH graph widths except the boss
     column, which the caller patches per-graph (its pad index moved).
 
     The observation occupies the first ``obs_len`` tokens with in-range ids;
     everything after is padding, masked out of attention and the value pool.
-    """
-    from ppo.schema import N_CONT, N_SECTION, empty_cat
 
-    pad = np.array(empty_cat(), dtype=np.int64)
+    ``cat_dim`` / ``n_cont`` come from the graph, not from ``ppo.schema``:
+    champions are promoted at different schema generations (cat 10..14, cont
+    19..26 today), and an input sized from the CURRENT schema is rejected by
+    every older champion before the comparison runs (GH #576).
+    """
+    from ppo.schema import N_SECTION, empty_cat
+
+    pad = np.array(empty_cat(), dtype=np.int64)[:cat_dim]
     obs_len = 24
     cat = np.tile(pad, (1, t_max, 1))
     for t in range(obs_len + a_max):
@@ -93,7 +100,7 @@ def random_inputs(rng: np.random.Generator, t_max: int, a_max: int) -> dict:
     pad_mask[0, : obs_len + a_max] = False
     return {
         "cat": cat,
-        "cont": rng.standard_normal((1, t_max, N_CONT)).astype(np.float32),
+        "cont": rng.standard_normal((1, t_max, n_cont)).astype(np.float32),
         "sec": rng.integers(0, N_SECTION, size=(1, t_max)).astype(np.int64),
         "pad_mask": pad_mask,
         "obs_len": np.array([obs_len], dtype=np.int64),
@@ -120,29 +127,50 @@ def boss_rows(path: Path) -> int | None:
     return None
 
 
+def input_contract(path: Path) -> dict[str, list]:
+    """The graph's input names -> shapes (the contract the Rust host feeds)."""
+    import onnxruntime as ort
+
+    sess = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+    return {i.name: list(i.shape) for i in sess.get_inputs()}
+
+
 def compare_graphs(old: Path, new: Path, trials: int = 8) -> None:
-    """Assert the two graphs answer identically on trained boss rows."""
+    """Assert the two graphs answer identically on trained boss rows.
+
+    Whether the table SHOULD have grown is the caller's call: on the mutating
+    path a same-width re-export is "already current, nothing to do", and on the
+    ``--check`` path it is the healthy state ``--check`` exists to confirm
+    (GH #576 -- this used to assert ``new > old`` unconditionally, so
+    ``--check`` could never pass once the migration was done).
+    """
     import onnxruntime as ort
 
     old_rows, new_rows = boss_rows(old), boss_rows(new)
     print(f"    emb_boss rows {old_rows} -> {new_rows}")
     # The caller only screens the OLD graph for a boss table. A re-export that
     # dropped it would reach here as `None` and compare as a TypeError, so name
-    # the failure instead of letting the `>` below raise it.
+    # the failure instead of letting the `>=` below raise it.
     assert old_rows is not None, "old graph has no emb_boss table to compare"
     assert new_rows is not None, "re-bake dropped the emb_boss table"
-    assert new_rows > old_rows, "re-bake did not widen the boss table"
+    assert new_rows >= old_rows, (
+        f"re-export NARROWED the boss table ({old_rows} -> {new_rows}); "
+        "the current vocab is smaller than the committed champion's"
+    )
 
     so = ort.SessionOptions()
     so.intra_op_num_threads = 1
     s_old = ort.InferenceSession(str(old), so, providers=["CPUExecutionProvider"])
     s_new = ort.InferenceSession(str(new), so, providers=["CPUExecutionProvider"])
-    t_max = s_old.get_inputs()[1].shape[1]
-    a_max = s_old.get_inputs()[5].shape[1]
+    inputs = {i.name: i.shape for i in s_old.get_inputs()}
+    t_max = inputs["cat"][1]
+    a_max = inputs["act_mask"][1]
+    cat_dim = inputs["cat"][2]
+    n_cont = inputs["cont"][2]
 
     rng = np.random.default_rng(0)
     for i in range(trials):
-        feed = random_inputs(rng, t_max, a_max)
+        feed = random_inputs(rng, t_max, a_max, cat_dim, n_cont)
         # The boss pad row moved with the table, so each graph gets its own.
         feed_old = dict(feed)
         feed_new = dict(feed)
@@ -181,8 +209,11 @@ def main() -> int:
         f"(emb_boss must be {vocab.bosses().size + 1} rows)"
     )
 
-    champions = tomllib.loads(CHAMPIONS_TOML.read_text())
+    target_rows = vocab.bosses().size + 1
+    champions = tomllib.loads(CHAMPIONS_TOML.read_text(encoding="utf-8"))
     updates: dict[str, str] = {}
+    stale: list[str] = []
+    blocked: list[str] = []
     with tempfile.TemporaryDirectory() as tmp:
         tmpdir = Path(tmp)
         for character, entry in champions.items():
@@ -192,27 +223,73 @@ def main() -> int:
             if not ckpt_path.exists():
                 print(f"    SKIP: checkpoint {ckpt_path.name} is missing")
                 continue
-            if boss_rows(onnx_path) is None:
+            old_rows = boss_rows(onnx_path)
+            if old_rows is None:
                 print(
                     "    SKIP: pre-boss champion (cat_dim 9, no emb_boss table) — "
                     "unaffected by the boss-vocab change"
                 )
                 continue
-            backup = tmpdir / f"{character}.before.onnx"
-            shutil.copy2(onnx_path, backup)
-            out = (tmpdir / f"{character}.after.onnx") if args.check else onnx_path
+            # Always export to a temp file first: the committed champion is
+            # only replaced after the re-export has been verified.
+            out = tmpdir / f"{character}.after.onnx"
             export(str(ckpt_path), str(out))
-            compare_graphs(backup, Path(out))
-            digest = sha256_of(Path(out))
+
+            # `export` emits the CURRENT schema width (trailing cat/cont columns
+            # zero-filled by `load_compat`), so for a champion promoted at an
+            # older schema the re-export is a different input contract, not a
+            # boss-row re-lay. Never install that; and its graphs cannot be fed
+            # the same inputs, so there is nothing to compare bit-for-bit.
+            old_in, new_in = input_contract(onnx_path), input_contract(out)
+            if old_in != new_in:
+                changed = {
+                    k: (old_in.get(k), new_in.get(k))
+                    for k in old_in
+                    if old_in.get(k) != new_in.get(k)
+                }
+                if old_rows == target_rows:
+                    print(
+                        f"    OK: emb_boss already {old_rows} rows. (A re-export from the "
+                        f"checkpoint would change the input contract {changed}; not compared.)"
+                    )
+                else:
+                    blocked.append(character)
+                    print(
+                        f"    BLOCKED: emb_boss is {old_rows} rows (want {target_rows}), but a "
+                        f"re-export would also change the input contract {changed}. That is a "
+                        "model change, not a re-lay — re-bake this champion by hand."
+                    )
+                continue
+
+            compare_graphs(onnx_path, out)
+            if boss_rows(out) == old_rows:
+                print("    OK: already at the current width")
+                continue
+            if args.check:
+                stale.append(character)
+                print("    STALE: committed champion is narrower than the current vocab")
+                continue
+            shutil.copy2(out, onnx_path)
+            digest = sha256_of(onnx_path)
             if digest != entry["sha256"]:
                 updates[character] = digest
                 print(f"    sha256 {entry['sha256'][:12]} -> {digest[:12]}")
 
+    if blocked:
+        print(f"\nFAILED: {', '.join(blocked)} cannot be re-baked by re-export (see above)")
+        return 1
     if args.check:
         print("\n--check: nothing written.")
+        if stale:
+            print(
+                f"--check FAILED: {', '.join(stale)} need a re-bake "
+                "(run this script without --check)"
+            )
+            return 1
+        print("--check OK: every champion with a boss table is at the current width")
         return 0
     if updates:
-        text = CHAMPIONS_TOML.read_text()
+        text = CHAMPIONS_TOML.read_text(encoding="utf-8")
         for character, digest in updates.items():
             old = champions[character]["sha256"]
             # Anchor on the character's own table so two champions that
@@ -220,10 +297,10 @@ def main() -> int:
             section = re.search(rf"(\[{re.escape(character)}\][^\[]*)", text, flags=re.S)
             assert section, f"no [{character}] table in champions.toml"
             text = text.replace(section.group(1), section.group(1).replace(old, digest), 1)
-        CHAMPIONS_TOML.write_text(text)
+        CHAMPIONS_TOML.write_text(text, encoding="utf-8")
         print(f"\nchampions.toml: updated {len(updates)} sha256 entries")
     else:
-        print("\nchampions.toml: all sha256 entries already current")
+        print("\nchampions.toml: nothing re-baked, all sha256 entries unchanged")
     return 0
 
 

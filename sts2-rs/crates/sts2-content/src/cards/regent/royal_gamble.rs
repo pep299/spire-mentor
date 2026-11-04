@@ -5,7 +5,6 @@ use super::prelude::*;
 /// effectively "gain stars", not the random-card-from-pile shape
 /// the bead body mentions — the bead text predates the source
 /// pin. See `regent.py:L521`.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L521
 pub(crate) fn play_royal_gamble(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     gain_stars(state, 9);
     EffectResult::Resolved

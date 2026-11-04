@@ -1,6 +1,7 @@
 import { render } from "@testing-library/react";
 import { describe, it, expect } from "vitest";
-import Combatant, { doomAmount } from "../Combatant";
+import Combatant from "../Combatant";
+import { doomAmount } from "../combatantMetrics";
 
 /**
  * Doom on the health bar.

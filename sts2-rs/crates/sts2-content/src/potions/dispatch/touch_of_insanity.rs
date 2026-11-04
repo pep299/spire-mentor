@@ -54,7 +54,7 @@ pub(crate) fn drink_touch_of_insanity(
         [uid] => {
             // FirstOrDefault: a single cost-bearing card, set free directly.
             let idx = uid.0.get() as usize - 1;
-            state.cards[idx].set_free_for_combat();
+            state.cards[idx].set_free_this_combat();
         }
         _ => {
             let options: Vec<sts2_core::ChoiceOption> = candidates

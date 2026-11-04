@@ -68,7 +68,7 @@ def test_declared_features_are_exactly_the_ones_gated_here() -> None:
     """
     from ppo.schema import KNOWN_FEATURES
 
-    gated = {"reward_upgrade", "card_mods"}
+    gated = {"reward_upgrade", "card_mods", "card_bundles", "card_kind"}
     assert gated == set(KNOWN_FEATURES), (
         f"undeclared feature(s) {sorted(set(KNOWN_FEATURES) - gated)} — "
         "add the default-unchanged / one-column-moves gates for them here"
@@ -89,8 +89,8 @@ def test_the_rust_encoder_honours_every_declared_feature() -> None:
 
 
 def test_the_default_schema_is_what_the_champions_expect() -> None:
-    """`N_CAT` is 12, not 10 -- cat[10]/cat[11] (deck-op, enchantment; GH #545)
-    are unconditional APPENDS, the same shape as the cat[9] boss slot the
+    """`N_CAT` is 14, not 10 -- cat[10]/cat[11] (deck-op, enchantment; GH #545)
+    and cat[12]/cat[13] (card type, rarity; GH #977) are APPENDS, the same shape as the cat[9] boss slot the
     module docstring's `emb_boss` note already covers. Every committed
     champion's ONNX graph was still exported at cat_dim=10, but both consumers
     (`ppo::net`'s `cat_dim`, `ppo.onnx_policy`'s `n_cat`) read that width off
@@ -101,7 +101,7 @@ def test_the_default_schema_is_what_the_champions_expect() -> None:
     default width, not "what every champion's graph was exported at"."""
     from ppo.schema import N_CAT, empty_cat
 
-    assert N_CAT == 12
+    assert N_CAT == 14
     assert len(empty_cat()) == N_CAT
 
 
@@ -303,3 +303,153 @@ def test_card_mods_moves_only_the_enchanted_tokens_enchantment_cells() -> None:
                 c_on[schema.CAT_ENCHANT] = c_off[schema.CAT_ENCHANT]
                 k_on[schema.C_ENCH_AMT] = k_off[schema.C_ENCH_AMT]
             assert c_on == c_off and k_on == k_off, t
+
+
+# ── card_bundles (GH #978) ─────────────────────────────────────────────
+
+
+def _bundle_row():
+    """A Scroll Boxes pick as the engine surfaces it: one option per pack (its
+    first card) plus the packs (`policy.rs::build_obs`, `env.py`)."""
+    obs = {
+        "deck": [["STRIKE_IRONCLAD", False], ["BASH", False]],
+        "card_reward_option_ids": ["CARD.ANGER", "CARD.ARMAMENTS"],
+        "card_reward_bundles": [
+            ["CARD.ANGER", "CARD.CLASH", "CARD.INFLAME"],
+            ["CARD.ARMAMENTS", "CARD.HAVOC", "CARD.RAMPAGE"],
+        ],
+        "max_hp": 80,
+    }
+    actions = [
+        {"action": "pick_card_reward", "idx": 0},
+        {"action": "pick_card_reward", "idx": 1},
+    ]
+    return obs, actions
+
+
+def test_the_default_arm_ignores_bundles_even_when_they_are_present() -> None:
+    from ppo.encoder import featurize_row
+
+    obs, actions = _bundle_row()
+    bare = featurize_row({k: v for k, v in obs.items() if k != "card_reward_bundles"}, actions, {})
+    full = featurize_row(obs, actions, {})
+    for name in ("obs_cat", "obs_cont", "act_cat", "act_cont", "obs_sec", "act_sec"):
+        assert (getattr(bare, name) == getattr(full, name)).all(), name
+
+
+def test_card_bundles_shows_every_member_and_tags_the_pack_actions() -> None:
+    from ppo import schema, vocab
+    from ppo.encoder import featurize_row
+
+    obs, actions = _bundle_row()
+    off = featurize_row(obs, actions, {})
+    on = featurize_row(obs, actions, {}, frozenset({schema.CARD_BUNDLES}))
+    n = len(off.obs_cat)
+    assert len(on.obs_cat) == n + 6
+    # Everything before the members is untouched.
+    assert (on.obs_cat[:n] == off.obs_cat).all() and (on.obs_cont[:n] == off.obs_cont).all()
+    bundle = vocab.deck_op_index("bundle")
+    packs = obs["card_reward_bundles"]
+    for j, cat in enumerate(on.obs_cat[n:]):
+        assert cat[0] == vocab.cards().index(packs[j // 3][j % 3])
+        assert cat[schema.CAT_DECK_OP] == bundle
+        assert cat[7] == j // 3
+        assert on.obs_sec[n + j] == schema.SEC_CARD
+    pad = schema.empty_cat()
+    for k, cat in enumerate(on.act_cat):
+        assert cat[0] == pad[0], "a pick-pack token carries no card of its own"
+        assert cat[schema.CAT_DECK_OP] == bundle
+        assert cat[7] == k
+
+
+def test_card_bundles_leaves_an_ordinary_card_reward_alone() -> None:
+    from ppo import schema
+    from ppo.encoder import featurize_row
+
+    obs, actions = _bundle_row()
+    obs = {**obs, "card_reward_bundles": None}
+    off = featurize_row(obs, actions, {})
+    on = featurize_row(obs, actions, {}, frozenset({schema.CARD_BUNDLES}))
+    for name in ("obs_cat", "obs_cont", "act_cat", "act_cont"):
+        assert (getattr(on, name) == getattr(off, name)).all(), name
+
+
+# ── card_kind (GH #977) ─────────────────────────────────────────────────
+
+
+def _removal_row() -> tuple[dict, list[dict]]:
+    obs = {
+        "deck": [["StrikeIronclad", False], ["Anger", False], ["Injury", False]],
+        "card_removal_options": [["StrikeIronclad", False], ["Injury", False]],
+    }
+    actions = [
+        {"action": "remove_deck_card", "idx": 0},
+        {"action": "remove_deck_card", "idx": 1},
+    ]
+    return obs, actions
+
+
+def test_card_kind_off_leaves_both_columns_at_the_pad() -> None:
+    from ppo import schema
+    from ppo.encoder import featurize_row
+
+    obs, actions = _removal_row()
+    f = featurize_row(obs, actions, {})
+    pad = schema.empty_cat()
+    for cat in [*f.obs_cat, *f.act_cat]:
+        assert cat[schema.CAT_CARD_TYPE] == pad[schema.CAT_CARD_TYPE]
+        assert cat[schema.CAT_CARD_RARITY] == pad[schema.CAT_CARD_RARITY]
+
+
+def test_card_kind_stamps_every_card_token_and_nothing_else() -> None:
+    from ppo import schema, vocab
+    from ppo.encoder import featurize_row
+
+    obs, actions = _removal_row()
+    off = featurize_row(obs, actions, {})
+    on = featurize_row(obs, actions, {}, frozenset({schema.CARD_KIND}))
+    t, r = vocab.CARD_TYPES.index, vocab.CARD_RARITIES.index
+    kinds = [
+        (int(c[schema.CAT_CARD_TYPE]), int(c[schema.CAT_CARD_RARITY])) for c in on.obs_cat[1:4]
+    ]
+    assert kinds == [
+        (t("ATTACK"), r("BASIC")),
+        (t("ATTACK"), r("COMMON")),
+        (t("CURSE"), r("CURSE")),
+    ]
+    assert on.act_cat[1][schema.CAT_CARD_TYPE] == t("CURSE")
+    k = schema.CAT_CARD_TYPE
+    assert (on.obs_cat[:, :k] == off.obs_cat[:, :k]).all()
+    assert (on.act_cat[:, :k] == off.act_cat[:, :k]).all()
+    assert (on.obs_cat[0] == off.obs_cat[0]).all(), "the state token names no card"
+
+
+def test_every_removable_curse_reads_as_a_curse() -> None:
+    """The lesson the feature exists to carry: all 14 share one type row."""
+    import sts2_rs
+    from ppo import vocab
+
+    types, _ = vocab.card_kind_rows()
+    for name in sts2_rs.removable_curse_cards():
+        assert types[vocab.cards().index(name)] == vocab.CARD_TYPES.index("CURSE"), name
+
+
+def test_card_kind_tables_start_at_zero_so_a_warm_start_is_bit_identical() -> None:
+    import torch
+    from ppo import schema
+    from ppo.encoder import featurize_row
+    from ppo.model import RunPolicyNet, collate, load_compat
+
+    torch.manual_seed(0)
+    parent = RunPolicyNet()
+    sd = {k: v for k, v in parent.state_dict().items() if "ctype" not in k and "rarity" not in k}
+    child = load_compat(RunPolicyNet(), sd)
+    obs, actions = _removal_row()
+    on = featurize_row(obs, actions, {}, frozenset({schema.CARD_KIND}))
+    off = featurize_row(obs, actions, {})
+    parent.eval()
+    child.eval()
+    with torch.no_grad():
+        lp, vp, _ = parent(collate([off]))
+        lc, vc, _ = child(collate([on]))
+    assert torch.equal(lp, lc) and torch.equal(vp, vc)

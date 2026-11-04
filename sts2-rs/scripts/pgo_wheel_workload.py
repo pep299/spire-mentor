@@ -67,10 +67,7 @@ def play_run(
         character=character,
         ascension_level=0,
         neow_start=True,
-        interactive_card_removal=True,
-        interactive_card_upgrade=True,
-        interactive_card_transform=True,
-        direct_event_relic_grant=True,
+        mode="agent",
     )
     agent = sts2_rs.HeuristicRunAgent(seed=seed, sims=sims, boss_sims=boss_sims)
     steps: list[dict] = []
@@ -143,10 +140,7 @@ def play_ppo_run(
         character=character,
         ascension_level=ascension,
         neow_start=True,
-        interactive_card_removal=True,
-        interactive_card_upgrade=True,
-        interactive_card_transform=True,
-        direct_event_relic_grant=True,
+        mode="agent",
         interactive_potion_swap=sts2_rs.resolve_potion_swap_flag(),
         act1=act1,
     )

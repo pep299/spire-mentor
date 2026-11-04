@@ -364,6 +364,10 @@ class WorkbenchRunLogger:
         #: repeated board): they ride on the next one, so the rows of a fight
         #: stay complete (``coop_replay`` replays plays from them).
         self._pending_rows: list[dict[str, Any]] = []
+        #: The advisor lost its connection since the last ``state`` line: the
+        #: mod may have drained rows into requests the advisor never read, so
+        #: the next state is marked ``after_reconnect`` (GH #989).
+        self._reconnected = False
         self._lock = threading.RLock()
 
     @property
@@ -430,6 +434,13 @@ class WorkbenchRunLogger:
     # -- events --------------------------------------------------------
 
     @_locked
+    def note_reconnect(self) -> None:
+        """The connection to the mod dropped. Requests it wrote that this
+        process never read are gone with their combat-log rows, so the next
+        logged board says so (``coop_replay`` skips a pair across it)."""
+        self._reconnected = True
+
+    @_locked
     def log_decision(self, msg: dict[str, Any], advice_for: str) -> int | None:
         """Append the decision's ``state`` record.
 
@@ -468,6 +479,9 @@ class WorkbenchRunLogger:
             self._pending_rows = []
             if rows:
                 state["combat_log_raw"] = list(rows)
+            if self._reconnected:
+                state["after_reconnect"] = True
+                self._reconnected = False
             character = (msg.get("run_state") or {}).get("character")
             if character:
                 state["character_id"] = character

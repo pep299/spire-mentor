@@ -252,7 +252,7 @@ pub enum EventId {
     /// Bead `sts2-rs-6ynt.4.4`.
     DrowningBeacon,
     /// `GraveOfTheForgotten` — shared. Confront (Decay + enchant
-    /// `SoulsPower` on a card — deferred) / Accept (Forgotten Soul
+    /// `SoulsPower` on an Exhaust card) / Accept (Forgotten Soul
     /// relic). Bead `sts2-rs-6ynt.4.4`.
     GraveOfTheForgotten,
     /// `HungryForMushrooms` — shared. Big (Big Mushroom relic) /
@@ -375,6 +375,26 @@ pub enum EventId {
 }
 
 impl EventId {
+    /// The monsters a `LayoutType => EventLayoutType.Combat` event creates the
+    /// moment its room is entered, in `GenerateMonsters` order: `EventRoom`
+    /// calls `GenerateInternalCombatState` (EventRoom.cs:70-72), which runs
+    /// `CombatState.CreateCreature` — and so one `Rng.Niche` HP roll — per
+    /// monster (EventModel.cs:383-402) whether or not the event is ever
+    /// fought. Empty for every other event. Same three events in v0.111.0.
+    #[must_use]
+    pub const fn combat_layout_monsters(self) -> &'static [crate::monsters::MonsterKind] {
+        use crate::monsters::MonsterKind;
+        match self {
+            // MysteriousKnightEventEncounter.cs
+            Self::TheLanternKey => &[MonsterKind::MysteriousKnight],
+            // PunchOffEventEncounter.cs
+            Self::PunchOff => &[MonsterKind::PunchConstruct, MonsterKind::PunchConstruct],
+            // TheArchitectEventEncounter.cs
+            Self::TheArchitect => &[MonsterKind::Architect],
+            _ => &[],
+        }
+    }
+
     /// Python class name for this event (matches the `event_id` class
     /// attribute on the `EventModel` subclass in
     /// `sts2-rl-agent@01c094d:sts2_env/events/`). Stable across the

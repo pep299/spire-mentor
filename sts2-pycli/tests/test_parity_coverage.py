@@ -13,6 +13,15 @@ from __future__ import annotations
 import parity_fuzz_scenario as m
 
 
+def _ic_pool() -> list[str]:
+    """Ironclad + colorless cards of the selected build (`--game-version`).
+
+    The sweeps follow `$STS2_GAME_VERSION`; v0.111.0 drops Scare and appends
+    its new cards, so a count against the raw v0.107.1 lists would not hold.
+    """
+    return m.class_cards_for_build("Ironclad") + m.colorless_cards_for_build()
+
+
 def _subjects(prefix: str) -> set[str]:
     return {
         s.coverage_subject.split(":", 1)[1]
@@ -58,9 +67,8 @@ def test_every_encounter_covered() -> None:
 def test_additive_not_cartesian() -> None:
     scenarios = m.coverage_scenarios()
     expected = (
-        len(m.ALL_IC_CARDS)
-        + len(m.ALL_COLORLESS_CARDS)
-        + len(m.ALL_EVENT_CARDS)
+        len(_ic_pool())
+        + len(m.event_cards_for_build())
         + len(m.ALL_RELICS)
         + len(m.ALL_POTIONS)
         + len(m.ALL_ENCOUNTERS)
@@ -141,7 +149,7 @@ def test_upgraded_sweep_covers_every_card_once() -> None:
     assert len(subjects) == len(set(subjects)), "duplicate card+ subject"
     assert all(s.startswith("card+:") for s in subjects)
     covered = {s.split(":", 1)[1] for s in subjects}
-    assert covered == set(m.ALL_IC_CARDS + m.ALL_COLORLESS_CARDS)
+    assert covered == set(_ic_pool())
 
 
 def test_upgraded_sweep_deck_shape() -> None:
@@ -164,7 +172,7 @@ def test_arena_cross_subjects_qualified_and_complete() -> None:
     # every subject against the act1 arena; the cross adds act2 + act3.
     assert all(s.endswith(("@act2", "@act3")) for s in subjects)
     expected_per_act = (
-        2 * len(m.ALL_IC_CARDS + m.ALL_COLORLESS_CARDS)  # base + upgraded
+        2 * len(_ic_pool())  # base + upgraded
         + len(m.ALL_RELICS)
         + len(m.ALL_POTIONS)
     )
@@ -279,8 +287,8 @@ def test_every_playable_engine_card_is_covered() -> None:
     """
     from card_inventory import sweepable_cards
 
-    covered = _all_card_subjects()
-    missing = sorted(sweepable_cards() - covered)
+    covered = _all_card_subjects()  # the packs of the selected build
+    missing = sorted(sweepable_cards(m.sweep_game_version()) - covered)
     assert not missing, (
         f"{len(missing)} playable engine cards have no coverage trial "
         f"(so they have never been run against the C# oracle): {missing}"
@@ -316,7 +324,9 @@ def test_v0107_coverage_never_names_a_v0111_card() -> None:
     """The default (v0.107.1) packs must not sweep a card that build lacks."""
     from card_inventory import v0111_only_cards
 
-    leaked = sorted(_all_card_subjects() & v0111_only_cards())
+    # pinned to v0.107.1: under `--game-version v0.111.0` the default packs
+    # legitimately carry the v0.111.0 cards.
+    leaked = sorted(_all_card_subjects_for("v0.107.1") & v0111_only_cards())
     assert not leaked, f"v0.107.1 coverage sweeps v0.111.0-only cards: {leaked}"
 
 

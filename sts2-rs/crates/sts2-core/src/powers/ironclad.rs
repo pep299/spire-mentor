@@ -1,5 +1,3 @@
-// Ported from sts2-rl-agent@01c094d:sts2_env/powers/*.py (Ironclad-owned powers).
-//
 //! Ironclad-exclusive power listener bodies — bead `sts2-rs-le3` (P6-3).
 //!
 //! ## Architecture note

@@ -26,9 +26,10 @@ matches how the champion nets were themselves evaluated) **or, for a
 cheaper/torch-only run, by the random-legal policy** (``--combat-policy
 random``, reusing :func:`realgame_random.pick_combat_action`). Any
 non-combat surface the PPO obs builders below don't (yet) cover --
-``card_select``, ``card_bundle``, ``crystal_sphere``, ``reward_screen``,
-``treasure``, ``run_config`` -- falls through to
-:func:`realgame_random.choose_action`, same as an outright PPO failure.
+``card_select``, ``card_bundle``, ``reward_screen``, ``treasure``,
+``run_config`` -- falls through to :func:`realgame_random.choose_action`, same
+as an outright PPO failure. ``crystal_sphere`` has no net either but is played
+by :mod:`crystal_sphere_policy`'s geometric rule (GH #872).
 Never-crash-the-session contract is identical to :mod:`realgame_mcts`: any
 exception building the observation or running inference is caught, logged
 loudly, and that one decision falls back to the random-legal policy with
@@ -112,6 +113,7 @@ from pathlib import Path
 from typing import Any
 
 import ppo_decode
+from floors import act_number, engine_total_floor
 from ppo.errors import BudgetExceededError  # numpy-free (ppo.schema imports numpy)
 from realgame_bridge import DEFAULT_HOST, DEFAULT_PORT, RealGameBridgeClient
 from realgame_mcts import (
@@ -129,7 +131,7 @@ from realgame_random import (
     pick_combat_action,
 )
 from sts2_hint.recommender import RecommendConfig
-from sts2_realgame import reward_screen_choice
+from sts2_realgame import potion_swap_group, reward_screen_choice
 
 logger = logging.getLogger(__name__)
 
@@ -387,15 +389,18 @@ def _base_metrics(state: dict[str, Any], run_state: dict[str, Any]) -> dict[str,
     # map node, and counting it made `act_floor` 1 where training saw 0.
     if cur is not None and int(cur.get("row", -1)) == 0:
         cur = None
+    act = act_number(state.get("act"))
     return {
-        # Training-time parity (2026-08-02 pathing diagnosis): the engine's
-        # `rm.total_floor()` is 0 at Neow (the DLL's `context.total_floor`
-        # is 1 there) and `rm.act_index` is 1-BASED. Both fed the encoder
-        # off-by-one on EVERY meta decision — 4735/4735 in the v3x sweeps —
-        # so the net always believed it was one act earlier and one floor
-        # deeper than training ever showed it.
-        "total_floor": max(0, int(state.get("floor", 0) or 0) - 1),
-        "act_index": int(state.get("act", 1) or 1),
+        # Training-time parity: `rm.act_index` is 1-BASED, and the DLL's
+        # `TotalFloor` counts every act's start room (Neow, the Ancients)
+        # where `rm.total_floor()` counts none -- so the offset is the act
+        # number (`floors`). The 2026-08-02 pathing diagnosis found the act-1
+        # half (off-by-one on every meta decision, 4735/4735 in the v3x
+        # sweeps) and fixed it with a flat `- 1`, which left acts 2-3 one and
+        # two floors too deep (GH #1051: `shadow_replay.py` measured +1 / +2).
+        # Twin of `sts2-runai` `ppo/wire.rs`.
+        "total_floor": engine_total_floor(state.get("floor"), act),
+        "act_index": act,
         "act_floor": int(cur["row"]) + 1 if cur else 0,
         "hp": run_state.get("hp", 0),
         "max_hp": run_state.get("max_hp", 0),
@@ -504,6 +509,42 @@ def _build_boss_relic(state: dict[str, Any]) -> PpoDecision | None:
     ]
     labels = [str((o.get("relic") or {}).get("name") or o.get("label")) for o in options]
     return PpoDecision(obs, actions, _base_metrics(state, run_state), responses, labels)
+
+
+def _build_potion_swap(state: dict[str, Any]) -> PpoDecision | None:
+    """A full-belt potion reward on ``reward_screen`` -> ``ppo.env``'s
+    "potion-swap" surface (GH #1069).
+
+    The mod offers it as a :func:`~sts2_realgame.potion_swap_group`: decline,
+    then discard slot k for each belt slot, the order the engine lists its
+    ``potion_swap`` actions in. The offered potion goes on the state token
+    (``pending_potion_swap``), the discarded one on each option token.
+    """
+    group = potion_swap_group(state.get("options") or [])
+    if not group:
+        return None
+    run_state = state.get("run_state") or {}
+    obs = _base_obs(state, run_state)
+    obs["pending_potion_swap"] = (group[0].get("reward") or {}).get("id") or ""
+    actions = [{"action": "potion_swap", "discard_slot": o.get("discard_slot")} for o in group]
+    responses = [{"action": "choose", "index": int(o["index"])} for o in group]
+    labels = [str(o.get("label") or "?") for o in group]
+    return PpoDecision(obs, actions, _base_metrics(state, run_state), responses, labels)
+
+
+def _live_potion_swap_enabled() -> bool:
+    """Whether the run policy answers a full-belt potion swap live.
+
+    Read through the SAME resolver training and the arena use
+    (``STS2_RUNAI_POTION_SWAP``, default off), so the live world matches the
+    one the champion was evaluated in. Off, the swap is declined: the potion
+    stays on the reward screen, as the engine drops it with the flag off.
+    Not every champion trained with it on, and a net that never saw the
+    surface should not answer it.
+    """
+    import sts2_rs
+
+    return bool(sts2_rs.resolve_potion_swap_flag())
 
 
 _REST_OPTION_LABELS = ("rest", "smith")
@@ -1301,12 +1342,12 @@ def _build_card_select(state: dict[str, Any], prev_msg_type: str | None) -> PpoD
 
 
 #: Bridge message ``type`` -> builder. Anything else (``card_bundle``,
-#: ``crystal_sphere``, ``treasure``, ``run_config``) is not (yet) covered --
-#: see module docstring -- and goes straight to
-#: :func:`realgame_random.choose_action`. (``card_select`` and
-#: ``reward_screen`` are special-cased in :func:`pick_noncombat_action_ppo`:
-#: the former needs the session's ``prev_msg_type`` context, the latter the
-#: shared multi-claim collector.)
+#: ``treasure``, ``run_config``) is not (yet) covered -- see module docstring --
+#: and goes straight to :func:`realgame_random.choose_action`. (``card_select``,
+#: ``reward_screen`` and ``crystal_sphere`` are special-cased in
+#: :func:`pick_noncombat_action_ppo`: the first needs the session's
+#: ``prev_msg_type`` context, the second the shared multi-claim collector, the
+#: third is answered by :mod:`crystal_sphere_policy`'s rule, GH #872.)
 _PPO_NONCOMBAT_BUILDERS: dict[str, Callable[[dict[str, Any]], PpoDecision | None]] = {
     "map_select": _build_map_select,
     "card_reward": _build_card_reward,
@@ -1915,9 +1956,20 @@ def pick_noncombat_action_ppo(
             if proceed_idx is not None:
                 return {"action": "choose", "index": proceed_idx}, None
         idx = reward_screen_choice(options)
-        return (
-            ({"action": "choose", "index": idx}, None) if idx is not None else (_fallback(), None)
-        )
+        picked = next((o for o in options if o.get("index") == idx), None)
+        if picked is not None and picked.get("action") == "potion_swap":
+            # A full-belt potion reward (GH #1069): the net decides when the
+            # swap is on; otherwise take the collector's decline.
+            if _live_potion_swap_enabled():
+                builder = _build_potion_swap
+            else:
+                return {"action": "choose", "index": idx}, None
+        else:
+            return (
+                ({"action": "choose", "index": idx}, None)
+                if idx is not None
+                else (_fallback(), None)
+            )
 
     # card_select needs cross-decision context (which screen opened it) --
     # dispatched here rather than via the type->builder table. Only the
@@ -1932,6 +1984,14 @@ def pick_noncombat_action_ppo(
         card_select_prev = (session or {}).get("prev_msg_type")
         if _CARD_SELECT_SURFACES.get(card_select_prev or "") is None:
             return _fallback(), None
+    elif msg_type == "crystal_sphere":
+        # No net was trained on the minigame; a geometric rule beats the
+        # random-legal fallback by ~2x EV (GH #872, `crystal_sphere_policy`).
+        # Its `annotations.policy` names it in the JSONL step record.
+        import crystal_sphere_policy
+
+        rule_action = crystal_sphere_policy.choose(state)
+        return (rule_action if rule_action is not None else _fallback()), None
     elif builder is None:
         return _fallback(), None
 

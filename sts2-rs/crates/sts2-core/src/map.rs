@@ -20,8 +20,6 @@
 use serde::{Deserialize, Serialize};
 
 /// (column, row) coordinate on the act-map grid.
-///
-/// Port pin: `sts2-rl-agent@01c094d:sts2_env/map/map_point.py:11-25`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct MapCoord {
     pub col: i32,
@@ -78,7 +76,6 @@ impl MapPointHistoryEntry {
 
 /// Directed edge between two grid coordinates.
 ///
-/// Port pin: `sts2-rl-agent@01c094d:sts2_env/map/map_point.py:28-35`.
 /// Edges are stored on [`MapPoint`] adjacency lists ([`MapPoint::children`] /
 /// [`MapPoint::parents`]); this POD is the standalone form used by
 /// map-generator helpers and serialization.
@@ -104,7 +101,6 @@ pub type MapPointIdx = u16;
 
 /// Room-type discriminant assigned to each map node.
 ///
-/// Port pin: `sts2-rl-agent@01c094d:sts2_env/core/enums.py:158-167`.
 /// The categorical helpers (`is_combat()`, `is_rewards()`, …) live in
 /// P9.1.c (bead `sts2-rs-h4jx9`); this enum is the bare discriminant
 /// so [`MapPoint::point_type`] can compile.
@@ -225,7 +221,6 @@ impl MapPointType {
 
 /// Node on the act-map grid.
 ///
-/// Port pin: `sts2-rl-agent@01c094d:sts2_env/map/map_point.py:38-98`.
 /// `children` / `parents` are index handles into the parent
 /// `ActMap`'s point list rather than Python's object refs. The
 /// graph-walking methods (`add_child`, `remove_child`, `siblings`,
@@ -271,7 +266,6 @@ impl MapPoint {
 
 /// Empty act-map graph container.
 ///
-/// Port pin: `sts2-rl-agent@01c094d:sts2_env/map/generator.py:37-69`.
 /// Stores nodes in a flat `Vec<MapPoint>` and indexes them by
 /// [`MapCoord`] for O(1) lookup; adjacency lives on each
 /// [`MapPoint`]'s `children`/`parents` (built via [`Self::add_child`]).

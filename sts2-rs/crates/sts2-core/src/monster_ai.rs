@@ -275,6 +275,24 @@ pub struct PeekedIntent {
     pub step: u8,
 }
 
+/// One turn of [`MonsterAi::forecast_after_current`]: the move the machine is
+/// predicted to telegraph `step` turns after its current one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ForecastStep {
+    /// Turns after the current telegraph, from 1: step 1 is the move rolled
+    /// at the end of the coming enemy turn.
+    pub step: u8,
+    /// The predicted move's state id.
+    pub move_id: StateId,
+    /// That move's intents, in declaration order (empty for a move that
+    /// telegraphs nothing).
+    pub intents: SmallVec<[Intent; 4]>,
+    /// The product of the weight shares of every `RandomBranch` pick on the
+    /// walk from the current telegraph to this move: `1.0` along a
+    /// deterministic chain, `0.0` once a pick had no positive weight.
+    pub certainty: f32,
+}
+
 #[derive(Clone, Debug)]
 pub struct MonsterAi {
     /// The moveset state machine. Wrapped in an `Arc` (perf 2026-07-05):
@@ -339,6 +357,16 @@ pub struct MonsterAi {
     /// jump when TorchHeadAmalgam dies mid-chain) and likely future
     /// phase-switch bosses.
     forced_next_state: Option<StateId>,
+    /// Whether the CURRENT state was installed by a C# `SetMoveImmediate`
+    /// (a stun, [`Self::force_current_state_unlogged`]) rather than reached
+    /// by a roll. C# appends to `StateLog` only when a move is rolled
+    /// (`MonsterMoveStateMachine.FindNextMoveState`, `logMove: true`) and
+    /// never for `ForceCurrentState`, so the engine, which logs at perform
+    /// time, must not log such a state when it runs. Cleared by every roll.
+    current_forced: bool,
+    /// [`Self::current_forced`] of the move [`Self::begin_move`] started, for
+    /// a move a stun displaces while it runs.
+    performing_forced: bool,
     /// Encounter **slot index** this creature occupies, as a position in
     /// the encounter's `Slots` list (C# `Creature.SlotName` →
     /// `Encounter.Slots.IndexOf`). `None` for the vast majority of
@@ -391,6 +419,8 @@ impl MonsterAi {
             owner_uid: None,
             counter: 0,
             forced_next_state: None,
+            current_forced: false,
+            performing_forced: false,
             after_death: None,
             slot: None,
         };
@@ -423,6 +453,8 @@ impl MonsterAi {
             owner_uid: None,
             counter: 0,
             forced_next_state: None,
+            current_forced: false,
+            performing_forced: false,
             after_death: None,
             slot: None,
         };
@@ -554,6 +586,15 @@ impl MonsterAi {
     /// Calling twice before a roll overwrites the earlier queued id.
     /// Panics in debug if `state_id` is not in `states`; release
     /// builds let the bad id surface at the next roll's `[…]` index.
+    /// Whether the CURRENT move state has started running this turn
+    /// ([`Self::begin_move`]); `false` for a telegraphed move still to come.
+    /// Lets a cross-creature reaction tell C#'s `NextMove` apart: before the
+    /// owner acts it is the current state, after it acts it is the next roll.
+    #[must_use]
+    pub fn current_move_performed(&self) -> bool {
+        self.performed_at_least_once
+    }
+
     pub fn force_next_state(&mut self, state_id: StateId) {
         debug_assert!(
             self.states.contains_key(state_id),
@@ -634,6 +675,36 @@ impl MonsterAi {
         self.performed_first_move = true;
         self.performed_at_least_once = false;
         self.forced_next_state = None;
+        self.current_forced = false;
+    }
+
+    /// [`Self::force_current_state`] with C#'s `StateLog` bookkeeping for a
+    /// `SetMoveImmediate` (`MonsterModel.SetMoveImmediate` →
+    /// `MoveStateMachine.ForceCurrentState`, MonsterModel.cs:562-575): C#
+    /// logged the displaced move when it was rolled and never logs the forced
+    /// one (`MonsterMoveStateMachine.cs`). The engine logs at perform time, so
+    /// a displaced move that has not started yet is logged now, and the forced
+    /// state is marked so its perform is not logged. The roll out of it logs
+    /// its follow-up as usual.
+    ///
+    /// Use it for a game-side `SetMoveImmediate` / `CreatureCmd.Stun`; a wire
+    /// restore of a rolled move keeps [`Self::force_current_state`].
+    pub fn force_current_state_unlogged(&mut self, target: StateId) {
+        if !self.states.get(target).is_some_and(MonsterState::is_move) {
+            debug_assert!(
+                false,
+                "force_current_state_unlogged({target:?}): not a move"
+            );
+            return;
+        }
+        if !self.current_forced
+            && !self.performed_at_least_once
+            && self.cur().should_appear_in_logs()
+        {
+            self.state_log.push(self.current);
+        }
+        self.force_current_state(target);
+        self.current_forced = true;
     }
 
     /// Restore the current move-state from a serialized [`current_state_id`]
@@ -736,6 +807,9 @@ impl MonsterAi {
         self.initial_resolved = carried.initial_resolved;
         self.counter = carried.counter;
         self.forced_next_state = carried.forced_next_state;
+        // Whether the current state was forced is only meaningful for the
+        // same current state.
+        self.current_forced = carried.current_forced && carried.current == self.current;
         // The encounter slot is NOT "rebuilt correctly by the fresh build"
         // for dynamically-slotted spawns (Fabricator bots, Ovicopter eggs):
         // the wire carries no slot, the fresh build leaves `None`, and a
@@ -778,6 +852,7 @@ impl MonsterAi {
             self.performed_at_least_once = false;
         }
         self.set_current(next_id);
+        self.current_forced = false;
 
         self.resolve_to_move_no_combat(rng);
 
@@ -816,6 +891,7 @@ impl MonsterAi {
             self.performed_at_least_once = false;
         }
         self.set_current(next_id);
+        self.current_forced = false;
 
         self.resolve_to_move_with_combat(rng, combat);
 
@@ -881,6 +957,7 @@ impl MonsterAi {
             return;
         }
         self.set_current(self.initial);
+        self.current_forced = false;
         self.resolve_to_move_with_combat(rng, combat);
     }
 
@@ -932,6 +1009,7 @@ impl MonsterAi {
     /// The post-move half is [`Self::on_move_performed_state`].
     pub fn begin_move(&mut self) {
         self.performed_at_least_once = true;
+        self.performing_forced = self.current_forced;
     }
 
     /// [`Self::on_move_performed`] for the move that ACTUALLY ran, which may
@@ -952,18 +1030,55 @@ impl MonsterAi {
     /// otherwise the newly installed state keeps the `false` its force left.
     /// (After [`Self::begin_move`] the flag is already up for a `performed`
     /// that is still current; the combat walk calls both.)
+    ///
+    /// The performed move joins the `StateLog` unless a `SetMoveImmediate`
+    /// installed it ([`Self::force_current_state_unlogged`]): C# logs rolled
+    /// moves only.
     pub fn on_move_performed_state(&mut self, performed: StateId) {
         self.performed_first_move = true;
-        if performed == self.current {
+        let forced = if performed == self.current {
             self.performed_at_least_once = true;
-        }
-        if self
-            .states
-            .get(performed)
-            .is_some_and(MonsterState::should_appear_in_logs)
+            self.current_forced
+        } else {
+            self.performing_forced
+        };
+        if !forced
+            && self
+                .states
+                .get(performed)
+                .is_some_and(MonsterState::should_appear_in_logs)
         {
             self.state_log.push(performed);
         }
+    }
+
+    /// Id of the generic stun state [`Self::ensure_generic_stun_state`] adds.
+    pub const GENERIC_STUN_STATE: StateId = "STUNNED";
+
+    /// Make sure this machine has a `"STUNNED"` must-perform-once stun move,
+    /// adding one when its content AI has none, and return its id. C#
+    /// `Creature.StunInternal` synthesizes that state on ANY monster
+    /// (Creature.cs:537-541); content AIs only prebuild it where a stun is
+    /// part of their own kit, but a stun power copied onto another monster
+    /// (ImbalancedPower via Misery) can stun anything. The follow-up is
+    /// irrelevant: [`Self::stun_immediate`] queues the resume explicitly.
+    pub fn ensure_generic_stun_state(&mut self) -> StateId {
+        fn noop(_: &mut CombatState, _: CreatureUid) {}
+        let id = Self::GENERIC_STUN_STATE;
+        if !self.states.contains_key(id) {
+            let follow_up = Some(self.initial);
+            std::sync::Arc::make_mut(&mut self.states).insert(
+                id,
+                MonsterState::Move(MoveState {
+                    id,
+                    effect: noop,
+                    intents: smallvec::smallvec![Intent::Stun],
+                    follow_up,
+                    must_perform_once: true,
+                }),
+            );
+        }
+        id
     }
 
     /// C# `CreatureCmd.Stun` → `Creature.StunInternal` →
@@ -1010,7 +1125,7 @@ impl MonsterAi {
                 Some(self.current)
             }
         });
-        self.force_current_state(stun_state);
+        self.force_current_state_unlogged(stun_state);
         if let Some(resume) = resume {
             self.force_next_state(resume);
         }
@@ -1124,6 +1239,86 @@ impl MonsterAi {
                 cursor_performed_once = true;
                 cursor_log.push(cursor_current);
             }
+        }
+        out
+    }
+
+    /// The `k` moves this machine telegraphs AFTER its current move, as it
+    /// would roll them if the board stayed as it is now. Read-only: no RNG
+    /// draw, `self` and `combat` untouched.
+    ///
+    /// This is [`Self::peek_intents`]'s walk (the same branch rules: the
+    /// highest-weight `RandomBranch` pick under the virtual log, certainty =
+    /// that pick's weight share, folded into a product; `ConditionalBranch`
+    /// predicates against `combat`), started from the state the machine will
+    /// be in at its next roll. `peek_intents` starts from the machine as it
+    /// is, which at a player decision means three differences:
+    ///
+    /// * Before the first move, its step 1 is the current telegraph. Here
+    ///   step 1 is always the move after it; before the first move this is
+    ///   exactly `peek_intents(k + 1)` without its first step.
+    /// * After the first move it walks away from the telegraph with a log
+    ///   that does not yet hold it. The engine logs a move when it is
+    ///   performed (`on_move_performed_state`) and C# when it is rolled
+    ///   (`MonsterMoveStateMachine.FindNextMoveState`); either way the next
+    ///   roll's repeat rules count the telegraph. Here the telegraph is
+    ///   logged first, so a `CannotRepeat` / `UseOnlyOnce` / cooldown move
+    ///   is not predicted twice in a row.
+    /// * It ignores a queued [`Self::force_next_state`] (a stun's resume,
+    ///   `SetMoveImmediate`), and a `must_perform_once` telegraph holds it
+    ///   for every step. Here the coming enemy turn performs the telegraph,
+    ///   and the roll after it takes the queued state first, as
+    ///   [`Self::roll_move`] does.
+    ///
+    /// Every predicted move is assumed performed on its own turn, so a
+    /// `must_perform_once` move never holds the walk. A machine parked on a
+    /// branch state (no telegraph) forecasts nothing.
+    #[must_use]
+    pub fn forecast_after_current(
+        &self,
+        k: usize,
+        combat: &CombatState,
+    ) -> SmallVec<[ForecastStep; 4]> {
+        let mut out: SmallVec<[ForecastStep; 4]> = SmallVec::new();
+        if k == 0 || !self.cur().is_move() {
+            return out;
+        }
+        let mut log: SmallVec<[StateId; 16]> = self.state_log.clone();
+        // A move already performed this turn is already in the log (the
+        // state `on_move_performed` leaves before the roll); don't count it
+        // twice. A forced state (a stun) is never logged.
+        let already_logged =
+            self.performed_at_least_once && self.state_log.last() == Some(&self.current);
+        if !already_logged && !self.current_forced {
+            log.push(self.current);
+        }
+        let mut from = self.current;
+        let mut forced = self
+            .forced_next_state
+            .filter(|id| self.states.contains_key(id));
+        let mut certainty: f32 = 1.0;
+        for step_idx in 0..k {
+            let (next, share) = match forced.take() {
+                Some(id) if self.states[id].is_move() => (id, 1.0),
+                // A queued branch state resolves like any other: the walk
+                // starts AT it rather than at a move's follow-up.
+                Some(id) => self.peek_next_move_state(id, &log, combat),
+                None => self.peek_next_move_state(from, &log, combat),
+            };
+            certainty *= share;
+            let intents = match &self.states[next] {
+                MonsterState::Move(m) => m.intents.clone(),
+                // `peek_next_move_state` only ever lands on a move.
+                _ => SmallVec::new(),
+            };
+            out.push(ForecastStep {
+                step: u8::try_from(step_idx + 1).unwrap_or(u8::MAX),
+                move_id: next,
+                intents,
+                certainty,
+            });
+            log.push(next);
+            from = next;
         }
         out
     }
@@ -1414,6 +1609,23 @@ mod tests {
             }),
         );
         MonsterAi::new(states, "A")
+    }
+
+    /// A machine with no prebuilt stun gets C#'s synthesized must-perform
+    /// STUNNED (Creature.cs:537-541): a stun landing mid-move holds through
+    /// the end-of-move roll, then resumes the stunned move (seed 2566).
+    #[test]
+    fn generic_stun_state_holds_then_resumes() {
+        let mut ai = make_linear_chain();
+        ai.on_move_performed(); // A
+        let _ = ai.roll_move_seeded(0); // → B
+        ai.on_move_performed(); // B begins…
+        let stun = ai.ensure_generic_stun_state();
+        assert!(ai.stun_immediate(stun, None), "…and is stunned mid-move");
+        assert_eq!(ai.roll_move_seeded(0).id, "STUNNED");
+        ai.on_move_performed();
+        assert_eq!(ai.roll_move_seeded(0).id, "B");
+        assert_eq!(ai.ensure_generic_stun_state(), "STUNNED", "idempotent");
     }
 
     /// Bead `sts2-rs-fgjdh`: `set_owner` round-trips through
@@ -2304,6 +2516,231 @@ mod tests {
             assert!(matches!(p.intent, Intent::Attack { damage: 10 }));
             assert!((p.certainty - 1.0).abs() < 1e-6);
         }
+    }
+
+    // ── forecast_after_current (GH #1097, WP-ENG-1) ─────────────────
+
+    fn plain_move(id: StateId, damage: i32, follow_up: StateId) -> MonsterState {
+        MonsterState::Move(MoveState {
+            id,
+            effect: noop_effect,
+            intents: smallvec![Intent::Attack { damage }],
+            follow_up: Some(follow_up),
+            must_perform_once: false,
+        })
+    }
+
+    fn ids(f: &[ForecastStep]) -> Vec<StateId> {
+        f.iter().map(|s| s.move_id).collect()
+    }
+
+    #[test]
+    fn forecast_zero_k_and_numbering() {
+        let ai = make_linear_chain();
+        let combat = CombatState::default();
+        assert!(ai.forecast_after_current(0, &combat).is_empty());
+        let f = ai.forecast_after_current(3, &combat);
+        assert_eq!(
+            f.iter().map(|s| s.step).collect::<Vec<_>>(),
+            vec![1, 2, 3],
+            "one entry per step, numbered from 1"
+        );
+    }
+
+    /// Before the first move `peek_intents`' step 1 is the telegraph itself;
+    /// the forecast starts after it, so it is `peek_intents(k + 1)` with the
+    /// first step dropped (the plan's `performed_first_move` alignment).
+    #[test]
+    fn forecast_skips_the_telegraph_before_the_first_move() {
+        let ai = make_linear_chain(); // A (telegraphed, unperformed) → B → B …
+        let combat = CombatState::default();
+        let f = ai.forecast_after_current(3, &combat);
+        assert_eq!(ids(&f), vec!["B", "B", "B"]);
+        let peek = ai.peek_intents(4, &combat);
+        assert!(
+            matches!(peek[0].intent, Intent::Buff { .. }),
+            "peek step 1 = A"
+        );
+        for (s, p) in f.iter().zip(&peek[1..]) {
+            assert_eq!(s.step + 1, p.step);
+            assert_eq!(s.intents.as_slice(), &[p.intent]);
+            assert!((s.certainty - p.certainty).abs() < 1e-6);
+        }
+    }
+
+    /// Two `CannotRepeat` moves under one branch alternate. With `B`
+    /// telegraphed after `A` ran, the next roll sees `B` logged, so it must
+    /// pick `A`. `peek_intents` walks away from `B` with a log that still ends
+    /// in `A` and predicts `B` again.
+    #[test]
+    fn forecast_counts_the_telegraph_in_the_repeat_rules() {
+        let branch = |id: StateId| WeightedBranch {
+            state_id: id,
+            repeat_type: MoveRepeatType::CannotRepeat,
+            max_times: 1,
+            weight: 1.0,
+            cooldown: 0,
+        };
+        let mut states = BTreeMap::new();
+        states.insert("A", plain_move("A", 1, "ROOT"));
+        states.insert("B", plain_move("B", 2, "ROOT"));
+        states.insert(
+            "ROOT",
+            MonsterState::RandomBranch(RandomBranchState {
+                id: "ROOT",
+                branches: smallvec![branch("A"), branch("B")],
+            }),
+        );
+        let mut ai = MonsterAi::new(states, "A");
+        ai.on_move_performed();
+        assert_eq!(ai.roll_move_seeded(7).id, "B", "A cannot repeat");
+        let combat = CombatState::default();
+
+        let f = ai.forecast_after_current(2, &combat);
+        assert_eq!(ids(&f), vec!["A", "B"]);
+        assert!(f.iter().all(|s| (s.certainty - 1.0).abs() < 1e-6));
+        let peek = ai.peek_intents(1, &combat);
+        assert_eq!(
+            peek[0].intent,
+            Intent::Attack { damage: 2 },
+            "peek_intents reads the log without the telegraph (why the forecast \
+             has its own start state)"
+        );
+
+        // The live machine agrees with the forecast.
+        ai.on_move_performed();
+        assert_eq!(ai.roll_move_seeded(7).id, "A");
+    }
+
+    /// `peek_intents` holds an unperformed `must_perform_once` telegraph for
+    /// every step (`peek_repeats_a_held_must_perform_once_move`). The coming
+    /// enemy turn performs it, so the forecast walks on.
+    #[test]
+    fn forecast_walks_past_a_must_perform_once_telegraph() {
+        let mut states = BTreeMap::new();
+        states.insert("X", plain_move("X", 1, "Y"));
+        states.insert(
+            "Y",
+            MonsterState::Move(MoveState {
+                id: "Y",
+                effect: noop_effect,
+                intents: smallvec![Intent::Attack { damage: 2 }],
+                follow_up: Some("X"),
+                must_perform_once: true,
+            }),
+        );
+        let mut ai = MonsterAi::new(states, "X");
+        ai.on_move_performed();
+        assert_eq!(ai.roll_move_seeded(0).id, "Y");
+        let combat = CombatState::default();
+        assert_eq!(
+            ids(&ai.forecast_after_current(3, &combat)),
+            vec!["X", "Y", "X"]
+        );
+    }
+
+    /// A stun queues its resume with `force_next_state`; the roll after the
+    /// stun takes it before the graph (`roll_move`), and so does the forecast.
+    #[test]
+    fn forecast_takes_the_queued_resume_first() {
+        let mut states = BTreeMap::new();
+        states.insert("A", plain_move("A", 1, "B"));
+        states.insert("B", plain_move("B", 2, "C"));
+        states.insert("C", plain_move("C", 3, "A"));
+        states.insert(
+            "S",
+            MonsterState::Move(MoveState {
+                id: "S",
+                effect: noop_effect,
+                intents: smallvec![Intent::Stun],
+                follow_up: Some("A"),
+                must_perform_once: true,
+            }),
+        );
+        let mut ai = MonsterAi::new(states, "A");
+        ai.on_move_performed();
+        assert_eq!(ai.roll_move_seeded(0).id, "B");
+        assert!(ai.stun_immediate("S", None), "B is stunned before it runs");
+        assert_eq!(ai.forced_next_state(), Some("B"));
+        let combat = CombatState::default();
+        assert_eq!(
+            ids(&ai.forecast_after_current(2, &combat)),
+            vec!["B", "C"],
+            "not S's follow-up A"
+        );
+        ai.on_move_performed();
+        assert_eq!(ai.roll_move_seeded(0).id, "B");
+    }
+
+    /// A move already performed and logged (the state `on_move_performed`
+    /// leaves before the roll) is not logged a second time: the forecast is
+    /// the next roll, as `peek_intents` has it in that state.
+    #[test]
+    fn forecast_after_the_move_ran_matches_peek_intents() {
+        let mut states = BTreeMap::new();
+        states.insert(
+            "root",
+            MonsterState::RandomBranch(RandomBranchState {
+                id: "root",
+                branches: smallvec![
+                    WeightedBranch {
+                        state_id: "big",
+                        repeat_type: MoveRepeatType::CanRepeatXTimes,
+                        max_times: 2,
+                        weight: 70.0,
+                        cooldown: 0,
+                    },
+                    WeightedBranch {
+                        state_id: "small",
+                        repeat_type: MoveRepeatType::CanRepeatForever,
+                        max_times: 1,
+                        weight: 30.0,
+                        cooldown: 0,
+                    },
+                ],
+            }),
+        );
+        states.insert("big", plain_move("big", 20, "root"));
+        states.insert("small", plain_move("small", 5, "root"));
+        let mut ai = MonsterAi::new(states, "big");
+        ai.on_move_performed(); // big ran once; a second big is still allowed
+        let combat = CombatState::default();
+        let f = ai.forecast_after_current(3, &combat);
+        let peek = ai.peek_intents(3, &combat);
+        assert_eq!(ids(&f), vec!["big", "small", "big"]);
+        for (s, p) in f.iter().zip(&peek) {
+            assert_eq!(s.intents.as_slice(), &[p.intent]);
+            assert!((s.certainty - p.certainty).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn forecast_is_pure_and_deterministic() {
+        let mut ai = make_stunnable_chain();
+        ai.on_move_performed();
+        let _ = ai.roll_move_seeded(0);
+        assert!(ai.stun_immediate("S", None));
+        let combat = CombatState::default();
+        let before = (
+            ai.current_state_id(),
+            ai.move_history().to_vec(),
+            ai.forced_next_state(),
+            ai.performed_first_move(),
+            ai.current_move_performed(),
+            ai.counter(),
+        );
+        let first = ai.forecast_after_current(5, &combat);
+        let second = ai.forecast_after_current(5, &combat);
+        assert_eq!(first, second);
+        let after = (
+            ai.current_state_id(),
+            ai.move_history().to_vec(),
+            ai.forced_next_state(),
+            ai.performed_first_move(),
+            ai.current_move_performed(),
+            ai.counter(),
+        );
+        assert_eq!(before, after);
     }
 
     /// Bead `sts2-rs-70zuj` (dvqa1.3): `force_next_state(id)` queues

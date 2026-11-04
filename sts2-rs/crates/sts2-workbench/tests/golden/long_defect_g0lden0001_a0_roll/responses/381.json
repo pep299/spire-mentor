@@ -7,10 +7,10 @@
  "meta": {
   "act": 2,
   "act_name": "Hive",
-  "bg_col": 2,
+  "bg_col": 1,
   "bg_row": 3,
   "bg_seed": 1772253313,
-  "floor": 19,
+  "floor": 21,
   "step_no": 0,
   "turn": 3
  },
@@ -22,30 +22,11 @@
   "act1": "overgrowth",
   "act_name": "Hive",
   "ascension": 0,
-  "bg_col": 2,
+  "bg_col": 1,
   "bg_row": 3,
   "bg_seed": 1772253313,
   "decision": "combat_play",
   "discard_pile": [
-   {
-    "base_cost": 1,
-    "can_play": false,
-    "color": "colorless",
-    "cost": 1,
-    "description": "Deal 14 damage.",
-    "description_rich": "Deal 14 damage.",
-    "id": "ULTIMATE_STRIKE",
-    "image": "https://assets.test/card_atlas/colorless/ultimate_strike.png",
-    "index": -1,
-    "name": "Ultimate Strike",
-    "rarity": "Uncommon",
-    "stats": {
-     "damage": 14
-    },
-    "target_type": "None",
-    "type": "Attack",
-    "upgraded": false
-   },
    {
     "base_cost": 2,
     "can_play": false,
@@ -63,42 +44,6 @@
     },
     "target_type": "None",
     "type": "Attack",
-    "upgraded": false
-   },
-   {
-    "base_cost": 0,
-    "can_play": false,
-    "color": "blue",
-    "cost": 0,
-    "description": "Deal 3 damage.\nIf the enemy intends to attack, apply 1 Weak.",
-    "description_rich": "Deal 3 damage.\nIf the enemy intends to attack, apply 1 [gold]Weak[/gold].",
-    "id": "GO_FOR_THE_EYES",
-    "image": "https://assets.test/card_atlas/defect/go_for_the_eyes.png",
-    "index": -1,
-    "name": "Go for the Eyes",
-    "rarity": "Common",
-    "stats": {
-     "damage": 3
-    },
-    "target_type": "None",
-    "type": "Attack",
-    "upgraded": false
-   },
-   {
-    "base_cost": 1,
-    "can_play": false,
-    "color": "blue",
-    "cost": 1,
-    "description": "Channel 1 Lightning.",
-    "description_rich": "[gold]Channel[/gold] 1 [gold]Lightning[/gold].",
-    "id": "ZAP",
-    "image": "https://assets.test/card_atlas/defect/zap.png",
-    "index": -1,
-    "name": "Zap",
-    "rarity": "Basic",
-    "stats": {},
-    "target_type": "None",
-    "type": "Skill",
     "upgraded": false
    },
    {
@@ -121,22 +66,113 @@
     "upgraded": true
    },
    {
-    "base_cost": 1,
+    "base_cost": 0,
     "can_play": false,
     "color": "blue",
-    "cost": 1,
-    "description": "Gain 6 Block.\nTransform all Status cards in your Hand into Fuel.",
-    "description_rich": "Gain 6 [gold]Block[/gold].\n[gold]Transform[/gold] all Status cards in your [gold]Hand[/gold] into [gold]Fuel[/gold].",
-    "id": "COMPACT",
-    "image": "https://assets.test/card_atlas/defect/beta/compact.png",
+    "cost": 0,
+    "description": "Deal 3 damage.\nIf the enemy intends to attack, apply 1 Weak.",
+    "description_rich": "Deal 3 damage.\nIf the enemy intends to attack, apply 1 [gold]Weak[/gold].",
+    "id": "GO_FOR_THE_EYES",
+    "image": "https://assets.test/card_atlas/defect/go_for_the_eyes.png",
     "index": -1,
-    "name": "Compact",
-    "rarity": "Uncommon",
+    "name": "Go for the Eyes",
+    "rarity": "Common",
+    "stats": {
+     "damage": 3
+    },
+    "target_type": "None",
+    "type": "Attack",
+    "upgraded": false
+   },
+   {
+    "base_cost": 0,
+    "can_play": false,
+    "color": "blue",
+    "cost": 0,
+    "description": "Deal 3 damage.\nApply 1 Vulnerable.",
+    "description_rich": "Deal 3 damage.\nApply 1 [gold]Vulnerable[/gold].",
+    "id": "BEAM_CELL",
+    "image": "https://assets.test/card_atlas/defect/beam_cell.png",
+    "index": -1,
+    "name": "Beam Cell",
+    "rarity": "Common",
+    "stats": {
+     "damage": 3
+    },
+    "target_type": "None",
+    "type": "Attack",
+    "upgraded": false
+   },
+   {
+    "base_cost": -1,
+    "can_play": false,
+    "color": "colorless",
+    "cost": 0,
+    "description": "Unplayable.\nEthereal.",
+    "description_rich": "[gold]Unplayable[/gold].\n[gold]Ethereal[/gold].",
+    "id": "DAZED",
+    "image": "https://assets.test/card_atlas/status/dazed.png",
+    "index": -1,
+    "name": "Dazed",
+    "rarity": "Status",
+    "stats": {},
+    "target_type": "None",
+    "type": "Status",
+    "upgraded": false
+   },
+   {
+    "base_cost": 0,
+    "can_play": false,
+    "color": "blue",
+    "cost": 0,
+    "description": "Gain 6 Block.\nAdd a Dazed into your Discard Pile.",
+    "description_rich": "Gain 6 [gold]Block[/gold].\nAdd a [gold]Dazed[/gold] into your [gold]Discard Pile[/gold].",
+    "id": "BOOST_AWAY",
+    "image": "https://assets.test/card_atlas/defect/boost_away.png",
+    "index": -1,
+    "name": "Boost Away",
+    "rarity": "Common",
     "stats": {
      "block": 6
     },
     "target_type": "None",
     "type": "Skill",
+    "upgraded": false
+   },
+   {
+    "base_cost": 1,
+    "can_play": false,
+    "color": "blue",
+    "cost": 1,
+    "description": "Channel 1 Lightning.",
+    "description_rich": "[gold]Channel[/gold] 1 [gold]Lightning[/gold].",
+    "id": "ZAP",
+    "image": "https://assets.test/card_atlas/defect/zap.png",
+    "index": -1,
+    "name": "Zap",
+    "rarity": "Basic",
+    "stats": {},
+    "target_type": "None",
+    "type": "Skill",
+    "upgraded": false
+   },
+   {
+    "base_cost": 1,
+    "can_play": false,
+    "color": "colorless",
+    "cost": 1,
+    "description": "Deal 14 damage.",
+    "description_rich": "Deal 14 damage.",
+    "id": "ULTIMATE_STRIKE",
+    "image": "https://assets.test/card_atlas/colorless/ultimate_strike.png",
+    "index": -1,
+    "name": "Ultimate Strike",
+    "rarity": "Uncommon",
+    "stats": {
+     "damage": 14
+    },
+    "target_type": "None",
+    "type": "Attack",
     "upgraded": false
    },
    {
@@ -159,117 +195,102 @@
     "upgraded": false
    },
    {
-    "base_cost": 2,
+    "base_cost": 1,
     "can_play": false,
     "color": "blue",
-    "cost": 0,
-    "description": "Deal 13 damage.\nDraw 1 card.\nWhenever you create a Status, reduce this card's cost to 0 Energy until played.",
-    "description_rich": "Deal 13 damage.\nDraw 1 card.\nWhenever you create a Status, reduce this card's cost to 0 [energy]1[/energy] until played.",
-    "id": "ROCKET_PUNCH",
-    "image": "https://assets.test/card_atlas/defect/rocket_punch.png",
+    "cost": 1,
+    "description": "Deal 6 damage to ALL enemies.\nDraw 1 card.",
+    "description_rich": "Deal 6 damage to ALL enemies.\nDraw 1 card.",
+    "id": "SWEEPING_BEAM",
+    "image": "https://assets.test/card_atlas/defect/sweeping_beam.png",
     "index": -1,
-    "name": "Rocket Punch",
-    "rarity": "Uncommon",
+    "name": "Sweeping Beam",
+    "rarity": "Common",
     "stats": {
-     "damage": 13
+     "damage": 6
     },
     "target_type": "None",
     "type": "Attack",
     "upgraded": false
    },
    {
-    "base_cost": 0,
+    "base_cost": 1,
     "can_play": false,
     "color": "blue",
-    "cost": 0,
-    "description": "Deal 3 damage.\nIf the enemy intends to attack, apply 1 Weak.",
-    "description_rich": "Deal 3 damage.\nIf the enemy intends to attack, apply 1 [gold]Weak[/gold].",
-    "id": "GO_FOR_THE_EYES",
-    "image": "https://assets.test/card_atlas/defect/go_for_the_eyes.png",
+    "cost": 1,
+    "description": "Deal 6 damage.",
+    "description_rich": "Deal 6 damage.",
+    "id": "STRIKE_DEFECT",
+    "image": "https://assets.test/card_atlas/defect/strike_defect.png",
     "index": -1,
-    "name": "Go for the Eyes",
-    "rarity": "Common",
+    "name": "Strike",
+    "rarity": "Basic",
     "stats": {
-     "damage": 3
+     "damage": 6
     },
     "target_type": "None",
     "type": "Attack",
     "upgraded": false
    },
    {
-    "base_cost": -1,
+    "base_cost": 1,
     "can_play": false,
-    "color": "colorless",
-    "cost": 0,
-    "description": "Unplayable.\nEthereal.\nWhenever you draw this card, lose Energy.",
-    "description_rich": "[gold]Unplayable[/gold].\n[gold]Ethereal[/gold].\nWhenever you draw this card, lose Energy.",
-    "id": "VOID",
-    "image": "https://assets.test/card_atlas/status/void.png",
+    "color": "blue",
+    "cost": 1,
+    "description": "Deal 6 damage.\nChannel 1 Frost.",
+    "description_rich": "Deal 6 damage.\n[gold]Channel[/gold] 1 [gold]Frost[/gold].",
+    "id": "COLD_SNAP",
+    "image": "https://assets.test/card_atlas/defect/cold_snap.png",
     "index": -1,
-    "name": "Void",
-    "rarity": "Status",
-    "stats": {},
+    "name": "Cold Snap",
+    "rarity": "Common",
+    "stats": {
+     "damage": 6
+    },
     "target_type": "None",
-    "type": "Status",
+    "type": "Attack",
     "upgraded": false
    },
    {
-    "base_cost": 0,
+    "base_cost": 1,
     "can_play": false,
     "color": "blue",
-    "cost": 0,
-    "description": "Gain Energy.\nAdd a Void into your Discard Pile.",
-    "description_rich": "Gain Energy.\nAdd a [gold]Void[/gold] into your [gold]Discard Pile[/gold].",
-    "id": "TURBO",
-    "image": "https://assets.test/card_atlas/defect/turbo.png",
+    "cost": 1,
+    "description": "Deal 6 damage.",
+    "description_rich": "Deal 6 damage.",
+    "id": "STRIKE_DEFECT",
+    "image": "https://assets.test/card_atlas/defect/strike_defect.png",
     "index": -1,
-    "name": "TURBO",
+    "name": "Strike",
+    "rarity": "Basic",
+    "stats": {
+     "damage": 6
+    },
+    "target_type": "None",
+    "type": "Attack",
+    "upgraded": false
+   },
+   {
+    "base_cost": 1,
+    "can_play": false,
+    "color": "blue",
+    "cost": 1,
+    "description": "Gain 9 Block.",
+    "description_rich": "Gain 9 [gold]Block[/gold].",
+    "id": "LEAP",
+    "image": "https://assets.test/card_atlas/defect/leap.png",
+    "index": -1,
+    "name": "Leap",
     "rarity": "Common",
-    "stats": {},
+    "stats": {
+     "block": 9
+    },
     "target_type": "None",
     "type": "Skill",
     "upgraded": false
-   },
-   {
-    "base_cost": 1,
-    "can_play": false,
-    "color": "blue",
-    "cost": 1,
-    "description": "Deal 6 damage.",
-    "description_rich": "Deal 6 damage.",
-    "id": "STRIKE_DEFECT",
-    "image": "https://assets.test/card_atlas/defect/strike_defect.png",
-    "index": -1,
-    "name": "Strike",
-    "rarity": "Basic",
-    "stats": {
-     "damage": 6
-    },
-    "target_type": "None",
-    "type": "Attack",
-    "upgraded": false
-   },
-   {
-    "base_cost": 1,
-    "can_play": false,
-    "color": "blue",
-    "cost": 1,
-    "description": "Deal 6 damage.",
-    "description_rich": "Deal 6 damage.",
-    "id": "STRIKE_DEFECT",
-    "image": "https://assets.test/card_atlas/defect/strike_defect.png",
-    "index": -1,
-    "name": "Strike",
-    "rarity": "Basic",
-    "stats": {
-     "damage": 6
-    },
-    "target_type": "None",
-    "type": "Attack",
-    "upgraded": false
    }
   ],
-  "discard_pile_count": 13,
+  "discard_pile_count": 14,
   "draw_pile": [
    {
     "base_cost": 1,
@@ -310,22 +331,20 @@
     "upgraded": false
    },
    {
-    "base_cost": 1,
+    "base_cost": -1,
     "can_play": false,
-    "color": "blue",
-    "cost": 1,
-    "description": "Deal 6 damage to ALL enemies.\nDraw 1 card.",
-    "description_rich": "Deal 6 damage to ALL enemies.\nDraw 1 card.",
-    "id": "SWEEPING_BEAM",
-    "image": "https://assets.test/card_atlas/defect/sweeping_beam.png",
+    "color": "quest",
+    "cost": 0,
+    "description": "Unplayable.\nMarks a site of 600 extra Gold in the next Act.",
+    "description_rich": "[gold]Unplayable[/gold].\nMarks a site of 600 extra [gold]Gold[/gold] in the next Act.",
+    "id": "SPOILS_MAP",
+    "image": "https://assets.test/card_atlas/quest/spoils_map.png",
     "index": -1,
-    "name": "Sweeping Beam",
-    "rarity": "Common",
-    "stats": {
-     "damage": 6
-    },
+    "name": "Spoils Map",
+    "rarity": "Quest",
+    "stats": {},
     "target_type": "None",
-    "type": "Attack",
+    "type": "Quest",
     "upgraded": false
    }
   ],
@@ -401,7 +420,7 @@
    },
    {
     "block": 0,
-    "hp": 89,
+    "hp": 85,
     "image": "https://assets.test/monsters/egg_layer.png",
     "index": 3,
     "intents": [
@@ -423,72 +442,63 @@
     "uid": 2
    }
   ],
-  "energy": 4,
+  "energy": 3,
   "energy_image": "https://assets.test/sprite_fonts/defect_energy_icon.png",
   "exhaust_pile": [],
   "exhaust_pile_count": 0,
-  "floor": 19,
+  "floor": 21,
   "hand": [
    {
     "base_cost": 0,
     "can_play": true,
     "color": "blue",
     "cost": 0,
-    "description": "Gain 6 Block.\nAdd a Dazed into your Discard Pile.",
-    "description_rich": "Gain 6 [gold]Block[/gold].\nAdd a [gold]Dazed[/gold] into your [gold]Discard Pile[/gold].",
-    "id": "BOOST_AWAY",
-    "image": "https://assets.test/card_atlas/defect/boost_away.png",
+    "description": "Gain Energy.\nAdd a Void into your Discard Pile.",
+    "description_rich": "Gain Energy.\nAdd a [gold]Void[/gold] into your [gold]Discard Pile[/gold].",
+    "id": "TURBO",
+    "image": "https://assets.test/card_atlas/defect/turbo.png",
     "index": 0,
-    "name": "Boost Away",
+    "name": "TURBO",
     "rarity": "Common",
+    "stats": {},
+    "target_type": "None",
+    "type": "Skill",
+    "upgraded": false
+   },
+   {
+    "base_cost": 1,
+    "can_play": true,
+    "color": "blue",
+    "cost": 1,
+    "description": "At the start of your turn, draw 1 additional card.",
+    "description_rich": "At the start of your turn, draw 1 additional card.",
+    "id": "MACHINE_LEARNING",
+    "image": "https://assets.test/card_atlas/defect/machine_learning.png",
+    "index": 1,
+    "name": "Machine Learning",
+    "rarity": "Rare",
+    "stats": {},
+    "target_type": "None",
+    "type": "Power",
+    "upgraded": false
+   },
+   {
+    "base_cost": 1,
+    "can_play": true,
+    "color": "blue",
+    "cost": 1,
+    "description": "Gain 6 Block.\nTransform all Status cards in your Hand into Fuel.",
+    "description_rich": "Gain 6 [gold]Block[/gold].\n[gold]Transform[/gold] all Status cards in your [gold]Hand[/gold] into [gold]Fuel[/gold].",
+    "id": "COMPACT",
+    "image": "https://assets.test/card_atlas/defect/beta/compact.png",
+    "index": 2,
+    "name": "Compact",
+    "rarity": "Uncommon",
     "stats": {
      "block": 6
     },
     "target_type": "None",
     "type": "Skill",
-    "upgraded": false
-   },
-   {
-    "base_cost": 1,
-    "can_play": true,
-    "color": "blue",
-    "cost": 1,
-    "description": "Gain 9 Block.",
-    "description_rich": "Gain 9 [gold]Block[/gold].",
-    "id": "LEAP",
-    "image": "https://assets.test/card_atlas/defect/leap.png",
-    "index": 1,
-    "name": "Leap",
-    "rarity": "Common",
-    "stats": {
-     "block": 9
-    },
-    "target_type": "None",
-    "type": "Skill",
-    "upgraded": false
-   },
-   {
-    "base_cost": 1,
-    "can_play": true,
-    "color": "blue",
-    "cost": 1,
-    "damage_preview": {
-     "0": 6,
-     "2": 6,
-     "3": 6
-    },
-    "description": "Deal 6 damage.\nChannel 1 Frost.",
-    "description_rich": "Deal 6 damage.\n[gold]Channel[/gold] 1 [gold]Frost[/gold].",
-    "id": "COLD_SNAP",
-    "image": "https://assets.test/card_atlas/defect/cold_snap.png",
-    "index": 2,
-    "name": "Cold Snap",
-    "rarity": "Common",
-    "stats": {
-     "damage": 6
-    },
-    "target_type": "AnyEnemy",
-    "type": "Attack",
     "upgraded": false
    },
    {
@@ -509,20 +519,27 @@
     "upgraded": false
    },
    {
-    "base_cost": 1,
+    "base_cost": 2,
     "can_play": true,
     "color": "blue",
-    "cost": 1,
-    "description": "At the start of your turn, draw 1 additional card.",
-    "description_rich": "At the start of your turn, draw 1 additional card.",
-    "id": "MACHINE_LEARNING",
-    "image": "https://assets.test/card_atlas/defect/machine_learning.png",
+    "cost": 0,
+    "damage_preview": {
+     "0": 13,
+     "2": 13,
+     "3": 13
+    },
+    "description": "Deal 13 damage.\nDraw 1 card.\nWhenever you create a Status, reduce this card's cost to 0 Energy until played.",
+    "description_rich": "Deal 13 damage.\nDraw 1 card.\nWhenever you create a Status, reduce this card's cost to 0 [energy]1[/energy] until played.",
+    "id": "ROCKET_PUNCH",
+    "image": "https://assets.test/card_atlas/defect/rocket_punch.png",
     "index": 4,
-    "name": "Machine Learning",
-    "rarity": "Rare",
-    "stats": {},
-    "target_type": "None",
-    "type": "Power",
+    "name": "Rocket Punch",
+    "rarity": "Uncommon",
+    "stats": {
+     "damage": 13
+    },
+    "target_type": "AnyEnemy",
+    "type": "Attack",
     "upgraded": false
    },
    {
@@ -545,24 +562,6 @@
     "upgraded": false
    },
    {
-    "base_cost": -1,
-    "can_play": false,
-    "color": "quest",
-    "cost": 0,
-    "description": "Unplayable.\nMarks a site of 600 extra Gold in the next Act.",
-    "description_rich": "[gold]Unplayable[/gold].\nMarks a site of 600 extra [gold]Gold[/gold] in the next Act.",
-    "id": "SPOILS_MAP",
-    "image": "https://assets.test/card_atlas/quest/spoils_map.png",
-    "index": 6,
-    "name": "Spoils Map",
-    "rarity": "Quest",
-    "stats": {},
-    "target_type": "None",
-    "type": "Quest",
-    "unplayable_reason": "blocked",
-    "upgraded": false
-   },
-   {
     "base_cost": 0,
     "can_play": true,
     "color": "blue",
@@ -572,12 +571,12 @@
      "2": 3,
      "3": 3
     },
-    "description": "Deal 3 damage.\nApply 1 Vulnerable.",
-    "description_rich": "Deal 3 damage.\nApply 1 [gold]Vulnerable[/gold].",
-    "id": "BEAM_CELL",
-    "image": "https://assets.test/card_atlas/defect/beam_cell.png",
-    "index": 7,
-    "name": "Beam Cell",
+    "description": "Deal 3 damage.\nIf the enemy intends to attack, apply 1 Weak.",
+    "description_rich": "Deal 3 damage.\nIf the enemy intends to attack, apply 1 [gold]Weak[/gold].",
+    "id": "GO_FOR_THE_EYES",
+    "image": "https://assets.test/card_atlas/defect/go_for_the_eyes.png",
+    "index": 6,
+    "name": "Go for the Eyes",
     "rarity": "Common",
     "stats": {
      "damage": 3
@@ -601,7 +600,7 @@
    }
   ],
   "player": {
-   "block": 0,
+   "block": 9,
    "deck": [
     {
      "color": "blue",
@@ -721,26 +720,13 @@
      "upgraded": false
     },
     {
-     "color": "colorless",
-     "cost": 1,
-     "description": "Deal 14 damage.",
-     "description_rich": "Deal 14 damage.",
-     "id": "ULTIMATE_STRIKE",
-     "image": "https://assets.test/card_atlas/colorless/ultimate_strike.png",
-     "index": 9,
-     "name": "Ultimate Strike",
-     "rarity": "Uncommon",
-     "type": "Attack",
-     "upgraded": false
-    },
-    {
      "color": "blue",
      "cost": 0,
      "description": "Gain 6 Block.\nAdd a Dazed into your Discard Pile.",
      "description_rich": "Gain 6 Block.\nAdd a Dazed into your Discard Pile.",
      "id": "BOOST_AWAY",
      "image": "https://assets.test/card_atlas/defect/boost_away.png",
-     "index": 10,
+     "index": 9,
      "name": "Boost Away",
      "rarity": "Common",
      "type": "Skill",
@@ -753,7 +739,7 @@
      "description_rich": "Gain Energy.\nAdd a [gold]Void[/gold] into your [gold]Discard Pile[/gold].",
      "id": "TURBO",
      "image": "https://assets.test/card_atlas/defect/turbo.png",
-     "index": 11,
+     "index": 10,
      "name": "TURBO",
      "rarity": "Common",
      "type": "Skill",
@@ -766,7 +752,7 @@
      "description_rich": "Deal 6 damage to ALL enemies.\nDraw 1 card.",
      "id": "SWEEPING_BEAM",
      "image": "https://assets.test/card_atlas/defect/sweeping_beam.png",
-     "index": 12,
+     "index": 11,
      "name": "Sweeping Beam",
      "rarity": "Common",
      "type": "Attack",
@@ -779,10 +765,23 @@
      "description_rich": "[gold]Unplayable[/gold].\nMarks a site of 600 extra Gold in the next Act.",
      "id": "SPOILS_MAP",
      "image": "https://assets.test/card_atlas/quest/spoils_map.png",
-     "index": 13,
+     "index": 12,
      "name": "Spoils Map",
      "rarity": "Quest",
      "type": "Quest",
+     "upgraded": false
+    },
+    {
+     "color": "blue",
+     "cost": 0,
+     "description": "Deal 3 damage.\nIf the enemy intends to attack, apply 1 Weak.",
+     "description_rich": "Deal 3 damage.\nIf the enemy intends to attack, apply 1 Weak.",
+     "id": "GO_FOR_THE_EYES",
+     "image": "https://assets.test/card_atlas/defect/go_for_the_eyes.png",
+     "index": 13,
+     "name": "Go for the Eyes",
+     "rarity": "Common",
+     "type": "Attack",
      "upgraded": false
     },
     {
@@ -800,25 +799,12 @@
     },
     {
      "color": "blue",
-     "cost": 0,
-     "description": "Deal 3 damage.\nIf the enemy intends to attack, apply 1 Weak.",
-     "description_rich": "Deal 3 damage.\nIf the enemy intends to attack, apply 1 Weak.",
-     "id": "GO_FOR_THE_EYES",
-     "image": "https://assets.test/card_atlas/defect/go_for_the_eyes.png",
-     "index": 15,
-     "name": "Go for the Eyes",
-     "rarity": "Common",
-     "type": "Attack",
-     "upgraded": false
-    },
-    {
-     "color": "blue",
      "cost": 1,
      "description": "Deal 6 damage.\nChannel 1 Frost.",
      "description_rich": "Deal 6 damage.\nChannel 1 Frost.",
      "id": "COLD_SNAP",
      "image": "https://assets.test/card_atlas/defect/cold_snap.png",
-     "index": 16,
+     "index": 15,
      "name": "Cold Snap",
      "rarity": "Common",
      "type": "Attack",
@@ -831,7 +817,7 @@
      "description_rich": "Gain 6 Block.\nTransform all Status cards in your Hand into Fuel.",
      "id": "COMPACT",
      "image": "https://assets.test/card_atlas/defect/beta/compact.png",
-     "index": 17,
+     "index": 16,
      "name": "Compact",
      "rarity": "Uncommon",
      "type": "Skill",
@@ -844,7 +830,7 @@
      "description_rich": "Deal 3 damage.\nApply 1 Vulnerable.",
      "id": "BEAM_CELL",
      "image": "https://assets.test/card_atlas/defect/beam_cell.png",
-     "index": 18,
+     "index": 17,
      "name": "Beam Cell",
      "rarity": "Common",
      "type": "Attack",
@@ -857,7 +843,7 @@
      "description_rich": "Gain 9 Block.",
      "id": "LEAP",
      "image": "https://assets.test/card_atlas/defect/leap.png",
-     "index": 19,
+     "index": 18,
      "name": "Leap",
      "rarity": "Common",
      "type": "Skill",
@@ -870,7 +856,7 @@
      "description_rich": "At the start of your turn, draw 1 additional card.",
      "id": "MACHINE_LEARNING",
      "image": "https://assets.test/card_atlas/defect/machine_learning.png",
-     "index": 20,
+     "index": 19,
      "name": "Machine Learning",
      "rarity": "Rare",
      "type": "Power",
@@ -883,8 +869,21 @@
      "description_rich": "Deal 13 damage.\nDraw 1 card.\nWhenever you create a Status, reduce this card's cost to 0 Energy until played.",
      "id": "ROCKET_PUNCH",
      "image": "https://assets.test/card_atlas/defect/rocket_punch.png",
-     "index": 21,
+     "index": 20,
      "name": "Rocket Punch",
+     "rarity": "Uncommon",
+     "type": "Attack",
+     "upgraded": false
+    },
+    {
+     "color": "colorless",
+     "cost": 1,
+     "description": "Deal 14 damage.",
+     "description_rich": "Deal 14 damage.",
+     "id": "ULTIMATE_STRIKE",
+     "image": "https://assets.test/card_atlas/colorless/ultimate_strike.png",
+     "index": 21,
+     "name": "Ultimate Strike",
      "rarity": "Uncommon",
      "type": "Attack",
      "upgraded": false
@@ -903,7 +902,7 @@
      "upgraded": false
     }
    ],
-   "gold": 297,
+   "gold": 296,
    "hp": 51,
    "image": "https://assets.test/character_sprites/defect.png",
    "max_hp": 75,

@@ -48,7 +48,9 @@ pub(crate) fn play_enfeebling_touch(
     if after > before {
         // TemporaryStrengthPower.BeforeApplied: `PowerCmd.Apply<StrengthPower>(
         // target, Sign * amount)` with Sign = -1 (IsPositive=false).
-        apply_power_signed_to_creature(state, t, PowerKind::Strength, -strength_loss);
+        // `amount` is the modified (landed) amount (PowerCmd.cs:129-136), e.g.
+        // doubled by Unsettling Lamp.
+        apply_power_signed_to_creature(state, t, PowerKind::Strength, -(after - before));
     }
     EffectResult::Resolved
 }

@@ -1,19 +1,25 @@
 {
  "final_turn_histogram": {},
- "n_losses": 1,
- "n_runs": 1,
+ "n_losses": 2,
+ "n_runs": 2,
  "pattern_tags": {},
  "representative_losses": [
   {
    "enemy_min_pct": 2.5641,
    "final_turn": null,
-   "stem": "20260101_000000_Ironclad_1",
+   "stem": "20260101_000000_Ironclad_1_2",
    "turn1_q": 0.1884
+  },
+  {
+   "enemy_min_pct": 2.5641,
+   "final_turn": null,
+   "stem": "20260101_000000_Ironclad_1",
+   "turn1_q": 1.2534
   }
  ],
  "turn1_q": {
-  "max": 0.1884,
-  "mean": 0.1884,
+  "max": 1.2534,
+  "mean": 0.7209,
   "min": 0.1884
  }
 }

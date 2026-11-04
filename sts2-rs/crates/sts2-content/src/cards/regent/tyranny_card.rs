@@ -2,7 +2,6 @@
 use super::prelude::*;
 
 /// `TyrannyCard` — apply 1 Tyranny to self.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L837
 pub(crate) fn play_tyranny_card(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     apply_power_to_player(state, PowerKind::Tyranny, 1);
     EffectResult::Resolved

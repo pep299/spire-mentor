@@ -5,8 +5,6 @@
 
 //! Act-3 monster ports (bead sts2-rs-m7f).
 //!
-//! Ported from sts2-rl-agent@01c094d:sts2_env/monsters/act3.py
-//!
 //! Ports the 28 monsters from
 //! `sts2-rl-agent@01c094d:sts2_env/monsters/act3.py` (826 LOC) to
 //! data-driven `MonsterAi` instances using the DSL skeleton from P5-1.
@@ -1653,17 +1651,40 @@ fn possess_stolen_total(state: &CombatState, owner: CreatureUid, possess_kind: P
 /// creature, it never keeps combat open. Bead `sts2-rs-jwb4a`.
 pub(crate) fn possess_strength_after_death(state: &mut CombatState, owner: CreatureUid) {
     let stolen = possess_stolen_total(state, owner, PowerKind::PossessStrength);
-    if stolen != 0 {
-        apply_signed_power_to_player(state, PowerKind::Strength, stolen);
-    }
+    return_possessed_stat(state, PowerKind::Strength, stolen);
 }
 
 /// `PossessSpeedPower.AfterDeath` — the Dexterity analogue for TheForgotten
 /// (MIASMA steals Dexterity). Bead `sts2-rs-jwb4a`.
 pub(crate) fn possess_speed_after_death(state: &mut CombatState, owner: CreatureUid) {
     let stolen = possess_stolen_total(state, owner, PowerKind::PossessSpeed);
-    if stolen != 0 {
-        apply_signed_power_to_player(state, PowerKind::Dexterity, stolen);
+    return_possessed_stat(state, PowerKind::Dexterity, stolen);
+}
+
+/// Give the player back `stolen` points of `kind` — the shared body of the
+/// two possess `AfterDeath` handlers. C# returns the steal with a plain
+/// `PowerCmd.Apply<…>(player, -stolen, applier: null, cardSource: null)`
+/// (`PossessStrengthPower.cs:57-67`, `PossessSpeedPower.cs`; unchanged
+/// v0.107.1 → v0.111.0), so a positive return runs the full received chain:
+/// `Hook.ModifyPowerAmountReceived` (`PowerCmd.cs:131`) — an unused Ruined
+/// Helmet doubles the first positive Strength (`RuinedHelmet.cs:32-59`) and
+/// is consumed — then `AfterPowerAmountChanged` and the remove-at-0 check.
+/// The raw legacy add skipped all of that (Ironclad seeds 2135 / 2192: C#
+/// -6 → +6 / -16 → +16, Rust → 0). Only a positive return with a mirror
+/// Creature takes the chained path; anything else keeps the signed legacy
+/// add (the negative-delta convention of `apply_signed_attr_power`).
+fn return_possessed_stat(state: &mut CombatState, kind: PowerKind, stolen: i32) {
+    if stolen == 0 {
+        return;
+    }
+    if stolen > 0 && state.player.creature_uid.is_some() {
+        sts2_core::coop::each_player(state, |state| {
+            if let Some(uid) = state.player.creature_uid {
+                sts2_core::card_effects::apply_power_to_creature(state, uid, kind, stolen);
+            }
+        });
+    } else {
+        apply_signed_power_to_player(state, kind, stolen);
     }
 }
 
@@ -2495,9 +2516,8 @@ fn queen_puppet_strings_effect(state: &mut CombatState, _owner: CreatureUid) {
 ///    returns `true` (flipping both `YOURE_MINE_NOW_BRANCH` and
 ///    `BURN_BRIGHT_FOR_ME_BRANCH` to the
 ///    OFF_WITH_YOUR_HEAD / EXECUTION / ENRAGE chain).
-/// 4. If Queen's currently-resolved next move (post-perform follow-up
-///    resolution) is `BURN_BRIGHT_FOR_ME_MOVE`, we
-///    [`force_next_state`](sts2_core::monster_ai::MonsterAi::force_next_state)
+/// 4. If Queen's current move is `BURN_BRIGHT_FOR_ME_MOVE`, we
+///    [`force_current_state`](sts2_core::monster_ai::MonsterAi::force_current_state)
 ///    to `ENRAGE_MOVE` — that is C# `SetMoveImmediate(EnragedState)`.
 ///    Otherwise we let the normal graph + flipped counter carry her
 ///    into the OFF_WITH_YOUR_HEAD chain on the next roll.
@@ -2517,12 +2537,24 @@ fn queen_after_death(
     let Some(owner_idx) = state.creatures.iter().position(|c| c.id == owner.0) else {
         return;
     };
-    let Some(ai) = state.creatures[owner_idx].ai.as_mut() else {
+    let queen = &mut state.creatures[owner_idx];
+    let Some(ai) = queen.ai.as_mut() else {
         return;
     };
     ai.set_counter(1);
     if ai.current_state_id() == "BURN_BRIGHT_FOR_ME_MOVE" {
-        ai.force_next_state("ENRAGE_MOVE");
+        // `SetMoveImmediate` replaces the CURRENT state
+        // (`MoveStateMachine.ForceCurrentState`, MonsterModel.cs:563-575),
+        // whether or not she has performed BURN_BRIGHT yet:
+        // - not yet (the Amalgam died to the player's end-of-turn Hailstorm,
+        //   Defect act23 seed 1001): she enrages this very turn;
+        // - already (Doom killed the Amalgam at the enemy side's turn end,
+        //   DoomPower.cs:60, after her move): the roll at the next player
+        //   turn start (CombatManager.cs:745) moves on from ENRAGE to its
+        //   follow-up, so she skips ENRAGE and goes to OFF_WITH_YOUR_HEAD
+        //   (Necrobinder act-3 checkpoint branch 1001#b3, v0.111.0).
+        ai.force_current_state("ENRAGE_MOVE");
+        queen.intent = ai.current_move().intents.first().copied();
     }
 }
 
@@ -2586,20 +2618,14 @@ pub fn create_queen_ai() -> MonsterAi {
         MonsterState::Move(MoveState {
             id: "YOURE_MINE_MOVE",
             effect: queen_youre_mine_effect,
-            intents: smallvec![
-                Intent::Debuff {
-                    kind: PowerKind::Frail,
-                    amount: 99,
-                },
-                Intent::Debuff {
-                    kind: PowerKind::Weak,
-                    amount: 99,
-                },
-                Intent::Debuff {
-                    kind: PowerKind::Vulnerable,
-                    amount: 99,
-                },
-            ],
+            // One `DebuffIntent` (`Queen.cs:136`, both builds): the telegraph
+            // is a single icon though the effect applies Frail, Weak and
+            // Vulnerable 99. The wire emits every declared intent, so three
+            // rows showed three icons.
+            intents: smallvec![Intent::Debuff {
+                kind: PowerKind::Frail,
+                amount: 99,
+            }],
             follow_up: Some("YOURE_MINE_NOW_BRANCH"),
             must_perform_once: false,
         }),
@@ -4344,6 +4370,18 @@ mod tests {
         );
     }
 
+    /// YOU_ARE_MINE telegraphs ONE `DebuffIntent` (`Queen.cs:136`, both
+    /// builds) though `YoureMineMove` applies three powers; the wire emits
+    /// every declared intent, so three rows showed three icons.
+    #[test]
+    fn queen_youre_mine_declares_one_debuff_intent() {
+        let mut ai = create_queen_ai();
+        assert!(ai.force_current_state_by_name("YOURE_MINE_MOVE"));
+        let intents = &ai.current_move().intents;
+        assert_eq!(intents.len(), 1, "{intents:?}");
+        assert!(matches!(intents[0], Intent::Debuff { .. }), "{intents:?}");
+    }
+
     /// Bead `sts2-rs-igdhp` (f933s sub-3): the PUPPET_STRINGS_MOVE
     /// effect_fn applies 3 stacks of `ChainsOfBinding` to the player
     /// per C# `Queen.cs:156-161 PuppetStringsMove`. Verifies the
@@ -4375,9 +4413,12 @@ mod tests {
     /// Bead `sts2-rs-6g4v4` (m70xg.3): the Queen's `AfterDeath` listener
     /// flips her per-instance `HasAmalgamDied` counter when a
     /// `TorchHeadAmalgam` enters `newly_dead_this_turn`, and — if her
-    /// resolved next move is `BURN_BRIGHT_FOR_ME_MOVE` — short-circuits
-    /// the graph to `ENRAGE_MOVE` via `force_next_state`. Mirrors C#
-    /// `Queen.cs:213-225 AfterDeath` (`SetMoveImmediate(EnragedState)`).
+    /// current move is `BURN_BRIGHT_FOR_ME_MOVE` — replaces it with
+    /// `ENRAGE_MOVE`. Mirrors C# `Queen.cs:213-225 AfterDeath`
+    /// (`SetMoveImmediate(EnragedState)`). Here she already performed
+    /// BURN_BRIGHT (Doom killed the Amalgam at the enemy turn end), so the
+    /// next roll goes past ENRAGE to OFF_WITH_YOUR_HEAD, as in C#
+    /// (Necrobinder act-3 checkpoint branch 1001#b3, v0.111.0).
     #[test]
     fn queen_after_death_flips_counter_and_forces_enrage_when_in_burn_bright() {
         use std::num::NonZeroU32;
@@ -4402,6 +4443,9 @@ mod tests {
         );
         assert_eq!(queen_ai.current_state_id(), "BURN_BRIGHT_FOR_ME_MOVE");
         assert_eq!(queen_ai.counter(), 0);
+        // She has already run BURN_BRIGHT this turn (the death lands during
+        // the enemy turn, after her move).
+        queen_ai.begin_move();
 
         combat.creatures.push(Creature {
             id: queen_uid.0,
@@ -4434,16 +4478,75 @@ mod tests {
 
         let queen = combat
             .creatures
-            .iter()
+            .iter_mut()
             .find(|c| c.id == queen_uid.0)
             .expect("queen present");
-        let ai = queen.ai.as_ref().expect("queen has ai");
+        let ai = queen.ai.as_mut().expect("queen has ai");
         assert_eq!(ai.counter(), 1, "HasAmalgamDied counter flips to 1");
-        assert_eq!(
-            ai.forced_next_state(),
-            Some("ENRAGE_MOVE"),
-            "BURN_BRIGHT → ENRAGE short-circuit",
+        assert_eq!(ai.current_state_id(), "ENRAGE_MOVE", "SetMoveImmediate");
+        assert_eq!(ai.forced_next_state(), None);
+        // The next player-turn roll moves on from ENRAGE: she skips it.
+        assert_eq!(ai.roll_move_seeded(0).id, "OFF_WITH_YOUR_HEAD_MOVE");
+    }
+
+    /// The Amalgam dies BEFORE the Queen acts (the player's end-of-turn
+    /// Hailstorm): BURN_BRIGHT is still her telegraphed move, and C#
+    /// `SetMoveImmediate(EnragedState)` replaces it now (Queen.cs:212-215), so
+    /// she enrages this very turn. Defect act23 seed 1001.
+    #[test]
+    fn queen_after_death_swaps_a_telegraphed_burn_bright_for_enrage_now() {
+        use std::num::NonZeroU32;
+
+        use smallvec::SmallVec;
+        use sts2_core::{Creature, CreatureUid, IntentHistory, MonsterId, PowerUid};
+
+        let mut combat = CombatState::default();
+        let queen_uid = CreatureUid(NonZeroU32::new(1).expect("nz"));
+        let amalgam_uid = CreatureUid(NonZeroU32::new(2).expect("nz"));
+        let mut queen_ai = create_queen_ai();
+        let _ = run_three_moves(&mut queen_ai);
+        assert_eq!(queen_ai.current_state_id(), "BURN_BRIGHT_FOR_ME_MOVE");
+        assert!(
+            !queen_ai.current_move_performed(),
+            "telegraphed, not yet run"
         );
+        for (uid, hp, kind, name, ai) in [
+            (
+                queen_uid,
+                200,
+                sts2_core::MonsterKind::Queen,
+                "Queen",
+                Some(queen_ai),
+            ),
+            (
+                amalgam_uid,
+                0,
+                sts2_core::MonsterKind::TorchHeadAmalgam,
+                "TorchHeadAmalgam",
+                None,
+            ),
+        ] {
+            combat.creatures.push(Creature {
+                id: uid.0,
+                current_hp: hp,
+                max_hp: 200,
+                block: 0,
+                powers: SmallVec::<[PowerUid; 8]>::new(),
+                species: Some(kind),
+                monster_id: MonsterId(name),
+                intent: None,
+                intent_history: IntentHistory::default(),
+                ai,
+            });
+            combat.enemy_uids.push(uid);
+        }
+
+        super::queen_after_death(&mut combat, amalgam_uid, queen_uid);
+
+        let queen = &combat.creatures[0];
+        let ai = queen.ai.as_ref().expect("queen has ai");
+        assert_eq!(ai.current_state_id(), "ENRAGE_MOVE");
+        assert_eq!(queen.intent, ai.current_move().intents.first().copied());
     }
 
     /// Negative path for `sts2-rs-6g4v4`: the listener ignores deaths of
@@ -4892,6 +4995,123 @@ mod tests {
                 .iter()
                 .any(|p| p.id == u.0 && p.kind == PowerKind::Strength)),
             "the net-zero Strength instance is removed (ShouldRemoveDueToAmount)"
+        );
+    }
+
+    /// A player with a mirror Creature, holding `relic` — the `combat_start`
+    /// shape the possess-return tests need (the chained apply lands on the
+    /// mirror and the relic-guarded modify channels read `state.relics`).
+    fn the_lost_vs_player_with_relic(relic: sts2_core::RelicKind) -> (CombatState, CreatureUid) {
+        use sts2_core::MonsterKind;
+        sts2_core::relic_effects::ensure_installed();
+        let mut combat = combat_with_monster(MonsterKind::TheLost, "TheLost");
+        combat.player.max_hp = 80;
+        combat.player.current_hp = 80;
+        combat.init_player_creature();
+        combat.relics.push(sts2_core::Relic {
+            id: std::num::NonZeroU32::new(1).expect("nz"),
+            kind: relic,
+            counter: 0,
+            is_wax: false,
+            is_melted: false,
+        });
+        let lost = CreatureUid::new(1).expect("nz");
+        sts2_core::card_effects::apply_power_to_creature(
+            &mut combat,
+            lost,
+            PowerKind::PossessStrength,
+            1,
+        );
+        (combat, lost)
+    }
+
+    fn mirror_power(state: &CombatState, kind: PowerKind) -> i32 {
+        state
+            .player_power_uids()
+            .into_iter()
+            .filter_map(|u| state.powers.iter().find(|p| p.id == u.0 && p.kind == kind))
+            .map(|p| p.amount)
+            .sum()
+    }
+
+    fn ruined_helmet_used(state: &CombatState) -> bool {
+        state
+            .relics
+            .iter()
+            .any(|r| r.kind == sts2_core::RelicKind::RuinedHelmet && r.counter != 0)
+    }
+
+    /// C# `PossessStrengthPower.AfterDeath` (v0.111.0 + v0.107.1
+    /// `PossessStrengthPower.cs:57-67`) returns the stolen Strength with
+    /// `PowerCmd.Apply<StrengthPower>(player, -stolen, null, null)`. That
+    /// runs `Hook.ModifyPowerAmountReceived` (`PowerCmd.cs:131`), so an
+    /// unused Ruined Helmet (`RuinedHelmet.cs:32-59`: first positive Strength
+    /// its owner receives this combat → x2) DOUBLES the restore and is then
+    /// consumed. Act-3 TheLost/TheForgotten repros: Ironclad seed 2135
+    /// (-6 → +6, a +12 apply) and seed 2192 (-16 → +16, a +32 apply). Rust
+    /// used to restore through the raw legacy add, giving 0 and dropping the
+    /// power (`player.powers.len` cs 4 vs rs 3).
+    #[test]
+    fn the_lost_possess_strength_return_is_doubled_by_unused_ruined_helmet() {
+        let (mut combat, lost) = the_lost_vs_player_with_relic(sts2_core::RelicKind::RuinedHelmet);
+        for _ in 0..3 {
+            the_lost_debilitating_smog_effect(&mut combat, lost);
+        }
+        assert_eq!(mirror_power(&combat, PowerKind::Strength), -6);
+        assert!(
+            !ruined_helmet_used(&combat),
+            "a negative steal never arms the helmet"
+        );
+
+        if let Some(c) = combat.creatures.iter_mut().find(|c| c.id == lost.0) {
+            c.current_hp = 0;
+        }
+        possess_strength_after_death(&mut combat, lost);
+
+        assert_eq!(
+            mirror_power(&combat, PowerKind::Strength),
+            6,
+            "the +6 return is doubled to +12 by the unused Ruined Helmet"
+        );
+        assert!(
+            ruined_helmet_used(&combat),
+            "the doubling consumes the helmet"
+        );
+        let strength_instances = combat
+            .powers
+            .iter()
+            .filter(|p| p.kind == PowerKind::Strength)
+            .count();
+        assert_eq!(
+            strength_instances, 2,
+            "player + TheLost: one Strength each, no duplicate"
+        );
+    }
+
+    /// The used-helmet twin: with Ruined Helmet already spent this combat the
+    /// return is the plain `+stolen`, netting the player to 0 — and the
+    /// 0-amount instance is removed (`ShouldRemoveDueToAmount`).
+    #[test]
+    fn the_lost_possess_strength_return_with_used_ruined_helmet_nets_to_zero() {
+        let (mut combat, lost) = the_lost_vs_player_with_relic(sts2_core::RelicKind::RuinedHelmet);
+        for r in &mut combat.relics {
+            r.counter = 1;
+        }
+        for _ in 0..3 {
+            the_lost_debilitating_smog_effect(&mut combat, lost);
+        }
+        if let Some(c) = combat.creatures.iter_mut().find(|c| c.id == lost.0) {
+            c.current_hp = 0;
+        }
+        possess_strength_after_death(&mut combat, lost);
+
+        assert_eq!(mirror_power(&combat, PowerKind::Strength), 0);
+        assert!(
+            !combat.player_power_uids().into_iter().any(|u| combat
+                .powers
+                .iter()
+                .any(|p| p.id == u.0 && p.kind == PowerKind::Strength)),
+            "the net-zero Strength instance is removed"
         );
     }
 

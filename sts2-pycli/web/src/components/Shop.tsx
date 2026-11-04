@@ -4,13 +4,9 @@ import { assetUrl } from "../api";
 import CardFrame from "./CardFrame";
 import SpineSprite from "./SpineSprite";
 import { cardBoxHeight } from "../cardGeometry";
-import {
-  useDecisionAdvisor,
-  DecisionAnalyzeButton,
-  DecisionAnalyzeStatus,
-  DecisionWinChip,
-} from "./DecisionAdvisor";
-import { useSound } from "../sound/SoundContext";
+import { DecisionAnalyzeButton, DecisionAnalyzeStatus, DecisionWinChip } from "./DecisionAdvisor";
+import { useDecisionAdvisor } from "./useDecisionAdvisor";
+import { useSound } from "../sound/useSound";
 import { cueForRelic } from "../sound/runCues";
 import "../skins/shop.css";
 

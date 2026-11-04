@@ -62,7 +62,7 @@ def main() -> None:
             }
         )
     doc = {
-        "engine": {"version": sts2_rs.version(), "src_hash": sts2_rs.src_hash()},
+        "engine": {"version": sts2_rs.version(), "src_hash": sts2_rs.src_hash()},  # ty: ignore[unresolved-attribute]
         "cases": cases,
     }
     args.out.parent.mkdir(parents=True, exist_ok=True)

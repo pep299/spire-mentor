@@ -629,6 +629,21 @@ relic_hook_channel!(
     fn(&mut CombatState) -> EffectResult
 );
 
+// C# `Hook.BeforeCombatStart` (Hook.cs:455-467, both builds) walks every
+// listener's `BeforeCombatStart`, then makes a SECOND full walk calling
+// `BeforeCombatStartLate`; Petrified Toad is the only override.
+relic_hook_channel!(
+    BeforeCombatStartLateFn,
+    HOOK_BEFORE_COMBAT_START_LATE,
+    registry_before_combat_start_late,
+    register_before_combat_start_late,
+    register_many_before_combat_start_late,
+    lookup_before_combat_start_late,
+    listeners_before_combat_start_late,
+    is_empty_before_combat_start_late,
+    fn(&mut CombatState) -> EffectResult
+);
+
 relic_hook_channel!(
     AfterSideTurnStartFn,
     HOOK_AFTER_SIDE_TURN_START,
@@ -859,6 +874,22 @@ relic_hook_channel!(
     fn(&mut CombatState) -> EffectResult;
     guarded: register_owned_after_combat_victory,
         listener_guards_after_combat_victory
+);
+
+// C# `Hook.BeforeSideTurnEnd` (v0.111.0 Hook.cs:1388-1417; v0.107.1
+// `Hook.BeforeTurnEnd`, Hook.cs:1376) makes three full listener walks:
+// VeryEarly, Early, then the normal `BeforeSideTurnEnd`. This is the relic
+// half of the Early walk; Pael's Eye's hand exhaust is its only relic override.
+relic_hook_channel!(
+    BeforeTurnEndEarlyFn,
+    HOOK_BEFORE_TURN_END_EARLY,
+    registry_before_turn_end_early,
+    register_before_turn_end_early,
+    register_many_before_turn_end_early,
+    lookup_before_turn_end_early,
+    listeners_before_turn_end_early,
+    is_empty_before_turn_end_early,
+    fn(&mut CombatState, side: Side) -> EffectResult
 );
 
 relic_hook_channel!(
@@ -1381,6 +1412,10 @@ const OWNED_CHANNELS: usize = 11;
 const READY_AFTER_SIDE_TURN_START: u16 = 1 << OWNED_CHANNELS;
 const READY_AFTER_PLAYER_TURN_START: u16 = 1 << (OWNED_CHANNELS + 1);
 const READY_BEFORE_SIDE_TURN_START: u16 = 1 << (OWNED_CHANNELS + 2);
+/// [`RelicPlan::ready`] bit of [`RelicPlan::after_card_played`], the equip
+/// order of the `after_card_played` owned channel. Not a [`PlannedChannel`]:
+/// that channel's liveness stays on its owned bits.
+const READY_AFTER_CARD_PLAYED_ORDER: u16 = 1 << (OWNED_CHANNELS + 3);
 /// Every planned channel's [`RelicPlan::ready`] / [`RelicPlan::dead`] bit.
 const ALL_PLANNED: u16 = (1 << (OWNED_CHANNELS + 3)) - 1;
 
@@ -1840,6 +1875,9 @@ pub(crate) struct RelicPlan {
     after_side_turn_start: EquipPlan,
     after_player_turn_start: EquipPlan,
     before_side_turn_start: ObtainPlan,
+    /// Equip-order call list of `after_card_played` (ready bit
+    /// [`READY_AFTER_CARD_PLAYED_ORDER`]).
+    after_card_played: EquipPlan,
     /// Bit `c` (a [`GuardedChannel`]): that channel's call bits were built
     /// against its frozen registry list (at most [`GUARDED_PLAN_CAP`]
     /// handlers). Clear on an empty store: its dispatches walk every handler.
@@ -1864,6 +1902,7 @@ impl RelicPlan {
         after_side_turn_start: EquipPlan::EMPTY,
         after_player_turn_start: EquipPlan::EMPTY,
         before_side_turn_start: ObtainPlan::EMPTY,
+        after_card_played: EquipPlan::EMPTY,
         guarded_ready: 0,
         guarded: [0; GUARDED_CHANNELS],
     };
@@ -1929,6 +1968,10 @@ impl RelicPlan {
             if p.len == 0 {
                 plan.dead |= READY_AFTER_PLAYER_TURN_START;
             }
+        }
+        if let Some(p) = equip_plan(registry_after_card_played(), relics, &mut frozen_seen) {
+            plan.after_card_played = p;
+            plan.ready |= READY_AFTER_CARD_PLAYED_ORDER;
         }
         if let Some(p) = obtain_plan(relics, &mut frozen_seen) {
             plan.before_side_turn_start = p;
@@ -2419,14 +2462,44 @@ fn shadow_skipped_steps<F: Copy, A: Copy + PartialEq + std::fmt::Debug>(
     }
 }
 
-/// Dispatch `before_combat_start` to every registered listener.
+/// Dispatch `before_combat_start` to the owned relics' listeners in EQUIP
+/// order. C# `Hook.BeforeCombatStart` (CombatManager.cs:405) walks
+/// `RunState.IterateHookListeners`, whose combat half lists each player's
+/// non-melted relics in `player.Relics` order (CombatState.cs:130, both
+/// builds) — so Vajra obtained before Oddly Smooth Stone applies Strength
+/// before Dexterity, whatever the registry (`RelicId`) order.
 pub fn dispatch_before_combat_start(state: &mut CombatState) -> EffectResult {
     if is_empty_before_combat_start() {
         return EffectResult::NotImplemented;
     }
-    let listeners = listeners_before_combat_start();
+    let listeners = collect_equip_order_listeners(registry_before_combat_start(), state);
     let mut any_resolved = false;
-    for (_id, f) in listeners {
+    for (_idx, _id, f) in listeners {
+        if f(state) == EffectResult::Resolved {
+            any_resolved = true;
+        }
+    }
+    if any_resolved {
+        EffectResult::Resolved
+    } else {
+        EffectResult::NotImplemented
+    }
+}
+
+/// Dispatch `before_combat_start_late` to the owned relics' listeners in
+/// EQUIP order: the second, `BeforeCombatStartLate` walk of C#
+/// `Hook.BeforeCombatStart` (Hook.cs:455-467, both builds), which runs only
+/// after EVERY listener's `BeforeCombatStart` — so Petrified Toad procures
+/// its Rock after Delicate Frond has filled the belt, whatever the obtain
+/// order. `start_combat` calls it after every player's
+/// [`dispatch_before_combat_start`].
+pub fn dispatch_before_combat_start_late(state: &mut CombatState) -> EffectResult {
+    if is_empty_before_combat_start_late() {
+        return EffectResult::NotImplemented;
+    }
+    let listeners = collect_equip_order_listeners(registry_before_combat_start_late(), state);
+    let mut any_resolved = false;
+    for (_idx, _id, f) in listeners {
         if f(state) == EffectResult::Resolved {
             any_resolved = true;
         }
@@ -2451,17 +2524,29 @@ pub fn dispatch_before_hand_draw(state: &mut CombatState) -> EffectResult {
     )
 }
 
-/// Resume BeforeHandDraw in relic equip order, suspending after a new choice.
+/// Walk `before_hand_draw` in player EQUIP order (`state.relics` order, C#
+/// `CombatState.IterateHookListeners` inside `Hook.BeforeHandDraw`),
+/// starting at equip index `from`, and SUSPEND right after a listener opens a
+/// card choice. Returns the equip index to resume from once that choice
+/// resolves, or `None` when the walk completed.
+///
+/// C# awaits each listener: Toolbox (`Toolbox.cs`) awaits its
+/// `FromChooseACardScreen` before the next relic's `BeforeHandDraw` runs, so
+/// a relic equipped after it (NinjaScroll's Shivs, FuneraryMask's Souls,
+/// ToastyMittens, …) must act only after the pick lands in hand.
 pub fn dispatch_before_hand_draw_from(state: &mut CombatState, from: u8) -> Option<u8> {
+    if is_empty_before_hand_draw() {
+        return None;
+    }
     let owned = collect_equip_order_listeners(registry_before_hand_draw(), state);
-    for (idx, _, listener) in owned {
+    for (idx, _, f) in owned {
         if idx < usize::from(from) {
             continue;
         }
         let had_choice = state.pending_choice.is_some();
-        listener(state);
+        let _ = f(state);
         if !had_choice && state.pending_choice.is_some() {
-            return Some(u8::try_from(idx + 1).expect("relic equip index fits u8"));
+            return Some(u8::try_from(idx.saturating_add(1)).unwrap_or(u8::MAX));
         }
         if state.is_over {
             break;
@@ -2600,7 +2685,8 @@ fn run_after_player_turn_start(
         if idx < usize::from(from) {
             continue;
         }
-        // Only a choice opened by this listener suspends this walk.
+        // Only a choice THIS listener opened suspends the walk; one already
+        // open from an earlier surface does not.
         let had_choice = state.pending_choice.is_some();
         let _ = f(state);
         if !had_choice && state.pending_choice.is_some() {
@@ -2687,14 +2773,28 @@ pub fn dispatch_after_card_played(state: &mut CombatState, ctx: &CardEventCtx) -
     if state.relics.is_empty() {
         return EffectResult::NotImplemented;
     }
+    // EQUIP order, not `RelicId` order: C# `Hook.AfterCardPlayed` walks
+    // `CombatState.IterateHookListeners`, which lists each player's relics in
+    // `player.Relics` order (CombatState.cs:118-140, both builds). Iron Club
+    // obtained before Mummified Hand draws its card before Mummified Hand
+    // picks from the hand (Ironclad 4029 act 3), whatever the `RelicId`s.
     let mut any_resolved = false;
-    for f in owned_listeners(
+    if let Some((frozen, order)) = planned_equip_order(
         registry_after_card_played(),
-        OwnedChannel::AfterCardPlayed,
         state,
+        READY_AFTER_CARD_PLAYED_ORDER,
+        |p| &p.after_card_played,
     ) {
-        if f(state, ctx) == EffectResult::Resolved {
-            any_resolved = true;
+        for slot in order.slots() {
+            if (frozen[usize::from(slot.entry)].1)(state, ctx) == EffectResult::Resolved {
+                any_resolved = true;
+            }
+        }
+    } else {
+        for (_, _, f) in collect_equip_order_listeners(registry_after_card_played(), state) {
+            if f(state, ctx) == EffectResult::Resolved {
+                any_resolved = true;
+            }
         }
     }
     if any_resolved {
@@ -2879,6 +2979,29 @@ pub fn dispatch_before_turn_end(state: &mut CombatState, side: Side) -> EffectRe
         OwnedChannel::BeforeTurnEnd,
         state,
     ) {
+        if f(state, side) == EffectResult::Resolved {
+            any_resolved = true;
+        }
+    }
+    if any_resolved {
+        EffectResult::Resolved
+    } else {
+        EffectResult::NotImplemented
+    }
+}
+
+/// Dispatch `before_turn_end_early` to the owned relics' listeners in EQUIP
+/// order (`CombatState.IterateHookListeners`): the Early walk of C#
+/// `Hook.BeforeSideTurnEnd` (Hook.cs:1388-1417, both builds), which finishes
+/// before ANY normal `BeforeSideTurnEnd` listener runs — so Pael's Eye's hand
+/// exhaust lands before Screaming Flagon checks for an empty hand.
+pub fn dispatch_before_turn_end_early(state: &mut CombatState, side: Side) -> EffectResult {
+    if is_empty_before_turn_end_early() {
+        return EffectResult::NotImplemented;
+    }
+    let listeners = collect_equip_order_listeners(registry_before_turn_end_early(), state);
+    let mut any_resolved = false;
+    for (_idx, _id, f) in listeners {
         if f(state, side) == EffectResult::Resolved {
             any_resolved = true;
         }
@@ -4036,7 +4159,7 @@ impl<F: Copy + 'static> FreezeControl for ChannelRegistry<F> {
 /// read path — but it is also invisible to [`all_channels_frozen`], so the
 /// `freeze_guard` hot-channel test pins the per-dispatch hot set by name. Keep
 /// alphabetical, mirroring the macro invocations above.
-fn all_channels() -> [&'static dyn FreezeControl; 53] {
+fn all_channels() -> [&'static dyn FreezeControl; 55] {
     [
         registry_after_block_cleared(),
         registry_after_block_gained(),
@@ -4065,11 +4188,13 @@ fn all_channels() -> [&'static dyn FreezeControl; 53] {
         registry_after_turn_end(),
         registry_before_card_played(),
         registry_before_combat_start(),
+        registry_before_combat_start_late(),
         registry_before_hand_draw(),
         registry_before_play_phase_start(),
         registry_before_power_amount_changed(),
         registry_before_side_turn_start(),
         registry_before_turn_end(),
+        registry_before_turn_end_early(),
         registry_count_pets(),
         registry_modify_block_multiplicative(),
         registry_modify_card_reward_options_late(),
@@ -4130,8 +4255,9 @@ mod plan_tests {
     use std::num::NonZeroU32;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// Every planned channel's `ready` bit.
-    const ALL_READY: u16 = ALL_PLANNED;
+    /// Every planned channel's `ready` bit, plus the `after_card_played`
+    /// equip-order bit.
+    const ALL_READY: u16 = ALL_PLANNED | READY_AFTER_CARD_PLAYED_ORDER;
 
     fn install_and_freeze() {
         super::super::ensure_installed();
@@ -4380,6 +4506,13 @@ mod plan_tests {
                 registry_after_player_turn_start,
                 READY_AFTER_PLAYER_TURN_START,
                 after_player_turn_start
+            );
+            check_equip!(
+                state,
+                covered,
+                registry_after_card_played,
+                READY_AFTER_CARD_PLAYED_ORDER,
+                after_card_played
             );
 
             let listeners = listeners_before_side_turn_start();

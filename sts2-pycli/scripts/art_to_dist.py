@@ -158,7 +158,7 @@ def convert_tree(
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     ap.add_argument("--images", type=Path, default=DEFAULT_IMAGES)
     ap.add_argument("--audio", type=Path, default=DEFAULT_AUDIO)
     ap.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)

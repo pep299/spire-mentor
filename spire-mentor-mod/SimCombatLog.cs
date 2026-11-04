@@ -28,6 +28,7 @@ using MegaCrit.Sts2.Core.Combat.History;
 using MegaCrit.Sts2.Core.Combat.History.Entries;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Helpers;
+using MegaCrit.Sts2.Core.ValueProps;
 
 namespace SpireMentor;
 
@@ -35,6 +36,14 @@ internal static class SimCombatLog
 {
     /// <summary>How many History entries have already been sent.</summary>
     private static int _sent;
+
+    /// <summary>
+    /// Rows drained into a request that never went out (the advisor was
+    /// gone or the write failed): the next <see cref="Drain"/> sends them
+    /// first, so a replay does not lose a teammate's plays to a dropped
+    /// connection (GH #989). Main thread only, like Drain.
+    /// </summary>
+    private static readonly List<Dictionary<string, object?>> _undelivered = new();
 
     /// <summary>
     /// The move the acting monster is mid-way through, so its damage rows can
@@ -64,10 +73,21 @@ internal static class SimCombatLog
 
     private static readonly object _choicesLock = new();
 
+    /// <summary>
+    /// The cards each player was last offered on a choose-a-card screen (a
+    /// Skill Potion, Discovery), by net id, until their pick arrives: the
+    /// game syncs only the picked index, and the offer is random, so a
+    /// replay that diverges needs the offer to tell why (GH #989). Under
+    /// <see cref="_choicesLock"/>.
+    /// </summary>
+    private static readonly Dictionary<string, List<Dictionary<string, object?>>> _offers = new();
+
     /// <summary>Forget everything (a new run / a restored snapshot).</summary>
     internal static void Reset()
     {
         _sent = 0;
+        // Another fight's rows: sent with this one's they would read as its.
+        _undelivered.Clear();
         _openMoveId = null;
         _openMoveMonster = null;
         lock (_choicesLock)
@@ -78,6 +98,20 @@ internal static class SimCombatLog
             {
                 _choices[i] = (0, _choices[i].Row);
             }
+        }
+    }
+
+    /// <summary>
+    /// The cards <paramref name="owner"/> is offered on a choose-a-card
+    /// screen, put on their next `Index` pick as `offered` (C#
+    /// `CardSelectCmd.FromChooseACardScreen` runs on every peer, the
+    /// chooser's and each teammate's). Never throws.
+    /// </summary>
+    internal static void RecordOffer(string? owner, List<Dictionary<string, object?>> cards)
+    {
+        lock (_choicesLock)
+        {
+            _offers[owner ?? ""] = cards;
         }
     }
 
@@ -120,6 +154,10 @@ internal static class SimCombatLog
             };
             lock (_choicesLock)
             {
+                if (type == "Index" && _offers.Remove(owner ?? "", out var offered))
+                {
+                    row["offered"] = offered;
+                }
                 _choices.Add((at, row));
             }
         }
@@ -127,6 +165,176 @@ internal static class SimCombatLog
         {
             Logger.Log($"[SimCombatLog] RecordChoice failed: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Whether <paramref name="creature"/> lost HP this turn: C#
+    /// `Spite.LostHpThisTurn`, a History scan for unblocked damage received
+    /// this turn. On the board as `hp_lost_this_turn`, which a rebuilt state
+    /// cannot recount (a Spite after Inferno's self-damage hit once). False on
+    /// any error.
+    /// </summary>
+    internal static bool LostHpThisTurn(Creature? creature)
+    {
+        try
+        {
+            CombatState? state = CombatManager.Instance?.DebugOnlyGetState();
+            if (creature == null || state == null)
+            {
+                return false;
+            }
+            return CombatManager.Instance!.History.Entries.OfType<DamageReceivedEntry>().Any(e =>
+                e.HappenedThisTurn(state) && e.Receiver == creature && e.Result.UnblockedDamage > 0);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// The hits that took <paramref name="creature"/>'s HP this combat: C#
+    /// `TearAsunder`'s hit count, a History scan for damage received with
+    /// unblocked damage. On the board as `unblocked_hits_this_combat` (GH
+    /// #989). 0 on any error.
+    /// </summary>
+    internal static int UnblockedHitsThisCombat(Creature? creature)
+    {
+        try
+        {
+            if (creature == null || CombatManager.Instance?.DebugOnlyGetState() == null)
+            {
+                return 0;
+            }
+            return CombatManager.Instance.History.Entries.OfType<DamageReceivedEntry>().Count(e =>
+                e.Receiver == creature && e.Result.UnblockedDamage > 0);
+        }
+        catch (Exception)
+        {
+            return 0;
+        }
+    }
+
+    /// <summary>
+    /// The cards <paramref name="creature"/>'s player exhausted this combat
+    /// (`CardExhaustedEntry`, whose actor is the card's owner). A Midnight
+    /// entering combat starts cheaper by every player's. On the board as
+    /// `cards_exhausted_this_combat`. 0 on any error.
+    /// </summary>
+    internal static int CardsExhaustedThisCombat(Creature? creature)
+    {
+        try
+        {
+            if (creature == null || CombatManager.Instance?.DebugOnlyGetState() == null)
+            {
+                return 0;
+            }
+            return CombatManager.Instance.History.Entries.OfType<CardExhaustedEntry>()
+                .Count(e => e.Actor == creature);
+        }
+        catch (Exception)
+        {
+            return 0;
+        }
+    }
+
+    /// <summary>
+    /// The cards <paramref name="creature"/>'s player exhausted this turn: C#
+    /// `EvilEye.WasCardExhaustedThisTurn` and `ForgottenRitual`. On the board as
+    /// `cards_exhausted_this_turn`, which a rebuilt state cannot recount (a
+    /// Toasty Mittens exhaust at turn start, GH #989). 0 on any error.
+    /// </summary>
+    internal static int CardsExhaustedThisTurn(Creature? creature)
+    {
+        try
+        {
+            CombatState? state = CombatManager.Instance?.DebugOnlyGetState();
+            if (creature == null || state == null)
+            {
+                return 0;
+            }
+            return CombatManager.Instance!.History.Entries.OfType<CardExhaustedEntry>()
+                .Count(e => e.HappenedThisTurn(state) && e.Actor == creature);
+        }
+        catch (Exception)
+        {
+            return 0;
+        }
+    }
+
+    /// <summary>
+    /// The block gains from <paramref name="creature"/>'s FINISHED card plays
+    /// this turn: what v0.111.0 `UnmovablePower.ModifyBlockMultiplicative`
+    /// counts before it doubles a card's block (`BlockGainedEntry`s this turn
+    /// with `CardPlay.Player.Creature == Owner`, `IsCardOrMonsterMove`, from
+    /// another play). `CardPlay.Player` is the card's owner
+    /// (`CardModel.cs:1918`), read here as `CardPlay.Card.Owner`, which both
+    /// builds have. A play still resolving (a board sent while its pick is
+    /// open) is left out: C# never counts a play's own gains, and the engine
+    /// cannot tell them from an earlier play's once rebuilt. v0.107.1 counted
+    /// by receiver instead (`e.Actor == target`, any move block included);
+    /// this sends the v0.111.0 count. On the board as
+    /// `card_block_gains_this_turn` (GH #989: rebuilt without it, Unmovable
+    /// doubled a second Defend). 0 on any error.
+    /// </summary>
+    internal static int CardBlockGainsThisTurn(Creature? creature)
+    {
+        try
+        {
+            CombatState? state = CombatManager.Instance?.DebugOnlyGetState();
+            if (creature == null || state == null)
+            {
+                return 0;
+            }
+            var history = CombatManager.Instance!.History;
+            var finished = history.CardPlaysFinished
+                .Where(f => f.CardPlay != null).Select(f => f.CardPlay).ToHashSet();
+            return history.Entries.OfType<BlockGainedEntry>().Count(e =>
+                e.HappenedThisTurn(state) && e.CardPlay != null && finished.Contains(e.CardPlay)
+                && e.CardPlay.Card?.Owner?.Creature == creature && e.Props.IsCardOrMonsterMove());
+        }
+        catch (Exception)
+        {
+            return 0;
+        }
+    }
+
+    /// <summary>
+    /// The powered hits <paramref name="dealer"/> landed on each enemy this
+    /// turn, as `[{enemy, hits}]` by the enemy's place in
+    /// <paramref name="enemies"/>: what a teammate's C# `GangUp` counts. On the
+    /// board as `powered_hits_this_turn` (GH #989). Empty on any error.
+    /// </summary>
+    internal static List<Dictionary<string, object?>> PoweredHitsThisTurn(
+        Creature? dealer, IReadOnlyList<Creature> enemies)
+    {
+        var rows = new List<Dictionary<string, object?>>();
+        try
+        {
+            CombatState? state = CombatManager.Instance?.DebugOnlyGetState();
+            if (dealer == null || state == null)
+            {
+                return rows;
+            }
+            List<DamageReceivedEntry> hits = CombatManager.Instance!.History.Entries
+                .OfType<DamageReceivedEntry>()
+                .Where(e => e.Dealer == dealer && e.Result.Props.IsPoweredAttack()
+                    && e.HappenedThisTurn(state))
+                .ToList();
+            for (int i = 0; i < enemies.Count; i++)
+            {
+                int n = hits.Count(e => e.Receiver == enemies[i]);
+                if (n > 0)
+                {
+                    rows.Add(new Dictionary<string, object?> { ["enemy"] = i, ["hits"] = n });
+                }
+            }
+        }
+        catch (Exception)
+        {
+            rows.Clear();
+        }
+        return rows;
     }
 
     /// <summary>A card as a `player_choice` row names it.</summary>
@@ -181,6 +389,8 @@ internal static class SimCombatLog
                 // A shorter history than last time can only be a new combat.
                 Reset();
             }
+            rows.AddRange(_undelivered);
+            _undelivered.Clear();
             for (int i = _sent; i < entries.Count; i++)
             {
                 rows.AddRange(TakeChoices(i));
@@ -198,6 +408,18 @@ internal static class SimCombatLog
             Logger.Log($"[SimCombatLog] Drain failed: {ex.Message}");
         }
         return rows;
+    }
+
+    /// <summary>
+    /// Give back the rows of a request that was not sent: the next
+    /// <see cref="Drain"/> returns them ahead of its own. Never throws.
+    /// </summary>
+    internal static void Requeue(List<Dictionary<string, object?>>? rows)
+    {
+        if (rows != null && rows.Count > 0)
+        {
+            _undelivered.InsertRange(0, rows);
+        }
     }
 
     /// <summary>One history entry as a wire row, or null if it maps to nothing.</summary>
@@ -251,8 +473,14 @@ internal static class SimCombatLog
                 row["auto_played"] = e.CardPlay?.IsAutoPlay ?? false;
                 // Co-op: whose card and at what, so a recorded fight can be
                 // replayed seat by seat. `play_index` > 0 is a repeat of the
-                // same play (Echo Form, Burst), not a new one.
-                row["owner"] = NetIdOf(() => e.CardPlay?.Card?.Owner?.NetId);
+                // same play (Echo Form, Burst), not a new one. The player is
+                // the entry's Actor, the card's owner when the play started
+                // (CardPlayStartedEntry passes cardPlay.Card.Owner.Creature):
+                // the card's own Owner can change before these rows are read.
+                // The Ball is handed to a teammate after its play
+                // (CardPileCmd.GiveToAnotherPlayer), and read through Owner
+                // its row named the teammate (GH #1017).
+                row["owner"] = NetIdOf(() => e.Actor?.Player?.NetId ?? e.CardPlay?.Card?.Owner?.NetId);
                 row["target"] = Who(e.CardPlay?.Target);
                 row["target_index"] = EnemyIndex(e.CardPlay?.Target);
                 row["play_index"] = e.CardPlay?.PlayIndex ?? 0;
@@ -288,6 +516,8 @@ internal static class SimCombatLog
                 row["kind"] = "card_exhausted";
                 row["card"] = e.Card?.Id.Entry;
                 row["upgraded"] = e.Card?.IsUpgraded ?? false;
+                // Whose card: the entry's actor is its owner (GH #989).
+                row["owner"] = NetIdOf(() => e.Actor?.Player?.NetId);
                 return row;
 
             case OrbChanneledEntry e:
@@ -299,6 +529,8 @@ internal static class SimCombatLog
                 row["kind"] = "potion";
                 row["potion"] = e.Potion?.Id.Entry;
                 row["owner"] = NetIdOf(() => e.Potion?.Owner?.NetId);
+                // As on card plays: an index can go stale once an enemy dies.
+                row["target"] = Who(e.Target);
                 row["target_index"] = EnemyIndex(e.Target);
                 return row;
 
@@ -351,13 +583,21 @@ internal static class SimCombatLog
         {
             return null;
         }
-        return Safe(() => new Dictionary<string, object?>
+        return Safe(() =>
         {
-            ["kind"] = creature.IsPlayer ? "player" : "monster",
-            ["id"] = creature.ModelId.Entry,
-            ["uid"] = null,
-            // Matches `combat_id` on the board's creatures (co-op replay).
-            ["combat_id"] = creature.CombatId,
+            var who = new Dictionary<string, object?>
+            {
+                ["kind"] = creature.IsPlayer ? "player" : "monster",
+                ["id"] = creature.ModelId.Entry,
+                ["uid"] = null,
+                // Matches `combat_id` on the board's creatures (co-op replay).
+                ["combat_id"] = creature.CombatId,
+            };
+            // A player's `net_id` (the board's), so a replay knows which
+            // teammate an AnyAlly card went to (GH #1017).
+            if (creature.IsPlayer)
+                who["net_id"] = NetIdOf(() => creature.Player?.NetId);
+            return who;
         });
     }
 

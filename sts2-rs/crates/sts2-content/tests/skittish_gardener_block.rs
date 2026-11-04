@@ -187,3 +187,138 @@ fn skittish_ignores_a_fully_blocked_attack() {
         "hasGainedBlockThisTurn stays false for a fully-blocked hit"
     );
 }
+
+/// A card whose attack is followed by a selection in the same play (Headbutt:
+/// `DamageCmd.Attack(...).Execute`, then the discard pick) pauses with the
+/// attack command complete, so C#'s `AfterAttack` has already granted the
+/// block at the pick (A6d4: V7W8Q5R79A at A5, step 76, Headless 6 where the
+/// engine showed 0 until the pick resolved).
+#[test]
+fn skittish_block_shows_at_a_mid_play_selection_after_the_attack() {
+    let mut state = gardener_state(0);
+    let headbutt = push_card(&mut state, CardId::Headbutt, 9);
+    let strike = push_card(&mut state, CardId::StrikeIronclad, 6);
+    let defend = push_card(&mut state, CardId::DefendIronclad, 0);
+    state.player.discard.push(strike);
+    state.player.discard.push(defend);
+    state.player.hand.push(headbutt);
+    let step = sts2_core::combat_loop::play_card(&mut state, 0, Some(0));
+    assert_eq!(
+        step,
+        sts2_core::StepResult::PendingChoice,
+        "Headbutt asks for a discard card"
+    );
+    assert_eq!(state.creatures[0].current_hp, 200 - 9);
+    assert_eq!(
+        state.creatures[0].block, 6,
+        "the attack command finished before the pick: Skittish's block is there"
+    );
+    assert_eq!(skittish_counter(&state), 1);
+    let _ = sts2_core::apply(
+        &mut state,
+        sts2_core::Action::ResolveChoice {
+            selection: smallvec::smallvec![0],
+        },
+    );
+    assert_eq!(
+        state.creatures[0].block, 6,
+        "granted once, not again at the play's end"
+    );
+}
+
+/// SolarStrike attacks, THEN `GainStars` (`SolarStrike.cs:24-28`), which fires
+/// `BlackHolePower.AfterStarsGained` damage-to-all mid-play. The attack command
+/// has finished by then, so C# has already granted Skittish's block in
+/// `AfterAttack` and the BlackHole hit lands on it (Regent full seed 4627:
+/// C# hp -13/block 2, Rust was hp -17/block 6).
+#[test]
+fn skittish_block_lands_before_a_later_black_hole_hit_in_the_same_play() {
+    let mut state = gardener_state(0);
+    let pid = NonZeroU32::new(77).expect("nz");
+    state.powers.push(Power {
+        id: pid,
+        kind: PowerKind::BlackHole,
+        amount: 4,
+        counter: 0,
+        applier: None,
+        skip_next_tick: false,
+    });
+    let player = state.player.creature_uid.expect("player creature");
+    state
+        .creatures
+        .iter_mut()
+        .find(|c| c.id == player.0)
+        .expect("player row")
+        .powers
+        .push(PowerUid(pid));
+    let solar = push_card(&mut state, CardId::SolarStrike, 9);
+    state.player.hand.push(solar);
+    play(&mut state, 0);
+    assert_eq!(
+        state.creatures[0].current_hp,
+        200 - 9,
+        "only the strike reaches HP; BlackHole's 4 hits the fresh block"
+    );
+    assert_eq!(state.creatures[0].block, 6 - 4);
+}
+
+/// Uproar finishes its 6x2 attack command before `CardCmd.AutoPlay`s a draw-pile
+/// attack, so the gardener's Skittish block is already up and absorbs the
+/// auto-played card's hits (`SkittishPower.cs:56-69`, `Uproar.cs`; Defect full
+/// parity seed 1655).
+#[test]
+fn skittish_block_lands_before_an_auto_played_attack() {
+    let mut state = gardener_state(0);
+    let uproar = push_card(&mut state, CardId::Uproar, 6);
+    state.player.hand.push(uproar);
+    let rip = push_card(&mut state, CardId::RipAndTear, 7);
+    state.player.draw.push(rip);
+    play(&mut state, 0);
+
+    assert_eq!(
+        state.creatures[0].current_hp,
+        200 - 12 - 8,
+        "Uproar's 12 lands; the 6 block then soaks 6 of RipAndTear's 14"
+    );
+    assert_eq!(state.creatures[0].block, 0);
+    assert_eq!(skittish_counter(&state), 1, "granted once");
+}
+
+/// Capture Spirit's damage is a bare `CreatureCmd.Damage` (Unblockable |
+/// Unpowered | Move), not an `AttackCommand`, so `SkittishPower.AfterAttack`
+/// never sees it (CaptureSpirit.cs OnPlay; Necrobinder full seeds
+/// 4719/4900/5481: C# gardener block 0, Rust 6).
+#[test]
+fn skittish_ignores_capture_spirit_unblockable_damage() {
+    let mut state = gardener_state(0);
+    let cs = push_card(&mut state, CardId::CaptureSpirit, 3);
+    state.cards[cs.get() as usize - 1].card_type = CardType::Skill;
+    state.player.hand.push(cs);
+    play(&mut state, 0);
+
+    assert!(state.creatures[0].current_hp < 200, "Capture Spirit hit");
+    assert_eq!(state.creatures[0].block, 0, "no Skittish block");
+    assert_eq!(skittish_counter(&state), 0);
+}
+
+/// Fear's attack is one `AttackCommand`; its `AfterAttack` grants Skittish's
+/// block BEFORE the card's Vulnerable apply, so the SleightOfFlesh damage
+/// that apply triggers is absorbed by it (Necrobinder full seed 4610).
+#[test]
+fn skittish_block_lands_before_a_post_attack_sleight_of_flesh_hit() {
+    let mut state = gardener_state(0);
+    let player_uid = state.player.creature_uid.expect("player creature");
+    sts2_core::card_effects::apply_power_to_creature(
+        &mut state,
+        player_uid,
+        PowerKind::SleightOfFlesh,
+        9,
+    );
+    let fear = push_card(&mut state, CardId::Fear, 7);
+    state.player.hand.push(fear);
+    play(&mut state, 0);
+
+    // 7 from Fear; SleightOfFlesh's 9 is absorbed 6 by the fresh block.
+    assert_eq!(state.creatures[0].current_hp, 200 - 7 - 3);
+    assert_eq!(state.creatures[0].block, 0);
+}

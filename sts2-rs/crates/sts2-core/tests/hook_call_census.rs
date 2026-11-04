@@ -1,4 +1,3 @@
-// port-pin-skip — hook-call census (bead sts2-rs-pmf, P6-1b).
 //! Hook-callsite census.
 //!
 //! Records the list of `hooks::dispatch_*` callsites in

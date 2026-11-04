@@ -3,7 +3,6 @@ use super::prelude::*;
 
 /// Convergence — apply RetainHand 1 + EnergyNextTurn 1 +
 /// StarNextTurn 1 to self.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L328
 pub(crate) fn play_convergence(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     // C# Convergence.cs OnUpgrade bumps StarsVar 1->2 (StarNextTurn
     // amount). EnergyVar(1) and RetainHandPower(literal 1) stay at 1.

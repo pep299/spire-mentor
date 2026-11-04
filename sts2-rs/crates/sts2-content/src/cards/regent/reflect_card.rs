@@ -2,7 +2,6 @@
 use super::prelude::*;
 
 /// ReflectCard — block + apply 1 Reflect to self.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L507
 pub(crate) fn play_reflect_card(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     gain_block_player(state, current_block(state));
     apply_power_to_player(state, PowerKind::Reflect, 1);

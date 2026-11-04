@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type PpoPolicyPayload } from "../api";
 import { isStaticMode } from "../transport";
-import { useHints } from "../hints/HintsContext";
+import { useHints } from "../hints/useHints";
 import { CollapseButton, PanelGrip } from "./panelChrome";
 import { usePanelFlag, usePanelHeight } from "../panelPrefs";
 

@@ -130,6 +130,49 @@ fn seeker_strike_damages_and_opens_draw_select() {
     assert_eq!(pc.options.len(), 3, "presents 3 of the 5 draw cards");
 }
 
+/// A 1-card draw pile is `<= MinSelect`: C# `FromCombatPile` takes the card
+/// with no prompt (CardSelectCmd.cs:397-400). Defect QX182.
+#[test]
+fn seeker_strike_single_draw_card_goes_to_hand_without_a_choice() {
+    install_pool();
+    let (mut state, euid) = fresh_state(CardId::SeekerStrike, 9, 0);
+    add_player_creature(&mut state);
+    state.player.current_hp = 80;
+    push_draw_card_id(&mut state, CardId::Finesse);
+    let only = state.player.draw[0];
+    let _ = lookup(CardId::SeekerStrike).expect("registered")(&mut state, Some(euid));
+    assert!(state.pending_choice.is_none(), "no prompt for a lone card");
+    assert!(state.player.draw.is_empty());
+    assert_eq!(state.player.hand.last().copied(), Some(only));
+}
+
+/// A killing Seeker Strike still runs its `StableShuffle` of the draw pile
+/// (it precedes the `FromCombatPile` call that returns empty on the ended
+/// combat), so CombatCardSelection advances `n - 1` reads. Regent act23 1001.
+#[test]
+fn seeker_strike_lethal_still_shuffles_the_draw_pile() {
+    install_pool();
+    let (mut state, euid) = fresh_state(CardId::SeekerStrike, 9, 0);
+    add_player_creature(&mut state);
+    state.player.current_hp = 80;
+    state.creatures[0].current_hp = 5;
+    for id in [
+        CardId::Finesse,
+        CardId::Purity,
+        CardId::StrikeIronclad,
+        CardId::DefendIronclad,
+    ] {
+        push_draw_card_id(&mut state, id);
+    }
+    let before = state.run_rng.combat_card_selection.counter();
+    let _ = lookup(CardId::SeekerStrike).expect("registered")(&mut state, Some(euid));
+    assert!(
+        state.pending_choice.is_none(),
+        "no select on the killing blow"
+    );
+    assert_eq!(state.run_rng.combat_card_selection.counter() - before, 3);
+}
+
 /// SeekerStrike replicates C# `StableShuffle` (`ListExtensions.cs:10-19`):
 /// `list.Sort()` by `CardModel.CompareTo` (`CardModel.cs:1745-1766` =
 /// ordinal `Entry` string, then `CurrentUpgradeLevel`/upgraded ascending)
@@ -414,6 +457,53 @@ fn entropy_transforms_the_ball_off_the_colorless_pool_v0111() {
     assert!(
         colorless_combat_generatable_card_ids().contains(&new_id),
         "TheBall must transform into a colorless card, got {new_id:?}",
+    );
+}
+
+/// GH #1054 item 7: a **Curse** original transforms off the CurseCardPool
+/// (C# `CardFactory.GetDefaultTransformationOptions` -> `original.Pool`; no
+/// rarity filter for Status/Curse; `CanBeGeneratedInCombat` drops only
+/// AscendersBane). The prior port returned `None` for any curse, so Entropy
+/// left a hand SPORE_MIND untouched and skipped the `CombatCardSelection`
+/// read (Regent seed 1008, THE_KIN_BOSS: C# rolled DECAY).
+#[test]
+fn entropy_transforms_curse_original_off_the_curse_pool() {
+    use super::helpers::transform_card_to_random_for_hook;
+    use crate::cards::types::CardRarity;
+
+    let (mut state, _euid) = fresh_state(CardId::SporeMind, 10, 0);
+    state.player.character = Some(sts2_core::potions::CharacterId::Regent);
+    let uid = sts2_core::CardUid(NonZeroU32::new(1).expect("nz"));
+    state.player.play.clear();
+    state.player.hand.push(uid);
+
+    let counter_before = state.run_rng.combat_card_selection.counter();
+    let new_uid = transform_card_to_random_for_hook(&mut state, uid).expect("curse transforms");
+    assert_eq!(
+        state.run_rng.combat_card_selection.counter(),
+        counter_before + 1,
+        "exactly one CombatCardSelection draw per transform",
+    );
+    assert!(
+        state.player.hand.contains(&new_uid),
+        "replacement is in hand"
+    );
+    let new_id = state
+        .cards
+        .iter()
+        .find(|c| c.uid == new_uid)
+        .unwrap()
+        .card_id;
+    assert_ne!(new_id, CardId::SporeMind, "original id is excluded");
+    assert_ne!(
+        new_id,
+        CardId::AscendersBane,
+        "AscendersBane is not combat-generatable"
+    );
+    assert_eq!(
+        crate::cards::spec_index::rarity_for_card_id(new_id),
+        Some(CardRarity::Curse),
+        "curse original must transform into another curse, got {new_id:?}",
     );
 }
 
@@ -1348,20 +1438,23 @@ fn the_bomb_upgraded_stores_fifty_damage() {
 }
 
 /// Bolas / ThrummingHatchet (sts2-rs-219ds): playing the card stamps the
-/// current combat round into its ReturnIfPlayedRound var (read by the
-/// core turn-start return-to-hand sweep).
+/// current player TURN number into its ReturnIfPlayedRound var (read by the
+/// core turn-start return-to-hand sweep). C# stamps
+/// `PlayerCombatState.TurnNumber` (`CombatHistoryEntry.cs:55`): round 4
+/// after one Pael's Eye extra turn is turn 5.
 #[test]
-fn self_returning_attacks_stamp_play_round() {
+fn self_returning_attacks_stamp_play_turn_number() {
     install_pool();
     for card in [CardId::Bolas, CardId::ThrummingHatchet] {
         let (mut state, euid) = fresh_state(card, 5, 0);
         add_player_creature(&mut state);
         state.round = 4;
+        state.combat_log.extra_turns_taken_this_combat = 1;
         let _ = lookup(card).expect("registered")(&mut state, Some(euid));
         assert_eq!(
             state.cards[0].combat_var(sts2_core::cards::VarKey::ReturnIfPlayedRound),
-            4,
-            "{card:?} stamps the play round"
+            5,
+            "{card:?} stamps the play turn number"
         );
     }
 }
@@ -1535,17 +1628,27 @@ fn intercept_card_covers_the_teammate_and_doubles_the_players_hits() {
     assert_eq!(creature_power(&state, player, PowerKind::Covered), 0);
     assert_eq!(creature_power(&state, player, PowerKind::Intercept), 1);
     assert!(
-        state.allies[0].powers.is_empty(),
-        "teammate powers are not simulated"
+        state.allies[0].powers.iter().any(|p| state
+            .powers
+            .get_by_id(p.0)
+            .is_some_and(|p| p.kind == PowerKind::Covered)),
+        "the teammate is Covered"
     );
-    let hit = |props| DamageCtx {
+    let hit = |target, props| DamageCtx {
         dealer: CreatureRef::Enemy(enemy),
-        target: CreatureRef::Player,
+        target,
         props,
         card_source: None,
     };
-    assert_eq!(modify_damage(&state, 6, &hit(ValueProps::MOVE)), 12);
-    assert_eq!(modify_damage(&state, 6, &hit(ValueProps::UNPOWERED)), 6);
+    let us = CreatureRef::Player;
+    let mate = CreatureRef::Ally(0);
+    assert_eq!(modify_damage(&state, 6, &hit(us, ValueProps::MOVE)), 12);
+    assert_eq!(modify_damage(&state, 6, &hit(us, ValueProps::UNPOWERED)), 6);
+    assert_eq!(modify_damage(&state, 6, &hit(mate, ValueProps::MOVE)), 0);
+    assert_eq!(
+        modify_damage(&state, 6, &hit(mate, ValueProps::UNPOWERED)),
+        6
+    );
 }
 
 /// Lift gives the block to the teammate, with the player's Dexterity on it
@@ -1811,6 +1914,39 @@ fn k2rzs_metamorphosis_upgrade_generates_five_attacks() {
         5,
         "upgraded Metamorphosis adds 5 cards to draw pile"
     );
+}
+
+/// Metamorphosis.cs:35 `SetToFreeThisCombat`: every generated attack costs 0
+/// for the rest of combat (Defect act23 seed 1001 kept them at native cost).
+#[test]
+fn metamorphosis_generated_attacks_are_free_this_combat() {
+    use sts2_core::potions::CharacterId;
+    install_pool();
+    let (mut state, _enemy) = fresh_state(CardId::Metamorphosis, 0, 0);
+    let _ = push_player(&mut state);
+    state.player.character = Some(CharacterId::Defect);
+    state.cards[0].upgraded = true;
+    let draw_before = state.player.draw.clone();
+    let f = lookup(CardId::Metamorphosis).expect("registered");
+    f(&mut state, None);
+    let generated: Vec<_> = state
+        .player
+        .draw
+        .iter()
+        .filter(|u| !draw_before.contains(u))
+        .map(|u| state.cards[u.0.get() as usize - 1])
+        .collect();
+    assert_eq!(generated.len(), 5);
+    for c in generated {
+        assert!(
+            c.cost <= 0,
+            "{:?} should be free (or keep its X sentinel)",
+            c.card_id
+        );
+        if c.cost == 0 {
+            assert_ne!(c.combat_var(sts2_core::cards::VarKey::CostAbsolutelySet), 0);
+        }
+    }
 }
 
 /// `sts2-rs-k2rzs`: Base Metamorphosis still adds 3 (C# `CardsVar(3)`).
@@ -2236,6 +2372,10 @@ fn play_secret_technique_with_no_skills_is_noop() {
     assert_eq!(state.player.hand.len(), hand_before);
 }
 
+/// C# `Wish.OnPlay` → `CardSelectCmd.FromCombatPile(Draw, 1)`: with 2+
+/// draw-pile cards the player CHOOSES (grid `orderby c.Rarity, c.Id`), so
+/// Wish surfaces `AddFromDrawToHand` instead of auto-taking the lowest-rarity
+/// card, and resolving it moves the chosen card — here the Rare.
 #[test]
 fn play_wish_waits_for_a_choice_over_sorted_draw_cards() {
     install_pool();
@@ -2310,6 +2450,31 @@ fn play_wish_single_candidate_uses_the_normal_hand_limit() {
     assert!(state.player.draw.is_empty());
     assert_eq!(state.player.hand.len(), sts2_core::cards::HAND_LIMIT);
     assert_eq!(state.player.discard.as_slice(), &[chosen]);
+}
+
+/// A single draw-pile card is taken without a screen (`FromCombatPile`'s
+/// `num <= MinSelect` fast path).
+#[test]
+fn play_wish_single_draw_card_is_taken_without_a_choice() {
+    use sts2_core::cards::{Card, CardType, TargetType};
+    use sts2_core::CardUid;
+    install_pool();
+    let (mut state, _euid) = fresh_state(CardId::Wish, 0, 0);
+    let raw = u32::try_from(state.cards.len() + 1).unwrap();
+    let uid = CardUid(NonZeroU32::new(raw).unwrap());
+    state.cards.push(Card {
+        uid,
+        card_id: CardId::Anger,
+        cost: 1,
+        card_type: CardType::Attack,
+        target_type: TargetType::Enemy,
+        ..Card::pod_defaults()
+    });
+    state.player.draw.push(uid);
+    let f = lookup(CardId::Wish).expect("registered");
+    f(&mut state, None);
+    assert!(state.pending_choice.is_none());
+    assert!(state.player.hand.contains(&uid));
 }
 
 #[test]
@@ -2466,6 +2631,71 @@ fn calamity_generates_one_attack_into_hand_on_attack_played() {
         state.run_rng.combat_card_generation.counter(),
         gen_before + 1,
         "GetForCombat with-replacement amount=1 ⇒ exactly 1 combat_card_generation read"
+    );
+}
+
+/// C# `Hook.AfterCardPlayed` walks `CombatState.IterateHookListeners`
+/// (CombatState.cs:115-170): the player's Powers first, then the player's
+/// relics, then each enemy's Powers. So the player's `CalamityPower` card
+/// lands in hand BEFORE the Wither added by the enemy-owned (Aeonglass)
+/// `WitheringPresencePower`. Rust used to fire Calamity in the late commutative
+/// `pending` lane, after the WitheringPresence lane, swapping the two hand
+/// slots (GH #1054, Necrobinder-3005-a0-act2#b3: C# hand [.., SNAP, WITHER]).
+#[test]
+fn calamity_card_lands_before_withering_presence_wither() {
+    use sts2_core::card_effects::apply_power_to_creature;
+    crate::cards::dispatch::ensure_installed();
+    let mut state = CombatState {
+        rng: sts2_core::dotnet_rng::Rng::new(0_i32),
+        ..Default::default()
+    };
+    state.player.current_hp = 70;
+    state.player.max_hp = 70;
+    state.init_player_creature();
+    state.player.character = Some(sts2_core::CharacterId::Ironclad);
+    let _boss = state.spawn_enemy(MonsterKind::Aeonglass);
+    // One card short of the WitheringPresence Wither (countdown on `counter`).
+    let wp = state
+        .powers
+        .iter_mut()
+        .find(|p| p.kind == sts2_core::powers::PowerKind::WitheringPresence)
+        .expect("Aeonglass spawns with WitheringPresence");
+    wp.counter = wp.amount - 1;
+    let puid = state.player.creature_uid.expect("player mirror");
+    apply_power_to_creature(&mut state, puid, sts2_core::powers::PowerKind::Calamity, 1);
+    let hand_before = state.player.hand.len();
+    let ctx = sts2_core::hooks::CardCtx {
+        card_type: Some(CardType::Attack),
+        ..Default::default()
+    };
+    // The card-play pipeline order (`combat_loop::dispatch_after_card_played_buses`
+    // minus the relic bus, which holds no relics here).
+    sts2_core::hooks::dispatch_after_card_played_ordered_enemy_hits(&mut state, &ctx);
+    sts2_core::hooks::dispatch_after_card_played_rest(&mut state, &ctx);
+    let added: Vec<_> = state.player.hand[hand_before..]
+        .iter()
+        .map(|uid| {
+            state
+                .cards
+                .get(uid.0.get() as usize - 1)
+                .expect("card")
+                .card_id
+        })
+        .collect();
+    assert_eq!(
+        added.len(),
+        2,
+        "one Calamity attack + one Wither: {added:?}"
+    );
+    assert_ne!(
+        added[0],
+        sts2_core::cards::CardId::Wither,
+        "the Calamity attack comes first: {added:?}"
+    );
+    assert_eq!(
+        added[1],
+        sts2_core::cards::CardId::Wither,
+        "the enemy-power Wither comes after the player-power card: {added:?}"
     );
 }
 
@@ -2727,6 +2957,59 @@ fn play_maul_hits_twice_and_grows_base_damage() {
         state.cards[idx].base_damage, 6,
         "Maul permanently grows its own base_damage by 1"
     );
+}
+
+/// C# `Maul.OnPlay` (v0.107.1 Maul.cs:53-58, v0.111.0 Maul.cs:52-57) buffs
+/// EVERY Maul in `Owner.PlayerCombatState.AllCards` — the five live piles
+/// Hand, Draw, Discard, Exhaust, Play (`PlayerCombatState.cs:76-88`) — via
+/// `BuffFromMaulPlay(Increase)`, where `Increase` is the PLAYED Maul's var.
+/// A Maul instance in no pile (orphaned arena entry) and non-Maul cards are
+/// untouched.
+#[test]
+fn play_maul_buffs_every_maul_in_all_five_piles() {
+    install_pool();
+    for (version, upgraded, inc) in [
+        (sts2_core::GameVersion::default(), false, 1),
+        (sts2_core::GameVersion::default(), true, 2),
+        (sts2_core::GameVersion::V0_111_0, false, 2),
+        (sts2_core::GameVersion::V0_111_0, true, 3),
+    ] {
+        let (mut state, euid) = fresh_state(CardId::Maul, 5, 0);
+        state.game_version = version;
+        let played = *state.player.play.last().expect("play pile");
+        state.cards[played.0.get() as usize - 1].upgraded = upgraded;
+        let mut others = Vec::new();
+        for pile in 0..4 {
+            let uid = push_draw_card_id(&mut state, CardId::Maul);
+            state.cards[uid.0.get() as usize - 1].base_damage = 7;
+            if pile > 0 {
+                state.player.draw.pop();
+                match pile {
+                    1 => state.player.hand.push(uid),
+                    2 => state.player.discard.push(uid),
+                    _ => state.player.exhaust.push(uid),
+                }
+            }
+            others.push(uid);
+        }
+        // Orphan Maul (in no pile) and a non-Maul in hand stay put.
+        let orphan = push_draw_card_id(&mut state, CardId::Maul);
+        state.player.draw.pop();
+        state.cards[orphan.0.get() as usize - 1].base_damage = 7;
+        let strike = push_draw_card_id(&mut state, CardId::StrikeIronclad);
+        state.cards[strike.0.get() as usize - 1].base_damage = 6;
+
+        let f = lookup(CardId::Maul).expect("registered");
+        f(&mut state, Some(euid));
+
+        let bd = |u: CardUid| state.cards[u.0.get() as usize - 1].base_damage;
+        assert_eq!(bd(played), 5 + inc, "{version:?} up={upgraded}: played");
+        for u in &others {
+            assert_eq!(bd(*u), 7 + inc, "{version:?} up={upgraded}: other Maul");
+        }
+        assert_eq!(bd(orphan), 7, "orphan Maul is not in AllCards");
+        assert_eq!(bd(strike), 6, "non-Maul untouched");
+    }
 }
 
 #[test]
@@ -4358,6 +4641,43 @@ fn play_anointed_caps_rares_by_free_hand_space() {
     assert_eq!(rares_in_draw, 1, "the other rare stayed in the draw pile");
 }
 
+/// A FULL hand still shuffles the rares: C# `TakeRandom(0, rng)` runs the
+/// whole `UnstableShuffle` (`IEnumerableExtensions.cs:19`,
+/// `ListExtensions.cs:45`) before `Take(0)`, so 3 rares cost 2
+/// `CombatCardSelection` reads even though nothing moves. Silent full-tier
+/// seed:5474 (History Course replaying Anointed into a retained 10-card hand).
+#[test]
+fn play_anointed_full_hand_still_consumes_card_selection_rng() {
+    use sts2_core::CardUid;
+    install_pool();
+    let (mut state, _) = fresh_state(CardId::Anointed, 0, 0);
+    let filler = crate::cards::ironclad::strike_ironclad::spec();
+    while state.player.hand.len() < sts2_core::cards::HAND_LIMIT {
+        let raw = u32::try_from(state.cards.len() + 1).expect("fits");
+        let uid = CardUid::new(raw).expect("nz");
+        let mut card = card_from_spec(&filler);
+        card.uid = uid;
+        state.cards.push(card);
+        state.player.hand.push(uid);
+    }
+    let rare_spec = crate::cards::ironclad::barricade::spec();
+    let rares: Vec<CardUid> = (0..3)
+        .map(|_| push_draw_card(&mut state, &rare_spec))
+        .collect();
+    let before = state.run_rng.combat_card_selection.counter();
+    let f = lookup(CardId::Anointed).expect("registered");
+    let _ = f(&mut state, None);
+    assert_eq!(
+        state.run_rng.combat_card_selection.counter() - before,
+        2,
+        "UnstableShuffle of 3 rares reads n-1 = 2 times even with 0 free slots"
+    );
+    assert!(
+        rares.iter().all(|u| state.player.draw.contains(u)),
+        "nothing moved"
+    );
+}
+
 /// GangUp (bead `sts2-rs-q6bix`, F-R follow-up): C# `GangUp` deals
 /// `CalculatedDamage = Base(5) + Extra(5) × allyPoweredHits`, where the
 /// multiplier counts OTHER same-side allies' powered attacks this turn
@@ -4416,6 +4736,53 @@ fn secret_technique_single_skill_auto_adds_no_prompt() {
         "Skill moved to hand"
     );
     assert!(!state.player.draw.contains(&skill_uid), "removed from draw");
+}
+
+/// SecretTechnique auto-played with 10 cards in hand (Mayhem plays it from
+/// the draw pile, so it frees no hand slot). C# `CardPileCmd.Add(card,
+/// Hand)` (`SecretTechnique.cs:25`) puts the lone Skill on the discard pile
+/// (`CardPileCmd.cs:485-489`).
+#[test]
+fn secret_technique_full_hand_sends_lone_skill_to_discard() {
+    install_pool();
+    let (mut state, _) = fresh_state(CardId::SecretTechnique, 0, 0);
+    let hand = push_hand_strikes(&mut state, sts2_core::cards::HAND_LIMIT);
+    let skill_uid = push_draw_card(&mut state, &crate::cards::ironclad::defend_ironclad::spec());
+    let f = lookup(CardId::SecretTechnique).expect("registered");
+    assert_eq!(f(&mut state, None), EffectResult::Resolved);
+    assert!(
+        state.pending_choice.is_none(),
+        "single candidate, no prompt"
+    );
+    assert_eq!(
+        state.player.hand.to_vec(),
+        hand,
+        "a full hand takes no card"
+    );
+    assert_eq!(state.player.discard.to_vec(), vec![skill_uid]);
+    assert!(state.player.draw.is_empty());
+}
+
+/// SeekerStrike auto-played with 10 cards in hand and one card in the draw
+/// pile. C# `CardPileCmd.Add(card, Hand)` (`SeekerStrike.cs:40`) puts the
+/// card on the discard pile (`CardPileCmd.cs:485-489`).
+#[test]
+fn seeker_strike_full_hand_sends_lone_draw_card_to_discard() {
+    install_pool();
+    let (mut state, euid) = fresh_state(CardId::SeekerStrike, 9, 0);
+    add_player_creature(&mut state);
+    state.player.current_hp = 80;
+    let hand = push_hand_strikes(&mut state, sts2_core::cards::HAND_LIMIT);
+    let only = push_draw_card_id(&mut state, CardId::Finesse);
+    let _ = lookup(CardId::SeekerStrike).expect("registered")(&mut state, Some(euid));
+    assert!(state.pending_choice.is_none(), "no prompt for a lone card");
+    assert_eq!(
+        state.player.hand.to_vec(),
+        hand,
+        "a full hand takes no card"
+    );
+    assert_eq!(state.player.discard.to_vec(), vec![only]);
+    assert!(state.player.draw.is_empty());
 }
 
 /// SecretTechnique with 2+ Skills opens a single-pick
@@ -4728,6 +5095,148 @@ fn play_enlightenment_caps_high_cost_hand_cards_at_one() {
         assert_eq!(
             now, expected,
             "uid {uid:?} (was {original}) → expected {expected}, got {now}"
+        );
+    }
+}
+
+/// Once a gathered auto-play kills the last enemy, C# `CardCmd.AutoPlay`
+/// returns at once for the rest (CardCmd.cs:54): the next card is never
+/// played and no `AfterCardPlayed` counts it. Act23 Ironclad:1012 (lethal
+/// Cascade, Iron Club).
+#[test]
+fn gathered_auto_plays_stop_once_combat_is_ending() {
+    crate::cards::dispatch::ensure_installed();
+    let (mut state, enemy) = fresh_state(CardId::Cascade, 0, 0);
+    let _ = push_player(&mut state);
+    if let Some(c) = state.creatures.iter_mut().find(|c| c.id == enemy.0) {
+        c.current_hp = 1;
+    }
+    let mut uids = Vec::new();
+    for _ in 0..2 {
+        let raw = u32::try_from(state.cards.len() + 1).expect("fits");
+        let uid = CardUid::new(raw).expect("nz");
+        let mut card = card_from_spec(&crate::cards::ironclad::strike_ironclad::spec());
+        card.uid = uid;
+        state.cards.push(card);
+        state.player.draw.push(uid);
+        uids.push(uid);
+    }
+    let started = state.player.card_plays_started_this_turn;
+    sts2_core::combat_loop::auto_play_n_from_draw_top(&mut state, 2, false);
+    assert_eq!(
+        state.player.card_plays_started_this_turn,
+        started + 1,
+        "only the lethal Strike is played"
+    );
+}
+
+/// C# `CardModel.OnPlayWrapper` runs `Hook.BeforeCardPlayed` +
+/// `History.CardPlayStarted` once per play iteration (CardModel.cs:1896-1930),
+/// so a Replay-2 card (HiddenGem) is three STARTED plays for the Sloth /
+/// Normality / Ringing `ShouldPlay` gates. Act23 Ironclad:1006: Strike + a
+/// Replay-2 Strike under Sloth(3) left C# blocking Stampede's Bash; Rust
+/// counted 2 and played it.
+#[test]
+fn replayed_card_counts_one_started_play_per_iteration() {
+    crate::cards::dispatch::ensure_installed();
+    // Hand play: the `extra_plays` (BaseReplay) loop.
+    let (mut state, _enemy) = fresh_state(CardId::Cascade, 0, 0);
+    let _ = push_player(&mut state);
+    state.phase = sts2_core::CombatPhase::PlayerPlayPhase;
+    state.player.energy = 3;
+    let strike = push_hand_strikes(&mut state, 1)[0];
+    state.cards[strike.0.get() as usize - 1].base_replay_count = 2;
+    let idx = u8::try_from(
+        state
+            .player
+            .hand
+            .iter()
+            .position(|u| *u == strike)
+            .expect("in hand"),
+    )
+    .expect("fits");
+    let _ = sts2_core::combat_loop::play_card(&mut state, idx, Some(0));
+    assert_eq!(
+        state.player.card_plays_started_this_turn, 3,
+        "hand-played Replay-2 Strike = 3 started plays"
+    );
+
+    // Auto-play: the auto-play replay loop.
+    let (mut state, _enemy) = fresh_state(CardId::Cascade, 0, 0);
+    let _ = push_player(&mut state);
+    let raw = u32::try_from(state.cards.len() + 1).expect("fits");
+    let uid = CardUid::new(raw).expect("nz");
+    let mut card = card_from_spec(&crate::cards::ironclad::strike_ironclad::spec());
+    card.uid = uid;
+    card.base_replay_count = 2;
+    state.cards.push(card);
+    state.player.draw.push(uid);
+    sts2_core::combat_loop::auto_play_n_from_draw_top(&mut state, 1, false);
+    assert_eq!(
+        state.player.card_plays_started_this_turn, 3,
+        "auto-played Replay-2 Strike = 3 started plays"
+    );
+}
+
+/// Unupgraded Enlightenment is C# `SetThisTurnOrUntilPlayed(1, reduceOnly)`:
+/// the cap reverts at the next turn start, even for a card that was
+/// discarded unplayed (act23 Ironclad:1012, a Jackpot kept at 1).
+#[test]
+fn play_enlightenment_cap_reverts_at_turn_start() {
+    install_pool();
+    let (mut state, _) = fresh_state(CardId::Enlightenment, 0, 0);
+    let raw = u32::try_from(state.cards.len() + 1).expect("fits");
+    let uid = CardUid::new(raw).expect("nz");
+    let mut card = card_from_spec(&crate::cards::ironclad::strike_ironclad::spec());
+    card.uid = uid;
+    card.cost = 3;
+    state.cards.push(card);
+    state.player.hand.push(uid);
+    let f = lookup(CardId::Enlightenment).expect("registered");
+    assert_eq!(f(&mut state, None), EffectResult::Resolved);
+    let idx = uid.0.get() as usize - 1;
+    assert_eq!(state.cards[idx].cost, 1, "capped this turn");
+    state.restore_snecko_costs_for_turn_start();
+    assert_eq!(state.cards[idx].cost, 3, "the cap expires at turn end");
+}
+
+/// Plain Enlightenment then Enlightenment+: C# appends
+/// `SetThisTurnOrUntilPlayed(1, reduceOnly)` then `SetThisCombat(1,
+/// reduceOnly)` (Enlightenment.cs OnPlay); once the first expires (on play,
+/// `CardEnergyCost.cs:341-344`, or at turn end) the combat cap still holds
+/// the card at 1. Ironclad-2026 act 3: Cinder C# 1, Rust back to 2.
+#[test]
+fn play_enlightenment_plain_then_upgraded_keeps_combat_cap() {
+    install_pool();
+    let (mut state, _) = fresh_state(CardId::Enlightenment, 0, 0);
+    let mut uids = Vec::new();
+    for _ in 0..2 {
+        let raw = u32::try_from(state.cards.len() + 1).expect("fits");
+        let uid = CardUid::new(raw).expect("nz");
+        let mut card = card_from_spec(&crate::cards::ironclad::strike_ironclad::spec());
+        card.uid = uid;
+        card.cost = 2;
+        state.cards.push(card);
+        state.player.hand.push(uid);
+        uids.push(uid.0.get() as usize - 1);
+    }
+    let f = lookup(CardId::Enlightenment).expect("registered");
+    assert_eq!(f(&mut state, None), EffectResult::Resolved);
+    state.cards[0].upgraded = true;
+    assert_eq!(f(&mut state, None), EffectResult::Resolved);
+    for &idx in &uids {
+        assert_eq!(state.cards[idx].cost, 1);
+    }
+    // Card 0: played (WhenPlayed expiry). Card 1: held to the next turn.
+    state.cards[uids[0]].expire_snecko_roll();
+    assert_eq!(state.cards[uids[0]].cost, 1, "combat cap survives the play");
+    state.restore_snecko_costs_for_turn_start();
+    assert_eq!(state.cards[uids[1]].cost, 1, "combat cap survives turn end");
+    for &idx in &uids {
+        assert_eq!(
+            state.cards[idx].combat_var(sts2_core::cards::VarKey::CostAbsolutelySet),
+            1,
+            "an Absolute combat modifier is still live"
         );
     }
 }
@@ -6192,4 +6701,233 @@ fn gh663_skill_and_power_mad_science_stay_untargeted() {
             "{mode:?} MadScience is TargetType.Self"
         );
     }
+}
+
+/// A riderless Glam MadScience (7 damage) in a state the engine plays from
+/// the hand (`manual`) or auto-plays from the draw pile.
+fn glam_mad_science_state(manual: bool) -> (CombatState, CreatureUid) {
+    crate::cards::dispatch::ensure_installed();
+    let (mut state, enemy) = fresh_state(CardId::MadScience, 7, 0);
+    state.player.play.clear();
+    state.phase = sts2_core::CombatPhase::PlayerPlayPhase;
+    state.player.energy = 3;
+    let card = &mut state.cards[0];
+    card.set_enchantment(sts2_core::cards::EnchantmentId::Glam, 1);
+    if manual {
+        state.player.hand.push(card.uid);
+    } else {
+        state.player.draw.insert(0, card.uid);
+    }
+    (state, enemy)
+}
+
+/// Glam replays a MadScience once, and its "used" bit must not land in the
+/// TinkerTime rider: both lived on `VarKey::Generic`, so the Glam bit
+/// (`0b10`) turned the packed `(Attack, None)` into another rider after the
+/// first play. Ported from the manoj fork (`841f558f3`).
+#[test]
+fn glam_mad_science_replays_once_without_changing_its_rider() {
+    for manual in [true, false] {
+        let (mut state, enemy) = glam_mad_science_state(manual);
+        if manual {
+            let _ = sts2_core::apply(
+                &mut state,
+                sts2_core::Action::PlayCard {
+                    hand_index: 0,
+                    target: Some(0),
+                },
+            );
+        } else {
+            assert!(sts2_core::combat_loop::auto_play_card_from_draw_top(
+                &mut state, false
+            ));
+        }
+        assert_eq!(
+            enemy_hp(&state, enemy),
+            100 - 14,
+            "manual {manual}: two hits of 7"
+        );
+        assert_eq!(
+            mad_science_variant_of(&state.cards[0]),
+            (CardType::Attack, TinkerTimeRider::None),
+            "manual {manual}: the rider is untouched"
+        );
+    }
+}
+
+/// PARITY95 Necrobinder: BigHat's ethereal draw reads the fight's
+/// combat-generatable pool for every character (BigHat.cs:21-33 ->
+/// CardFactory.GetDistinctForCombat). Necrobinder and Regent used to get
+/// nothing. The C# pools carry 0 / 0 / 1 / 2 / 8 canonically Ethereal cards
+/// (Ironclad / Silent / Defect / Regent / Necrobinder).
+#[test]
+fn big_hat_ethereal_sampler_covers_every_character() {
+    use sts2_core::potions::CharacterId;
+    for (character, want) in [
+        (CharacterId::Ironclad, 0),
+        (CharacterId::Silent, 0),
+        (CharacterId::Defect, 1),
+        (CharacterId::Regent, 2),
+        (CharacterId::Necrobinder, 2),
+    ] {
+        let mut state = CombatState::default();
+        let uids = create_character_ethereal_cards_into_arena(&mut state, character, 2);
+        assert_eq!(uids.len(), want, "{character:?}: Big Hat card count");
+        let pool = super::helpers::fight_pool(&state, character);
+        for uid in uids {
+            let card = sts2_core::card_by_uid(&state.cards, uid).expect("minted");
+            let spec = pool.iter().find(|s| s.id == card.card_id);
+            assert!(
+                spec.is_some_and(super::super::types::CardSpec::is_ethereal),
+                "{character:?}: {:?} not an Ethereal combat-generatable card",
+                card.card_id
+            );
+        }
+    }
+}
+
+/// v0.111.0 `ColorlessCardPool` lists TheBall (ColorlessCardPool.cs:85), so
+/// HeirloomHammer's `VisualCardPool.IsColorless` filter accepts it; it lives
+/// in `V0111_ONLY_SPECS` with Uncommon rarity, which the spec/rarity tests
+/// missed (Regent full seed 3441: the hammer cloned the NEXT colorless card).
+#[test]
+fn the_ball_is_visual_pool_colorless() {
+    assert!(super::is_visual_pool_colorless(CardId::TheBall));
+    assert!(super::is_visual_pool_colorless(CardId::Finesse));
+    assert!(!super::is_visual_pool_colorless(CardId::StrikeRegent));
+}
+
+// ── Whistle stun (GH #1054 item 7, Regent seed 1014) ─────────────────────
+
+/// Whistle on a monster whose AI has no prebuilt stun (Axebot) after a
+/// non-lethal hit: C# `CreatureCmd.Stun(cardPlay.Target)` (Whistle.cs:33)
+/// -> `Creature.StunInternal` (Creature.cs:525-545) installs the generic
+/// must-perform-once `STUNNED` move, telegraphs `Stun`, and resumes the
+/// planned move once the stun is served.
+#[test]
+fn whistle_stuns_target_then_resumes_planned_move() {
+    use crate::monster_dispatch::{build_ai, MonsterSpawnArgs, SpawnPosition};
+    let (mut state, euid) = fresh_state(CardId::Whistle, 33, 0);
+    let mut ai = build_ai(
+        MonsterKind::Axebot,
+        MonsterSpawnArgs::None,
+        SpawnPosition::default(),
+    );
+    ai.set_owner(euid);
+    let planned = ai.current_state_id();
+    state.creatures[0].ai = Some(ai);
+    let _ = play_whistle(&mut state, Some(euid));
+    let enemy = &state.creatures[0];
+    assert_eq!(enemy.current_hp, 100 - 33);
+    assert_eq!(enemy.intent, Some(sts2_core::Intent::Stun));
+    let ai = state.creatures[0].ai.as_mut().expect("ai");
+    assert_eq!(ai.current_state_id(), "STUNNED");
+    ai.on_move_performed();
+    assert_eq!(
+        ai.roll_move_seeded(0).id,
+        planned,
+        "resumes the stunned move"
+    );
+}
+
+/// `StunInternal` no-ops on a dead target (Creature.cs:531 `!IsDead`): a
+/// lethal Whistle leaves the corpse's AI untouched.
+#[test]
+fn whistle_lethal_does_not_stun() {
+    use crate::monster_dispatch::{build_ai, MonsterSpawnArgs, SpawnPosition};
+    let (mut state, euid) = fresh_state(CardId::Whistle, 33, 0);
+    state.creatures[0].current_hp = 10;
+    let mut ai = build_ai(
+        MonsterKind::Axebot,
+        MonsterSpawnArgs::None,
+        SpawnPosition::default(),
+    );
+    ai.set_owner(euid);
+    let planned = ai.current_state_id();
+    state.creatures[0].ai = Some(ai);
+    let _ = play_whistle(&mut state, Some(euid));
+    let enemy = &state.creatures[0];
+    assert!(enemy.current_hp <= 0);
+    assert_eq!(enemy.ai.as_ref().expect("ai").current_state_id(), planned);
+}
+
+/// Stage the Inferno-then-Entropy turn start of act23 Ironclad-2095: one
+/// 5-HP enemy, a Strike in hand, Inferno(9, self-damage 1) applied before
+/// Entropy(1). Inferno's turn-start retaliation kills the last enemy.
+fn inferno_kills_before_entropy_fixture() -> (CombatState, sts2_core::CardUid) {
+    crate::cards::dispatch::ensure_installed();
+    let (mut state, euid) = fresh_state(CardId::StrikeIronclad, 6, 0);
+    state.player.character = Some(sts2_core::potions::CharacterId::Ironclad);
+    if let Some(c) = state.creatures.iter_mut().find(|c| c.id == euid.0) {
+        c.current_hp = 5;
+        c.max_hp = 5;
+    }
+    let uid = sts2_core::CardUid(NonZeroU32::new(1).expect("nz"));
+    state.player.play.clear();
+    state.player.hand.push(uid);
+    state.phase = sts2_core::CombatPhase::PlayerTurnStart;
+    state.round = 2;
+    let player_uid = state.init_player_creature();
+    sts2_core::card_effects::apply_power_to_creature(&mut state, player_uid, PowerKind::Inferno, 9);
+    for pid in state.player_power_uids() {
+        if let Some(p) = state.powers.get_mut_by_id(pid.0) {
+            if p.kind == PowerKind::Inferno {
+                p.counter = 1;
+            }
+        }
+    }
+    sts2_core::card_effects::apply_power_to_creature(&mut state, player_uid, PowerKind::Entropy, 1);
+    (state, uid)
+}
+
+/// C# `EntropyPower.AfterPlayerTurnStart` (v0.111.0 `EntropyPower.cs:21-32`)
+/// selects through `CardSelectCmd.FromHand`, which returns nothing once
+/// `CombatManager.IsOverOrEnding` (`CardSelectCmd.cs:822-827`; v0.107.1
+/// `:697-702`). So when an earlier `AfterPlayerTurnStart` power (Inferno,
+/// CrimsonMantle > Juggernaut) kills the last enemy, Entropy transforms
+/// nothing and draws no `CombatCardSelection` (act23 Ironclad-2095: Rust
+/// drew one, leaving the stream one ahead for the next fight).
+#[test]
+fn entropy_skips_once_turn_start_inferno_ended_the_combat() {
+    let (mut state, uid) = inferno_kills_before_entropy_fixture();
+    let counter_before = state.run_rng.combat_card_selection.counter();
+    let _ = sts2_core::combat_loop::start_player_turn(&mut state);
+    assert!(
+        state
+            .creatures
+            .iter()
+            .filter(|c| c.species.is_some())
+            .all(|c| c.current_hp <= 0),
+        "Inferno's retaliation killed the only enemy"
+    );
+    assert_eq!(
+        state.run_rng.combat_card_selection.counter(),
+        counter_before,
+        "Entropy's FromHand is empty once the combat is ending: no transform draw"
+    );
+    assert_eq!(
+        state.cards[uid.0.get() as usize - 1].card_id,
+        CardId::StrikeIronclad,
+        "the hand card is not transformed"
+    );
+}
+
+/// Control for the guard above: with the enemy surviving Inferno, Entropy
+/// still transforms one hand card with one `CombatCardSelection` draw.
+#[test]
+fn entropy_transforms_when_turn_start_inferno_leaves_the_enemy_alive() {
+    let (mut state, _uid) = inferno_kills_before_entropy_fixture();
+    for c in &mut state.creatures {
+        if c.species.is_some() {
+            c.current_hp = 100;
+            c.max_hp = 100;
+        }
+    }
+    let counter_before = state.run_rng.combat_card_selection.counter();
+    let _ = sts2_core::combat_loop::start_player_turn(&mut state);
+    assert_eq!(
+        state.run_rng.combat_card_selection.counter(),
+        counter_before + 1,
+        "a live combat transforms exactly one card"
+    );
 }

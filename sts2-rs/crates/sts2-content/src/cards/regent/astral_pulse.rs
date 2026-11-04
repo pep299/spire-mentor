@@ -10,7 +10,6 @@ use super::prelude::*;
 /// damage TWICE (was a single 14-damage hit in v0.103.2). The two-hit loop
 /// reproduces the new value; a single-hit body would deal half the
 /// intended damage.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L85
 pub(crate) fn play_astral_pulse(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     let base = current_damage(state);
     // C# `.WithHitCount(2)`: two AoE passes over all alive enemies.

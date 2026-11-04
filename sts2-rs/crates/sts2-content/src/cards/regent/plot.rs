@@ -10,9 +10,11 @@ use super::prelude::*;
 /// single-player the owner draws the extra cards next turn.
 pub(crate) fn play_plot(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     // v0.111.0: DrawCardsNextTurn 2 (upg 3) on every living player on the
-    // side — the owner in SP (decomp Plot.cs:22-29).
+    // side (decomp Plot.cs:22-29).
     let n = if current_card_upgraded(state) { 3 } else { 2 };
-    apply_power_to_player(state, PowerKind::DrawCardsNextTurn, n);
+    sts2_core::coop::every_player(state, |state| {
+        apply_power_to_player(state, PowerKind::DrawCardsNextTurn, n);
+    });
     EffectResult::Resolved
 }
 

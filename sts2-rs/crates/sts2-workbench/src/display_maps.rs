@@ -277,11 +277,15 @@ pub fn pascal_to_screaming_snake(s: &str) -> String {
 /// PascalCase (`StrikeIronclad` -> `STRIKE_IRONCLAD`), and drops the
 /// disambiguating `_CARD` / `_STATUS` suffix a few card ids carry that the
 /// loc keys and art slugs omit (`STAMPEDE_CARD` -> `STAMPEDE`,
-/// `SLOTH_STATUS` -> `SLOTH`).
+/// `SLOTH_STATUS` -> `SLOTH`). A `RELIC.`-prefixed id keeps its suffix: the
+/// Membership Card relic's loc key is `MEMBERSHIP_CARD`.
 #[must_use]
 pub fn loc_id(raw_id: &str) -> String {
-    let bare = raw_id.split_once('.').map_or(raw_id, |(_, rest)| rest);
+    let (prefix, bare) = raw_id.split_once('.').unwrap_or(("", raw_id));
     let stem = pascal_to_screaming_snake(bare);
+    if prefix.eq_ignore_ascii_case("RELIC") {
+        return stem;
+    }
     for suffix in ["_CARD", "_STATUS"] {
         if let Some(s) = stem.strip_suffix(suffix) {
             return s.to_string();
@@ -417,6 +421,7 @@ mod tests {
         assert_eq!(loc_id("STAMPEDE_CARD"), "STAMPEDE");
         assert_eq!(loc_id("INFERNO_CARD"), "INFERNO");
         assert_eq!(loc_id("FOCUSED_STRIKE_CARD"), "FOCUSED_STRIKE");
+        assert_eq!(loc_id("RELIC.MEMBERSHIP_CARD"), "MEMBERSHIP_CARD");
         // A real `_IRONCLAD` suffix (or any non-_CARD tail) is untouched.
         assert_eq!(loc_id("DEFEND_IRONCLAD"), "DEFEND_IRONCLAD");
     }

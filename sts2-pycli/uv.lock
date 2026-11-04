@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.13"
 
 [[package]]
@@ -2114,6 +2114,7 @@ dependencies = [
     { name = "umap-learn" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "wandb" },
+    { name = "websockets" },
 ]
 
 [package.dev-dependencies]
@@ -2156,6 +2157,7 @@ requires-dist = [
     { name = "umap-learn", specifier = ">=0.5.12" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.46.0" },
     { name = "wandb", specifier = ">=0.28.0" },
+    { name = "websockets", specifier = ">=16.0" },
 ]
 
 [package.metadata.requires-dev]

@@ -36,10 +36,7 @@ def build(character: str, pair_card: str):
     rm = sts2_rs.RunManager(
         seed=12311,
         character=character,
-        interactive_card_removal=True,
-        interactive_card_upgrade=True,
-        interactive_card_transform=True,
-        direct_event_relic_grant=True,
+        mode="agent",
     )
     # Starter deck as-is; upgrade one copy of the pair card.
     if not rm.force_upgrade_card(pair_card):

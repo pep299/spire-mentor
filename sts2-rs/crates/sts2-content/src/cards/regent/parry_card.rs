@@ -3,7 +3,6 @@ use super::prelude::*;
 
 /// ParryCard — apply 10 Parry to self. C# source of truth `Parry.cs`:
 /// `PowerVar<ParryPower>(10)` (bead `sts2-rs-nntl0` corrected 6 -> 10).
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L457
 pub(crate) fn play_parry_card(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     // C# Parry.cs OnUpgrade bumps ParryPower 10->14. Bead `sts2-rs-qb2jc`.
     let amt = if current_card_upgraded(state) { 14 } else { 10 };

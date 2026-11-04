@@ -56,6 +56,8 @@ pub fn ironclad_content_callbacks() -> ContentCallbacks {
         generate_noncombat_card_reward_options: Some(
             crate::cards::spec_index::roll_noncombat_card_reward_options,
         ),
+        generate_extra_combat_card_reward: Some(generate_extra_combat_card_reward),
+        roll_hook_card_reward: Some(roll_hook_card_reward),
         generate_boss_relic_pool: Some(generate_boss_relic_pool),
         setup_boss_relic_ancient: Some(setup_boss_relic_ancient),
         generate_treasure_relic_pools: Some(generate_treasure_relic_pools),
@@ -531,12 +533,19 @@ fn apply_combat_gold_and_potion(rs: &mut RunState, room_type: RoomType) {
     // C# +15). The headless auto-collects gold rewards, so credit the appended
     // `Reward::Gold` here. Listeners are pure pushes (no RNG), so this consumes
     // no `Rewards` reads and stays stream-faithful. Card/Relic bonuses from the
-    // same hook (PrayerWheel / WhiteStar / LavaRock / BlackStar / Wongo) still
-    // need their own presentation wiring — tracked separately; ignoring them
-    // here is the current (unmodeled) behavior, so no regression. Bead
-    // `sts2-rs-RP16`.
-    let bonus_gold: i32 = rs
-        .offer_rewards(room_type, Vec::new())
+    // same hook (BlackStar / LavaRock / Wongo relics, PrayerWheel / WhiteStar
+    // cards) are rolled by `RunManager::offer_combat_room_rewards`'s hook
+    // walk, in relic order and after the card reward (`RewardsSet.cs:139-146`).
+    // Only AmethystAubergine's listener runs here: dispatching the whole
+    // channel fired Wongo's / LavaRock's once-only latch without granting
+    // their relics. Bead `sts2-rs-RP16`.
+    let mut hook_rewards = Vec::new();
+    if let Some(aubergine) =
+        sts2_core::run_effects::lookup_modify_rewards(sts2_core::RelicId::AmethystAubergine)
+    {
+        let _ = aubergine(rs, &mut hook_rewards, room_type);
+    }
+    let bonus_gold: i32 = hook_rewards
         .iter()
         .filter_map(|r| match r {
             sts2_core::runstate::Reward::Gold { amount } => Some(*amount),
@@ -1229,18 +1238,7 @@ pub fn new_ironclad_run_manager_with_deck_and_hp(
 /// POD). Bead `sts2-rs-81xxo`.
 pub fn generate_card_reward_options(rs: &mut RunState) -> Vec<CardId> {
     let character = rs.character_id;
-    // Card-reward rarity odds are room-type-scoped. Mirrors C#
-    // `CardCreationOptions.ForRoom` (`CardCreationOptions.cs:48-75`):
-    // Monster → RegularEncounter, Elite → EliteEncounter, Boss →
-    // BossEncounter (all-Rare). Without this every post-combat reward
-    // rolled "regular" odds, so elite kills under-weighted rares and
-    // boss kills offered mostly-common cards instead of the expected 3
-    // rares (GH #25).
-    let context = match rs.current_room.map(|r| r.room_type) {
-        Some(RoomType::Elite) => "elite",
-        Some(RoomType::Boss) => "boss",
-        _ => "regular",
-    };
+    let context = room_card_reward_context(rs);
     // The combat room's own card reward: `CardCreationOptions.ForRoom(...)
     // .WithFlags(CardCreationFlags.IsFromCombat)` (v0.111.0 RewardsSet.cs:233).
     let opts = CardRewardGenerationOptions {
@@ -1258,6 +1256,57 @@ pub fn generate_card_reward_options(rs: &mut RunState) -> Vec<CardId> {
     // Same side channel for relic-stamped enchantments (SilkenTress's Glam).
     rs.card_reward_enchantments = cards.iter().map(|c| c.enchantments).collect();
     cards.into_iter().map(|c| c.card_id).collect()
+}
+
+/// Card-reward rarity odds are room-type-scoped. Mirrors C#
+/// `CardCreationOptions.ForRoom` (`CardCreationOptions.cs:48-75`):
+/// Monster → RegularEncounter, Elite → EliteEncounter, Boss →
+/// BossEncounter (all-Rare). Without this every post-combat reward
+/// rolled "regular" odds, so elite kills under-weighted rares and
+/// boss kills offered mostly-common cards instead of the expected 3
+/// rares (GH #25).
+fn room_card_reward_context(rs: &RunState) -> &'static str {
+    match rs.current_room.map(|r| r.room_type) {
+        Some(RoomType::Elite) => "elite",
+        Some(RoomType::Boss) => "boss",
+        _ => "regular",
+    }
+}
+
+/// [`sts2_core::run_manager::ContentCallbacks::generate_extra_combat_card_reward`]:
+/// the card reward TheHunt adds to its combat room on a Fatal kill,
+/// `new CardReward(CardCreationOptions.ForRoom(owner, combatRoom.RoomType), 3,
+/// owner)` (TheHunt.cs:47, both builds). Rolled like the room's own reward
+/// (Encounter source, pity-updating) but without `IsFromCombat`, so
+/// v0.111.0 LastingCandy leaves it alone (`LastingCandy.cs:122`).
+pub fn generate_extra_combat_card_reward(rs: &mut RunState) -> sts2_core::runstate::CardReward {
+    let character = rs.character_id;
+    let opts = CardRewardGenerationOptions {
+        context: room_card_reward_context(rs),
+        ..CardRewardGenerationOptions::default()
+    };
+    let cards = crate::cards::spec_index::roll_card_reward_cards(rs, opts, character);
+    sts2_core::runstate::CardReward::from_cards(&cards)
+}
+
+/// A relic-added combat card reward (`TryModifyRewards`: Prayer Wheel's
+/// `ForRoom(Monster)`, White Star's `ForRoom(Boss)`), rolled with that room's
+/// odds. Unlike the room's own reward it carries no `IsFromCombat` flag
+/// (`PrayerWheel.cs:24`, `WhiteStar.cs:29`).
+pub fn roll_hook_card_reward(rs: &mut RunState, room: RoomType) -> sts2_core::runstate::CardReward {
+    let context = match room {
+        RoomType::Elite => "elite",
+        RoomType::Boss => "boss",
+        _ => "regular",
+    };
+    let opts = CardRewardGenerationOptions {
+        context,
+        is_from_combat: false,
+        ..CardRewardGenerationOptions::default()
+    };
+    let character = rs.character_id;
+    let cards = crate::cards::spec_index::roll_card_reward_cards(rs, opts, character);
+    sts2_core::runstate::CardReward::from_cards(&cards)
 }
 
 /// Offer up to 3 boss-relic choices from `run_state.boss_relic_pool`
@@ -1407,6 +1456,149 @@ mod tests {
     use super::*;
     use sts2_core::potions::CharacterId;
     use sts2_core::run_manager::RunManager;
+
+    /// An Ironclad run in a won fight of `room`, holding `relic` with the
+    /// combat-side `counter` the fight left it at (the combat bus has run its
+    /// own `AfterCombatVictory`), resolved through the deployed exit path.
+    fn won_fight_with(
+        relic: sts2_core::RelicId,
+        kind: sts2_core::RelicKind,
+        counter: i32,
+        elite: bool,
+    ) -> RunManager {
+        use sts2_core::runstate::RoomType;
+        crate::relics::dispatch::ensure_installed();
+        let mut rm = new_ironclad_run_manager(0);
+        rm.run_state.relics.push(relic);
+        rm.run_state.relic_counters.insert(relic, counter + 1);
+        let mut combat = sts2_core::CombatState::default();
+        combat.player.current_hp = 80;
+        combat.player.max_hp = 80;
+        combat.is_elite = elite;
+        combat.relics.push(sts2_core::Relic {
+            id: std::num::NonZeroU32::new(1).expect("non-zero"),
+            kind,
+            counter,
+            is_wax: false,
+            is_melted: false,
+        });
+        let room = if elite {
+            RoomType::Elite
+        } else {
+            RoomType::Monster
+        };
+        rm.debug_enter_combat(combat, room);
+        let _ = rm.resolve_combat_fast(0.0, true);
+        rm
+    }
+
+    /// C# `SwordOfStone.AfterCombatVictory` (`SwordOfStone.cs:40-51`): the
+    /// fifth elite replaces it with Sword of Jade (`RelicCmd.Replace`). The
+    /// combat side counts the elites down; the run side fires its victory
+    /// channel at the combat's exit and replaces the relic once the flushed
+    /// count reaches 0. Before that firing site existed it never did.
+    #[test]
+    fn sword_of_stone_becomes_sword_of_jade_after_its_fifth_elite() {
+        use sts2_core::{RelicId, RelicKind};
+        let rm = won_fight_with(RelicId::SwordOfStone, RelicKind::SwordOfStone, 0, true);
+        assert!(rm.run_state.relics.contains(&RelicId::SwordOfJade));
+        assert!(!rm.run_state.relics.contains(&RelicId::SwordOfStone));
+        // Four elites in: still Sword of Stone, its count kept.
+        let rm = won_fight_with(RelicId::SwordOfStone, RelicKind::SwordOfStone, 1, true);
+        assert!(rm.run_state.relics.contains(&RelicId::SwordOfStone));
+        assert_eq!(
+            rm.run_state.relic_counters.get(&RelicId::SwordOfStone),
+            Some(&1)
+        );
+    }
+
+    /// A won fight against a killed SwipePower thief that stole the Bash, with
+    /// Pael's Tooth holding an Inflame and Lucky Fysh owned. `steal = false`
+    /// is the control (no thief).
+    fn won_fight_with_reclaimed_bash(steal: bool) -> RunManager {
+        use sts2_core::cards::CardId;
+        use sts2_core::runstate::RoomType;
+        use sts2_core::RelicId;
+        crate::relics::dispatch::ensure_installed();
+        let mut rm = new_ironclad_run_manager(0);
+        let rs = &mut rm.run_state;
+        rs.relics.push(RelicId::PaelsTooth);
+        rs.relics.push(RelicId::LuckyFysh);
+        rs.paels_tooth_stored =
+            vec![
+                crate::cards::v0111::card_pod_for(CardId::Inflame, false, rs.game_version)
+                    .expect("inflame spec"),
+            ];
+        let mut combat = sts2_core::CombatState::default();
+        combat.player.current_hp = 80;
+        combat.player.max_hp = 80;
+        if steal {
+            let thief = sts2_core::CreatureUid::new(7).expect("non-zero");
+            combat.record_swipe_steal(thief, CardId::Bash, false);
+            combat.reclaim_swipe_on_death(thief);
+        }
+        rm.debug_enter_combat(combat, RoomType::Monster);
+        let _ = rm.resolve_combat_fast(0.0, true);
+        rm
+    }
+
+    /// C# `SwipePower.BeforeDeath` (`SwipePower.cs:50-67`) hands the stolen
+    /// card back as a `SpecialCardReward`, whose `OnSelect` is a hooked
+    /// `CardPileCmd.Add(_card, PileType.Deck)` (`SpecialCardReward.cs:82-92`)
+    /// on the reward screen. So the card lands AFTER Pael's Tooth's
+    /// `AfterCombatEnd` return (`PaelsTooth.cs:93-114`; Ironclad seed 2151
+    /// act 2) and pays Lucky Fysh (`LuckyFysh.cs:24-31`; Ironclad seed 2015
+    /// act 2, gold 305 vs 320).
+    #[test]
+    fn reclaimed_swipe_card_lands_after_paels_tooth_with_deck_add_hooks() {
+        use sts2_core::cards::CardId;
+        let control = won_fight_with_reclaimed_bash(false);
+        let rm = won_fight_with_reclaimed_bash(true);
+        let tail: Vec<CardId> = rm
+            .run_state
+            .master_deck
+            .iter()
+            .rev()
+            .take(2)
+            .rev()
+            .map(|c| c.card_id)
+            .collect();
+        assert_eq!(tail, vec![CardId::Inflame, CardId::Bash]);
+        assert_eq!(
+            rm.run_state
+                .master_deck
+                .iter()
+                .filter(|c| c.card_id == CardId::Bash)
+                .count(),
+            1,
+            "the Bash leaves its slot and comes back once"
+        );
+        assert!(rm.run_state.pending_swipe_returns.is_empty());
+        assert_eq!(
+            rm.run_state.gold,
+            control.run_state.gold + crate::relics::uncommon::LUCKY_FYSH_GOLD,
+            "the reclaim is a deck add: Lucky Fysh pays"
+        );
+    }
+
+    /// The same channel carries War Hammer (`WarHammer.cs:19-31`): an elite
+    /// victory upgrades up to four upgradable deck cards; a monster fight
+    /// none.
+    #[test]
+    fn war_hammer_upgrades_four_cards_after_an_elite() {
+        use sts2_core::{RelicId, RelicKind};
+        let upgraded = |rm: &RunManager| {
+            rm.run_state
+                .master_deck
+                .iter()
+                .filter(|c| c.upgraded)
+                .count()
+        };
+        let rm = won_fight_with(RelicId::WarHammer, RelicKind::WarHammer, 0, true);
+        assert_eq!(upgraded(&rm), 4);
+        let rm = won_fight_with(RelicId::WarHammer, RelicKind::WarHammer, 0, false);
+        assert_eq!(upgraded(&rm), 0);
+    }
 
     /// Guardrail #4 (Addendum 23): the shared run setup that EVERY full-run
     /// driver must call. The bare factory leaves the relic/room pools empty;
@@ -1760,6 +1952,23 @@ mod tests {
             !inv.removal_used && inv.removal_cost > 0,
             "removal slot live"
         );
+    }
+
+    /// An extra combat card reward (TheHunt, PrayerWheel) reads 9 `Rewards`
+    /// draws, as C# `CardReward.Populate` does: 3 cards x (rarity, pick,
+    /// upgrade roll). The oracle's cursor ran 9 ahead on Silent PARITY193
+    /// (v0.111.0) when Rust skipped TheHunt's reward.
+    #[test]
+    fn extra_combat_card_reward_reads_nine_rewards_draws() {
+        use sts2_core::runstate::{Room, RoomType, RunState};
+        let mut rs = RunState::new();
+        rs.character_id = CharacterId::Silent;
+        rs.current_room = Some(Room::new(RoomType::Monster));
+        let before = rs.rng.rewards.counter();
+        let reward = generate_extra_combat_card_reward(&mut rs);
+        assert_eq!(reward.options.len(), 3);
+        assert_eq!(reward.upgraded.len(), 3);
+        assert_eq!(rs.rng.rewards.counter() - before, 9);
     }
 
     #[test]
@@ -2482,6 +2691,32 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// QX79 (Ironclad, v0.111.0): `FromDeckForTransformation` drops
+    /// `CardType.Quest` cards (CardSelectCmd.cs:488). Dowsing (a Quest card
+    /// Rust types as a Skill) in the deck must not be offered, or every later
+    /// offer index lands one card early (WhisperingHollow's Hug transformed
+    /// Inflame instead of Thunderclap).
+    #[test]
+    fn transform_offer_excludes_quest_cards() {
+        use sts2_core::cards::CardId;
+
+        let mut rm = new_run_manager_for_character_with_ascension(0, CharacterId::Ironclad, 0);
+        rm.run_state
+            .pending_deck_transforms
+            .push(sts2_core::PendingDeckTransform::default());
+        let quest = crate::cards::spec_index::card_pod_from_id(CardId::Dowsing, false).unwrap();
+        let after = crate::cards::spec_index::card_pod_from_id(CardId::Inflame, false).unwrap();
+        rm.run_state.master_deck.push(quest);
+        rm.run_state.master_deck.push(after);
+        let quest_pos = rm.run_state.master_deck.len() - 2;
+
+        let eligible = rm.transform_eligible_deck_indices();
+
+        assert!(!eligible.contains(&quest_pos), "Quest card offered");
+        assert_eq!(eligible.len(), rm.run_state.master_deck.len() - 1);
+        assert_eq!(eligible.last(), Some(&(quest_pos + 1)));
     }
 
     #[test]

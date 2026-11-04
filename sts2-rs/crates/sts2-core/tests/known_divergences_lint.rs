@@ -1,4 +1,3 @@
-// port-pin-skip — `known_divergences.md` schema lint (bead sts2-rs-pmf, P6-1b).
 //! Schema lint for `tests/parity/known_divergences.md`.
 //!
 //! Bead sts2-rs-pmf (P6-1b) tightens the divergence-manifest schema (D13 of

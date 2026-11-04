@@ -366,6 +366,11 @@ impl<W: Write, A: Agent> ConsoleSimulator<W, A> {
                                 "  invalid target slot (legal slots: 0..{alive_enemies}); play not applied"
                             )?;
                         }
+                        StepResult::IllegalPlay => {
+                            // GH #1122: unaffordable / vetoed / wrong-phase
+                            // play — re-prompt instead of silently advancing.
+                            writeln!(self.out, "  illegal play; play not applied")?;
+                        }
                         StepResult::Advanced => {}
                     }
                 }

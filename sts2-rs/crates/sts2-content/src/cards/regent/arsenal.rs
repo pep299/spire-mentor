@@ -5,7 +5,6 @@ use super::prelude::*;
 /// Strength grant) lives in `crates/sts2-core/src/powers/regent.rs`
 /// (jxz); the after_card_played dispatcher wiring still depends on
 /// the jxz umbrella.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L593
 pub(crate) fn play_arsenal(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     apply_power_to_player(state, PowerKind::Arsenal, 1);
     EffectResult::Resolved

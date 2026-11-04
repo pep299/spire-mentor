@@ -103,6 +103,8 @@ mod tests {
     #[test]
     fn pagestorm_extra_draw_counts_toward_death_march_multiplier() {
         let mut state = CombatState::default();
+        // A live player: a dead one makes the combat ending, so draws move no card.
+        state.player.current_hp = 80;
         // Player needs a mirror creature so the draw/power accessors resolve.
         state.player.energy = 3;
 

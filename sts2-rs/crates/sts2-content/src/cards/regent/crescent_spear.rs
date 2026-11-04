@@ -10,7 +10,6 @@ use super::prelude::*;
 /// draw + discard + play + exhaust) — Python's
 /// `_all_cards_for_creature` returns the same set. Bead
 /// `sts2-rs-qz6v3`.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L152
 /// `CalculatedDamage`: base + ExtraDamage for every card you own with a Star
 /// cost. Shared with the card face — see `crate::cards::preview`.
 pub(crate) fn preview_crescent_spear(

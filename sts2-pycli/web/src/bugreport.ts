@@ -15,6 +15,15 @@
  * reader's workbench takes them back with `loadReportIntoWorkbench` — that
  * is how a report on a phone becomes a run on the desk.
  *
+ * Two more kinds of report reach the same store, through its signed-out
+ * intake `/intake/bugreport` (docs/browser-workbench.md, "Bug reports"):
+ * the Spire Mentor mod's in-game "Report a bug"
+ * (`meta.source === "mod"`, its position in `state.game_state`), and the
+ * mod-bundled workbench's, forwarded by the advisor's control plane with the
+ * game's latest position added as `state.live_game`. Either position is
+ * what the mod's Copy state yields, so `importReportPosition` hands it to
+ * the state import.
+ *
  * `api.captureBugReport` / `api.fetchBugReport` delegate here in static mode.
  * Whether the host HAS the Function is probed once (`bugReportEndpointAvailable`):
  * Cloudflare Pages answers the probe with JSON, a plain static host / `vite preview`
@@ -22,7 +31,7 @@
  * would work.
  */
 import type { BugReportDump } from "./api";
-import { DEFAULT_GAME_VERSION, declaredGameVersion, runLogGameVersion } from "./gameVersion";
+import { DEFAULT_GAME_VERSION, declaredGameVersion, gameVersionBody, runLogGameVersion } from "./gameVersion";
 import { apiFetch } from "./transport";
 
 /** The engine build a report is stamped with when its session names none
@@ -157,7 +166,7 @@ export async function buildBrowserDump(req: CaptureRequest, deps: BugReportDeps 
 export async function captureBrowserBugReport(
   req: CaptureRequest,
   deps: BugReportDeps = {},
-): Promise<{ id: string; url: string }> {
+): Promise<{ id: string; url: string; detail?: string }> {
   const d = resolve(deps);
   const dump = await buildBrowserDump(req, deps);
   const res = await d.fetch(BUGREPORT_ENDPOINT, {
@@ -166,7 +175,7 @@ export async function captureBrowserBugReport(
     body: JSON.stringify(dump),
   });
   if (!res.ok) throw await failure(res);
-  return (await res.json()) as { id: string; url: string };
+  return (await res.json()) as { id: string; url: string; detail?: string };
 }
 
 export async function fetchBrowserBugReport(id: string, deps: BugReportDeps = {}): Promise<BugReportDump> {
@@ -237,4 +246,34 @@ export async function loadReportIntoWorkbench(dump: BugReportDump, deps: BugRepo
     return { kind: "replay", path };
   }
   throw new Error("this report carries no run to load");
+}
+
+/** The live-game position a report carries — the mod's Copy-state message
+ *  (an `advice_request` or a `run_snapshot`) — or null. A mod report keeps
+ *  it as its `state.game_state`; a report from the mod-bundled workbench has
+ *  the game's latest one as `state.live_game` (the advisor adds it). */
+export function reportGamePosition(dump: BugReportDump): Record<string, unknown> | null {
+  const isPosition = (v: unknown): v is Record<string, unknown> => {
+    if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+    const t = (v as { type?: unknown }).type;
+    return t === "advice_request" || t === "run_snapshot";
+  };
+  const state = dump.state ?? {};
+  if (dump.meta?.source === "mod" && isPosition(state.game_state)) return state.game_state;
+  return isPosition(state.live_game) ? state.live_game : null;
+}
+
+/** Rebuild a report's game position as THIS workbench's live run (the
+ *  state import, lane "auto": the exact fight when it is one). Resolves to
+ *  the import's fidelity report; throws when the dump carries no position. */
+export async function importReportPosition(dump: BugReportDump, deps: BugReportDeps = {}): Promise<unknown> {
+  const pos = reportGamePosition(dump);
+  if (!pos) throw new Error("this report carries no game position");
+  const d = resolve(deps);
+  const step = await engine<{ import?: unknown }>(d.api, "POST", "/api/live/import-state", {
+    payload: JSON.stringify(pos),
+    lane: "auto",
+    ...gameVersionBody(declaredGameVersion(pos)),
+  });
+  return step.import ?? null;
 }

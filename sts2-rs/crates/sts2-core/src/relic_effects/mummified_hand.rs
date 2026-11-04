@@ -39,28 +39,35 @@ pub(crate) fn on_after_card_played_mummified_hand(
         return EffectResult::NotImplemented;
     }
     let hand: Vec<crate::CardUid> = state.player.hand.iter().copied().collect();
-    // `favorable` = base energy cost > 0 OR base star cost > 0
-    // (`CostModifiers.None` — intrinsic cost, ignoring local discounts).
+    // `favorable` = base energy cost > 0 OR base star cost > 0.
+    // `GetWithModifiers(CostModifiers.None)` is the card's `_base`, with no
+    // local or global modifier, so it reads a fresh copy of the card: our
+    // `cost` field also carries this combat's cost changes (a card set to 0
+    // for the combat is still favorable in C#).
+    let version = state.game_version;
     let is_favorable = |uid: &crate::CardUid| {
         crate::card_by_uid(&state.cards, *uid).is_some_and(|c| {
-            let base = c
-                .local_energy_cost
-                .map_or(i32::from(c.cost), |model| model.base);
-            (base > 0 && !c.is_x_cost()) || crate::card_base_star_cost(c.card_id) > 0
+            let base_cost = crate::build_card_for_version(c.card_id, c.upgraded, version)
+                .map_or(c.cost, |fresh| fresh.cost);
+            let base_stars = if version >= crate::GameVersion::V0_111_0 {
+                crate::card_base_star_cost_v0111(c.card_id)
+                    .unwrap_or_else(|| crate::card_base_star_cost(c.card_id))
+            } else {
+                crate::card_base_star_cost(c.card_id)
+            };
+            (base_cost > 0 && !c.is_x_cost()) || base_stars > 0
         })
     };
     // `costs_now` = `CostsEnergyOrStars(includeGlobalModifiers: true)`: the
-    // card still costs energy or stars after global modifiers (FreeThisTurn /
-    // FreeUntilPlayed zero the energy side; `effective_star_cost` folds the
-    // free markers on the star side).
+    // card still costs energy or stars after every modifier, local and
+    // global (Corruption, VoidForm, Brilliant Scarf, ...). Checking only the
+    // two free flags let Mummified Hand waste itself on a skill Corruption
+    // had already made free.
     let costs_now = |uid: &crate::CardUid| {
         crate::card_by_uid(&state.cards, *uid).is_some_and(|c| {
-            let energy_now = c.cost > 0
-                && !c.is_x_cost()
-                && (c.local_energy_cost.is_some()
-                    || (c.combat_var(crate::cards::VarKey::FreeThisTurn) == 0
-                        && c.combat_var(crate::cards::VarKey::FreeUntilPlayed) == 0));
-            energy_now || crate::effective_star_cost(c) > 0
+            let energy_now =
+                !c.is_x_cost() && crate::hooks::effective_card_cost_inst(state, c, *uid) > 0;
+            energy_now || crate::effective_star_cost_in_combat(state, c) > 0
         })
     };
     // Four pools, in C# fallback order. The first non-empty one is rolled.

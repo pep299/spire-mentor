@@ -29,7 +29,6 @@ use super::prelude::*;
 /// `spawn_card_into_hand` (the `AddGeneratedCardToCombat(.., Hand)`
 /// analogue, cap-respecting). The parity harness auto-drains the choice,
 /// taking option 0. Beads `sts2-rs-yc2d`, `sts2-rs-vyh1`.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L745
 pub(crate) fn play_heirloom_hammer(
     state: &mut CombatState,
     target: Option<CreatureUid>,

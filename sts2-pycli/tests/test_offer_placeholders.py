@@ -30,6 +30,7 @@ import re
 import sys
 
 import pytest
+import sts2_client
 from sts2_format import resolve
 
 # Tokens the game injects at render time that are NOT numeric DynamicVars and so
@@ -114,12 +115,18 @@ def test_no_potion_offer_shows_placeholder(content):
     assert not failures, "Potions with unresolved placeholders:\n" + "\n".join(failures)
 
 
+#: Signet Ring's ``GoldVar`` per game build (``SignetRing.cs``: 999 at v0.107.1,
+#: 888 at v0.111.0).
+_SIGNET_RING_GOLD = {"v0.107.1": "999", "v0.111.0": "888"}
+
+
 def test_signet_ring_offer_shows_gold_number(content):
-    """The exact reported case: Signet Ring must render its 999 Gold value."""
+    """The exact reported case: Signet Ring must render its Gold value."""
     signet = next((r for r in content.get("relics") or [] if r.get("id") == "SIGNET_RING"), None)
     assert signet is not None, "SIGNET_RING not found in relic dump"
     out, missing = _resolve_capturing(signet.get("description"), signet.get("vars"))
-    assert "999" in out, f"expected the Gold amount in {out!r}"
+    gold = _SIGNET_RING_GOLD[sts2_client.GAME_VERSION]
+    assert gold in out, f"expected the Gold amount {gold} in {out!r}"
     assert "Gold Gold" not in out, f"placeholder leaked: {out!r}"
     assert not missing, f"unexpected missing vars: {missing}"
 

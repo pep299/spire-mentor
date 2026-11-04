@@ -83,6 +83,19 @@
     <None Remove="tests/**;obj/**;bin/**" />
   </ItemGroup>
 
+  <!--
+    Where "Report a bug" sends (SimBugReport / BugReportSite): the hosted
+    workbench's origin, baked in as assembly metadata so no source file names
+    it (the site is private; release/export_unit.py fails the public export on
+    its host name). package.ps1 passes -p:SpireMentorBugReportSite=<origin>;
+    MSBuild also reads it from the environment. Unset (a plain dev build) =
+    no site: the mod saves reports to a file unless the "Bug report site"
+    setting names one.
+  -->
+  <ItemGroup Condition="'$(SpireMentorBugReportSite)' != ''">
+    <AssemblyMetadata Include="SpireMentorBugReportSite" Value="$(SpireMentorBugReportSite)" />
+  </ItemGroup>
+
   <ItemGroup Condition="Exists('$(Sts2DataDir)')">
     <Reference Include="sts2">
       <HintPath>$(Sts2DataDir)/sts2.dll</HintPath>

@@ -1,7 +1,7 @@
 import { render } from "@testing-library/react";
 import { describe, it, expect } from "vitest";
 import Board from "../Board";
-import { spriteBodyH } from "../Combatant";
+import { spriteBodyH } from "../combatantMetrics";
 import { instanceScale } from "../../scene";
 import fixture from "./fixture-step.json";
 import type { Step } from "../../api";

@@ -36,6 +36,8 @@ import sys
 from multiprocessing import Pool
 from typing import Any
 
+from floors import engine_total_floor
+
 # The scraped SpireCodex replay dump (not in this repo); override with
 # SPIRE_CODEX_REPLAYS.
 ROOT = os.environ.get(
@@ -226,7 +228,9 @@ class RunState:
         mc = self.map_coord()
         return {
             "ascension": self.ascension,
-            "total_floor": max(0, self.floor - 1),
+            # The log's floor is the game's TotalFloor, which counts each act's
+            # start room; the engine's (the champion's training) does not.
+            "total_floor": engine_total_floor(self.floor, self.act),
             "act_index": self.act,
             "act_floor": mc[1] + 1 if mc else 0,
             "hp": self.hp,

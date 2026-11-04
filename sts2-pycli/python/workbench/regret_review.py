@@ -12,8 +12,8 @@ produces (``reasoning.score`` / the recorder's ``root_outcomes``, both surfaced
 as a step's ``scores`` list) plus the move that was actually taken, and emits
 ranked :class:`DecisionRegret` rows. The orchestration that feeds it a timeline
 — and optionally re-runs MCTS for steps that lack recorded scores — lives in
-:func:`review_timeline`; the HTTP surface is in ``server.py`` and the live
-"was my last move a blunder?" hook is ``BranchingLiveSession.last_move_regret``.
+:func:`review_timeline`; the HTTP surface is in ``server.py``. The live
+per-turn grade (``/api/live/last-turn-grade``) is the Rust workbench's.
 
 Win-probability convention: ``wins / visits`` in ``[0, 1]`` — the same "win%"
 the ``hint`` panel shows. A *regret* is the non-negative drop

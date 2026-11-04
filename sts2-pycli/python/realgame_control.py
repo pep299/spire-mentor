@@ -24,6 +24,9 @@ Endpoints (all JSON):
                          first message opens a log
     POST /restore      — {snapshot_id} or {node_id}; rewinds the live game
     POST /search_tree  — companion MCTS tree over the current combat board
+    GET  /api/bugreport, POST /api/bugreport, GET /api/bugreport/<id>
+                       — the bundled workbench's bug reports (below); only
+                         when ``start(..., bug_reports=...)`` configures them
 
 Browser access (GH #709). The Python workbench reaches this server through a
 same-origin proxy; the browser-only workbench (``https://your-workbench.example.com``)
@@ -45,6 +48,26 @@ CORS opt-in nor Chrome's local-network prompt. ``GET /api/health`` answers
 200 only while a site is mounted: the mod's workbench button probes it to
 choose between this page and the dev workbench on :8077.
 
+Bug reports from the bundled workbench. Its 🐞 Report button posts to
+``/api/bugreport`` on the origin that served it -- on the hosted site that is
+the Pages Function (``web/functions/api/_bugreport.ts``), here it is this
+server, which forwards the dump to the same store (``--bug-report-site``, the
+site the mod's own in-game reports go to; the mod passes it) and answers with
+the store's ``{id, url}``. It posts to the store's intake,
+``<site>/intake/bugreport``: the hosted site is behind a sign-in (Cloudflare
+Access) that only that path is exempt from, so the forward follows no
+redirect -- a redirect is the sign-in page, and is reported as such. Reading a
+report back (``GET /api/bugreport/<id>``) needs the sign-in, so here it only
+finds reports this server saved itself. On the way it adds what only the advisor has: the
+latest position the game sent (``state.live_game``, the same message as Copy
+state, which the workbench's Import state rebuilds) and the run envelope
+(``meta.advisor``). With no site, or when the store cannot be reached, the
+dump is saved to ``<log dir>/../bugreports/<id>.json`` instead and the reply's
+``url`` is that path. Only the page's own origin (or an allow-listed one) may
+post: a foreign ``Origin`` is refused, and so is a body that is not
+``application/json``, which a cross-site page could only send after a
+preflight this server refuses.
+
 The mod's copy of the build carries its ``.json`` files gzipped as
 ``<name>.json.gz``: the game reads every ``.json`` under a mod's folder as a
 mod manifest. A request for ``x.json`` falls back to ``x.json.gz``, sent with
@@ -59,8 +82,15 @@ import gzip
 import io
 import json
 import logging
+import re
+import secrets
 import shutil
 import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -177,6 +207,192 @@ class StaticSite:
         }
 
 
+#: The store's body cap (``web/functions/api/_bugreport.ts`` MAX_BODY_BYTES).
+BUGREPORT_MAX_BYTES = 20 * 1024 * 1024
+#: A report id (the store's ``ID_RE``): the only key a GET may name.
+BUGREPORT_ID_RE = re.compile(r"^wb-[0-9a-f]{16}$")
+#: Cloudflare's bot check answers 403 to urllib's default agent.
+BUGREPORT_USER_AGENT = "SpireMentor-advisor/1 (bundled workbench bug-report forward)"
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Turn every redirect into an ``HTTPError`` instead of following it."""
+
+    def redirect_request(self, req: Any, fp: Any, code: Any, msg: Any, headers: Any, newurl: Any):
+        return None
+
+
+def _redirect_text(exc: urllib.error.HTTPError) -> str:
+    host = urllib.parse.urlsplit(exc.headers.get("Location") or "").hostname or ""
+    return (
+        f"HTTP {exc.code}: the report store sent us to {host} (a sign-in page?) -- "
+        "its /intake/bugreport is not exempt from the site's sign-in"
+        if host
+        else f"HTTP {exc.code}: the report store redirected instead of answering"
+    )
+
+
+#: The run envelope fields a forwarded report is stamped with (``/status``
+#: minus ``log_path``, which names the player's home directory).
+_STATUS_FIELDS = ("connected", "character", "seed", "floor", "act", "state_id")
+
+
+class BugReportForward:
+    """The bundled workbench's ``/api/bugreport`` (see the module docstring).
+
+    Args:
+        site: The hosted workbench origin whose ``/intake/bugreport`` stores
+            reports (``https://...``, no trailing slash needed), or None.
+        local_dir: Where a report is saved when there is no site or the
+            store cannot be reached.
+        urlopen: How to open a request (default: urllib following no
+            redirects).
+        timeout: Seconds per store call.
+    """
+
+    def __init__(
+        self,
+        site: str | None,
+        local_dir: Path,
+        *,
+        urlopen: Callable[..., Any] | None = None,
+        timeout: float = 60.0,
+    ) -> None:
+        self.site = site.strip().rstrip("/") if site and site.strip() else None
+        self.local_dir = local_dir
+        self._urlopen = urlopen or urllib.request.build_opener(_NoRedirect()).open
+        self.timeout = timeout
+
+    def probe(self) -> dict[str, Any]:
+        """``GET /api/bugreport``: the JSON the page's probe wants (``ok``)."""
+        return {"ok": True, "store": "forward" if self.site else "local"}
+
+    def submit(
+        self,
+        dump: dict[str, Any],
+        *,
+        live_state: dict[str, Any] | None,
+        status: dict[str, Any],
+    ) -> tuple[int, dict[str, Any]]:
+        """Enrich ``dump`` and store it; (HTTP status, reply)."""
+        problem = _validate_dump(dump)
+        if problem:
+            return 422, {"detail": problem}
+        meta = dump["meta"]
+        meta["forwarded_by"] = "advisor"
+        meta["advisor"] = {k: status.get(k) for k in _STATUS_FIELDS if k in status}
+        state = dump["state"]
+        if live_state is not None and "live_game" not in state:
+            state["live_game"] = live_state
+        body = json.dumps(dump, default=str).encode("utf-8")
+        if len(body) > BUGREPORT_MAX_BYTES:
+            return 413, {
+                "detail": f"report too large ({len(body)} bytes; limit {BUGREPORT_MAX_BYTES})"
+            }
+        why = "this build has no bug-report address"
+        if self.site:
+            try:
+                reply = self._post(body)
+            except Exception as exc:
+                why = f"could not reach the report store: {exc}"
+                logger.warning("bug report forward to %s failed: %s", self.site, exc)
+            else:
+                logger.info("bug report forwarded: %s", reply.get("id"))
+                return 201, reply
+        return self._save_local(dump, why)
+
+    def fetch(self, report_id: str) -> tuple[int, bytes]:
+        """``GET /api/bugreport/<id>``: a report this server saved itself.
+
+        The store's copies are behind the hosted site's sign-in, which a
+        server cannot pass; a miss says where to read them instead.
+        """
+        if not BUGREPORT_ID_RE.match(report_id):
+            return 404, _detail(f"unknown report: {report_id}")
+        path = self.local_dir / f"{report_id}.json"
+        if path.is_file():
+            return 200, path.read_bytes()
+        if self.site:
+            return 404, _detail(
+                f"{report_id} is not saved here; a sent report opens on the hosted "
+                f"workbench (signed in): {self.site}/?report={report_id}"
+            )
+        return 404, _detail(f"unknown report: {report_id}")
+
+    def _post(self, body: bytes) -> dict[str, Any]:
+        # The intake, with no Origin header: the store takes a non-browser
+        # client's post there, and the site's sign-in exempts that path.
+        req = urllib.request.Request(
+            f"{self.site}/intake/bugreport",
+            data=body,
+            method="POST",
+            headers={"content-type": "application/json", "User-Agent": BUGREPORT_USER_AGENT},
+        )
+        try:
+            with self._urlopen(req, timeout=self.timeout) as res:
+                reply = json.loads(res.read())
+        except urllib.error.HTTPError as exc:
+            if 300 <= exc.code < 400:
+                raise RuntimeError(_redirect_text(exc)) from exc
+            raise RuntimeError(f"HTTP {exc.code}: {_error_text(exc)}") from exc
+        if not (isinstance(reply, dict) and isinstance(reply.get("id"), str) and reply.get("url")):
+            raise RuntimeError("the store's reply was not {id, url}")
+        return {"id": reply["id"], "url": reply["url"]}
+
+    def _save_local(self, dump: dict[str, Any], why: str) -> tuple[int, dict[str, Any]]:
+        report_id = f"wb-{secrets.token_hex(8)}"
+        meta = dump["meta"]
+        meta["id"] = report_id
+        meta["captured_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        meta["received_via"] = "advisor-local"
+        try:
+            self.local_dir.mkdir(parents=True, exist_ok=True)
+            path = self.local_dir / f"{report_id}.json"
+            path.write_text(json.dumps(dump, default=str), encoding="utf-8")
+        except OSError as exc:
+            return 500, {"detail": f"{why}, and saving it failed: {exc}"}
+        logger.info("bug report saved locally: %s (%s)", path, why)
+        return 201, {
+            "id": report_id,
+            "url": str(path),
+            "path": str(path),
+            "detail": f"Not sent ({why}). Saved to {path} -- attach that file to your report.",
+        }
+
+
+def _validate_dump(dump: Any) -> str | None:
+    """The store's schema check (``_bugreport.ts`` validateDump), here so a
+    bad dump fails before it is enriched or saved."""
+    if not isinstance(dump, dict):
+        return "body must be a JSON object"
+    if dump.get("schema_version") != 1:
+        return "schema_version must be 1"
+    for key in ("meta", "repro", "state", "ui"):
+        if not isinstance(dump.get(key), dict):
+            return f"{key} must be an object"
+    if dump.get("note") is not None and not isinstance(dump.get("note"), str):
+        return "note must be a string or null"
+    return None
+
+
+def _detail(msg: str) -> bytes:
+    return json.dumps({"detail": msg}).encode("utf-8")
+
+
+def _error_text(exc: urllib.error.HTTPError) -> str:
+    try:
+        text = exc.read().decode("utf-8", errors="replace")
+    except Exception:
+        return exc.reason or ""
+    try:
+        detail = json.loads(text).get("detail")
+        if isinstance(detail, str):
+            return detail
+    except (ValueError, AttributeError):
+        pass
+    return text[:200]
+
+
 #: Message types the advisor's receive loop must route to the control plane.
 BRIDGE_MESSAGE_TYPES = (
     "snapshots",
@@ -212,6 +428,8 @@ class ControlPlane:
         self._server: ThreadingHTTPServer | None = None
         #: The bundled workbench build, if any (``start`` sets it).
         self.site: StaticSite | None = None
+        #: The bundled workbench's bug-report forward, if any (``start``).
+        self.bug_reports: BugReportForward | None = None
         self.search_tree_fn: Any = None  # set by the advisor: (sims|None) -> dict
 
     # -- called from the advisor loop ----------------------------------
@@ -352,7 +570,13 @@ class ControlPlane:
 
     # -- HTTP server ---------------------------------------------------
 
-    def start(self, port: int, allow_origins: Any = (), site: StaticSite | None = None) -> None:
+    def start(
+        self,
+        port: int,
+        allow_origins: Any = (),
+        site: StaticSite | None = None,
+        bug_reports: BugReportForward | None = None,
+    ) -> None:
         """Serve on ``127.0.0.1:port``.
 
         Args:
@@ -363,12 +587,16 @@ class ControlPlane:
                 and on the preflight; anything else gets none. Default: none.
             site: The bundled workbench build to host at ``/`` (see the
                 module docstring). Default: none, every other path is a 404.
+            bug_reports: Serve ``/api/bugreport`` through this forward (see
+                the module docstring). Default: none -- the route is a 404,
+                which keeps the page's Report button hidden.
         """
         plane = self
         self.allow_origins = tuple(
             o.strip().rstrip("/") for o in (allow_origins or ()) if str(o).strip()
         )
         self.site = site
+        self.bug_reports = bug_reports
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, format: str, *args: Any) -> None:
@@ -416,6 +644,42 @@ class ControlPlane:
                 else:
                     self._send(403, {"error": "origin not allowed"})
 
+            def _send_bytes(self, code: int, body: bytes) -> None:
+                self.send_response(code)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(body)))
+                self.send_header("cache-control", "no-store")
+                self._cors_headers()
+                self.end_headers()
+                self.wfile.write(body)
+
+            def _post_bug_report(self, forward: BugReportForward) -> None:
+                """``POST /api/bugreport`` (see the module docstring)."""
+                origin = self.headers.get("Origin")
+                own = f"http://{self.headers.get('Host', '')}"
+                if origin and origin.rstrip("/") not in (own, *plane.allow_origins):
+                    self._send(
+                        403, {"detail": "bug reports are accepted from the workbench page only"}
+                    )
+                    return
+                ctype = (self.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+                if ctype != "application/json":
+                    self._send(415, {"detail": "a bug report is application/json"})
+                    return
+                length = int(self.headers.get("content-length") or 0)
+                if length > BUGREPORT_MAX_BYTES:
+                    self._send(413, {"detail": f"report too large ({length} bytes)"})
+                    return
+                try:
+                    dump = json.loads(self.rfile.read(length)) if length > 0 else None
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    self._send(400, {"detail": "body is not JSON"})
+                    return
+                code, reply = forward.submit(
+                    dump, live_state=plane.last_state(), status=plane.status()
+                )
+                self._send(code, reply)
+
             def _body(self) -> dict[str, Any]:
                 length = int(self.headers.get("content-length") or 0)
                 if length <= 0:
@@ -453,6 +717,11 @@ class ControlPlane:
                 elif path == "/log":
                     code, payload = plane.live_log(stat_only="stat=1" in self.path)
                     self._send(code, payload)
+                elif path == "/api/bugreport" and plane.bug_reports is not None:
+                    self._send(200, plane.bug_reports.probe())
+                elif path.startswith("/api/bugreport/") and plane.bug_reports is not None:
+                    code, body = plane.bug_reports.fetch(unquote(path[len("/api/bugreport/") :]))
+                    self._send_bytes(code, body)
                 elif path == "/api/health" and plane.site is not None:
                     self._send(200, {"ok": True, "workbench": "static"})
                 elif not self._send_file(path, head=False):
@@ -506,6 +775,9 @@ class ControlPlane:
 
             def do_POST(self) -> None:
                 path = self.path.split("?", 1)[0]
+                if path == "/api/bugreport" and plane.bug_reports is not None:
+                    self._post_bug_report(plane.bug_reports)
+                    return
                 body = self._body()
                 if path == "/restore":
                     snapshot_id = body.get("snapshot_id")

@@ -65,10 +65,13 @@
     "action": "end turn",
     "hp_n": 0,
     "hp_sd": null,
+    "in_band": false,
     "is_best": true,
     "losses": 0,
     "low_confidence": false,
     "mean_final_hp": null,
+    "pick_rank": null,
+    "pick_reason": null,
     "q": 0.0,
     "q_saturated": false,
     "stable_idx": -1,
@@ -92,7 +95,7 @@
    "bg_col": 0,
    "bg_row": 3,
    "bg_seed": 3,
-   "floor": 3,
+   "floor": 4,
    "step_no": 0,
    "turn": 5
   },
@@ -377,7 +380,7 @@
     }
    ],
    "exhaust_pile_count": 1,
-   "floor": 3,
+   "floor": 4,
    "hand": [
     {
      "base_cost": 1,

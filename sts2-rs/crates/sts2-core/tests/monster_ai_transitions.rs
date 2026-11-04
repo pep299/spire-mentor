@@ -662,3 +662,182 @@ fn roll_lands_on_a_move_and_costs_one_tick_per_hop(tc: TestCase) {
         );
     }
 }
+
+// ── property: `forecast_after_current` (GH #1097, WP-ENG-1) ────────────
+
+/// The graph family above, with a distinct telegraph per move so that a
+/// predicted intent names its move.
+fn draw_branch_graph(tc: &TestCase) -> BTreeMap<StateId, MonsterState> {
+    let n_moves = tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
+    let mut states = BTreeMap::new();
+    let mut branches = smallvec![];
+    for (i, &id) in MOVE_IDS.iter().take(n_moves).enumerate() {
+        let must_perform_once = tc.draw(gs::booleans());
+        let damage = i32::try_from(i).unwrap() + 1;
+        states.insert(id, move_state(id, damage, "ROOT", must_perform_once));
+        branches.push(WeightedBranch {
+            state_id: id,
+            repeat_type: draw_repeat_type(tc),
+            max_times: tc.draw(gs::integers::<u8>().min_value(1).max_value(3)),
+            weight: f64::from(tc.draw(gs::integers::<u8>().min_value(0).max_value(50))) / 10.0,
+            cooldown: tc.draw(gs::integers::<u8>().min_value(0).max_value(3)),
+        });
+    }
+    states.insert(
+        "ROOT",
+        MonsterState::RandomBranch(RandomBranchState {
+            id: "ROOT",
+            branches,
+        }),
+    );
+    states
+}
+
+/// A forecast the machine is certain of IS the future. Over arbitrary weighted
+/// graphs, whenever every pick up to forecast step `j` had only one positive
+/// branch (certainty 1.0), the live machine (perform the telegraph, then roll
+/// off a real RNG, `j` times) lands on exactly the forecast's move `j`. The e2e
+/// policy's intent forecast relies on this. `peek_intents` breaks it after the
+/// first move, because its walk leaves the telegraph out of the repeat rules.
+#[hegel::test(test_cases = 200)]
+fn a_certain_forecast_is_the_roll(tc: TestCase) {
+    let states = draw_branch_graph(&tc);
+    let seed = tc.draw(gs::integers::<i32>().min_value(-10_000).max_value(10_000));
+    let mut ai = MonsterAi::new(states, "ROOT");
+    let mut rng = DotNetRng::new(seed);
+    let combat = CombatState::default();
+
+    for step in 0..20 {
+        let forecast = ai.forecast_after_current(3, &combat);
+        assert_eq!(forecast.len(), 3);
+        assert_eq!(
+            forecast,
+            ai.forecast_after_current(3, &combat),
+            "the forecast is not deterministic at step {step}"
+        );
+        let mut live = ai.clone();
+        let mut live_rng = rng.clone();
+        for f in forecast.iter().take_while(|f| f.certainty >= 1.0) {
+            live.on_move_performed();
+            assert_eq!(
+                live.roll_move(&mut live_rng).id,
+                f.move_id,
+                "step {step}: a certain forecast step {} missed the roll",
+                f.step,
+            );
+        }
+        ai.on_move_performed();
+        let _ = ai.roll_move(&mut rng);
+    }
+}
+
+/// Before its first move a machine's `peek_intents` starts with the telegraph
+/// itself. The forecast is the same walk, one step on: the plan's
+/// `performed_first_move` alignment (`peek_intents(k + 1)` minus step 1).
+#[hegel::test(test_cases = 200)]
+fn before_the_first_move_the_forecast_is_peek_without_the_telegraph(tc: TestCase) {
+    let states = draw_branch_graph(&tc);
+    let k = tc.draw(gs::integers::<usize>().min_value(1).max_value(5));
+    let ai = MonsterAi::new(states, "ROOT");
+    let combat = CombatState::default();
+    assert!(!ai.performed_first_move());
+    let peek = ai.peek_intents(k + 1, &combat);
+    assert_eq!(
+        peek.len(),
+        k + 1,
+        "one intent per move in this graph family"
+    );
+    assert_eq!(
+        peek[0].intent,
+        ai.current_move().intents[0],
+        "peek step 1 is the telegraph"
+    );
+    let peek_tail: Vec<(u8, Intent, f32)> = peek[1..]
+        .iter()
+        .map(|p| (p.step - 1, p.intent, p.certainty))
+        .collect();
+    let forecast: Vec<(u8, Intent, f32)> = ai
+        .forecast_after_current(k, &combat)
+        .iter()
+        .map(|f| (f.step, f.intents[0], f.certainty))
+        .collect();
+    assert_eq!(forecast, peek_tail);
+}
+
+// ── a stun's StateLog (C# logs at roll time, never a forced state) ──────
+
+/// SpectralKnight's shape (`SpectralKnight.cs:45-58`): `S` (SOUL_SLASH) and
+/// `F` (SOUL_FLAME) both follow up into `RAND` = {`S` CanRepeatXTimes(2),
+/// `F` CannotRepeat}; plus a must-perform `STUNNED`.
+fn knight_states() -> BTreeMap<StateId, MonsterState> {
+    let mut states = BTreeMap::new();
+    states.insert("S", move_state("S", 1, "RAND", false));
+    states.insert("F", move_state("F", 2, "RAND", false));
+    states.insert("STUNNED", move_state("STUNNED", 0, "S", true));
+    states.insert(
+        "RAND",
+        MonsterState::RandomBranch(RandomBranchState {
+            id: "RAND",
+            branches: smallvec![
+                WeightedBranch {
+                    state_id: "S",
+                    repeat_type: MoveRepeatType::CanRepeatXTimes,
+                    max_times: 2,
+                    weight: 1.0,
+                    cooldown: 0,
+                },
+                WeightedBranch {
+                    state_id: "F",
+                    repeat_type: MoveRepeatType::CannotRepeat,
+                    max_times: 1,
+                    weight: 1.0,
+                    cooldown: 0,
+                },
+            ],
+        }),
+    );
+    states
+}
+
+/// C# appends to `StateLog` when a move is ROLLED
+/// (`MonsterMoveStateMachine.FindNextMoveState`, `logMove: true`) and never
+/// for a state `SetMoveImmediate` installs (`ForceCurrentState`), which is how
+/// `Creature.StunInternal` (`Creature.cs:525-544`) installs `STUNNED`. A stun
+/// over the rolled `S` therefore leaves `[F, S]`; the roll out of `STUNNED`
+/// logs the resumed `S` again, so the next roll sees two `S` in a row and
+/// `CanRepeatXTimes(2)` (`RandomBranchState.cs:130-150`) zeroes it: `F` for
+/// every seed. act23 Ironclad:2062 (SpectralKnight), 4087 (FlailKnight).
+#[test]
+fn a_stun_over_a_rolled_move_logs_it_and_not_the_stun() {
+    for seed in 0..32 {
+        let mut ai = MonsterAi::new(knight_states(), "F");
+        let mut rng = DotNetRng::new(seed);
+        ai.on_move_performed(); // F
+        assert_eq!(ai.roll_move(&mut rng).id, "S", "F cannot repeat");
+        // The player stuns the knight over its telegraphed S.
+        assert!(ai.stun_immediate("STUNNED", None));
+        ai.on_move_performed(); // STUNNED
+        assert_eq!(ai.roll_move(&mut rng).id, "S", "the stun resumes S");
+        ai.on_move_performed(); // S
+        assert_eq!(ai.move_history(), ["F", "S", "S"], "seed {seed}");
+        assert_eq!(ai.roll_move(&mut rng).id, "F", "seed {seed}: S twice");
+    }
+}
+
+/// A stun that lands while the monster's own move is running (Thorns during
+/// its attack) displaces a move that is being performed: that move is logged
+/// once, the stun not at all.
+#[test]
+fn a_stun_during_the_monsters_own_move_logs_that_move_once() {
+    let mut ai = MonsterAi::new(knight_states(), "F");
+    let mut rng = DotNetRng::new(3);
+    ai.on_move_performed(); // F
+    assert_eq!(ai.roll_move(&mut rng).id, "S");
+    ai.begin_move(); // S starts...
+    assert!(ai.stun_immediate("STUNNED", None)); // ...and is stunned mid-move,
+    ai.on_move_performed_state("S"); // then S completes.
+    assert_eq!(ai.move_history(), ["F", "S"]);
+    assert_eq!(ai.roll_move(&mut rng).id, "STUNNED", "the stun is held");
+    ai.on_move_performed(); // STUNNED
+    assert_eq!(ai.move_history(), ["F", "S"], "the stun is not logged");
+}

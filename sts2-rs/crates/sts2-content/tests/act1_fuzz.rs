@@ -192,6 +192,7 @@ fn make_combat(seed: u64, idx: u8) -> CombatState {
         pending_enemy_exec_resume: None,
         combat_log: TurnEvents::default(),
         swipe_stolen: Vec::new(),
+        deck_link: None,
         escaped_creatures: 0,
         coop: sts2_core::coop::CoopState::default(),
         heist_recovered_gold: 0,
@@ -251,9 +252,9 @@ fn run_one(state: &mut CombatState, rng: &mut sts2_core::dotnet_rng::Rng) -> u32
                 // pending_choice is Some, which clears it via the stub
                 // body. Either way no error.
             }
-            StepResult::InvalidTarget => {
+            StepResult::InvalidTarget | StepResult::IllegalPlay => {
                 panic!(
-                    "InvalidTarget from a legal_actions-derived action — \
+                    "{result:?} from a legal_actions-derived action — \
                      decision={decisions} round={} phase={:?}",
                     state.round, state.phase
                 );

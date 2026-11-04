@@ -1,4 +1,3 @@
-// port-pin-skip — DSL re-export glue (sts2-core monster_ai is canonical).
 pub use sts2_core::monster_ai::{
     ConditionFn, ConditionalBranch, ConditionalBranchState, EffectFn, MonsterAi, MonsterState,
     MoveRepeatType, MoveState, RandomBranchState, StateId, WeightedBranch,

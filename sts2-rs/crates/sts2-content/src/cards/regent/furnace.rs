@@ -2,7 +2,6 @@
 use super::prelude::*;
 
 /// Furnace — apply 5 Furnace to self (7 upgraded).
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L342
 pub(crate) fn play_furnace(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     // C# `Furnace.cs` (v0.107.1) `ForgeVar(5)`, OnUpgrade bumps Forge 5->7.
     // Bead `sts2-rs-qb2jc`.

@@ -31,7 +31,8 @@ use super::prelude::*;
 // Both the damage AND the draw sit inside the `if (!CheckMissingWithAnim)` block,
 // so when the Osty is missing the entire effect is a no-op. `deal_damage_from_
 // osty_to_enemy` is itself a no-op when the Osty is absent (`osty_dealer_ref` →
-// None); we gate the draw on the same Osty-alive check to reproduce that.
+// None); we gate the draw on the Osty-alive check taken BEFORE the attack, so
+// an Osty killed by Thorns mid-attack still draws.
 //
 // The C# draw is additionally gated on `!HasBeenPlayedThisTurn`, which scans
 // `CombatManager.History.CardPlaysFinished` for a *finished* play of THIS card
@@ -43,12 +44,17 @@ pub(crate) fn play_fetch(state: &mut CombatState, target: Option<CreatureUid>) -
     // plain player-attack stat), gated on current_card_upgraded like the sibling
     // OstyAttack cards (poke/sic_em/unleash/bone_shards). No-op if the Osty is
     // missing (deal_damage_from_osty_to_enemy resolves to a no-op).
+    //
+    // The C# `CheckMissingWithAnim` guard (Fetch.cs:40) is evaluated ONCE,
+    // before the attack. If Thorns (or any retaliation) kills the Osty during
+    // the hit, the draw (Fetch.cs:45-48) still happens, so capture presence
+    // before dealing damage rather than re-checking afterwards.
+    let osty_present = osty_dealer_ref(state).is_some();
     let dmg = if current_card_upgraded(state) { 6 } else { 3 };
     deal_damage_from_osty_to_enemy(state, t, dmg);
 
     // C# `if (!HasBeenPlayedThisTurn) Draw(Cards.BaseValue=1)` — gated inside the
-    // Osty-alive block. We only draw when the Osty is alive (matching the C#
-    // guard placement).
+    // Osty-alive block, whose guard was evaluated before the attack.
     //
     // GH #806: `HasBeenPlayedThisTurn` (Fetch.cs:29) looks for a finished play
     // of THIS instance this turn. A play's `CardPlayFinishedEntry` is added after
@@ -57,7 +63,7 @@ pub(crate) fn play_fetch(state: &mut CombatState, target: Option<CreatureUid>) -
     // (`TurnEvents::fetch_played_this_turn`, cleared each player turn). A
     // replayed or returned Fetch then skips the draw.
     let this_card = sts2_core::card_effects::resolving_card_uid(state);
-    if osty_dealer_ref(state).is_some() {
+    if osty_present {
         let played_before =
             this_card.is_some_and(|uid| state.combat_log.fetch_played_this_turn.contains(&uid));
         if !played_before {

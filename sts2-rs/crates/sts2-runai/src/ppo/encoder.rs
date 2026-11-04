@@ -49,13 +49,21 @@ pub const SEC_POTION_OPT: i64 = 9;
 pub const SEC_EVENT_OPT: i64 = 10;
 pub const N_SECTION: i64 = 11;
 
-pub const N_CAT: usize = 12;
+pub const N_CAT: usize = 14;
 /// The act-boss identity's categorical column, mirroring `schema.py::CAT_BOSS`.
 /// Fixed at 9 regardless of `N_CAT` — it was the trailing column only while
 /// `N_CAT == 10`; GH #545 appended `deck_op`/`enchant` after it, so anything
 /// that wants "the boss column" must name this constant rather than derive
 /// it from the width (`N_CAT - 1` silently became the enchant column).
 pub const CAT_BOSS: usize = 9;
+/// A card token's spec type and rarity (`card_kind`, GH #977), mirroring
+/// `schema.py::CAT_CARD_TYPE` / `CAT_CARD_RARITY`.
+pub const CAT_CARD_TYPE: usize = 12;
+pub const CAT_CARD_RARITY: usize = 13;
+/// Rows of the type / rarity tables, in the engine's enum order
+/// (`vocab.py::CARD_TYPES` / `CARD_RARITIES`); the pad row is the count.
+pub const N_CARD_TYPE: usize = 5;
+pub const N_CARD_RARITY: usize = 10;
 pub const N_CONT: usize = 26;
 pub const GOLD_SCALE: f64 = 0.01;
 pub const DECK_SCALE: f64 = 0.05;
@@ -113,7 +121,8 @@ pub const C_ENCH_AMT: usize = 25;
 pub const ENCH_AMT_SCALE: f64 = 0.1;
 
 /// One token's categorical id row (`[card, upg, relic, potion, room,
-/// event, fixed, optidx, surface, boss, deck_op, enchant]`).
+/// event, fixed, optidx, surface, boss, deck_op, enchant, card_type,
+/// card_rarity]`).
 pub type Cat = [i64; N_CAT];
 /// One token's continuous feature row, computed in `f64` (cast to
 /// `f32` at the point it's written into a [`Featurized`] vector).
@@ -135,7 +144,8 @@ pub struct Featurized {
 
 /// Pad-row categorical ids — mirrors `model.py::empty_cat()`
 /// (`pad_indices()`'s values in `[card, upg, relic, potion, room,
-/// event, fixed, optidx, surface, boss, deck_op, enchant]` order).
+/// event, fixed, optidx, surface, boss, deck_op, enchant, card_type,
+/// card_rarity]` order).
 #[must_use]
 pub fn empty_cat() -> Cat {
     [
@@ -151,7 +161,67 @@ pub fn empty_cat() -> Cat {
         vocab::bosses().size as i64,
         vocab::N_DECK_OP as i64,
         vocab::enchantments().size as i64,
+        N_CARD_TYPE as i64,
+        N_CARD_RARITY as i64,
     ]
+}
+
+/// `(type_row, rarity_row)` per card embedding row, pad where unknown —
+/// mirrors `vocab.py::card_kind_rows`. Both read the engine's card specs.
+fn card_kind_rows() -> &'static [(i64, i64)] {
+    use sts2_content::cards::types::CardRarity;
+    use sts2_core::cards::CardType;
+    static ROWS: OnceLock<Vec<(i64, i64)>> = OnceLock::new();
+    ROWS.get_or_init(|| {
+        let reg = vocab::cards();
+        let mut rows = vec![(N_CARD_TYPE as i64, N_CARD_RARITY as i64); reg.size];
+        for &c in sts2_core::cards::CardId::all() {
+            let Some(spec) = sts2_content::cards::spec_index::spec_for_card_id(c) else {
+                continue;
+            };
+            let i = reg.index(c.to_python_name());
+            if i == reg.oov {
+                continue;
+            }
+            let t = match spec.card_type {
+                CardType::Attack => 0,
+                CardType::Skill => 1,
+                CardType::Power => 2,
+                CardType::Curse => 3,
+                CardType::Status => 4,
+            };
+            let r = match spec.rarity {
+                CardRarity::Basic => 0,
+                CardRarity::Common => 1,
+                CardRarity::Uncommon => 2,
+                CardRarity::Rare => 3,
+                CardRarity::Ancient => 4,
+                CardRarity::Status => 5,
+                CardRarity::Curse => 6,
+                CardRarity::Event => 7,
+                CardRarity::Token => 8,
+                CardRarity::Quest => 9,
+            };
+            rows[i] = (t, r);
+        }
+        rows
+    })
+}
+
+/// Stamp every token that names a card with its type and rarity (GH #977).
+///
+/// One pass over the finished tokens, so whatever wrote `cat[0]` gets the
+/// columns; the OOV row reads the pad. Mirrors `encoder.py::_stamp_card_kind`.
+fn stamp_card_kind(cats: &mut [Cat]) {
+    let rows = card_kind_rows();
+    let pad = vocab::cards().size as i64;
+    for cat in cats {
+        if cat[0] != pad {
+            let (t, r) = rows[usize::try_from(cat[0]).expect("card row is non-negative")];
+            cat[CAT_CARD_TYPE] = t;
+            cat[CAT_CARD_RARITY] = r;
+        }
+    }
 }
 
 fn to_f32_arr(a: ContF64) -> [f32; N_CONT] {
@@ -390,6 +460,17 @@ fn stamp_enchant(
     }
 }
 
+/// `cat` shared by a Scroll Boxes pack's member tokens and its pick action
+/// (GH #978). The pack index rides in the option-index column, so the
+/// pick-pack token and its members share one embedding row. Mirrors
+/// `encoder.py::_bundle_cat`.
+fn bundle_cat(pack: i64) -> Cat {
+    let mut cat = empty_cat();
+    cat[10] = vocab::deck_op_index("bundle") as i64;
+    cat[7] = pack.min(vocab::MAX_OPT_IDX as i64 - 1);
+    cat
+}
+
 fn fixed_tok(kind: &str, price: i64) -> (i64, Cat, ContF64) {
     let mut cat = empty_cat();
     cat[6] = vocab::fixed_index(kind) as i64;
@@ -421,6 +502,8 @@ struct Ctx<'a> {
     /// empty means "not upgraded". Only read under
     /// [`Features::reward_upgrade`].
     card_reward_upgraded: &'a [bool],
+    /// Scroll Boxes packs (GH #978); empty unless [`Features::card_bundles`].
+    bundles: &'a [Vec<String>],
     relic_reward_ids: &'a [String],
     boss_relics: &'a [String],
     smith: &'a [String],
@@ -486,6 +569,14 @@ impl<'a> Ctx<'a> {
             event_options: obs.event_options.as_deref().unwrap_or(&[]),
             card_reward_ids: obs.card_reward_option_ids.as_deref().unwrap_or(&[]),
             card_reward_upgraded: obs.card_reward_option_upgraded.as_deref().unwrap_or(&[]),
+            bundles: if features.card_bundles {
+                obs.card_reward_bundles
+                    .as_ref()
+                    .and_then(|inner| inner.as_deref())
+                    .unwrap_or(&[])
+            } else {
+                &[]
+            },
             relic_reward_ids: obs.relic_reward_ids.as_deref().unwrap_or(&[]),
             boss_relics: obs.boss_relic_options.as_deref().unwrap_or(&[]),
             smith: obs.smith_options.as_deref().unwrap_or(&[]),
@@ -545,6 +636,8 @@ fn build_action_token(ctx: &Ctx<'_>, a: &ActionDesc) -> (i64, Cat, ContF64) {
         }
         ActionDesc::PickCardReward { idx } => match idx {
             None => fixed_tok("skip_card", 0),
+            // A pack pick: no card of its own, the members are obs tokens.
+            Some(i) if !ctx.bundles.is_empty() => (SEC_CARD, bundle_cat(*i), [0.0f64; N_CONT]),
             Some(i) => {
                 let cid = at(ctx.card_reward_ids, *i).map(String::as_str);
                 // Reward options are pre-upgraded by `roll_for_upgrade` in
@@ -901,6 +994,17 @@ pub fn featurize_with(obs: &PpoObs, actions: &[ActionDesc], features: Features) 
         obs_sec.push(SEC_POTION);
     }
 
+    // Scroll Boxes pack members (GH #978, `card_bundles`), after the potions.
+    for (k, pack) in ctx.bundles.iter().enumerate() {
+        for cid in pack {
+            let mut cat = bundle_cat(k as i64);
+            cat[0] = vocab::cards().index(cid) as i64;
+            obs_cat.push(cat);
+            obs_cont.push([0.0f32; N_CONT]);
+            obs_sec.push(SEC_CARD);
+        }
+    }
+
     // Map node tokens (R5b). The terminal boss node also carries the boss's
     // identity; every other node carries the pad row.
     for nf in &ctx.mapf.nodes {
@@ -928,6 +1032,11 @@ pub fn featurize_with(obs: &PpoObs, actions: &[ActionDesc], features: Features) 
         act_sec.push(sec);
         act_cat.push(cat);
         act_cont.push(to_f32_arr(cont));
+    }
+
+    if features.card_kind {
+        stamp_card_kind(&mut obs_cat);
+        stamp_card_kind(&mut act_cat);
     }
 
     Featurized {
@@ -1058,6 +1167,8 @@ mod tests {
             Features {
                 reward_upgrade: true,
                 card_mods: false,
+                card_bundles: false,
+                card_kind: false,
             },
         );
         assert_eq!(f.act_cat[0][1], 0);
@@ -1080,6 +1191,8 @@ mod tests {
             Features {
                 reward_upgrade: true,
                 card_mods: false,
+                card_bundles: false,
+                card_kind: false,
             },
         );
         assert_eq!(f.act_cat[0][1], 0);
@@ -1255,11 +1368,13 @@ mod tests {
     /// is SILENT — the shapes match either way.
     #[test]
     fn appended_cat_slots_mirror_the_python_encoder() {
-        assert_eq!(N_CAT, 12);
+        assert_eq!(N_CAT, 14);
         let pad = empty_cat();
         assert_eq!(pad[10], vocab::N_DECK_OP as i64);
         assert_eq!(pad[11], vocab::enchantments().size as i64);
-        assert_eq!(vocab::N_DECK_OP, vocab::DECK_OPS.len() + 1);
+        // The spare row went to "bundle" (GH #978); the pad stays at 11.
+        assert_eq!(vocab::N_DECK_OP, 11);
+        assert_eq!(vocab::deck_op_index("bundle"), 10);
         assert_eq!(vocab::deck_op_index("enchant"), 6);
         assert_eq!(vocab::deck_op_index("nonsense"), 0); // "none"
     }
@@ -1269,6 +1384,8 @@ mod tests {
     const CARD_MODS: Features = Features {
         reward_upgrade: false,
         card_mods: true,
+        card_bundles: false,
+        card_kind: false,
     };
 
     /// A three-card deck whose middle card is Sharp ×3, an enchant pick
@@ -1403,5 +1520,157 @@ mod tests {
         // columns and must see exactly what it was trained on.
         assert_eq!(C_ENCH_AMT, C_CARD_LOSS + 1);
         assert_eq!(N_CONT, C_ENCH_AMT + 1);
+    }
+
+    // ── card_bundles (GH #978) ──────────────────────────────────────────
+
+    const CARD_BUNDLES: Features = Features {
+        reward_upgrade: false,
+        card_mods: false,
+        card_bundles: true,
+        card_kind: false,
+    };
+
+    /// A Scroll Boxes pick as `build_obs` produces it: two options (each
+    /// pack's first card) plus the packs themselves.
+    fn bundle_obs() -> (PpoObs, Vec<ActionDesc>) {
+        let obs: PpoObs = serde_json::from_value(serde_json::json!({
+            "phase": "CardReward",
+            "surface": "card-pick",
+            "seed": 0, "ascension": 0,
+            "deck": [["StrikeIronclad", false], ["Bash", false]],
+            "relics": [], "potions": [],
+            "map": null, "map_coord": null,
+            "total_floor": 0, "act_index": 0, "act_floor": 0,
+            "hp": 80, "max_hp": 80, "gold": 99,
+            "deck_size": 2, "num_upgraded": 0, "num_relics": 0, "num_potions": 0,
+            "card_reward_option_ids": ["CARD.ANGER", "CARD.ARMAMENTS"],
+            "card_reward_bundles": [
+                ["CARD.ANGER", "CARD.CLASH", "CARD.INFLAME"],
+                ["CARD.ARMAMENTS", "CARD.HAVOC", "CARD.RAMPAGE"],
+            ],
+        }))
+        .expect("obs");
+        let actions = vec![
+            ActionDesc::PickCardReward { idx: Some(0) },
+            ActionDesc::PickCardReward { idx: Some(1) },
+        ];
+        (obs, actions)
+    }
+
+    #[test]
+    fn card_bundles_off_ignores_the_packs() {
+        let (obs, actions) = bundle_obs();
+        let mut bare = obs.clone();
+        bare.card_reward_bundles = None;
+        let f = featurize_with(&obs, &actions, Features::default());
+        assert_eq!(f, featurize_with(&bare, &actions, Features::default()));
+        // Each pack is still scored by its first card.
+        assert_eq!(f.act_cat[0][0], vocab::cards().index("CARD.ANGER") as i64);
+    }
+
+    #[test]
+    fn card_bundles_on_shows_every_member_and_pack_tagged_actions() {
+        let (obs, actions) = bundle_obs();
+        let off = featurize_with(&obs, &actions, Features::default());
+        let on = featurize_with(&obs, &actions, CARD_BUNDLES);
+        // Six member tokens appended after the state + deck tokens.
+        assert_eq!(on.obs_cat.len(), off.obs_cat.len() + 6);
+        let bundle = vocab::deck_op_index("bundle") as i64;
+        let members = &on.obs_cat[off.obs_cat.len()..];
+        for (j, cat) in members.iter().enumerate() {
+            assert_eq!(cat[10], bundle);
+            assert_eq!(cat[7], (j / 3) as i64, "pack index rides in cat[7]");
+            assert_eq!(on.obs_sec[off.obs_cat.len() + j], SEC_CARD);
+        }
+        assert_eq!(members[4][0], vocab::cards().index("CARD.HAVOC") as i64);
+        // A pick-pack token has no card of its own: only its op and pack index.
+        let pad = empty_cat();
+        for (k, cat) in on.act_cat.iter().enumerate() {
+            assert_eq!(cat[0], pad[0]);
+            assert_eq!(cat[10], bundle);
+            assert_eq!(cat[7], k as i64);
+        }
+    }
+
+    #[test]
+    fn card_bundles_leaves_an_ordinary_card_reward_alone() {
+        let (mut obs, actions) = bundle_obs();
+        obs.card_reward_bundles = Some(None);
+        assert_eq!(
+            featurize_with(&obs, &actions, CARD_BUNDLES),
+            featurize_with(&obs, &actions, Features::default())
+        );
+    }
+
+    // ── card_kind (GH #977) ─────────────────────────────────────────────
+
+    const CARD_KIND: Features = Features {
+        reward_upgrade: false,
+        card_mods: false,
+        card_bundles: false,
+        card_kind: true,
+    };
+
+    /// A removal screen over a deck holding a basic, a common and a curse.
+    fn removal_obs() -> (PpoObs, Vec<ActionDesc>) {
+        let obs: PpoObs = serde_json::from_value(serde_json::json!({
+            "phase": "CardSelect",
+            "surface": "card-pick",
+            "seed": 0, "ascension": 0,
+            "deck": [["StrikeIronclad", false], ["Anger", false], ["Injury", false]],
+            "relics": [], "potions": [],
+            "map": null, "map_coord": null,
+            "total_floor": 0, "act_index": 0, "act_floor": 0,
+            "hp": 80, "max_hp": 80, "gold": 99,
+            "deck_size": 3, "num_upgraded": 0, "num_relics": 0, "num_potions": 0,
+            "card_removal_options": [["StrikeIronclad", false], ["Injury", false]],
+        }))
+        .expect("obs");
+        let actions = vec![
+            ActionDesc::RemoveDeckCard { idx: 0 },
+            ActionDesc::RemoveDeckCard { idx: 1 },
+        ];
+        (obs, actions)
+    }
+
+    #[test]
+    fn card_kind_off_leaves_both_columns_at_the_pad() {
+        let (obs, actions) = removal_obs();
+        let f = featurize_with(&obs, &actions, Features::default());
+        let pad = empty_cat();
+        for cat in f.obs_cat.iter().chain(&f.act_cat) {
+            assert_eq!(cat[CAT_CARD_TYPE], pad[CAT_CARD_TYPE]);
+            assert_eq!(cat[CAT_CARD_RARITY], pad[CAT_CARD_RARITY]);
+        }
+    }
+
+    #[test]
+    fn card_kind_stamps_every_card_token_and_nothing_else() {
+        let (obs, actions) = removal_obs();
+        let off = featurize_with(&obs, &actions, Features::default());
+        let on = featurize_with(&obs, &actions, CARD_KIND);
+        // Deck tokens: obs rows 1..=3 (row 0 is the state token).
+        let kinds: Vec<(i64, i64)> = on.obs_cat[1..4]
+            .iter()
+            .map(|c| (c[CAT_CARD_TYPE], c[CAT_CARD_RARITY]))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![(0, 0), (0, 1), (3, 6)],
+            "ATTACK/BASIC, ATTACK/COMMON, CURSE/CURSE"
+        );
+        // The removal action tokens name Strike and Injury.
+        assert_eq!(on.act_cat[1][CAT_CARD_TYPE], 3);
+        // Nothing else moves, and the state token stays at the pad.
+        for (a, b) in on
+            .obs_cat
+            .iter()
+            .chain(&on.act_cat)
+            .zip(off.obs_cat.iter().chain(&off.act_cat))
+        {
+            assert_eq!(a[..CAT_CARD_TYPE], b[..CAT_CARD_TYPE]);
+        }
+        assert_eq!(on.obs_cat[0], off.obs_cat[0]);
     }
 }

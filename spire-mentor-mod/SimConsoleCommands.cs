@@ -22,7 +22,7 @@ public class SpireMentorConsoleCmd : AbstractConsoleCmd
 {
     public override string CmdName => "spirementor";
 
-    public override string Args => "[mode off|advisor|hints|coach] [speed <0.1-4.0>] [hud on|off] [log] [waitmult <f>] [animmult <f>]";
+    public override string Args => "[mode off|advisor|hints|coach] [speed <0.1-4.0>] [hud on|off] [log] [bugreport [note...]] [waitmult <f>] [animmult <f>]";
 
     public override string Description => "Spire Mentor control: show status, switch mode, set game speed / HUD / autopilot multipliers.";
 
@@ -62,6 +62,17 @@ public class SpireMentorConsoleCmd : AbstractConsoleCmd
             case "log":
                 SimActions.ToggleLog();
                 return new CmdResult(success: true, "toggled action-log panel");
+            case "bugreport":
+                if (args.Length == 1)
+                {
+                    SimActions.ReportBug();
+                    return new CmdResult(success: true, "opened the bug report dialog");
+                }
+                // A note on the command line: send straight away (the action
+                // log says where it went).
+                SimBugReport.SendNow(string.Join(" ", args, 1, args.Length - 1));
+                return new CmdResult(success: true,
+                    SimBugReport.Site != null ? "sending a bug report (see the action log)" : "saving a bug report (see the action log)");
             case "waitmult":
                 if (!TryParseFloat(value, out float wait) || wait <= 0f)
                 {

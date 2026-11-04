@@ -355,6 +355,13 @@ public static class SimStateExtractor
             ["played_cost"] = SafePlayedCost(card),
             ["stable_cost"] = SafeStableCost(card),
             ["effective_cost"] = SafeEffectiveCost(card),
+            // The STAR half of the cost model, for the Regent star cards. A
+            // card made free this turn (Splash, Discovery, Infernal Blade, the
+            // generative potions -- `SetToFreeThisTurn`) is free in stars as
+            // well as energy, and the energy fields above cannot say so. See
+            // SafeStarCost. Null for every card without a star cost.
+            ["star_cost"] = SafeStarCost(card),
+            ["persistent_star_cost"] = SafePersistentStarCost(card),
             ["costs_x"] = card.EnergyCost.CostsX,
             ["type"] = card.Type.ToString(),
             ["rarity"] = card.Rarity.ToString(),
@@ -488,6 +495,21 @@ public static class SimStateExtractor
             {
                 ["return_if_played_round"] = returnRound,
             };
+        }
+
+        // Extra plays the instance gained this combat (Soldier's Stew's +1 on
+        // every Strike, Hidden Gem, Transfigure). A rebuilt board without it
+        // played a Stewed Strike once where the game plays it twice.
+        try
+        {
+            if (card.BaseReplayCount != 0)
+            {
+                data["base_replay_count"] = card.BaseReplayCount;
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Log($"[SimStateExtractor] Error reading replay count for {SafeCardId(card)}: {ex.Message}");
         }
 
         return data;
@@ -707,6 +729,51 @@ public static class SimStateExtractor
         catch { return null; }
     }
 
+    /// <summary>
+    /// The card's current STAR cost with its temporary costs applied and the
+    /// global hooks (VoidForm, Brilliant Scarf) excluded -- C#
+    /// <c>CurrentStarCost</c>, the star twin of <see cref="SafeBaseCost"/>.
+    ///
+    /// <c>SetToFreeThisTurn</c> is <c>SetThisTurnOrUntilPlayed(0)</c> on the
+    /// energy cost PLUS <c>SetStarCostThisTurn(0)</c>. The consumer rebuilds
+    /// the energy half from <c>base_cost</c>; without this it rebuilt a
+    /// generated Regent star card at its printed star cost, so a Silent's
+    /// Splash'd Falling Star (free in the game) needed 2 stars the Silent can
+    /// never have, the search listed it unplayable, and it ended the turn
+    /// holding a free attack.
+    ///
+    /// Null when the card has no star cost (<c>BaseStarCost</c> &lt; 0, the
+    /// default for every non-Regent card), for X star cost (Stardust), or when
+    /// the read fails. Kept identical on purpose to the headless
+    /// <c>RunSimulator.SerializeCombatCard</c> star fields.
+    /// </summary>
+    private static int? SafeStarCost(CardModel card)
+    {
+        try
+        {
+            if (card.HasStarCostX || card.BaseStarCost < 0) return null;
+            return Math.Max(0, card.CurrentStarCost);
+        }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// What <see cref="SafeStarCost"/> becomes once this turn's temporary
+    /// star costs wear off -- C# <c>GetStarCostThisCombat()</c>. Separates
+    /// <c>SetToFreeThisTurn</c> (0 now, printed cost next turn) from
+    /// <c>SetToFreeThisCombat</c> (Touch of Insanity: 0 for the whole fight).
+    /// Same null cases as <see cref="SafeStarCost"/>.
+    /// </summary>
+    private static int? SafePersistentStarCost(CardModel card)
+    {
+        try
+        {
+            if (card.HasStarCostX || card.BaseStarCost < 0) return null;
+            return Math.Max(0, card.GetStarCostThisCombat());
+        }
+        catch { return null; }
+    }
+
     private static int SafeEffectiveCost(CardModel card)
     {
         try { return card.EnergyCost.GetAmountToSpend(); }
@@ -781,6 +848,13 @@ public static class SimStateExtractor
     private static readonly System.Reflection.FieldInfo? CentennialPuzzleLatch =
         LatchField("CentennialPuzzle", "_usedThisCombat");
 
+    // First debuffing card of a combat doubles its debuffs; spent, it is the
+    // engine's UNSETTLING_LAMP_FINISHED = 2 (not 1: the engine's 1 is "a card
+    // captured, mid-play"). Rebuilt unspent, a teammate's Bash+ applied
+    // Vulnerable 6 on floor 31 (GH #989). Same entry as RunSimulator's.
+    private static readonly System.Reflection.FieldInfo? UnsettlingLampLatch =
+        LatchField("UnsettlingLamp", "_isFinishedTriggering");
+
     private static System.Reflection.FieldInfo? LatchField(string typeName, string fieldName)
     {
         try
@@ -794,21 +868,123 @@ public static class SimStateExtractor
         catch { return null; }
     }
 
+    /// <summary>`_isActivating` per relic type (null: the type has none).</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, System.Reflection.FieldInfo?>
+        ActivatingFields = new();
+
+    /// <summary>
+    /// What <c>DisplayAmount</c> returns when the relic is NOT activating,
+    /// per relic type: the count property it reads (the first one the type
+    /// has: LastingCandy's is <c>CombatRewardsSeen</c> on v0.111.0,
+    /// <c>CombatsSeen</c> on v0.107.1) and the modulus it takes, a DynamicVar
+    /// name or a constant (0: none). Transcribed from each relic's
+    /// <c>DisplayAmount</c> getter, identical on both builds otherwise.
+    /// </summary>
+    private static readonly Dictionary<string, (string[] Count, string? ModVar, int ModConst)> SettledCounters = new()
+    {
+        ["BookOfFiveRings"] = (new[] { "CardsAddedSinceLastTrigger" }, null, 0),
+        ["FakeHappyFlower"] = (new[] { "TurnsSeen" }, null, 0),
+        ["GalacticDust"] = (new[] { "StarsSpent" }, "Stars", 0),
+        ["HappyFlower"] = (new[] { "TurnsSeen" }, null, 0),
+        ["IronClub"] = (new[] { "CardsPlayed" }, "Cards", 0),
+        ["JossPaper"] = (new[] { "CardsExhausted" }, null, 0),
+        ["Kunai"] = (new[] { "AttacksPlayedThisTurn" }, "Cards", 0),
+        ["Kusarigama"] = (new[] { "AttacksPlayedThisTurn" }, "Cards", 0),
+        ["LastingCandy"] = (new[] { "CombatRewardsSeen", "CombatsSeen" }, null, 2),
+        ["LetterOpener"] = (new[] { "SkillsPlayedThisTurn" }, "Cards", 0),
+        ["Nunchaku"] = (new[] { "AttacksPlayed" }, "Cards", 0),
+        ["OrnamentalFan"] = (new[] { "AttacksPlayedThisTurn" }, "Cards", 0),
+        ["PaelsWing"] = (new[] { "RewardsSacrificed" }, "Sacrifices", 0),
+        ["PenNib"] = (new[] { "AttacksPlayed" }, null, 10),
+        ["Pendulum"] = (new[] { "TurnsSeen" }, null, 0),
+        ["PollinousCore"] = (new[] { "TurnsSeen" }, null, 0),
+        ["Shuriken"] = (new[] { "AttacksPlayedThisTurn" }, "Cards", 0),
+        ["ToyBox"] = (new[] { "CombatsSeen" }, "Combats", 0),
+        ["TuningFork"] = (new[] { "SkillsPlayed" }, null, 0),
+    };
+
+    /// <summary>
+    /// <c>DisplayAmount</c> as it reads once the relic's activation flash is
+    /// over. About twenty counter relics (Joss Paper, Pen Nib, Kunai, ...)
+    /// show their threshold instead of their count for the second
+    /// <c>DoActivateVisuals</c> holds <c>IsActivating</c>: a board sent in
+    /// that second read Joss Paper 5 where it had just reset to 0, and the
+    /// rebuilt relic drew on the next exhaust (GH #989). Read-only (the mod
+    /// does not affect gameplay): while the flag is up, the count the getter
+    /// would return without it is computed from the relic's own count
+    /// property (<see cref="SettledCounters"/>); a relic not in that table, or
+    /// one whose property cannot be read, keeps <c>DisplayAmount</c>.
+    /// </summary>
+    private static int SettledDisplayAmount(RelicModel relic)
+    {
+        var field = ActivatingFields.GetOrAdd(relic.GetType(), t =>
+        {
+            var f = t.GetField(
+                "_isActivating",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            return f?.FieldType == typeof(bool) ? f : null;
+        });
+        if (field == null || field.GetValue(relic) is not true)
+        {
+            return relic.DisplayAmount;
+        }
+        try
+        {
+            string name = relic.GetType().Name;
+            if (name == "StoneCalendar")
+            {
+                // Its getter: -1 outside combat or once the damage turn is
+                // reached, else the owner's turn number.
+                int turn = relic.Owner?.PlayerCombatState?.TurnNumber ?? -1;
+                int damageTurn = relic.DynamicVars["DamageTurn"].IntValue;
+                return turn < 0 || turn >= damageTurn ? -1 : turn;
+            }
+            if (!SettledCounters.TryGetValue(name, out var spec))
+            {
+                return relic.DisplayAmount;
+            }
+            int? count = null;
+            foreach (string prop in spec.Count)
+            {
+                var p = relic.GetType().GetProperty(
+                    prop,
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
+                    | System.Reflection.BindingFlags.Instance);
+                if (p?.GetValue(relic) is int n)
+                {
+                    count = n;
+                    break;
+                }
+            }
+            if (count == null)
+            {
+                return relic.DisplayAmount;
+            }
+            int mod = spec.ModVar != null ? relic.DynamicVars[spec.ModVar].IntValue : spec.ModConst;
+            return mod > 0 ? count.Value % mod : count.Value;
+        }
+        catch
+        {
+            return relic.DisplayAmount;
+        }
+    }
+
     private static int? SafeRelicCounter(RelicModel relic)
     {
         try
         {
-            if (relic.ShowCounter) return relic.DisplayAmount;
-            var latch = relic.Id.Entry switch
+            if (relic.ShowCounter) return SettledDisplayAmount(relic);
+            var (latch, spent) = relic.Id.Entry switch
             {
-                "VAMBRACE" => VambraceLatch,
-                "RUINED_HELMET" => RuinedHelmetLatch,
-                "PERMAFROST" => PermafrostLatch,
-                "CENTENNIAL_PUZZLE" => CentennialPuzzleLatch,
-                _ => null,
+                "VAMBRACE" => (VambraceLatch, 1),
+                "RUINED_HELMET" => (RuinedHelmetLatch, 1),
+                "PERMAFROST" => (PermafrostLatch, 1),
+                "CENTENNIAL_PUZZLE" => (CentennialPuzzleLatch, 1),
+                "UNSETTLING_LAMP" => (UnsettlingLampLatch, 2),
+                _ => (null, 0),
             };
             if (latch == null) return null;
-            return (latch.GetValue(relic) is bool b && b) ? 1 : 0;
+            return (latch.GetValue(relic) is bool b && b) ? spent : 0;
         }
         catch { return null; }
     }
@@ -903,6 +1079,18 @@ public static class SimStateExtractor
             var d = new Dictionary<string, object?>();
             foreach (var dv in vars)
                 d[dv.Name] = (int)dv.BaseValue;
+            // Skittish blocks once a turn and keeps whether it did in private
+            // data, behind a public getter; a rebuilt board let it block a
+            // second time (GH #989). Not a DynamicVar, but carried as one.
+            if (power.GetType().Name == "SkittishPower"
+                && power.GetType().GetProperty("HasGainedBlockThisTurn")?.GetValue(power) is bool gained)
+                d["HasGainedBlockThisTurn"] = gained ? 1 : 0;
+            // Surrounded's Facing (Right 0, Left 1) is a public getter, not a
+            // DynamicVar: which crab arm is behind a player. Ours can be read
+            // off the arms' intents; a teammate's cannot (GH #989).
+            if (power.GetType().Name == "SurroundedPower"
+                && power.GetType().GetProperty("Facing")?.GetValue(power) is System.Enum facing)
+                d["Facing"] = Convert.ToInt32(facing, System.Globalization.CultureInfo.InvariantCulture);
             return d.Count > 0 ? d : null;
         }
         catch { return null; }
@@ -964,6 +1152,28 @@ public static class SimStateExtractor
         catch { }
     }
 
+    // `ImitationLearningPower.PlayerTarget`, looked up once. Reflection, since
+    // the type exists only from v0.111.0 and the mod builds against both.
+    private static System.Reflection.PropertyInfo? _imitationTargetProp;
+
+    /// <summary>
+    /// The <c>net_id</c> of the player an <c>ImitationLearningPower</c> copies,
+    /// or null for every other power (and while its target is unset, when the
+    /// getter throws).
+    /// </summary>
+    private static ulong? ImitationLearningTarget(PowerModel power)
+    {
+        var type = power.GetType();
+        if (type.Name != "ImitationLearningPower")
+            return null;
+        try
+        {
+            _imitationTargetProp ??= type.GetProperty("PlayerTarget");
+            return (_imitationTargetProp?.GetValue(power) as Player)?.NetId;
+        }
+        catch { return null; }
+    }
+
     public static Dictionary<string, object?> SerializePower(PowerModel power)
     {
         try
@@ -971,7 +1181,7 @@ public static class SimStateExtractor
             string description = "";
             try { description = power.DumbHoverTip.Description; } catch { }
 
-            return new Dictionary<string, object?>
+            var d = new Dictionary<string, object?>
             {
                 ["id"] = power.Id.Entry,
                 ["name"] = power.Title.GetFormattedText(),
@@ -991,6 +1201,20 @@ public static class SimStateExtractor
                 ["type"] = power.Type.ToString(),
                 ["description"] = description,
             };
+            // Co-op: the player who applied it, as the `net_id` the board
+            // names players by. A teammate's Flanking, Knockdown and Tag Team
+            // help everyone but them (GH #1004). Absent when no player did.
+            ulong? applier = null;
+            try { applier = power.Applier?.Player?.NetId; } catch { }
+            if (applier != null)
+                d["applier"] = applier.Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            // Co-op: the teammate a v0.111.0 ImitationLearningPower copies
+            // (`PlayerTarget`, GH #992), which its `applier` (its own holder)
+            // does not name. Only that power; see `ImitationLearningTarget`.
+            ulong? playerTarget = ImitationLearningTarget(power);
+            if (playerTarget != null)
+                d["player_target"] = playerTarget.Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            return d;
         }
         catch (Exception ex)
         {

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { BENCH_SIMS, runBench } from "../BenchButton";
+import { BENCH_SIMS, runBench } from "../benchRun";
 
 describe("runBench", () => {
   it("times every preset through the API shim and reports ms per sim", async () => {

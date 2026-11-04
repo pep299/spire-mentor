@@ -746,7 +746,7 @@ pub fn eval_features_wide(state: &CombatState) -> [f32; WIDE_FEATURE_DIM] {
     out[0] = (state.player.current_hp.max(0) as f32) / max_hp;
     out[1] = state.player.max_hp as f32 / 100.0;
     out[2] = state.player.block as f32 / max_hp;
-    out[3] = f32::from(state.player.energy);
+    out[3] = state.player.energy as f32;
     out[4] = f32::from(state.player.max_energy);
     out[5] = f32::from(state.player.stars);
     out[6] = state.player.hand.len() as f32;

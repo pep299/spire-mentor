@@ -3,7 +3,6 @@ use super::prelude::*;
 
 /// Patter — block + apply `Vigor` 2 to self. Python pin:
 /// `regent.py:L221-L225`.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L221
 pub(crate) fn play_patter(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     gain_block_player(state, current_block(state));
     // C# Patter.cs OnUpgrade bumps VigorPower 2->3. Bead `sts2-rs-mwts2`.

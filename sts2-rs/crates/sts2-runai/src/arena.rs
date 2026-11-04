@@ -1057,10 +1057,7 @@ pub(crate) fn new_arena_run_manager(
     // event cursor) — 2026-06-12 anomaly triage on the M1 sweeps.
     let mut rm =
         new_run_manager_for_character_with_ascension(seed, character, ascension).with_neow_start();
-    rm.run_state.interactive_card_removal = true;
-    rm.run_state.interactive_card_upgrade = true;
-    rm.run_state.interactive_card_transform = true;
-    rm.run_state.direct_event_relic_grant = true;
+    rm.run_state.set_agent_decisions();
     // GH #252 / #447 acquisition follow-up: full-belt potion rewards
     // surface a discard-to-claim swap decision (priced by the OC table in
     // the run policy) instead of silently dropping. Env-gated OFF — the
@@ -1383,11 +1380,30 @@ fn panic_payload_string(payload: &(dyn std::any::Any + Send)) -> String {
 /// pattern). Rows come back sorted by [`ArenaRow::sort_key`].
 #[must_use]
 pub fn run_panel(cells: &[CellSpec], jobs: usize) -> Vec<(ArenaRow, Vec<AuditRecord>)> {
+    run_panel_streaming(cells, jobs, &|_| {})
+}
+
+/// [`run_panel`], calling `on_row` with each row as its cell finishes
+/// (completion order, from the worker thread), so a caller can persist
+/// progress before the whole panel ends.
+pub fn run_panel_streaming(
+    cells: &[CellSpec],
+    jobs: usize,
+    on_row: &(dyn Fn(&ArenaRow) + Sync),
+) -> Vec<(ArenaRow, Vec<AuditRecord>)> {
     let prev_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
 
-    let run_all =
-        || -> Vec<(ArenaRow, Vec<AuditRecord>)> { cells.par_iter().map(run_cell).collect() };
+    let run_all = || -> Vec<(ArenaRow, Vec<AuditRecord>)> {
+        cells
+            .par_iter()
+            .map(|cell| {
+                let result = run_cell(cell);
+                on_row(&result.0);
+                result
+            })
+            .collect()
+    };
     let mut results = if jobs == 0 {
         run_all()
     } else {
@@ -1817,8 +1833,15 @@ mod tests {
                 "bin/outcome mismatch: {row:?}"
             );
         }
-        let b = strip(run_panel(&cells, 1));
+        // The streaming variant reports every row once, as it finishes.
+        let streamed = std::sync::Mutex::new(Vec::new());
+        let b = strip(run_panel_streaming(&cells, 1, &|row| {
+            streamed.lock().unwrap().push(row.seed);
+        }));
         assert_eq!(a, b, "re-run must be identical modulo wall_ms");
+        let mut streamed = streamed.into_inner().unwrap();
+        streamed.sort_unstable();
+        assert_eq!(streamed, vec![5, 7, 11]);
     }
 
     #[test]

@@ -1,4 +1,3 @@
-// port-pin-skip — data transcribed from the C# decomp, not the Python pin.
 //! C#-faithful relic grab-bag composition.
 //!
 //! Mirrors `MegaCrit.Sts2.Core.Runs.RelicGrabBag.Populate` from the

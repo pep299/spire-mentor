@@ -71,6 +71,7 @@ pub mod projection;
 #[cfg(feature = "sweeps")]
 pub mod proxy_study;
 pub mod rollout;
+pub mod tie_probe;
 #[cfg(feature = "sweeps")]
 pub mod trajectory;
 pub mod turn_plan_teacher;

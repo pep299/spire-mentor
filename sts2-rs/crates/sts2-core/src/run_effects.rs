@@ -367,13 +367,11 @@ pub fn dispatch_should_generate_treasure(run_state: &mut RunState) -> bool {
 // shop listener that mutates inventory can't safely share a bus with
 // generic `after_room_entered` listeners that only see `RoomType`).
 //
-// The dispatch site is NOT wired in this bead — the run-loop shop
-// driver bead (room-dispatch umbrella) will call
-// [`dispatch_after_shop_inventory_generated`] from inside its
-// `_enter_shop` analogue after rolling the inventory. Until then,
-// registered listeners are dead code; this matches the established
-// "register-first, plumb-later" convention used by sibling P9.2
-// beads (see `elcvh` for an immediate precedent).
+// Dispatched from the `RunManager` shop room-enter arm right after
+// the inventory is rolled. No listener is registered today:
+// LordsParasol, its one former listener, needs the run manager's
+// Courier restock and reward drains, so `RunManager::
+// lords_parasol_purchase_everything` implements it directly.
 //
 // Bead `sts2-rs-apy0a` (Channel: shop auto-purchase / LordsParasol).
 run_hook_channel!(
@@ -599,22 +597,12 @@ pub struct CombatVictoryRunCtx {
 // this bead lands the run-side channel + listener so the
 // transform path is reachable end-to-end.
 //
-// No production firing site lands with this bead — the
-// combat-side `dispatch_after_combat_victory` site in
-// `combat_loop.rs::step_phase_continue` has no `&mut RunState`
-// in scope, and plumbing it through the MCTS hot path would
-// require a CombatState→RunState back-edge that crosses multiple
-// crates. The channel is reachable from tests + the
-// swarm-installer that registers handlers eagerly; the
-// integration test in this bead exercises the full counter +
-// transform path by driving both the combat-side decrement
-// dispatch and the run-side transform dispatch in sequence.
-//
-// Future follow-up bead will wire the production firing site
-// (likely as a deferred-action queue stamped on CombatState
-// during combat-end, drained by the run-loop driver — see
-// CLAUDE.md "Don't add features beyond what the task requires"
-// for why that plumbing is not in scope here).
+// The combat-side `dispatch_after_combat_victory` site in
+// `combat_loop.rs::step_phase_continue` has no `&mut RunState` in
+// scope, so the production firing site is the run manager's combat
+// exit (`RunManager::exit_combat_and_transition`), after the exit
+// callback has written the combat back into the run (C#
+// `Hook.AfterCombatVictory`, `CombatManager.cs:1002`).
 run_hook_channel!(
     AfterCombatVictoryRunFn,
     HOOK_AFTER_COMBAT_VICTORY_RUN,
@@ -1341,9 +1329,14 @@ run_hook_channel!(
     fn(&RunState, &mut Vec<crate::runstate::RestSiteOption>) -> EffectResult
 );
 
-/// Dispatch the `modify_rest_site_options` channel. Walks listeners in
-/// registry order, each mutating `options` in place. Empty-bus
-/// early-out leaves `options` untouched. Bead `sts2-rs-ekf4j`.
+/// Dispatch the `modify_rest_site_options` channel, each listener mutating
+/// `options` in place. Listeners run in the player's relic acquisition
+/// order: `Hook.ModifyRestSiteOptions` walks `IterateHookListeners`
+/// (Hook.cs:2093 v0.107.1, Hook.cs:2102 v0.111.0), which visits
+/// `Player.Relics` in the order obtained, so a Girya obtained before a
+/// Shovel lists Lift ahead of Dig. Listeners of unowned relics (they
+/// no-op on ownership) sort last. Empty-bus early-out leaves `options`
+/// untouched. Bead `sts2-rs-ekf4j`.
 pub fn dispatch_modify_rest_site_options(
     run_state: &RunState,
     options: &mut Vec<crate::runstate::RestSiteOption>,
@@ -1351,7 +1344,14 @@ pub fn dispatch_modify_rest_site_options(
     if is_empty_modify_rest_site_options() {
         return EffectResult::NotImplemented;
     }
-    let listeners = listeners_modify_rest_site_options();
+    let mut listeners = listeners_modify_rest_site_options();
+    listeners.sort_by_key(|(id, _)| {
+        run_state
+            .relics
+            .iter()
+            .position(|r| r == id)
+            .unwrap_or(usize::MAX)
+    });
     let mut any_resolved = false;
     for (_id, f) in listeners {
         if f(run_state, options) == EffectResult::Resolved {
@@ -1511,10 +1511,10 @@ pub fn dispatch_on_gold_gained(run_state: &mut RunState, amount: i32) -> EffectR
 // zero-gold purchase). Future consumers needing `item_kind` / `item`
 // can extend this into a Ctx struct without a behavioural change.
 //
-// The free auto-purchase path (`shop::auto_purchase_shop_inventory`,
-// LordsParasol) does NOT fire this channel — matches Python's
-// `gold_spent=0` short-circuit where MawBank's latch stays open and
-// no purchase-side listeners trigger. Bead `sts2-rs-yb6rm`.
+// The free LordsParasol buys (`shop::buy_*_free`) fire this channel
+// with `gold_spent == 0`, as C# `AfterItemPurchased(goldSpent: 0)`
+// does (`MerchantEntry.cs:92`); MawBank's `goldSpent <= 0` guard keeps
+// its latch open (`MawBank.cs:62`). Bead `sts2-rs-yb6rm`.
 run_hook_channel!(
     OnItemPurchasedRunFn,
     HOOK_ON_ITEM_PURCHASED_RUN,
@@ -1741,6 +1741,12 @@ pub struct CombatRewardsSet {
     pub room_type: RoomType,
     /// The populated rewards (see the type docs for what is listed).
     pub rewards: Vec<crate::runstate::Reward>,
+    /// The relics whose hook runs: C# fires `BeforeCombatRewardOffered` while
+    /// the set is offered, before any of its rewards is taken, so a relic the
+    /// set itself grants (an Elite's Lasting Candy) does not hear it. Empty
+    /// means every registered listener runs (each still self-gates on
+    /// ownership).
+    pub hook_relics: Vec<crate::RelicId>,
 }
 
 impl CombatRewardsSet {
@@ -1763,7 +1769,10 @@ pub fn dispatch_before_combat_reward_offered(run_state: &mut RunState, rewards: 
     {
         return;
     }
-    for (_id, f) in listeners_before_combat_reward_offered() {
+    for (id, f) in listeners_before_combat_reward_offered() {
+        if !rewards.hook_relics.is_empty() && !rewards.hook_relics.contains(&id) {
+            continue;
+        }
         let _ = f(run_state, rewards);
     }
 }

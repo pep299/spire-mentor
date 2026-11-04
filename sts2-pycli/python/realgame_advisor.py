@@ -36,7 +36,7 @@ it must never answer them.
 Usage::
 
     uv run python python/realgame_advisor.py [--host 127.0.0.1] [--port 9002]
-        [--sims 4000] [--boss-sims 16000] [--threads 1]
+        [--sims 4000] [--boss-sims 16000] [--threads 4]
         [--log-dir logs/realgame_advisor]
 """
 
@@ -57,7 +57,7 @@ from typing import Any
 import realgame_hand_select
 import runtime_paths
 from coop_coordination import apply_ally_wait
-from enemy_labels import enemy_label
+from enemy_labels import ally_label, enemy_label
 from realgame_adapter import (
     UnsupportedGameVersionError,
     character_display_name,
@@ -68,9 +68,10 @@ from realgame_adapter import (
 from realgame_advisor_mirror import AdvisorMirror
 from realgame_bridge import DEFAULT_HOST, DEFAULT_PORT, RealGameBridgeClient
 from realgame_coach import CoachGrader, GraderThread
-from realgame_control import BRIDGE_MESSAGE_TYPES, ControlPlane, StaticSite
+from realgame_control import BRIDGE_MESSAGE_TYPES, BugReportForward, ControlPlane, StaticSite
 from realgame_livetree import LiveRunTree
 from realgame_workbench_log import WorkbenchRunLogger
+from sts2_hint.calibration import calibrated_p_win
 from sts2_hint.recommender import (
     CHOOSE_SKIP_STABLE_IDX,
     CHOOSE_STABLE_IDX_BASE,
@@ -78,6 +79,7 @@ from sts2_hint.recommender import (
     POTION_STABLE_IDX_BASE,
     HintTag,
     RecommendConfig,
+    crown_engine_heir,
     tags_from_result,
 )
 
@@ -199,7 +201,10 @@ def _tag_label(tag: HintTag, state: dict[str, Any]) -> str:
         return f"choose option {i}"
     else:
         return f"action {tag.stable_idx}"
-    target = enemy_label(enemies, tag.target_index)
+    if tag.ally_index is not None:
+        target = ally_label(state.get("allies") or [], tag.ally_index)
+    else:
+        target = enemy_label(enemies, tag.target_index)
     if target is not None:
         label += f" → {target}"
     return label
@@ -236,7 +241,10 @@ def _pv_labels(pv: list[Any], state: dict[str, Any]) -> list[str]:
             label = str(hand[idx].get("name") or hand[idx].get("id") or "?")
         else:
             label = kind.replace("_", " ")
-        target = enemy_label(enemies, action.get("target_index"))
+        if action.get("ally_index") is not None:
+            target = ally_label(state.get("allies") or [], action.get("ally_index"))
+        else:
+            target = enemy_label(enemies, action.get("target_index"))
         if target is not None:
             label += f" → {target}"
         labels.append(label)
@@ -257,6 +265,8 @@ def _best_to_action(tag: HintTag, state: dict[str, Any]) -> dict[str, Any] | Non
         best: dict[str, Any] = {"action": "play", "card_index": tag.stable_idx}
         if tag.target_index is not None:
             best["target_index"] = tag.target_index
+        if tag.ally_index is not None:
+            best["ally_index"] = tag.ally_index
         return best
     if POTION_STABLE_IDX_BASE - 5 < tag.stable_idx <= POTION_STABLE_IDX_BASE:
         dense = POTION_STABLE_IDX_BASE - tag.stable_idx
@@ -265,6 +275,9 @@ def _best_to_action(tag: HintTag, state: dict[str, Any]) -> dict[str, Any] | Non
             best = {"action": "potion", "slot": non_empty[dense]["slot"]}
             if tag.target_index is not None:
                 best["target_index"] = tag.target_index
+            if tag.ally_index is not None:
+                # Thrown at that teammate (GH #1017).
+                best["ally_index"] = tag.ally_index
             return best
     return None
 
@@ -304,12 +317,14 @@ def veto_unplayable(tags: list[HintTag], state: dict[str, Any]) -> tuple[list[Hi
     Fixing the reconstruction is the real repair and stays open (issue 12).
     This is the cheap guard in front of it: whatever the mirror believes, do
     not RECOMMEND a card the game has already told us it will not play. The
-    runner-up is a legal move the search still ranked; a refusal is nothing.
+    heir is a legal move the search still ranked; a refusal is nothing.
 
     Returns:
-        ``(kept, reasons)`` -- the surviving tags, best-first with ``is_best``
-        re-stamped onto the new leader, and one human-readable string per
-        vetoed play for the advice note.
+        ``(kept, reasons)`` -- the surviving tags, best-first. When the veto
+        took the engine's pick, ``is_best`` moves to the engine's own next
+        choice (:func:`sts2_hint.recommender.crown_engine_heir`, GH #1022),
+        not to the highest win probability. Plus one human-readable string
+        per vetoed play for the advice note.
     """
     veto = wire_unplayable(state)
     if not veto:
@@ -331,8 +346,7 @@ def veto_unplayable(tags: list[HintTag], state: dict[str, Any]) -> tuple[list[Hi
         return kept, reasons
     # The search's #1 may be the card that was just vetoed, so the flag has to
     # move with the crown -- the mod reads `is_best` to label the action.
-    kept = [t._replace(is_best=(i == 0)) for i, t in enumerate(kept)]
-    return kept, reasons
+    return crown_engine_heir(kept), reasons
 
 
 def build_advice(
@@ -341,10 +355,18 @@ def build_advice(
     *,
     sims: int,
     pv: list[str] | None = None,
+    pick: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """The wire ``advice`` object (PROTOCOL.md section 5) from ranked tags."""
+    """The wire ``advice`` object (PROTOCOL.md section 5) from ranked tags.
+
+    ``pick`` is the search result's own explanation of its pick
+    (``mcts_recommend()["pick"]``, GH #1022). It rides along as
+    ``advice.pick`` only while the advice still recommends that pick: a veto
+    that moved the crown makes it describe a move nobody will play.
+    """
     if not tags:
         return {"note": "no legal actions"}
+    engine_best = next((t for t in tags if t.is_best), None)
     tags, vetoed = veto_unplayable(tags, state)
     best = tags[0]
     total_visits = sum(t.visits for t in tags) or 1
@@ -355,6 +377,7 @@ def build_advice(
                 "stable_idx": t.stable_idx,
                 "card_index": t.stable_idx if t.stable_idx >= 0 else None,
                 "target_index": t.target_index,
+                **({"ally_index": t.ally_index} if t.ally_index is not None else {}),
                 "label": _tag_label(t, state),
                 "p_win": round(t.win_prob, 4),
                 "q": round(t.q, 4),
@@ -366,6 +389,8 @@ def build_advice(
                 "bucket": t.bucket_label,
                 "is_best": t.is_best,
                 "low_confidence": t.low_confidence,
+                "in_band": t.in_band,
+                **({"pick_rank": t.pick_rank} if t.pick_rank is not None else {}),
             }
         )
     best_action = _best_to_action(best, state)
@@ -377,7 +402,10 @@ def build_advice(
         note += f" · vetoed {len(vetoed)} the game calls unplayable ({', '.join(vetoed[:3])})"
     advice: dict[str, Any] = {
         "note": note,
-        "p_win": round(best.win_prob, 4),
+        # The HUD's "est. win": the search's own number reads far too low
+        # (sts2_hint.calibration). The per-option rows keep the raw value.
+        "p_win": round(calibrated_p_win(best.win_prob), 4),
+        "p_win_raw": round(best.win_prob, 4),
         "low_confidence": best.low_confidence or best.q_saturated,
         "options": options,
     }
@@ -393,7 +421,19 @@ def build_advice(
         advice["note"] += f" · no executable form for {_tag_label(best, state)}"
     if pv:
         advice["pv"] = pv
+    if pick and engine_best is not None and best is engine_best:
+        advice["pick"] = {
+            "rule": pick.get("rule"),
+            "reason": pick.get("reason"),
+            "gap_q": _round_opt(pick.get("gap_q")),
+            "gap_z": _round_opt(pick.get("gap_z")),
+            "gap_hp": _round_opt(pick.get("gap_hp")),
+        }
     return advice
+
+
+def _round_opt(v: Any, nd: int = 4) -> float | None:
+    return None if v is None else round(float(v), nd)
 
 
 def compute_combat_advice(
@@ -503,13 +543,13 @@ def compute_combat_advice(
         )
     tags = tags_from_result(result, wire["deck"]["hand"])
     pv = _pv_labels(list(result.get("pv") or [])[:4], state)
-    advice = build_advice(tags, state, sims=sims, pv=pv)
+    advice = build_advice(tags, state, sims=sims, pv=pv, pick=result.get("pick"))
     rows = combat_rows(result, headless, advice)
     return advice, cs, call_cfg, rows
 
 
-def _row_key(d: dict[str, Any]) -> tuple[Any, Any]:
-    return (d.get("stable_idx"), d.get("target_index"))
+def _row_key(d: dict[str, Any]) -> tuple[Any, Any, Any]:
+    return (d.get("stable_idx"), d.get("target_index"), d.get("ally_index"))
 
 
 def combat_rows(
@@ -594,6 +634,20 @@ _HAND_BACK_SURFACES = {
 }
 
 
+def _trained_on_packs(policy: Any) -> bool:
+    """Whether this run-policy net reads Scroll Boxes packs (``card_bundles``).
+
+    ``RustPolicy`` carries its features as the manifest string,
+    ``OnnxPolicy`` as a parsed set; both name the schema the net was trained at.
+    """
+    from ppo import schema
+
+    features = getattr(policy, "features", "") or ""
+    if isinstance(features, str):
+        features = schema.parse_features(features)
+    return schema.CARD_BUNDLES in features
+
+
 #: Characters whose run-policy net has already been warmed this session.
 _WARMED: set[str] = set()
 
@@ -659,18 +713,17 @@ def _unranked(state: dict[str, Any], why: str) -> dict[str, Any]:
 
 
 def _build_card_bundle(state: dict[str, Any]) -> Any:
-    """Rank card bundles by how much the card-pick head likes their contents.
+    """Rank Scroll Boxes packs with the obs the engine gives the Rust agent.
 
-    There is no bundle head: the champion has never been asked "which of these
-    SETS of cards do you want". What it can answer is "which of these cards
-    would you pick", so each bundle is offered as a card-reward slate and
-    scored by its cards. That is a composition, not a trained surface -- it
-    ignores everything a bundle is actually about (synergy between the cards,
-    the fact that you take all of them) -- so the caller labels it.
+    The engine surfaces a bundle pick as a card reward whose options are each
+    pack's FIRST card, plus the whole packs in ``card_reward_bundles``
+    (``RunManager::surface_pending_bundle``; ``policy.rs::build_obs``). This
+    builds exactly that, so the live answer is the decision training saw
+    (GH #978): a champion trained with ``card_bundles`` reads every pack
+    member; any other champion scores each pack by its first card, as it was
+    trained to.
 
-    Returns a ``PpoDecision`` whose actions are the bundles: the obs is the
-    flattened card list and each bundle's action picks its FIRST card, which
-    is what makes this a heuristic rather than a ranking.
+    Returns a ``PpoDecision`` whose actions are the packs.
     """
     import realgame_ppo
 
@@ -679,21 +732,20 @@ def _build_card_bundle(state: dict[str, Any]) -> Any:
         return None
     run_state = state.get("run_state") or {}
 
-    flat: list[dict[str, Any]] = []
-    first_of: list[int] = []
+    packs: list[list[dict[str, Any]]] = []
     for bundle in bundles:
         cards = [c for c in (bundle.get("cards") or []) if isinstance(c, dict)]
         if not cards:
             return None
-        first_of.append(len(flat))
-        flat.extend(cards)
+        packs.append(cards)
 
     obs = realgame_ppo._base_obs(state, run_state)
-    obs["card_reward_option_ids"] = [realgame_ppo._card_id(c) for c in flat]
-    obs["card_reward_option_upgraded"] = [
-        bool(c.get("upgrade_level") or c.get("upgraded")) for c in flat
-    ]
-    actions = [{"action": "pick_card_reward", "idx": i} for i in first_of]
+    obs["card_reward_option_ids"] = [realgame_ppo._card_id(p[0]) for p in packs]
+    # The engine carries no upgrade state on bundle offerings
+    # (`card_reward_upgraded_flags`), so neither does this.
+    obs["card_reward_option_upgraded"] = []
+    obs["card_reward_bundles"] = [[realgame_ppo._card_id(c) for c in p] for p in packs]
+    actions = [{"action": "pick_card_reward", "idx": i} for i in range(len(packs))]
     responses = [
         {"action": "choose", "index": int(b.get("index", i))} for i, b in enumerate(bundles)
     ]
@@ -766,6 +818,8 @@ def compute_screen_advice(
         return {"note": f"no run-policy net: {error}", "hand_back": "no run-policy net is loaded"}
 
     standin_note = ""
+    # A hand-back surface whose champion WAS trained on it (GH #978).
+    trained_surface = False
     if advice_for == "card_select":
         # `_build_card_select` keys the deck-mutation surface off the screen's
         # own prompt_key first (TO_UPGRADE/TO_REMOVE/...), which the mod
@@ -775,7 +829,10 @@ def compute_screen_advice(
         decision = realgame_ppo._build_card_select(state, None)
     elif advice_for == "card_bundle":
         decision = _build_card_bundle(state)
-        standin_note = "bundles scored card-by-card; synergy is not modelled"
+        if _trained_on_packs(policy):
+            trained_surface = True
+        else:
+            standin_note = "packs scored by their first card; this net was not trained on packs"
     else:
         # Everything else goes through the driver's own builder table, so a
         # surface the PPO driver learns to handle is one the advisor can
@@ -903,7 +960,7 @@ def compute_screen_advice(
         note += " · scored as a deck pick; this copy only lasts the fight"
 
     advice = {"note": note, "options": options, "best": best}
-    if advice_for in _HAND_BACK_SURFACES:
+    if advice_for in _HAND_BACK_SURFACES and not trained_surface:
         advice["hand_back"] = _HAND_BACK_SURFACES[advice_for]
 
     if advice_for == "map_select":
@@ -1356,7 +1413,19 @@ def serve(args: argparse.Namespace) -> None:
             Path(args.workbench_dir), ppo_dir=runtime_paths.data_root() / "data" / "ppo"
         )
         logger.info("hosting the browser workbench from %s", args.workbench_dir)
-    control.start(args.control_port, allow_origins=args.control_allow_origin or (), site=site)
+    # The bundled page's Report button (realgame_control.BugReportForward):
+    # forwarded to the site the mod passes, else saved beside the logs.
+    bug_reports = (
+        BugReportForward(args.bug_report_site, Path(args.log_dir).resolve().parent / "bugreports")
+        if site is not None
+        else None
+    )
+    control.start(
+        args.control_port,
+        allow_origins=args.control_allow_origin or (),
+        site=site,
+        bug_reports=bug_reports,
+    )
 
     # Screen decisions (card reward / card select) are answered by the same
     # run-policy champion the PPO driver uses; loaded lazily per character on
@@ -1383,8 +1452,10 @@ def serve(args: argparse.Namespace) -> None:
         # simply lost -- the mod saw no answer and the HUD stayed blank.
         client = RealGameBridgeClient(host=args.host, port=args.port, timeout=args.idle_timeout)
         coach: CoachGrader | None = None
+        connected = False
         try:
             client.connect()
+            connected = True
             logger.info("connected to SpireMentor at %s:%s", args.host, args.port)
             log.write("meta", {"event": "connected", "sims": args.sims, **HONEST_SEARCH})
             control.set_client(client)
@@ -1394,6 +1465,10 @@ def serve(args: argparse.Namespace) -> None:
             )
         except (ConnectionError, TimeoutError) as e:
             logger.warning("connection lost/failed: %s; retrying in 3s", e)
+            if connected:
+                # A session dropped mid-run (not a connect that never got
+                # through): the mod's unread requests went with it.
+                wlog.note_reconnect()
             time.sleep(3)
         finally:
             if coach is not None:
@@ -1849,20 +1924,22 @@ def main(argv: list[str] | None = None) -> int:
     # 1000/4000, A9 45.2% vs 40.2%; 16x adds only +1.5pp at 4.2x the time —
     # docs/experiments/2026-10-20-combat-pro-ladder-findings.md, "Full-run
     # check"). Cost on one 2.8 GHz core: ~0.7 s per decision, ~2.3 s per boss
-    # decision.
+    # decision; `--threads` (default 4) splits that across cores.
     #
     # The advisor used to default to 8000/8000 split across up to 8
-    # root-parallel trees (2026-08-10, for latency). That made the advice
-    # depend on the player's core count, merged its trees by a different pick
-    # rule, and dropped the single-tree lost-position override; no run-level
-    # win rate was ever measured for it.
+    # root-parallel trees (2026-08-10, for latency), with no run-level win
+    # rate measured. Root-parallel merges its trees by the same pick rule but
+    # drops the single-tree lost-position override; the 2026-10-31 gate below
+    # measured that at no detectable cost for 4 trees.
     parser.add_argument("--sims", type=int, default=4000)
     parser.add_argument("--boss-sims", type=int, default=16000)
     # Root-parallel workers (sts2_rs par_search: sims split across independent
-    # trees). 1 = the run agent's single tree. More trees trade decision
-    # fidelity to the measured agent for wall-clock; only for a box too slow
-    # for the single-tree budget.
-    parser.add_argument("--threads", type=int, default=1)
+    # trees; clamped to the core count below). 4 trees of 1000 / 4000 sims
+    # played the same as the run agent's single tree on whole runs (Ironclad
+    # A10, 1000 paired seeds: 26.6% vs 26.7%, -0.10pp, 95% CI [-3.0, +2.8])
+    # at 3.6x less wall time per boss decision (0.31 s vs 1.13 s median) --
+    # docs/experiments/2026-10-31-advisor-threads-gate.md. 1 = the single tree.
+    parser.add_argument("--threads", type=int, default=4)
     parser.add_argument(
         "--log-dir",
         # Frozen exe: the CWD is the install dir (Program Files on a default
@@ -1927,6 +2004,14 @@ def main(argv: list[str] | None = None) -> int:
         "(repeatable), e.g. https://your-workbench.example.com — the browser-only "
         "workbench's live-game views (GH #709). Off by default: without it no "
         "web page can read the control plane, only the same-machine proxy.",
+    )
+    parser.add_argument(
+        "--bug-report-site",
+        default=None,
+        metavar="ORIGIN",
+        help="Workbench site whose /intake/bugreport stores bug reports: the bundled "
+        "workbench's Report button is forwarded there (the mod passes the site its "
+        "own reports go to). Unset: reports are saved under <log dir>/../bugreports.",
     )
     parser.add_argument(
         "--workbench-dir",

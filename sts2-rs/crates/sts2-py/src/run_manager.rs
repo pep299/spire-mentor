@@ -145,7 +145,7 @@ impl PyRunManager {
 #[pymethods]
 impl PyRunManager {
     #[new]
-    #[pyo3(signature = (seed = 0, character = "Ironclad", deck = None, max_hp = None, string_seed = None, ascension_level = 0, neow_start = false, interactive_card_removal = false, direct_event_relic_grant = false, interactive_card_upgrade = false, interactive_card_transform = false, interactive_potion_swap = false, act1 = "overgrowth", game_version = None))]
+    #[pyo3(signature = (seed = 0, character = "Ironclad", deck = None, max_hp = None, string_seed = None, ascension_level = 0, neow_start = false, interactive_card_removal = None, direct_event_relic_grant = None, interactive_card_upgrade = None, interactive_card_transform = None, interactive_potion_swap = false, act1 = "overgrowth", game_version = None, mode = None))]
     // A PyO3 constructor mirroring the optional-kwarg surface; the arg list
     // tracks the run's configurable knobs (seed forms, deck/hp overrides,
     // neow-start, C#-faithful UI toggles) rather than a bundled options struct.
@@ -161,14 +161,42 @@ impl PyRunManager {
         string_seed: Option<&str>,
         ascension_level: u8,
         neow_start: bool,
-        interactive_card_removal: bool,
-        direct_event_relic_grant: bool,
-        interactive_card_upgrade: bool,
-        interactive_card_transform: bool,
+        interactive_card_removal: Option<bool>,
+        direct_event_relic_grant: Option<bool>,
+        interactive_card_upgrade: Option<bool>,
+        interactive_card_transform: Option<bool>,
         interactive_potion_swap: bool,
         act1: &str,
         game_version: Option<&str>,
+        mode: Option<&str>,
     ) -> PyResult<Self> {
+        // GH #981: `mode` names the whole deck-decision bundle at once, so a
+        // host cannot turn on three flags and forget the fourth. It and the
+        // individual flags are mutually exclusive — mixing them would make
+        // "which one wins" a silent rule.
+        let bundle = [
+            ("interactive_card_removal", interactive_card_removal),
+            ("interactive_card_upgrade", interactive_card_upgrade),
+            ("interactive_card_transform", interactive_card_transform),
+            ("direct_event_relic_grant", direct_event_relic_grant),
+        ];
+        let agent_mode = match mode {
+            None => None,
+            Some(m @ ("parity" | "agent")) => {
+                if let Some((name, _)) = bundle.iter().find(|(_, v)| v.is_some()) {
+                    return Err(PyValueError::new_err(format!(
+                        "pass either mode={m:?} or {name}=…, not both: the mode \
+                         sets the whole deck-decision bundle"
+                    )));
+                }
+                Some(m == "agent")
+            }
+            Some(other) => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown mode {other:?} (expected \"parity\" or \"agent\")"
+                )))
+            }
+        };
         let cid = character_from_str(character)?;
         let game_version = crate::parse_game_version(game_version)?;
         // Bead `sts2-rs-livck`: Ironclad / Silent / Necrobinder / Regent
@@ -258,20 +286,20 @@ impl PyRunManager {
         // (Precise Scissors, …) present a player card_select instead of the
         // default front-of-deck auto-removal. The workbench sets this for
         // C#-faithful Neow; default off keeps the parity-fuzz behavior.
-        inner.run_state.interactive_card_removal = interactive_card_removal;
+        inner.run_state.interactive_card_removal = interactive_card_removal.unwrap_or(false);
         // Opt-in interactive deck upgrade: on-obtain card-upgrade relics
         // (Pomander) present a player card_select instead of the default
         // random rewards-stream auto-upgrade, matching C#
         // `Pomander.AfterObtained` → `CardSelectCmd.FromDeckForUpgrade`. The
         // workbench / `run_parity` lockstep set this; default off keeps the
         // parity-fuzz behavior. Bead `sts2-rs-1hiht`.
-        inner.run_state.interactive_card_upgrade = interactive_card_upgrade;
+        inner.run_state.interactive_card_upgrade = interactive_card_upgrade.unwrap_or(false);
         // Opt-in interactive deck transform: on-obtain card-transform relics
         // (NewLeaf) present a player card_select whose replacement is rolled
         // off `Rng.Niche` only after the pick, matching C#
         // `NewLeaf.AfterObtained` → `CardSelectCmd.FromDeckForTransformation`
         // → `CardCmd.TransformToRandom`. Bead 6ynt.4.deck-add / GH #34.
-        inner.run_state.interactive_card_transform = interactive_card_transform;
+        inner.run_state.interactive_card_transform = interactive_card_transform.unwrap_or(false);
         // Opt-in interactive full-belt potion swap: a potion reward landing
         // on a full belt surfaces a `potion_swap` discard-to-claim decision
         // instead of being silently dropped, matching C#'s TooFull reward +
@@ -280,7 +308,14 @@ impl PyRunManager {
         inner.run_state.interactive_potion_swap = interactive_potion_swap;
         // Grant Neow blessing relics directly (no extra Take relic/Skip
         // confirmation), matching C#. See `RunState::direct_event_relic_grant`.
-        inner.run_state.direct_event_relic_grant = direct_event_relic_grant;
+        inner.run_state.direct_event_relic_grant = direct_event_relic_grant.unwrap_or(false);
+        // `mode="agent"` is `RunState::set_agent_decisions` — the same one
+        // definition the arena and the workbench use. `mode="parity"` (and
+        // no mode at all) leaves the bundle off, the headless-C# behaviour
+        // the parity suite pins.
+        if agent_mode == Some(true) {
+            inner.run_state.set_agent_decisions();
+        }
         // GH #544: which of the two Act-1 models this run walks. Must be set
         // BEFORE `initialize_run_setup`, which pre-generates every act's
         // rooms off `up_front`. Defaults to `"overgrowth"` — the single Act 1
@@ -316,6 +351,21 @@ impl PyRunManager {
     #[getter]
     fn seed(&self) -> i32 {
         self.seed
+    }
+
+    /// The deck-decision bundle this run was built with (GH #981):
+    /// `"agent"` (every flag `RunState::set_agent_decisions` sets is on),
+    /// `"parity"` (all off — the headless C# runner's auto-resolution), or
+    /// `"custom"` (a hand-picked mix of the individual flags).
+    #[getter]
+    fn mode(&self) -> &'static str {
+        if self.inner.run_state.has_agent_decisions() {
+            "agent"
+        } else if self.inner.run_state.has_parity_decisions() {
+            "parity"
+        } else {
+            "custom"
+        }
     }
 
     /// The game build this run simulates, as `"v0.107.1"` / `"v0.111.0"`
@@ -471,6 +521,24 @@ impl PyRunManager {
             .map(|p| p.enchantment.python_name())
     }
 
+    /// `True` when the front queued deck-enchant pick belongs to an "up to
+    /// N" screen (Kifuda / Gnarled Hammer): the select may be confirmed with
+    /// fewer cards, then `decline_optional_deck_enchants` drops the rest.
+    #[getter]
+    fn pending_enchant_optional(&self) -> bool {
+        self.inner
+            .run_state
+            .pending_deck_enchants
+            .first()
+            .is_some_and(|p| p.optional)
+    }
+
+    /// Drop the rest of the front optional deck-enchant batch (confirming an
+    /// "up to N" screen early). Returns how many queued picks were dropped.
+    fn decline_optional_deck_enchants(&mut self) -> usize {
+        self.inner.decline_optional_deck_enchants()
+    }
+
     /// Master-deck positions eligible for the front pending interactive
     /// transform — the option pool a UI host must render, in order; the
     /// `transform_deck_card` action's `idx` is the position in THIS list
@@ -517,6 +585,20 @@ impl PyRunManager {
             .map_or(0, |g| u32::try_from(g.pick).unwrap_or(u32::MAX))
     }
 
+    /// Picks the FRONT pending card grant still REQUIRES before it may be
+    /// confirmed (C# `prefs.MinSelect`): equal to `pending_card_grants` for a
+    /// mandatory pick-N (Gorge), `0` for an optional 0..=N grid (SeaGlass),
+    /// where `grant_deck_card` at `idx == len(card_grant_options())` confirms.
+    /// `0` when no grant is open.
+    #[getter]
+    fn pending_card_grant_min(&self) -> u32 {
+        self.inner
+            .run_state
+            .pending_card_grants
+            .first()
+            .map_or(0, |g| u32::try_from(g.min_pick).unwrap_or(u32::MAX))
+    }
+
     /// `(PascalCase id, upgraded)` of the FRONT pending card grant's generated
     /// options, in C# generation order — the option pool a UI host renders and
     /// the index space `grant_deck_card`'s `idx` selects. Empty when no grant
@@ -540,6 +622,14 @@ impl PyRunManager {
     #[getter]
     fn card_offer_choose_screen(&self) -> bool {
         self.inner.card_offer_choose_screen()
+    }
+
+    /// Whether the open choose screen may be skipped:
+    /// `False` for a pick the game forces, Brain Leech's Share Knowledge grid
+    /// (C# `FromSimpleGridForRewards`, `Cancelable = false`), whose actions
+    /// then hold no `pick_card_reward` skip and no sacrifice.
+    fn card_offer_can_skip(&self) -> bool {
+        self.inner.card_offer_can_skip()
     }
 
     /// Card ids (PascalCase `Debug` form, e.g. `"Anger"`) of the
@@ -1239,7 +1329,7 @@ impl PyRunManager {
     /// class name, or `None` if `name` resolves to no known `EventId`.
     fn force_event(&mut self, name: &str) -> Option<String> {
         let id = sts2_core::EventId::from_python_name(name)?;
-        self.inner.run_state.enter_event_room(id);
+        sts2_content::events::dispatch::begin_event(&mut self.inner.run_state, id);
         Some(id.python_name().to_string())
     }
 
@@ -1383,11 +1473,18 @@ impl PyRunManager {
     /// "end_turn"}` on the `RunManager`. The clone is intended for
     /// read-only inspection and for feeding `sts2_rs.Mcts(cs, …)` to
     /// get hint recommendations that the caller then translates back
-    /// into `RunAction` dicts.
+    /// into `RunAction` dicts. Its `encounter_id` names the encounter
+    /// this fight is against (GH #1097).
+    ///
+    /// A won non-boss fight's state is not torn down: it is still returned
+    /// through the reward, map and event phases that follow, until the next
+    /// fight replaces it. Check `phase() == "combat"` for a live fight; a
+    /// lingering state's `encounter_id` is `None`.
     fn combat_state(&self) -> Option<crate::PyCombatState> {
         self.inner.combat.as_ref().map(|c| {
             let seed_u64 = u64::from(u32::from_ne_bytes(self.seed.to_ne_bytes()));
             crate::PyCombatState::from_inner(c.clone(), seed_u64)
+                .with_encounter_id(emit_rm::combat_encounter_id(&self.inner))
         })
     }
 

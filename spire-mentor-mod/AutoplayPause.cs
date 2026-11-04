@@ -3,8 +3,8 @@
 //
 // F7 used to play every screen it reached, including the ones it has no
 // policy for: the advisor's unranked first-option pick, a borrowed head's
-// ranking, the crystal sphere's blind reveals. Nothing told the player it was
-// happening. `pause_on` lists what F7 must stop on instead:
+// ranking, the crystal sphere's blind reveals (those follow a rule since
+// GH #872, CrystalSpherePick.cs). Nothing told the player it was happening. `pause_on` lists what F7 must stop on instead:
 //
 //   "unsupported"  any decision the advisor flags with `advice.hand_back`
 //                  (or the mod flags for a screen it answers itself);

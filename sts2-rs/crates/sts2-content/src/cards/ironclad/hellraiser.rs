@@ -127,6 +127,65 @@ mod tests {
         uid
     }
 
+    /// C# `Hook.AfterCardDrawn` (v0.111.0 + v0.107.1 `Hook.cs:346-361`) runs
+    /// every listener's `AfterCardDrawnEarly` before any `AfterCardDrawn`.
+    /// `HellraiserPower.AfterCardDrawnEarly` auto-plays the drawn Strike
+    /// (awaited), so by the time `Slither.AfterCardDrawn` runs the card is no
+    /// longer in hand and Slither returns on `Card.Pile.Type != PileType.Hand`
+    /// (`Slither.cs`) WITHOUT a `CombatEnergyCosts` roll. Rust used to roll
+    /// Slither for the whole drawn batch before the Hellraiser decision
+    /// (act23 Ironclad:4092 @688: Rust one read ahead). Covers the turn-start
+    /// hand draw and the card-effect draw (`draw_via_state`) paths.
+    #[test]
+    fn hellraiser_autoplayed_slither_strike_does_not_roll_combat_energy_costs() {
+        for effect_draw in [false, true] {
+            let (mut state, _enemy) = state_with_enemy_and_player_mirror(100);
+            let player_cuid = state.player.creature_uid.expect("mirror set");
+            apply_power_to_creature(&mut state, player_cuid, PowerKind::Hellraiser, 1);
+            let strike = push_strike_in_draw(&mut state);
+            state.cards[strike.get() as usize - 1]
+                .enchantments
+                .push((sts2_core::cards::EnchantmentId::Slither, 1));
+
+            let before = state.run_rng.combat_energy_costs.counter();
+            if effect_draw {
+                sts2_core::cards::draw_via_state(&mut state, 1);
+            } else {
+                state.draw_into_hand(1);
+            }
+            assert!(
+                state.player.discard.contains(&strike),
+                "Strike must be auto-played (effect_draw={effect_draw})"
+            );
+            assert_eq!(
+                state.run_rng.combat_energy_costs.counter(),
+                before,
+                "auto-played Slither Strike left hand before Slither's AfterCardDrawn: \
+                 no roll (effect_draw={effect_draw})"
+            );
+        }
+    }
+
+    /// Control for the test above: a Slither card Hellraiser does NOT
+    /// auto-play (no Strike tag) stays in hand and rolls exactly once.
+    #[test]
+    fn hellraiser_non_strike_slither_card_still_rolls_once() {
+        let (mut state, _enemy) = state_with_enemy_and_player_mirror(100);
+        let player_cuid = state.player.creature_uid.expect("mirror set");
+        apply_power_to_creature(&mut state, player_cuid, PowerKind::Hellraiser, 1);
+        let card = push_strike_in_draw(&mut state);
+        {
+            let c = &mut state.cards[card.get() as usize - 1];
+            c.tags = CardTags::NONE;
+            c.enchantments
+                .push((sts2_core::cards::EnchantmentId::Slither, 1));
+        }
+        let before = state.run_rng.combat_energy_costs.counter();
+        state.draw_into_hand(1);
+        assert!(state.player.hand.contains(&card));
+        assert_eq!(state.run_rng.combat_energy_costs.counter(), before + 1);
+    }
+
     /// Bead `sts2-rs-bsj93`, base path (no upgrade):
     /// When HellraiserPower is applied via the MIRROR creature path
     /// (`player.creature_uid` set → `apply_power_to_creature`), drawing a
@@ -486,6 +545,41 @@ mod tests {
         assert_eq!(
             state.player.energy, energy_before,
             "auto-play is FREE (C# CardCmd.AutoPlay EnergySpent=0) — energy must not drain"
+        );
+    }
+
+    /// act23 Ironclad:1006: Twin Strike downs TestSubject mid-draw. Its
+    /// `Adaptable` corpse keeps the combat open, so C# `CardCmd.AutoPlay`
+    /// passes its `IsOverOrEnding` gate, finds no hittable enemy and sends the
+    /// next drawn Strike to the discard pile WITHOUT playing it
+    /// (`CardCmd.cs:76-86`: no target roll, no damage). Rust used to leave
+    /// every Strike drawn after the kill in hand.
+    #[test]
+    fn hellraiser_discards_strike_drawn_with_only_an_adaptable_corpse() {
+        let (mut state, enemy_uid) = state_with_enemy_and_player_mirror(100);
+        apply_power_to_creature(&mut state, enemy_uid, PowerKind::Adaptable, 1);
+        state.creatures[0].current_hp = 0;
+        assert!(!sts2_core::combat_loop::combat_is_ending(&state));
+        let player_cuid = state.player.creature_uid.expect("mirror set");
+        apply_power_to_creature(&mut state, player_cuid, PowerKind::Hellraiser, 1);
+        let strike_uid = push_strike_in_draw(&mut state);
+        let targets_before = state.run_rng.combat_targets.counter();
+
+        state.draw_into_hand(1);
+
+        assert!(
+            !state.player.hand.contains(&strike_uid),
+            "Strike left in hand"
+        );
+        assert!(
+            state.player.discard.contains(&strike_uid),
+            "Strike not discarded"
+        );
+        assert_eq!(state.creatures[0].current_hp, 0);
+        assert_eq!(
+            state.run_rng.combat_targets.counter(),
+            targets_before,
+            "NextItem over no hittable enemy reads no RNG"
         );
     }
 }

@@ -249,13 +249,26 @@ internal sealed class SimCoachChip
         });
     }
 
+    /// <summary>Height of the chips on screen (0 when none or hidden), so
+    /// SimHud can keep room for them under the advice panel. Main thread.</summary>
+    public float StackHeight()
+    {
+        if (_stack == null || !GodotObject.IsInstanceValid(_stack) ||
+            !_stack.IsVisibleInTree() || _stack.GetChildCount() == 0)
+        {
+            return 0f;
+        }
+        return _stack.GetCombinedMinimumSize().Y;
+    }
+
     private void RefreshVisibility()
     {
         Guard(() =>
         {
             if (_layer != null && GodotObject.IsInstanceValid(_layer))
             {
-                _layer.Visible = SpireMentorModConfig.ShowHud && SimRuntime.Mode == SimMode.Advisor;
+                _layer.Visible = SpireMentorModConfig.ShowHud && SimRuntime.Mode == SimMode.Advisor &&
+                                 !SimUiHide.Hidden;
             }
         });
     }

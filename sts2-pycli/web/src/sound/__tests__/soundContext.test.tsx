@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, act } from "@testing-library/react";
-import { SoundProvider, useSound } from "../SoundContext";
+import { SoundProvider } from "../SoundContext";
+import { useSound } from "../useSound";
 import { SoundPlayer } from "../player";
 import { EffectsProvider } from "../../effects/EffectsContext";
 import * as sfxMap from "../sfxMap";

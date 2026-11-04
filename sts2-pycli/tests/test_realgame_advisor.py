@@ -230,12 +230,13 @@ class TestBuildCardBundle:
         ],
     }
 
-    def test_one_action_per_bundle_pointing_at_its_first_card(self) -> None:
+    def test_the_obs_is_the_engines_bundle_shape(self) -> None:
+        # GH #978: the engine hands the Rust agent (and training) one option
+        # per pack -- its FIRST card -- plus the packs themselves. The live
+        # lane must build that same obs, or the champion is asked a question
+        # it never trained on (it used to get a flattened 6-card slate).
         decision = ra._build_card_bundle(self._BUNDLES)
         assert decision is not None
-        # Bundle 1's cards are flattened after bundle 0's single card, so its
-        # action must index 1, not 0 -- getting this wrong scores every bundle
-        # by the first bundle's contents.
         assert decision.actions == [
             {"action": "pick_card_reward", "idx": 0},
             {"action": "pick_card_reward", "idx": 1},
@@ -245,13 +246,23 @@ class TestBuildCardBundle:
             {"action": "choose", "index": 1},
         ]
         assert decision.labels == ["Strike", "Bash + Defend"]
-        assert decision.obs["card_reward_option_ids"] == [
-            "STRIKE_IRONCLAD",
-            "BASH",
-            "DEFEND_IRONCLAD",
+        assert decision.obs["card_reward_option_ids"] == ["STRIKE_IRONCLAD", "BASH"]
+        assert decision.obs["card_reward_bundles"] == [
+            ["STRIKE_IRONCLAD"],
+            ["BASH", "DEFEND_IRONCLAD"],
         ]
-        # Index-aligned with the FLATTENED ids, not with the bundles.
-        assert decision.obs["card_reward_option_upgraded"] == [False, False, False]
+        # Bundle offerings carry no upgrade state in the engine.
+        assert decision.obs["card_reward_option_upgraded"] == []
+
+    def test_only_a_pack_trained_net_drops_the_hand_back(self) -> None:
+        class _Policy:
+            def __init__(self, features: object) -> None:
+                self.features = features
+
+        assert ra._trained_on_packs(_Policy("card_mods,card_bundles"))
+        assert ra._trained_on_packs(_Policy(frozenset({"card_bundles"})))
+        assert not ra._trained_on_packs(_Policy("card_mods,reward_upgrade"))
+        assert not ra._trained_on_packs(_Policy(""))
 
     def test_empty_or_cardless_bundles_return_none(self) -> None:
         assert ra._build_card_bundle({**self._BUNDLES, "options": []}) is None
@@ -695,7 +706,7 @@ class TestRunAgentParity:
         monkeypatch.setattr(ra, "serve", lambda args: seen.setdefault("args", args))
         ra.main([])
         args = seen["args"]
-        assert (args.sims, args.boss_sims, args.threads) == (4000, 16000, 1)
+        assert (args.sims, args.boss_sims, args.threads) == (4000, 16000, 4)
 
     @staticmethod
     def _boss(run_state: dict[str, Any], act: int = 3) -> dict[str, Any]:

@@ -2,7 +2,6 @@
 use super::prelude::*;
 
 /// GammaBlast — damage + apply 2 Weak + 2 Vulnerable.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L348
 pub(crate) fn play_gamma_blast(
     state: &mut CombatState,
     target: Option<CreatureUid>,

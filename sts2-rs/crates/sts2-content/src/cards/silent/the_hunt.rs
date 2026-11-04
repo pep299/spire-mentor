@@ -24,10 +24,12 @@ use super::prelude::*;
 /// `ShouldCreatureBeRemovedFromCombatAfterDeath`, a distinct method), so
 /// they do not block the fatal trigger.
 ///
-/// The 3-card `AddExtraReward` requires P9 run-side reward routing
-/// (`combatRoom.AddExtraReward` / `CardReward`), which has no surface in
-/// `CombatState` yet — see deferral below. Bead `sts2-rs-mtjox` (was
-/// `sts2-rs-oac`: card was misclassified as hand-search).
+/// The 3-card `AddExtraReward` is granted run-side: `CombatState` has no
+/// reward surface, so the [`PowerKind::TheHunt`] stack (one per Fatal kill)
+/// is the record, and `RunManager::populate_fixed_extra_gold_rewards` rolls
+/// one extra card reward per stack when the room's rewards are populated.
+/// Bead `sts2-rs-mtjox` (was `sts2-rs-oac`: card was misclassified as
+/// hand-search).
 pub(crate) fn play_the_hunt(state: &mut CombatState, target: Option<CreatureUid>) -> EffectResult {
     let t = target.expect("TheHunt: Enemy-targeted");
 
@@ -43,13 +45,9 @@ pub(crate) fn play_the_hunt(state: &mut CombatState, target: Option<CreatureUid>
         sts2_core::card_effects::deal_damage_player_to_enemy_full(state, t, base).was_target_killed;
 
     if should_trigger_fatal && killed {
-        // DEFERRED (sts2-rs-mtjox / P9 reward routing): C# also calls
-        // `combatRoom.AddExtraReward(owner, new CardReward(..., 3, owner))`
-        // to grant a 3-card pick. `CombatState` has no run-side reward
-        // surface (`AddExtraReward`/`CardReward` live on `CombatRoom`/
-        // run-state, outside the combat engine), so the reward is not
-        // wired here — only the power is stacked. Re-wire once P9 exposes
-        // extra-reward routing.
+        // C# also calls `combatRoom.AddExtraReward(owner, new CardReward(...,
+        // 3, owner))` (TheHunt.cs:47). The power stack stands in for it: the
+        // run manager grants one extra card reward per stack at room end.
         apply_power_to_player(state, PowerKind::TheHunt, 1);
     }
     EffectResult::Resolved

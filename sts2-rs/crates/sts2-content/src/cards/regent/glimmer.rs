@@ -6,31 +6,26 @@ use super::prelude::*;
 /// plumbing landed by bead `sts2-rs-yc2d`; the resolver is the
 /// `PutBack` arm of [`sts2_core::apply`]'s `ResolveChoice` dispatch
 /// (which already moves the chosen `Hand`-pile uid to top-of-draw).
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L358
 pub(crate) fn play_glimmer(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     // C# Glimmer.cs OnUpgrade bumps Cards 3->4 (draws CardsVar; PutBack
     // stays 1). Bead `sts2-rs-mnnnf`.
     let draws = if current_card_upgraded(state) { 4 } else { 3 };
     let _ = sts2_core::cards::draw_via_state(state, draws);
-    if state.player.hand.is_empty() {
+    // C# Glimmer.OnPlay awaits the whole `CardPileCmd.Draw` (including a
+    // Stratagem `AfterShuffle` FromCombatPile select) before
+    // `CardSelectCmd.FromHand`. A suspended Rust draw must defer the put-back
+    // to the draw's resume, or it overwrites the Stratagem select and offers
+    // the partial hand (Regent-3002 act2). Mirrors `play_thinking_ahead`.
+    if let Some(pdr) = state.pending_draw_resume.as_mut() {
+        pdr.then_put_back_from_hand = true;
         return EffectResult::Resolved;
     }
-    let options: Vec<ChoiceOption> = state
-        .player
-        .hand
-        .iter()
-        .map(|uid| {
-            let idx = uid.0.get() as usize - 1;
-            let card = &state.cards[idx];
-            ChoiceOption {
-                card_id: card.card_id,
-                upgraded: card.upgraded,
-                card_uid: Some(*uid),
-                source_pile: Some(sts2_core::cards::PileKind::Hand),
-            }
-        })
-        .collect();
-    state.request_card_choice(ChoiceKind::PutBack, options, 1, 1, false);
+    // `CardSelectCmd.FromHand` returns nothing once combat is ending and
+    // takes a hand of <= 1 card without asking (CardSelectCmd.cs:699,713).
+    if state.player.hand.is_empty() || sts2_core::combat_loop::combat_is_ending(state) {
+        return EffectResult::Resolved;
+    }
+    state.open_put_back_from_hand();
     EffectResult::Resolved
 }
 

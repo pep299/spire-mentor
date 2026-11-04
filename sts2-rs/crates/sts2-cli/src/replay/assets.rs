@@ -135,26 +135,67 @@ fn resolve(path: PathBuf) -> Option<PathBuf> {
 /// drive letter rather than `/` — so the naive format yielded
 /// `file://\\?\C:\…`, whose authority is `\\?\C:\…` and whose path is empty.
 /// The canonical form is `file:///C:/…`.
+///
+/// The path is then percent-encoded (GH #437): a wiki root under a directory
+/// with a space (`C:\Program Files\…`, a user dir like `John Doe`), a `#` or
+/// a `?` otherwise yields a URL the browser cuts short or reads as a fragment
+/// or query, and the image silently fails like the cases above.
 #[must_use]
 pub fn file_url(path: &Path) -> String {
     let abs = path.canonicalize().unwrap_or_else(|_| {
         std::env::current_dir().map_or_else(|_| path.to_path_buf(), |cwd| cwd.join(path))
     });
-    let disp = abs.display().to_string();
-    // `\\?\UNC\server\share` is the verbatim spelling of `\\server\share`; it
-    // maps back onto the `//server/share` URL path, so it keeps two slashes
-    // where the plain `\\?\C:\…` form keeps none.
-    let stripped = disp.strip_prefix(r"\\?\UNC\").map_or_else(
-        || disp.strip_prefix(r"\\?\").unwrap_or(&disp).to_string(),
-        |unc| format!("//{unc}"),
-    );
-    let slashed = stripped.replace('\\', "/");
+    let slashed = percent_encode_path(&url_path_bytes(&abs));
     if slashed.starts_with('/') {
         format!("file://{slashed}")
     } else {
         // Drive-rooted (`C:/…`): the URL's empty authority needs its own slash.
         format!("file:///{slashed}")
     }
+}
+
+/// The bytes of an absolute path as a `/`-separated URL path, before
+/// percent-encoding.
+///
+/// Unix: the path's own bytes, unchanged. A path need not be UTF-8 there, and
+/// `display()` would turn each stray byte into U+FFFD (`%EF%BF%BD`), a URL to
+/// a file that does not exist; a backslash is an ordinary filename byte and
+/// stays one (`%5C`).
+#[cfg(unix)]
+fn url_path_bytes(abs: &Path) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt as _;
+    abs.as_os_str().as_bytes().to_vec()
+}
+
+/// Windows: strip the extended-length prefix and turn separators into `/`.
+/// `\\?\UNC\server\share` is the verbatim spelling of `\\server\share`; it
+/// maps back onto the `//server/share` URL path, so it keeps two slashes where
+/// the plain `\\?\C:\…` form keeps none.
+#[cfg(not(unix))]
+fn url_path_bytes(abs: &Path) -> Vec<u8> {
+    let disp = abs.display().to_string();
+    let stripped = disp.strip_prefix(r"\\?\UNC\").map_or_else(
+        || disp.strip_prefix(r"\\?\").unwrap_or(&disp).to_string(),
+        |unc| format!("//{unc}"),
+    );
+    stripped.replace('\\', "/").into_bytes()
+}
+
+/// Percent-encode a `/`-separated path for a URL: every byte except RFC 3986
+/// unreserved characters, `/` and `:` (the drive letter's colon) becomes
+/// `%XX`. Over-encoding a sub-delimiter is harmless; a `file://` path is
+/// percent-decoded back to the filesystem path either way.
+fn percent_encode_path(path: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(path.len());
+    for &b in path {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~' | b'/' | b':') {
+            out.push(char::from(b));
+        } else {
+            let _ = write!(out, "%{b:02X}");
+        }
+    }
+    out
 }
 
 fn pascal_to_snake(s: &str) -> String {
@@ -229,6 +270,38 @@ mod tests {
                 "expected a drive-rooted URL: {url}"
             );
         }
+    }
+
+    #[test]
+    fn file_url_percent_encodes_spaces_and_url_delimiters() {
+        // GH #437: a raw space, `#` or `?` makes the browser cut the path
+        // short (or read the rest as a fragment / query), so the art fails.
+        let url = file_url(Path::new("/Program Files/a#b?c/d%e/caf\u{e9}.png"));
+        assert_loadable_file_url(&url);
+        assert!(
+            url.ends_with("/Program%20Files/a%23b%3Fc/d%25e/caf%C3%A9.png"),
+            "not percent-encoded: {url}"
+        );
+        assert!(!url.contains(' '), "raw space in URL: {url}");
+    }
+
+    #[test]
+    fn percent_encode_path_keeps_drive_colon_and_separators() {
+        assert_eq!(percent_encode_path(b"C:/x y/z.png"), "C:/x%20y/z.png");
+        assert_eq!(percent_encode_path(b"/a-b_c.d~e/F9"), "/a-b_c.d~e/F9");
+    }
+
+    /// A Unix path need not be UTF-8: its raw bytes are encoded, not the
+    /// U+FFFD that `display()` substitutes, and a backslash in a file name is
+    /// a byte like any other rather than a separator.
+    #[cfg(unix)]
+    #[test]
+    fn file_url_encodes_raw_unix_path_bytes() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt as _;
+        let url = file_url(Path::new(OsStr::from_bytes(b"/home/jos\xe9/a\\b.png")));
+        assert_loadable_file_url(&url);
+        assert_eq!(url, "file:///home/jos%E9/a%5Cb.png");
     }
 
     #[test]

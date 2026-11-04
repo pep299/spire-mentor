@@ -2,7 +2,6 @@
 use super::prelude::*;
 
 /// SpectrumShift — apply 1 SpectrumShift to self.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L535
 pub(crate) fn play_spectrum_shift(
     state: &mut CombatState,
     _t: Option<CreatureUid>,

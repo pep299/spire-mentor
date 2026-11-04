@@ -403,7 +403,12 @@ internal static class SimChoiceCapture
             Report(r, i);
             return;
         }
-        if (pick == null && final)
+        // A skip needs the screen actually CLOSED, not just gone from view: the
+        // overlay stack also hides a live screen (AfterOverlayHidden) when
+        // something is pushed over it, and in co-op that happened when a
+        // teammate picked their reward -- the unchanged deck then graded as
+        // "you skipped" while the player was still choosing.
+        if (pick == null && final && ScreenClosed(r.Screen))
         {
             Report(r, null);
             return;
@@ -507,6 +512,17 @@ internal static class SimChoiceCapture
             return true;
         }
         return screen is CanvasItem ci && !ci.IsVisibleInTree();
+    }
+
+    /// <summary>Freed or leaving the tree -- a real close. Unlike
+    /// <see cref="ScreenGone"/>, a hidden screen is not closed.</summary>
+    private static bool ScreenClosed(GodotObject? screen)
+    {
+        if (screen == null || !GodotObject.IsInstanceValid(screen))
+        {
+            return true;
+        }
+        return screen is Node node && (!node.IsInsideTree() || node.IsQueuedForDeletion());
     }
 
     private static List<string> DeckIds(Player me)

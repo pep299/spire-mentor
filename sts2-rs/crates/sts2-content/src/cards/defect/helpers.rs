@@ -151,18 +151,21 @@ pub(crate) fn current_card_energy_spent(state: &CombatState) -> i32 {
     sts2_core::card_effects::resolving_card_x_value(state)
 }
 
-/// Deal `base` damage to every alive enemy.
+/// Deal `base` damage to every alive enemy as one AoE volley.
+///
+/// C# `CreatureCmd.Damage` modifies every target's damage up front and kills
+/// only after the loop (`CreatureCmd.cs:134-151`, `:285`), so a ShrinkerBeetle
+/// dying to the first hit does not lift the player's Shrink for the rest of the
+/// volley (Defect full seed 5566: Hyperbeam over ShrinkerBeetle + Wurm). Same
+/// shared helper the other characters' AoE cards use.
 pub(crate) fn deal_damage_player_to_all(state: &mut CombatState, base: i32) {
-    let uids: Vec<CreatureUid> = state.enemy_uids.iter().copied().collect();
-    for uid in uids {
-        let alive = state
-            .creatures
-            .iter()
-            .any(|c| c.id == uid.0 && c.current_hp > 0);
-        if alive {
-            let _ = deal_damage_player_to_enemy(state, uid, base);
-        }
-    }
+    let card = sts2_core::card_effects::originating_card_id(state);
+    let _ = sts2_core::card_effects::deal_damage_to_all_alive_enemies(
+        state,
+        base,
+        sts2_core::hooks::ValueProps::MOVE,
+        card,
+    );
 }
 
 /// The Defect 10-card starter deck: 4×StrikeDefect, 4×DefendDefect,

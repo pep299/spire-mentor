@@ -164,6 +164,13 @@ public static class SimMp
     /// in the co-op lobby (SimCoopDummy).</summary>
     public static string? CharacterOverride => CmdlineValue("spire-mentor-character");
 
+    /// <summary><c>--spire-mentor-coop-players N</c>: how many players a
+    /// hands-free host waits for in the co-op lobby before it embarks
+    /// (SimCoopDummy, GH #1017). 2–4, the size of the game's ENet lobby
+    /// (NMultiplayerHostSubmenu.StartHost); default 2.</summary>
+    public static int CoopPlayers =>
+        int.TryParse(CmdlineValue("spire-mentor-coop-players"), out int n) ? Math.Clamp(n, 2, 4) : 2;
+
     /// <summary>The game's own <c>--fastmp</c> dev launch (host / join a
     /// local co-op lobby without Steam).</summary>
     public static bool FastMpLaunch => HasCmdlineArg("fastmp");

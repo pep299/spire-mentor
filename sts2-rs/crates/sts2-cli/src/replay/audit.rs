@@ -122,7 +122,7 @@ const BLOCK_PAYOFF_POWERS: &[PowerKind] = &[
 /// bead spec: a full starting hand at base energy that decides to
 /// end-turn is unambiguously bad (couldn't be a single-card-can't-pay
 /// tail).
-const HIGH_ENERGY_THRESHOLD: i8 = 3;
+const HIGH_ENERGY_THRESHOLD: i32 = 3;
 
 /// Strike base damage for the `StrikeWhenBashAffordable` overkill
 /// guard. 6 = unupgraded; 9 = upgraded. Matches the Python pin for
@@ -205,6 +205,7 @@ pub fn audit_fight(record: &FightRecord) -> Vec<RedFlag> {
             continue;
         };
         match action {
+            Action::PlayCardAtAlly { .. } => play_card_decisions += 1,
             Action::PlayCard { hand_index, target } => {
                 play_card_decisions += 1;
                 if i == last_idx && !record.final_won && killed_self(dec, record) {
@@ -386,7 +387,7 @@ fn is_affordable_playable(card: &CardInHand, snap: &StateSnapshot) -> bool {
     if card.cost == -1 {
         return snap.player_energy >= 0;
     }
-    i32::from(card.cost) <= i32::from(snap.player_energy)
+    i32::from(card.cost) <= snap.player_energy
 }
 
 fn describe_affordable_hand(snap: &StateSnapshot) -> String {
@@ -634,7 +635,7 @@ fn detect_strike_when_bash(
         .hand
         .iter()
         .find(|c| c.card_id == CardId::Bash && is_affordable_playable(c, snap))?;
-    let energy_after_bash = i32::from(snap.player_energy) - i32::from(bash.cost.max(0));
+    let energy_after_bash = snap.player_energy - i32::from(bash.cost.max(0));
     if energy_after_bash < 0 {
         return None;
     }

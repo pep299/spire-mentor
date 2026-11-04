@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { arrowGeometry, SEGMENT_COUNT, DESIGN_HEIGHT } from "../TargetingArrow";
+import { arrowGeometry, SEGMENT_COUNT, DESIGN_HEIGHT } from "../arrowGeometry";
 
 /** A card at the bottom-centre of a 1080-tall board, aiming up-right at an
  *  enemy — the ordinary case, and the one the game's constants are tuned for. */

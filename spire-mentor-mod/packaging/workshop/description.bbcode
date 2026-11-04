@@ -25,22 +25,27 @@ It has two styles, switched with the toolbar's [b]Hints / Coach[/b] button:
 [*][b]F6[/b] let the AI take just this one decision
 [*][b]F7[/b] let the AI keep playing until you press F7 again. It pauses and hands a decision back to you when it has no real policy for it (F7 resumes).
 [*][b]F4[/b] show / hide the HUD
-[*][b]F3[/b] action log: what was played, and what was advised at the time
+[*][b]Ctrl+L[/b] action log: what was played, and what was advised at the time
+[*][b]Ctrl+H[/b] hide every panel down to the toolbar pill for a quick look (again, or click the pill, to bring them back)
 [*][b]F9 / F10[/b] game speed down / up
 [*][b]Ctrl+Z[/b] undo to the start of this combat turn
 [*][b]Ctrl+Shift+Z[/b] rewind to the start of this room
 [*][b]Ctrl+Shift+C[/b] copy this position, to paste into the workbench
+[*][b]Ctrl+Shift+B[/b] report a bug (see below)
 [/list]
-The [b]Spire Mentor[/b] strip in the top-left does the same with the mouse: the coach and AI controls, game speed, and the [b]Rewind[/b], [b]Panels[/b] and [b]Workbench[/b] menus.
+The [b]Spire Mentor[/b] strip in the top-left (drag it by its ⠿ grip) does the same with the mouse: the coach and AI controls, game speed, and the [b]Rewind[/b], [b]Panels[/b] and [b]Workbench[/b] menus.
 
 Settings: [b]Panels → Settings[/b] on the toolbar (works mid-run), or Main menu → Options → Mod Configuration → SpireMentor.
+
+[h2]Co-op[/h2]
+The coach also works in co-op runs, as host or as a client, and your teammates do not need the mod. It advises you only, but its combat search sees the whole party: your teammates' cards, block, powers and orbs, and what their cards do to you. Undo and rewind are off in co-op, since they would roll back everyone's game.
 
 [h2]The workbench[/h2]
 The toolbar's [b]Workbench → Open workbench[/b] opens a page in your browser that follows your run as you play: every decision with what the AI advised at the time, regret reviews and search trees for any past step, the run tree (click a save point to rewind the real game), live search over the board, replays and a combat sandbox. [b]Workbench → Copy state[/b] (or Ctrl+Shift+C) puts the current position on the clipboard; paste it into the workbench's [b]Import state[/b] to try other lines. It is served by the coach on [i]127.0.0.1:8079[/i] and runs entirely on your machine.
 
 [h2]What it does on your machine[/h2]
 [list]
-[*]When the coach is on, the mod starts the bundled [b]SimAdvisor.exe[/b] in the background and talks to it over a local connection ([i]127.0.0.1:9002[/i]). Nothing leaves your computer. The exe is not code-signed, so Windows SmartScreen may ask about it the first time.
+[*]When the coach is on, the mod starts the bundled [b]SimAdvisor.exe[/b] in the background and talks to it over a local connection ([i]127.0.0.1:9002[/i]). Nothing leaves your computer unless you send a bug report. The exe is not code-signed, so Windows SmartScreen may ask about it the first time.
 [*]The first start takes a few seconds while the advisor loads its networks.
 [*][b]Autopilot mode[/b] (off by default) lets an AI play whole runs on its own. It turns tutorials off and makes every character selectable on your [b]modded[/b] profile. The game keeps modded progress separate from your normal save, so your unmodded profile is never touched. Advisor mode and F6/F7 never change your save.
 [/list]
@@ -53,6 +58,10 @@ Logs: [i]%LOCALAPPDATA%\SpireMentor\[/i]
 How the AI works, how it was trained, benchmarks and screenshots: [url=https://tfriedel.github.io/spire-mentor/index.html]tfriedel.github.io/spire-mentor[/url]
 
 [h2]Source and license[/h2]
-Open source under the MIT license: [url=https://github.com/tfriedel/spire-mentor]github.com/tfriedel/spire-mentor[/url]. Bug reports go there; please attach [i]%APPDATA%\SlayTheSpire2\logs\godot.log[/i].
+Open source under the MIT license: [url=https://github.com/tfriedel/spire-mentor]github.com/tfriedel/spire-mentor[/url].
+
+[h2]Reporting a bug[/h2]
+Press [b]Ctrl+Shift+B[/b] (or [b]Panels → Report a bug[/b]) the moment something goes wrong, say what happened in one line, and press [b]Send report[/b]. The report carries the position you were in, the game's save at the start of the room, the coach's log of the run and the last lines of the mod, game and coach logs (your Windows user name is removed from file paths), so the bug can be replayed exactly. Nothing is sent until you press Send. You get a link on your clipboard; paste it into a comment here or a GitHub issue. [b]Save to file only[/b] writes the same report to [i]%LOCALAPPDATA%\SpireMentor\bugreports\[/i] and sends nothing. The workbench's [b]🐞 Report[/b] button does the same from the browser.
 
 Spire Mentor is an unofficial fan project, not affiliated with or endorsed by Mega Crit. Slay the Spire 2 and the art and sound shown in the workbench are © Mega Crit.
+

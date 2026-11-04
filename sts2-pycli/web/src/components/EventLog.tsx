@@ -1,6 +1,8 @@
 import type { TimelineEntry } from "../api";
 import { hasReadableRow } from "../combatlog";
-import { DetailToggle, StepEvents, TurnHeader, turnChips, useDetailMode } from "./turnLedger";
+import { endedSelection } from "../textSelection";
+import { DetailToggle, StepEvents, TurnHeader } from "./turnLedger";
+import { turnChips, useDetailMode } from "./turnLedgerState";
 
 /**
  * The loaded-run history: one clickable row per recorded decision.
@@ -84,7 +86,7 @@ export default function EventLog({ entries, current, onPick }: {
             {showTurn && (
               <TurnHeader turn={e.turn as number} chips={chipsByStart.get(i) ?? []} />
             )}
-            <div className="mono" onClick={() => onPick(e.idx)}
+            <div className="mono" onClick={(ev) => { if (!endedSelection(ev.currentTarget)) onPick(e.idx); }}
               style={{ display: "flex", gap: 7, fontSize: 11.5, lineHeight: 1.65, cursor: "pointer",
                 padding: "1px 4px", borderRadius: 4,
                 background: isCurrent ? "var(--accent-weak, var(--hp-track))" : "transparent",

@@ -669,6 +669,52 @@ fn crush_under_prunes_strength_netted_to_zero() {
     assert_eq!(enemy_has_power(&state, b, PowerKind::Strength), Some(1));
 }
 
+/// CrushUnder debuffs only the PRE-attack enemy snapshot (Regent-3001 act3
+/// parity). C# `CrushUnder.OnPlay` captures `HittableEnemies` (a `ToList()`
+/// copy) before `DamageCmd.Attack`; the Axebot that `StockPower.AfterDeath`
+/// spawns mid-attack is not in it, so the replacement carries only its
+/// `Stock 1` — no CrushUnder, no -Strength. Rust re-read `enemy_uids` after
+/// the damage and debuffed the replacement.
+#[test]
+fn crush_under_skips_enemy_spawned_by_stock_mid_attack() {
+    install_pool();
+    crate::cards::dispatch::ensure_installed();
+    // `push_play_card(.., 3, ..)` hits for 3: the Axebot at 3 HP dies.
+    let (mut state, a, b) = fresh_state_with_two_enemies(3, 30);
+    if let Some(c) = state.creatures.iter_mut().find(|c| c.id == a.0) {
+        c.species = Some(MonsterKind::Axebot);
+        c.monster_id = MonsterId("Axebot");
+    }
+    apply_power_to_enemy(&mut state, a, PowerKind::Stock, 2);
+    let _ = push_play_card(&mut state, CardId::CrushUnder, 3, 0);
+    let _ = dispatch(&mut state, CardId::CrushUnder, None);
+
+    let spawned: Vec<CreatureUid> = state
+        .enemy_uids
+        .iter()
+        .copied()
+        .filter(|u| *u != a && *u != b)
+        .filter(|u| {
+            state
+                .creatures
+                .iter()
+                .any(|c| c.id == u.0 && c.current_hp > 0)
+        })
+        .collect();
+    assert_eq!(spawned.len(), 1, "Stock respawned exactly one Axebot");
+    let new_bot = spawned[0];
+    assert_eq!(enemy_has_power(&state, new_bot, PowerKind::Stock), Some(1));
+    assert_eq!(
+        enemy_has_power(&state, new_bot, PowerKind::CrushUnder),
+        None,
+        "the mid-attack spawn is not in C#'s HittableEnemies snapshot"
+    );
+    assert_eq!(enemy_has_power(&state, new_bot, PowerKind::Strength), None);
+    // The surviving sibling still takes the full debuff package.
+    assert_eq!(enemy_has_power(&state, b, PowerKind::CrushUnder), Some(1));
+    assert_eq!(enemy_has_power(&state, b, PowerKind::Strength), Some(-1));
+}
+
 /// MonarchsGaze powered-attack StrengthDown vs Artifact (bead
 /// `sts2-rs-hhjfb`, parity fuzz Regent seed 136 / CHOMPER): the player's
 /// `MonarchsGazePower.AfterDamageGiven` applies a `MonarchsGazeStrengthDown`
@@ -1101,6 +1147,9 @@ fn photon_cut_damages_draws_and_opens_putback_choice() {
     let p2 = push_play_card(&mut state, CardId::Venerate, 0, 0);
     state.player.play.clear();
     state.player.draw.extend([p1, p2]);
+    // A second hand card, so the put-back is a real choice (a lone card goes
+    // back without one, CardSelectCmd.cs:713).
+    let _ = push_hand_card(&mut state, CardId::StrikeRegent);
     let _ = push_play_card(&mut state, CardId::PhotonCut, 5, 0);
     let hp0 = state.creatures[0].current_hp;
     let _ = dispatch(&mut state, CardId::PhotonCut, Some(enemy));
@@ -1136,6 +1185,26 @@ fn photon_cut_empty_hand_skips_putback_choice() {
         state.pending_choice.is_none(),
         "no pending choice when post-draw hand is empty",
     );
+}
+
+/// A lone post-draw hand card goes back on top without a prompt: C#
+/// `CardSelectCmd.FromHand` returns the whole list when it holds no more
+/// than `MinSelect` (1) cards (CardSelectCmd.cs:713). act23 Regent 1015.
+#[test]
+fn photon_cut_single_hand_card_goes_back_without_a_choice() {
+    install_pool();
+    let (mut state, enemy) = fresh_state_with_enemy(200);
+    state.player.draw.clear();
+    state.player.discard.clear();
+    let lone = push_hand_card(&mut state, CardId::StrikeRegent);
+    let _ = push_play_card(&mut state, CardId::PhotonCut, 5, 0);
+    let _ = dispatch(&mut state, CardId::PhotonCut, Some(enemy));
+    assert!(
+        state.pending_choice.is_none(),
+        "no prompt for a single card"
+    );
+    assert!(state.player.hand.is_empty());
+    assert_eq!(state.player.draw.first().copied(), Some(lone));
 }
 
 #[test]
@@ -1304,6 +1373,8 @@ fn kingly_punch_gains_four_damage_per_draw() {
     use sts2_core::{Card, CardUid};
     install_pool();
     let mut state = CombatState::default();
+    // A live player: a dead one makes the combat ending, so draws move no card.
+    state.player.current_hp = 80;
     let _ = state.init_player_creature();
     let uid = state.add_card_to_draw_pile(Card {
         uid: CardUid::new(u32::MAX).expect("nz placeholder"),
@@ -1328,6 +1399,8 @@ fn kingly_kick_loses_one_cost_per_draw() {
     use sts2_core::{Card, CardUid};
     install_pool();
     let mut state = CombatState::default();
+    // A live player: a dead one makes the combat ending, so draws move no card.
+    state.player.current_hp = 80;
     let _ = state.init_player_creature();
     let uid = state.add_card_to_draw_pile(Card {
         uid: CardUid::new(u32::MAX).expect("nz placeholder"),
@@ -1820,6 +1893,58 @@ fn stardust_fires_black_hole_aoe_on_spend() {
         5,
         "BlackHole AoE hit enemy B"
     );
+}
+
+/// C# spends a star-X card's stars in `SpendResources`
+/// (`CardModel.cs:1817-1854`), BEFORE `Hook.BeforeCardPlayed`, so the star
+/// TheSealedThrone grants there (`TheSealedThronePower.cs:14-21`) is NOT part
+/// of Stardust's X: 2 stars → 2 hits, and the Throne star is left over. Rust
+/// spent inside `OnPlay`, after the Throne star, and hit 3 times (Regent full
+/// seeds 2669/4138).
+#[test]
+fn stardust_x_is_captured_before_the_sealed_throne_star() {
+    install_pool();
+    let (mut state, _enemy) = fresh_state_with_enemy(200);
+    let _ = state.init_player_creature();
+    state.phase = sts2_core::CombatPhase::PlayerPlayPhase;
+    state.player.energy = 3;
+    state.player.stars = 2;
+    apply_power_to_player(&mut state, PowerKind::TheSealedThrone, 1);
+    let uid = push_hand_card(&mut state, CardId::Stardust);
+    state.cards[uid.0.get() as usize - 1].base_damage = 5;
+    state.cards[uid.0.get() as usize - 1].cost = 0;
+    let hp0 = state.creatures[0].current_hp;
+    let step = sts2_core::combat_loop::play_card(&mut state, 0, Some(0));
+    assert_eq!(step, sts2_core::StepResult::Advanced);
+    assert_eq!(hp0 - state.creatures[0].current_hp, 10, "2 hits of 5");
+    assert_eq!(state.player.stars, 1, "the Throne star survives the spend");
+}
+
+/// A Duplication replay resolves Stardust's X again from `LastStarsSpent`,
+/// which stays on the card: 3 stars hit 3 times, twice. Rust cleared the X
+/// after the first play, so the replay spent the 0 stars left and missed
+/// (Regent 1017, GH #1054: C# 6 hits, Rust 3).
+#[test]
+fn stardust_replay_reuses_the_spent_star_x() {
+    install_pool();
+    let (mut state, _enemy) = fresh_state_with_enemy(200);
+    let _ = state.init_player_creature();
+    state.phase = sts2_core::CombatPhase::PlayerPlayPhase;
+    state.player.energy = 3;
+    state.player.stars = 3;
+    apply_power_to_player(&mut state, PowerKind::Duplication, 1);
+    let uid = push_hand_card(&mut state, CardId::Stardust);
+    state.cards[uid.0.get() as usize - 1].base_damage = 5;
+    state.cards[uid.0.get() as usize - 1].cost = 0;
+    let hp0 = state.creatures[0].current_hp;
+    let step = sts2_core::combat_loop::play_card(&mut state, 0, Some(0));
+    assert_eq!(step, sts2_core::StepResult::Advanced);
+    assert_eq!(
+        hp0 - state.creatures[0].current_hp,
+        30,
+        "two plays of 3 hits of 5"
+    );
+    assert_eq!(state.player.stars, 0, "only the first play spends");
 }
 
 /// A 0-star Stardust resolves with no block and no hits (no spend → no
@@ -2403,6 +2528,45 @@ fn decisions_decisions_resolves_to_three_auto_plays() {
     );
 }
 
+/// A repeated Skill that opens its OWN select (Quasar's choose-a-card) must
+/// resolve it before the next repeat (C# awaits each `CardCmd.AutoPlay`,
+/// `DecisionsDecisions.cs:33-36`, inside one `AutoResolveInline` resume). The
+/// first repeat used to surface, parking Quasar on Play, and repeats 2/3 found
+/// it in no pile — 1 generated card instead of 3 (Regent quick seed 452).
+#[test]
+fn decisions_decisions_repeats_a_selecting_skill_three_times() {
+    crate::cards::dispatch::install_default_registry();
+    sts2_core::register_card_factory(crate::cards::spec_index::card_pod_from_id);
+    install_pool();
+    let (mut state, _e) = fresh_state_with_enemy(200);
+    let q = push_hand_skill(&mut state, CardId::Quasar);
+    let _v = push_hand_skill(&mut state, CardId::Venerate);
+    let _ = push_play_card(&mut state, CardId::DecisionsDecisions, 0, 0);
+    let _ = dispatch(&mut state, CardId::DecisionsDecisions, None);
+    let pc = state.pending_choice.as_ref().expect("choice surfaced");
+    let pick = pc
+        .options
+        .iter()
+        .position(|o| o.card_uid == Some(q))
+        .expect("Quasar is an option");
+    let gen0 = state.player.generated_cards_this_combat;
+    let selection: SmallVec<[u8; 4]> = [u8::try_from(pick).expect("fits")].into_iter().collect();
+    let _ = sts2_core::apply(&mut state, sts2_core::Action::ResolveChoice { selection });
+    assert!(
+        state.pending_choice.is_none(),
+        "every Quasar pick drained inline"
+    );
+    assert_eq!(
+        state.player.generated_cards_this_combat - gen0,
+        3,
+        "Quasar auto-played 3 times, one generated card each"
+    );
+    assert!(
+        !state.player.play.contains(&q),
+        "Quasar not stranded on Play"
+    );
+}
+
 /// `DecisionsDecisions` with exactly ONE Skill candidate in hand auto-applies
 /// the lone Skill with NO prompt (C# `FromHand` count <= MinSelect == 1) and
 /// auto-plays it 3 times inline. DefendRegent → +15 block, no pending choice.
@@ -2550,6 +2714,135 @@ fn foregone_conclusion_applies_power() {
         player_has_power(&state, PowerKind::ForegoneConclusion),
         Some(2)
     );
+}
+
+/// C# awaits ForegoneConclusion's select inside `Hook.BeforeHandDraw`, so a
+/// SpectrumShift that sits after FC in the power list adds its colorless card
+/// only once the FC pick is in hand (act23 Regent:1009: Rust generated the
+/// card first, ahead of the pick, and the same hand index played another
+/// card).
+#[test]
+fn spectrum_shift_after_foregone_conclusion_waits_for_the_select() {
+    use sts2_core::{apply, Action};
+    install_pool();
+    crate::cards::dispatch::install_default_registry();
+    let (mut state, _e) = fresh_state_with_enemy(200);
+    let _ = state.init_player_creature();
+    state.phase = sts2_core::CombatPhase::PlayerTurnStart;
+    apply_power_to_player(&mut state, PowerKind::ForegoneConclusion, 1);
+    apply_power_to_player(&mut state, PowerKind::SpectrumShift, 1);
+    let drawn: Vec<_> = (0..3)
+        .map(|_| push_play_card(&mut state, CardId::Venerate, 0, 0))
+        .collect();
+    state.player.play.clear();
+    state.player.draw.extend(drawn.iter().copied());
+
+    let deferred = sts2_core::hooks::dispatch_before_hand_draw_powers(&mut state);
+    assert_ne!(deferred, 0, "SpectrumShift deferred behind the FC select");
+    assert!(
+        state.player.hand.is_empty(),
+        "nothing generated before the pick"
+    );
+
+    let chosen = state
+        .pending_choice
+        .as_ref()
+        .expect("FC select open")
+        .options[0]
+        .card_uid
+        .expect("uid present");
+    state.pending_hand_draw_resume = Some((0, deferred, false));
+    let mut sel: SmallVec<[u8; 4]> = SmallVec::new();
+    sel.push(0);
+    let _ = apply(&mut state, Action::ResolveChoice { selection: sel });
+
+    assert_eq!(
+        state.player.hand.len(),
+        2,
+        "FC pick + one SpectrumShift card"
+    );
+    assert_eq!(state.player.hand[0], chosen, "the FC pick lands first");
+    assert!(
+        !drawn.contains(&state.player.hand[1]),
+        "then the generated card"
+    );
+}
+
+/// The FC select is a player-choice pause inside `SetupPlayerTurn`, and C#
+/// `StartTurn` waits on that task only until it pauses
+/// (`WaitForPauseOrCompletionWithoutAssigningTask`, v0.111.0
+/// `CombatManager.cs:779-785`, v0.107.1 `:516-524`) before it runs
+/// `Hook.AfterSideTurnStart`. So DemonForm's Strength is already granted while
+/// the FC screen is open, and it is not granted a second time once the pick
+/// resolves and the rest of setup runs.
+#[test]
+fn after_side_turn_start_fires_during_the_foregone_conclusion_pause() {
+    use sts2_core::{apply, Action, StepResult};
+    install_pool();
+    crate::cards::dispatch::install_default_registry();
+    let (mut state, _e) = fresh_state_with_enemy(200);
+    let _ = state.init_player_creature();
+    state.phase = sts2_core::CombatPhase::PlayerTurnStart;
+    state.round = 2;
+    apply_power_to_player(&mut state, PowerKind::ForegoneConclusion, 1);
+    apply_power_to_player(&mut state, PowerKind::DemonForm, 2);
+    let drawn: Vec<_> = (0..8)
+        .map(|_| push_play_card(&mut state, CardId::Venerate, 0, 0))
+        .collect();
+    state.player.play.clear();
+    state.player.draw.extend(drawn.iter().copied());
+
+    assert_eq!(
+        sts2_core::combat_loop::start_player_turn(&mut state),
+        StepResult::PendingChoice
+    );
+    assert!(state.pending_choice.is_some(), "the FC select is open");
+    assert_eq!(
+        player_has_power(&state, PowerKind::Strength),
+        Some(2),
+        "DemonForm's AfterSideTurnStart ran during the FC pause"
+    );
+    let mut sel: SmallVec<[u8; 4]> = SmallVec::new();
+    sel.push(0);
+    let _ = apply(&mut state, Action::ResolveChoice { selection: sel });
+    assert_eq!(
+        player_has_power(&state, PowerKind::Strength),
+        Some(2),
+        "DemonForm fires exactly once"
+    );
+    assert_eq!(
+        state.player.hand.len(),
+        6,
+        "FC pick + the natural draw of 5"
+    );
+}
+
+/// C# `CardSelectCmd.FromCombatPile` (v0.111.0 `CardSelectCmd.cs:~484-487`)
+/// returns `pile.Cards` in raw pile order when `num <= prefs.MinSelect`; the
+/// `orderby c.Rarity, c.Id` only runs in the Selector branches after it. So
+/// when the draw pile holds no more cards than Foregone Conclusion takes, the
+/// hand receives them in draw order, not rarity order (act23 Ironclad:2047).
+#[test]
+fn foregone_conclusion_auto_take_keeps_draw_pile_order() {
+    install_pool();
+    let (mut state, _e) = fresh_state_with_enemy(200);
+    let _ = state.init_player_creature();
+    state.phase = sts2_core::CombatPhase::PlayerTurnStart;
+    apply_power_to_player(&mut state, PowerKind::ForegoneConclusion, 3);
+    let drawn: Vec<_> = [
+        CardId::DefendIronclad,
+        CardId::FranticEscape,
+        CardId::DefendIronclad,
+    ]
+    .into_iter()
+    .map(|id| push_play_card(&mut state, id, 0, 0))
+    .collect();
+    state.player.play.clear();
+    state.player.draw.extend(drawn.iter().copied());
+
+    let _ = sts2_core::hooks::dispatch_before_hand_draw_powers(&mut state);
+    assert!(state.pending_choice.is_none(), "auto-take opens no screen");
+    assert_eq!(state.player.hand.as_slice(), drawn.as_slice());
 }
 
 /// Genesis: 2 Genesis on player.
@@ -3685,6 +3978,32 @@ fn heirloom_hammer_no_colorless_no_clone() {
     assert_eq!(hp0 - state.creatures[0].current_hp, 20);
     assert_eq!(state.player.hand.len(), hand_before, "no clone added");
     assert!(state.pending_choice.is_none());
+}
+
+/// HeirloomHammer filters on `VisualCardPool.IsColorless`
+/// (`HeirloomHammer.cs:33`). Caltrops is an Event card drawn in Silent's
+/// color (`Caltrops.cs:17`), so it is not a candidate; Apotheosis is an
+/// Ancient-rarity Event card and is one. With one candidate the select
+/// auto-takes it, so no choice opens and Apotheosis is cloned.
+#[test]
+fn heirloom_hammer_candidates_follow_the_visual_pool() {
+    install_pool();
+    let (mut state, enemy) = fresh_state_with_enemy(200);
+    let _ = push_hand_card(&mut state, CardId::Caltrops);
+    let _ = push_hand_card(&mut state, CardId::Apotheosis);
+    let hand_before = state.player.hand.len();
+
+    let _ = push_play_card(&mut state, CardId::HeirloomHammer, 20, 0);
+    let r = dispatch(&mut state, CardId::HeirloomHammer, Some(enemy));
+    assert_eq!(r, EffectResult::Resolved);
+
+    assert!(state.pending_choice.is_none(), "one candidate, no select");
+    assert_eq!(state.player.hand.len(), hand_before + 1);
+    let new_uid = *state.player.hand.last().expect("hand non-empty");
+    assert_eq!(
+        state.cards[new_uid.0.get() as usize - 1].card_id,
+        CardId::Apotheosis
+    );
 }
 
 /// HeirloomHammer's ≥2-colorless branch must clone the SELECTED instance

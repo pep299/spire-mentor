@@ -72,7 +72,7 @@ UPGRADE_CARDS = {"ARMAMENTS"}  # IC cards that open an upgrade choice
 # Sweep-v2 axis/tier definitions
 # ---------------------------------------------------------------------------
 
-V2_AXES = ("upgraded", "arenas", "fuzz", "pairwise", "autoplay")
+V2_AXES = ("upgraded", "arenas", "fuzz", "pairwise", "autoplay", "enchant")
 _FUZZ_SEEDS = {"smoke": 5, "quick": 500, "mid": 2000, "full": 5000}
 _V2_MAX_TURNS = 6
 
@@ -134,6 +134,13 @@ def assemble_v2_trials(
     # committed Ironclad trace cache. Ironclad-only, like `pairwise`.
     if "autoplay" in axes:
         scenarios.extend(_autoplay_for_tier(tier, character))
+    # GH #1021 (axis F): enchanted decks. Appended after `autoplay` for the
+    # same trace-cache reason.
+    if "enchant" in axes:
+        from parity_fuzz_scenario import enchant_scenarios
+
+        sweep = enchant_scenarios(character)
+        scenarios.extend(sweep[:4] if tier == "smoke" else sweep)
     # item#4: replicate each scenario `paths` times with distinct action seeds.
     # The action seed is the flat position index, so paths of one scenario get
     # different seeds → different `rng.choice` play-lines, and distinct cache
@@ -1623,10 +1630,19 @@ def _run_trial_core(seed: int, max_turns: int, sc: Scenario, oracle: _CsOracle) 
             # a plain QUICK_SLASH opener (monsters[0].powers.len 2/1 + a player.hp
             # cascade). Build native first; only fall back to the override when
             # the native roster genuinely diverges from C# (sts2-rs-zdjjx).
-            rs_state = _rust_init(sc, monsters=None, move_states=cs_move_states)
+            # GH #1054: with C#'s floor the native build rolls RNG-branched
+            # rosters itself, so it also matches when a setup AoE killed a
+            # monster `cs_monsters` (living only) no longer lists. Traces
+            # recorded before the headless reported it carry no total_floor.
+            floor = cs_raw.get("total_floor")
+            rs_state = _rust_init(
+                sc, monsters=None, move_states=cs_move_states, encounter_floor=floor
+            )
             rs_native = [m.get("kind") for m in (_enrich_rust(rs_state).get("monsters") or [])]
             if rs_native != cs_monsters:
-                rs_state = _rust_init(sc, monsters=cs_monsters, move_states=cs_move_states)
+                rs_state = _rust_init(
+                    sc, monsters=cs_monsters, move_states=cs_move_states, encounter_floor=floor
+                )
             _drain_rust_choices(rs_state)
         except Exception as exc:
             out["category"] = "HARNESS_INIT"
@@ -2297,7 +2313,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument(
         "--axes",
-        default="upgraded,arenas,fuzz,pairwise,autoplay",
+        default="upgraded,arenas,fuzz,pairwise,autoplay,enchant",
         help="comma-separated v2 axes subset",
     )
     p.add_argument(

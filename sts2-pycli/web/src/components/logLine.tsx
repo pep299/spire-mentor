@@ -9,7 +9,7 @@ import type { CombatLogRow } from "../api";
  */
 
 /** Colour for a creature name: the player's side reads cool, the enemy's hot. */
-export function sideColor(side: string | null): string {
+function sideColor(side: string | null): string {
   return side === "enemy" ? "var(--hp)" : "var(--block)";
 }
 

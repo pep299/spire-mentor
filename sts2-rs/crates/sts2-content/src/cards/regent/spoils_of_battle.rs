@@ -5,7 +5,6 @@ use super::prelude::*;
 /// `SpoilsOfBattle.cs`: `ForgeVar(5)` + `CardsVar(2)` — forge 5 then
 /// draw 2. Bead `sts2-rs-nntl0` corrected the prior forge-10-only
 /// body (wrong amount + missing draw).
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L259
 pub(crate) fn play_spoils_of_battle(
     state: &mut CombatState,
     _t: Option<CreatureUid>,

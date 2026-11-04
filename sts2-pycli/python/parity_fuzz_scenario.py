@@ -1807,6 +1807,78 @@ _AUTOPLAY_HP = 200
 _AUTOPLAY_LINES = 24
 
 
+#: GH #1021 (axis F): one deck per character holding every in-combat
+#: enchantment on a card C# `CanEnchant` accepts, plus replay sources (Havoc
+#: auto-play, Spiral/Glam extra plays, Echo Form) so the enchantment OnPlay /
+#: AfterCardPlayed legs run on replays too. No C#-oracle trial built an
+#: enchanted deck before this axis.
+ENCHANT_DECKS: dict[str, tuple[str, ...]] = {
+    "Ironclad": (
+        "STRIKE_IRONCLAD@SHARP:2",
+        "STRIKE_IRONCLAD@SPIRAL:1",
+        "DEFEND_IRONCLAD@GOOPY:1",
+        "DEFEND_IRONCLAD@STEADY:1",
+        "BASH@MOMENTUM:3",
+        "RAMPAGE@MOMENTUM:2",
+        "POMMEL_STRIKE@CORRUPTED:1",
+        "IRON_WAVE@INSTINCT:1",
+        "TWIN_STRIKE@VIGOROUS:3",
+        "SHRUG_IT_OFF@ROYALLY_APPROVED:1",
+        "TRUE_GRIT@NIMBLE:2",
+        "ARMAMENTS@ADROIT:3",
+        "BATTLE_TRANCE@SWIFT:1",
+        "HEADBUTT@GLAM:1",
+        "BLOODLETTING@PERFECT_FIT:1",
+        "INFLAME@PERFECT_FIT:1",
+        "ENTRENCH@NIMBLE:2",
+        "ANGER@TEZCATARAS_EMBER:1",
+        "HAVOC",
+        "HAVOC",
+    ),
+    "Defect": (
+        "STRIKE_DEFECT@MOMENTUM:2",
+        "STRIKE_DEFECT@CORRUPTED:1",
+        "DEFEND_DEFECT@ADROIT:3",
+        "DEFEND_DEFECT@GOOPY:1",
+        "BALL_LIGHTNING@SHARP:2",
+        "COLD_SNAP@STEADY:1",
+        "CHARGE_BATTERY@NIMBLE:2",
+        "LEAP@ROYALLY_APPROVED:1",
+        "BEAM_CELL@VIGOROUS:2",
+        "COOLHEADED@SWIFT:1",
+        "SWEEPING_BEAM@SOWN:1",
+        "ECHO_FORM_CARD",
+        "ECHO_FORM_CARD",
+    ),
+}
+_ENCHANT_LINES = 4
+_ENCHANT_HP = 200
+
+
+def enchant_scenarios(character: str = "Ironclad", lines: int | None = None) -> list[Scenario]:
+    """Axis F (GH #1021): :data:`ENCHANT_DECKS` x every non-boss Act-1
+    encounter x ``lines`` action trajectories. ``[]`` for a character without
+    a deck. A high HP keeps the fights going long enough for replays."""
+    deck = ENCHANT_DECKS.get(character)
+    if deck is None:
+        return []
+    lines = _ENCHANT_LINES if lines is None else lines
+    return [
+        _coverage_base(
+            character=character,
+            deck=deck,
+            hp=_ENCHANT_HP,
+            max_hp=_ENCHANT_HP,
+            relics=(),
+            encounter=enc,
+            coverage_subject=f"enchant:{enc}#{line}",
+        )
+        for enc in ACT1_ENCOUNTERS
+        if "BOSS" not in enc
+        for line in range(lines)
+    ]
+
+
 def autoplay_replay_scenarios(
     character: str = "Ironclad", lines: int | None = None
 ) -> list[Scenario]:

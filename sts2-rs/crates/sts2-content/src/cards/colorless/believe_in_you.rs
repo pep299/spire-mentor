@@ -9,13 +9,13 @@ use super::prelude::*;
 /// co-op teammate (`cardPlay.Target.Player`), not the player. Bead `sts2-rs-c9exw`
 /// (was `sts2-rs-thno`).
 pub(crate) fn play_believe_in_you(
-    _state: &mut CombatState,
+    state: &mut CombatState,
     _t: Option<CreatureUid>,
 ) -> EffectResult {
-    // C# `PlayerCmd.GainEnergy(Energy, cardPlay.Target.Player)`: the teammate gains 2 (upg 3) energy — all of it lands on the co-op teammate
-    // (`cardPlay.Target`), whose turn is not simulated, so playing it
-    // changes nothing here but the energy and the card's own pile move.
-    // Unplayable without a living teammate (`card_is_any_ally`).
+    // C# `PlayerCmd.GainEnergy(Energy, cardPlay.Target.Player)`: the teammate
+    // gains 2 (upg 3) energy.
+    let energy = if current_upgraded(state) { 3 } else { 2 };
+    sts2_core::coop::with_card_target(state, |state| state.gain_energy(energy));
     EffectResult::Resolved
 }
 

@@ -20,7 +20,12 @@
 use std::sync::OnceLock;
 
 /// Every declared feature name. Mirrors `ppo.schema.KNOWN_FEATURES`.
-pub const KNOWN: &[&str] = &[Features::REWARD_UPGRADE, Features::CARD_MODS];
+pub const KNOWN: &[&str] = &[
+    Features::REWARD_UPGRADE,
+    Features::CARD_MODS,
+    Features::CARD_BUNDLES,
+    Features::CARD_KIND,
+];
 
 /// Which experiment features are on for this featurization.
 ///
@@ -46,6 +51,18 @@ pub struct Features {
     /// on it, and the enchantment table it writes into was only ever trained
     /// on the state token and the enchant-pick action tokens.
     pub card_mods: bool,
+    /// A Scroll Boxes pick shows every card of both packs (GH #978): each
+    /// member is an obs token (deck op `bundle`, `cat[7]` = pack index) and
+    /// each pick-pack action token carries only that deck op and pack index.
+    /// Without it the net sees each pack's first card and nothing else. Off
+    /// by default: the `bundle` deck-op row was the never-trained spare.
+    pub card_bundles: bool,
+    /// Every token that names a card carries the card's spec type and rarity
+    /// (`cat[12]`, `cat[13]`; GH #977), so cards the policy rarely sees share
+    /// an embedding with the ones it does: a champion that learned to remove
+    /// Decay and Normality still never removed Injury, because each card id
+    /// is its own row. Off by default: both tables are new.
+    pub card_kind: bool,
 }
 
 impl Features {
@@ -53,6 +70,10 @@ impl Features {
     pub const REWARD_UPGRADE: &'static str = "reward_upgrade";
     /// The `STS2_PPO_FEATURES` token for [`Self::card_mods`].
     pub const CARD_MODS: &'static str = "card_mods";
+    /// The `STS2_PPO_FEATURES` token for [`Self::card_bundles`].
+    pub const CARD_BUNDLES: &'static str = "card_bundles";
+    /// The `STS2_PPO_FEATURES` token for [`Self::card_kind`].
+    pub const CARD_KIND: &'static str = "card_kind";
 
     /// Parse a comma-separated `STS2_PPO_FEATURES` spec.
     ///
@@ -83,6 +104,8 @@ impl Features {
             match name {
                 Self::REWARD_UPGRADE => out.reward_upgrade = true,
                 Self::CARD_MODS => out.card_mods = true,
+                Self::CARD_BUNDLES => out.card_bundles = true,
+                Self::CARD_KIND => out.card_kind = true,
                 _ => {
                     return Err(format!(
                         "unknown STS2_PPO_FEATURES entry {name:?} (known: {KNOWN:?})"

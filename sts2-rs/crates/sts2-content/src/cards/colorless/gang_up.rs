@@ -11,14 +11,16 @@ pub(crate) fn play_gang_up(state: &mut CombatState, target: Option<CreatureUid>)
     // (`e.Dealer != Owner.Creature && e.Dealer.Side == Owner.Side`,
     // GangUp.cs:24-29). Extra is 5 (base) / 7 (upgraded, `OnUpgrade
     // UpgradeValueBy(2)`). In a solo fight the only such dealer is the Osty
-    // (GH #806: the old body assumed there was none).
+    // (GH #806: the old body assumed there was none); in co-op it is also
+    // every teammate and their Osty (GH #989).
     let dmg = resolving_preview(state, preview_gang_up, target);
     let _ = deal_damage_player_to_enemy(state, t, dmg);
     EffectResult::Resolved
 }
 
-/// `CalculatedDamage`: `5 + Extra × (the Osty's powered hits on target this
-/// turn)`. Shared with the card face so the face and the hit stay in step.
+/// `CalculatedDamage`: `5 + Extra × (powered hits on target this turn by
+/// our Osty, every teammate and their Osty)`. Shared with the card face so
+/// the face and the hit stay in step.
 pub(crate) fn preview_gang_up(
     state: &CombatState,
     card: &Card,
@@ -26,12 +28,27 @@ pub(crate) fn preview_gang_up(
 ) -> i32 {
     let extra: i32 = if card.upgraded { 7 } else { 5 };
     let hits = target.map_or(0, |t| {
-        state
-            .combat_log
-            .osty_powered_hits_by_target_this_turn
+        let on = |tally: &[(CreatureUid, u32)]| {
+            tally
+                .iter()
+                .find(|(uid, _)| *uid == t)
+                .map_or(0, |(_, n)| *n)
+        };
+        // A teammate seat's own hits ride with their seat (`allies[i]`), their
+        // Osty's with their stashed turn log.
+        let teammates: u32 = state
+            .allies
             .iter()
-            .find(|(uid, _)| *uid == t)
-            .map_or(0, |(_, n)| *n)
+            .map(|a| on(&a.powered_hits_by_target_this_turn))
+            .chain(
+                state
+                    .coop
+                    .stash
+                    .iter()
+                    .map(|s| on(&s.combat_log.osty_powered_hits_by_target_this_turn)),
+            )
+            .sum();
+        on(&state.combat_log.osty_powered_hits_by_target_this_turn).saturating_add(teammates)
     });
     5 + extra.saturating_mul(i32::try_from(hits).unwrap_or(i32::MAX))
 }

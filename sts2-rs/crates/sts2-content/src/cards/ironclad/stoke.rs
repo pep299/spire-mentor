@@ -49,6 +49,12 @@ pub(crate) fn play_stoke(state: &mut CombatState, _t: Option<CreatureUid>) -> Ef
             let idx = uid.0.get() as usize - 1;
             state.cards[idx].upgraded = true;
             crate::cards::spec_index::apply_spec_upgrade(&mut state.cards[idx]);
+            // `apply_spec_upgrade` writes the v0.107.1 upgraded values over
+            // the build-normalized base; move them onto this build's upgraded
+            // values (v0.111.0 Taunt+ blocks 7, not 8: Taunt.cs:20,41).
+            // No-op in the default build.
+            let version = state.game_version;
+            state.cards[idx].normalize_for_version(version);
         }
         state.player.generated_cards_this_combat =
             state.player.generated_cards_this_combat.saturating_add(1);

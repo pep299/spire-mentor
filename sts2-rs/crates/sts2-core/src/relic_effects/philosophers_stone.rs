@@ -28,6 +28,25 @@ pub(crate) fn on_before_combat_start_philosophers_stone(state: &mut CombatState)
     EffectResult::Resolved
 }
 
+/// `PhilosophersStone.AfterCreatureAddedToCombat` (PhilosophersStone.cs:41):
+/// an opposing creature added to a combat already under way
+/// (`CreatureCmd.Add`) gains the Stone's +1 Strength, applier `null`. The
+/// combat-start leg above covers the enemies present at room entry; this one
+/// covers summons. Called from the engine's enemy spawn path once the
+/// monster's own `AfterAddedToRoom` buffs are on (`CreatureCmd.Add` fires the
+/// hook last). Both builds.
+pub(crate) fn on_enemy_added_to_combat_philosophers_stone(
+    state: &mut CombatState,
+    uid: crate::CreatureUid,
+) {
+    if state.phase == crate::CombatPhase::Setup
+        || !player_owns_relic(state, crate::RelicKind::PhilosophersStone)
+    {
+        return;
+    }
+    apply_power_to_enemy(state, uid, PowerKind::Strength, 1);
+}
+
 pub(crate) fn install() {
     register_before_combat_start(
         RelicId::PhilosophersStone,

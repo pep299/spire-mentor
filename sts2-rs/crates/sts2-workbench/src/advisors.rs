@@ -225,7 +225,28 @@ pub fn rows_from_mcts(result: &Value, state: &Value) -> Vec<Value> {
             "mean_final_hp": entry["mean_final_hp"].as_f64(),
             "hp_sd": entry["hp_sd"].as_f64(),
             "hp_n": entry["hp_n"].as_i64().unwrap_or(0),
+            "pick_rank": entry["pick_rank"].as_i64(),
+            "in_band": entry["in_band"].as_bool().unwrap_or(false),
+            // Why the engine took this move (`mcts_recommend()["pick"]`), on
+            // the engine's own pick only — an heir crowned below has none.
+            "pick_reason": if entry["is_best"] == json!(true) {
+                result["pick"]["reason"].clone()
+            } else {
+                Value::Null
+            },
         }));
+    }
+    // The engine's pick was a row this boundary does not surface: the star
+    // goes to the engine's own next choice, the lowest surviving
+    // `pick_rank` (GH #1022), not to the highest win probability.
+    if !rows.iter().any(|r| r["is_best"] == json!(true)) {
+        if let Some(next) = rows
+            .iter_mut()
+            .filter(|r| r["pick_rank"].is_i64())
+            .min_by_key(|r| r["pick_rank"].as_i64())
+        {
+            next["is_best"] = json!(true);
+        }
     }
     rows.sort_by(|a, b| {
         let ka = (
@@ -1273,37 +1294,6 @@ fn step_of(
     }
 }
 
-/// `last_move_regret`: regret of the move that produced the active node —
-/// `None` when it has no parent or the parent was not a combat decision;
-/// `{error, regret: null}` when the parent cannot be scored; else a
-/// `DecisionRegret` dict (or `None` if the move is unresolvable).
-pub fn last_move_regret(sess: &Session, config: &Value) -> Result<Option<Value>, SessionError> {
-    let node = sess.active_node()?;
-    let Some(parent) = node.parent_id.and_then(|p| sess.node(p)) else {
-        return Ok(None);
-    };
-    if !combat_play(parent) {
-        return Ok(None);
-    }
-    let mut cfg = config_obj(config);
-    let blunder_pct = pop_f64(&mut cfg, "blunder_pct", DEFAULT_BLUNDER_DROP_PCT);
-    let mut step = step_of(parent, node, sess.loc(), &Value::Null, &Value::Null);
-    let no_scores = || json!({"error": "no MCTS scores available", "regret": Value::Null});
-    let (Some(cs), Ok(params)) = (parent.combat.as_ref(), params_for(&cfg, "mcts_recommend"))
-    else {
-        return Ok(Some(no_scores()));
-    };
-    let (result, pv) = score_with_pv(cs, &step.state, &cfg);
-    let mut scores: Vec<Value> = result["scores"].as_array().cloned().unwrap_or_default();
-    if scores.is_empty() {
-        return Ok(Some(no_scores()));
-    }
-    top_up_played(cs, &mut scores, &step.chosen, &params);
-    step.best_line = label_line(cs, &pv, sess.loc());
-    step.node_id = None; // the live coach's step carries no node id
-    Ok(assess_decision(&step, &scores, blunder_pct))
-}
-
 /// `realgame_coach.intent_text`: one enemy's telegraphed move as display
 /// text — `"attack 6"`, `"attack 6×2"`, another intent as its lower-cased
 /// type, joined by `" + "` (`"attack 6×2 + debuff"`); `"unknown"` when
@@ -1395,9 +1385,10 @@ pub fn turn_context(named: &Value) -> Value {
 /// ungraded rather than stall the player's next action.
 pub const TURN_GRADE_MAX_SEARCHES: usize = 6;
 
-/// Default sims of a turn grade's search: the live advisor's `--sims`
-/// (`realgame_advisor.py`), so the browser coach and the mod's grade a turn
-/// from the same search strength. At the engine's 300 the root's children
+/// Default sims of a turn grade's search. 8000 was the live advisor's `--sims`
+/// (`realgame_advisor.py`) when this was set; the advisor now searches 4000
+/// (16000 at bosses) on one tree, so this sits between the two. At the
+/// engine's 300 the root's children
 /// split ~75 playouts each and an under-played turn's HP cost drowns in the
 /// noise (a Strike-then-End-turn graded `best`).
 pub const TURN_GRADE_SIMS: u32 = 8000;
@@ -1414,8 +1405,8 @@ pub const TURN_GRADE_TOP_UP_SIMS: u32 = 400;
 /// (`Session::hint_scores`, if it ran at least the grade's `sims`, default
 /// [`TURN_GRADE_SIMS`]) or a fresh search — at most `max_searches`
 /// (default [`TURN_GRADE_MAX_SEARCHES`]) of them; past the cap the move is
-/// ungraded and the turn silent — then topped up and diffed like
-/// [`last_move_regret`]. A forced move (one legal action) is labelled, not
+/// ungraded and the turn silent — then topped up and diffed by
+/// `assess_decision`. A forced move (one legal action) is labelled, not
 /// graded; an in-combat card select counts in `ungraded_actions`.
 ///
 /// `None` when the active node is not the result of an End turn, or when
@@ -2212,6 +2203,37 @@ pub fn wpa_review_unavailable() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// GH #1022, the Python twin's `test_rows_from_mcts_crowns_the_engines_next_choice`:
+    /// the engine's pick is a channel this boundary does not surface, so the
+    /// star goes to its next choice by `pick_rank`, not to the best p_win.
+    #[test]
+    fn rows_from_mcts_crowns_the_engines_next_choice() {
+        let raw = json!({"actions": [
+            {"action": {"action": "channel"}, "visits": 50, "p_win": 0.9,
+             "is_best": true, "pick_rank": 0, "in_band": true},
+            {"action": {"action": "end_turn"}, "visits": 10, "p_win": 0.8, "pick_rank": 2},
+            {"action": {"action": "play", "card_index": 0}, "visits": 40, "p_win": 0.7,
+             "pick_rank": 1, "in_band": true},
+        ]});
+        let rows = rows_from_mcts(&raw, &json!({"hand": [{"index": 0, "name": "Zap"}]}));
+        assert!(
+            rows.iter().all(|r| r["pick_reason"].is_null()),
+            "an heir has no reason"
+        );
+        let got: Vec<(i64, bool, bool, i64)> = rows
+            .iter()
+            .map(|r| {
+                (
+                    r["stable_idx"].as_i64().unwrap(),
+                    r["is_best"].as_bool().unwrap(),
+                    r["in_band"].as_bool().unwrap(),
+                    r["pick_rank"].as_i64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(got, vec![(0, true, true, 1), (END_TURN, false, false, 2)]);
+    }
 
     #[test]
     fn intent_text_shared_cases() {

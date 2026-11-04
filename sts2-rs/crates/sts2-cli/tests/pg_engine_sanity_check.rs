@@ -186,8 +186,8 @@ fn run_trace(path: &Path, seed: u64, verbose: bool, pre_shuffle: bool) -> Outcom
                     v!("    ** combat LOST on turn {turn} step {steps} **");
                     break 'turns;
                 }
-                StepResult::InvalidTarget => {
-                    v!("    !! InvalidTarget; force EndTurn");
+                StepResult::InvalidTarget | StepResult::IllegalPlay => {
+                    v!("    !! {result:?}; force EndTurn");
                     match apply(&mut state, Action::EndTurn) {
                         StepResult::CombatWon => {
                             won = true;

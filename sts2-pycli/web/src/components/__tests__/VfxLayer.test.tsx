@@ -6,7 +6,7 @@ import {
   drawAngleFromGodotDegrees,
   drawAngleFromGodotRadians,
   sampleSpriteShaderTween,
-} from "../VfxLayer";
+} from "../vfxLive";
 import type { TargetRef } from "../../effects/types";
 import type { SpriteShaderEffect } from "../../effects/manifest";
 

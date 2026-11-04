@@ -31,6 +31,51 @@ describe("LiveLog", () => {
     expect(onSeek).toHaveBeenCalledWith(0);
   });
 
+  it("does not seek when the click ends a text selection in the row", () => {
+    // Rows used to be <button>s, whose text a browser will not select; a drag
+    // inside one also fired a click and rewound the run.
+    const onSeek = vi.fn();
+    const timeline: LiveTimeline = {
+      nodes: [
+        node({ id: 0, label: "Started Ironclad", child_ids: [1] }),
+        node({ id: 1, parent_id: 0, idx: 1, label: "Map → (0,0)", child_ids: [] }),
+      ],
+      active_path: [0, 1],
+      active_leaf: 1,
+    };
+    render(<LiveLog timeline={timeline} onSeek={onSeek} />);
+    const row = screen.getByRole("button", { name: /Started Ironclad/ });
+    expect(row.tagName).not.toBe("BUTTON");
+    getSelection()!.selectAllChildren(screen.getByText("Started Ironclad"));
+    fireEvent.click(row);
+    expect(onSeek).not.toHaveBeenCalled();
+    getSelection()!.removeAllRanges();
+    fireEvent.click(row);
+    expect(onSeek).toHaveBeenCalledWith(0);
+  });
+
+  it("seeks from the keyboard, and not while busy", () => {
+    const onSeek = vi.fn();
+    const timeline: LiveTimeline = {
+      nodes: [
+        node({ id: 0, label: "root", child_ids: [1] }),
+        node({ id: 1, parent_id: 0, idx: 1, label: "latest move", child_ids: [] }),
+      ],
+      active_path: [0, 1],
+      active_leaf: 1,
+    };
+    const { rerender } = render(<LiveLog timeline={timeline} onSeek={onSeek} />);
+    const row = screen.getByRole("button", { name: /root/ });
+    fireEvent.keyDown(row, { key: "Enter" });
+    fireEvent.keyDown(row, { key: " " });
+    expect(onSeek.mock.calls).toEqual([[0], [0]]);
+    rerender(<LiveLog timeline={timeline} onSeek={onSeek} busy />);
+    expect(row).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(row);
+    fireEvent.keyDown(row, { key: "Enter" });
+    expect(onSeek).toHaveBeenCalledTimes(2);
+  });
+
   it("marks the active leaf as the current position", () => {
     const timeline: LiveTimeline = {
       nodes: [

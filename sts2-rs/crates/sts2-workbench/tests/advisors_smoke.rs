@@ -190,10 +190,6 @@ fn advisor_routes_over_a_scripted_run() {
         Err(409)
     );
     assert_eq!(
-        status(&mut wb, "POST", "/api/live/last-move-regret", json!({})),
-        Err(409)
-    );
-    assert_eq!(
         status(&mut wb, "POST", "/api/live/card-advisor", rollout_body()),
         Err(409)
     );
@@ -229,10 +225,8 @@ fn advisor_routes_over_a_scripted_run() {
 
     let mut shop_done = false;
     let mut combats = 0;
-    let mut regret_seen = false;
     let mut card_advised = false;
     let mut shop_advised = false;
-    let mut prev_decision = String::new();
     for _ in 0..400 {
         let d = step["decision"].as_str().unwrap_or("").to_string();
         if d == "combat_play" {
@@ -321,30 +315,6 @@ fn advisor_routes_over_a_scripted_run() {
             assert!(keys.contains(&"leave"), "{keys:?}");
             assert!(keys.iter().any(|k| k.starts_with("card:")), "{keys:?}");
         }
-        if prev_decision == "combat_play" && !regret_seen {
-            // The move just made came from a combat decision → the coach has
-            // something to say (or reports the move as unresolvable — never 500).
-            match status(
-                &mut wb,
-                "POST",
-                "/api/live/last-move-regret",
-                json!({"config": {"sims": 24, "seed": 2}}),
-            ) {
-                Ok(r) => {
-                    regret_seen = true;
-                    assert!(
-                        r["message"]
-                            .as_str()
-                            .is_some_and(|m| m.starts_with("Turn ")),
-                        "{r}"
-                    );
-                    assert!(r["node_id"].is_null());
-                    assert!(r["played_win_prob"].is_number());
-                }
-                Err(409) => {}
-                Err(s) => panic!("last-move-regret -> {s}"),
-            }
-        }
         let Some((action, args)) = policy(&step, &mut shop_done) else {
             break;
         };
@@ -359,15 +329,13 @@ fn advisor_routes_over_a_scripted_run() {
             "action {action} {args} rejected: {}",
             resp["error"]
         );
-        prev_decision = d;
         step = resp["step"].clone();
-        if combats >= 3 && card_advised && shop_advised && regret_seen {
+        if combats >= 3 && card_advised && shop_advised {
             break;
         }
     }
     assert!(combats >= 1, "the script never reached combat");
     assert!(card_advised, "the script never reached a card reward");
-    assert!(regret_seen, "the coach never assessed a combat move");
 
     // The run review covers every combat decision on the active line.
     let review = call(
@@ -402,76 +370,6 @@ fn advisor_routes_over_a_scripted_run() {
     assert_eq!(seek["step"]["decision"], json!("combat_play"));
     let hint = call(&mut wb, "POST", "/api/live/hint", hint_body());
     assert!(!hint["scores"].as_array().unwrap().is_empty());
-}
-
-/// Ending turn 1 with an untouched hand — while Strike / Defend / Bash were all
-/// playable — is graded as a mistake on HP or win chance, and the coach names
-/// the line the search would have played instead.
-#[test]
-fn last_move_regret_flags_wasted_turn() {
-    let mut wb = new_wb();
-    let mut step = call(
-        &mut wb,
-        "POST",
-        "/api/live/start",
-        json!({"character": "Ironclad", "seed": "SMOKE1", "ascension": 0, "act1": "overgrowth"}),
-    );
-    call(
-        &mut wb,
-        "POST",
-        "/api/live/run-mode",
-        json!({"off_combat_brain": "heuristic"}),
-    );
-    let mut shop_done = false;
-    for _ in 0..200 {
-        if step["decision"] == json!("combat_play") {
-            break;
-        }
-        let (action, args) = policy(&step, &mut shop_done).expect("run continues");
-        step = call(
-            &mut wb,
-            "POST",
-            "/api/live/action",
-            json!({"action": action, "args": args}),
-        )["step"]
-            .clone();
-    }
-    assert_eq!(
-        step["decision"],
-        json!("combat_play"),
-        "never reached combat"
-    );
-    let hand = step["state"]["hand"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    assert!(
-        hand.iter().any(|c| c["can_play"] == json!(true)),
-        "the fixture needs a playable card: {hand:?}"
-    );
-    call(
-        &mut wb,
-        "POST",
-        "/api/live/action",
-        json!({"action": "end_turn", "args": {}}),
-    );
-    let r = call(
-        &mut wb,
-        "POST",
-        "/api/live/last-move-regret",
-        json!({"config": {"sims": 400, "seed": 2}}),
-    );
-    let verdict = r["verdict"].as_str().unwrap_or("");
-    assert!(matches!(verdict, "slip" | "blunder"), "{r}");
-    assert!(r["hp_drop"].is_number(), "{r}");
-    let line: Vec<&str> = r["best_line"]
-        .as_array()
-        .expect("best_line")
-        .iter()
-        .map(|v| v.as_str().unwrap())
-        .collect();
-    assert!(!line.is_empty(), "{r}");
-    assert_ne!(line[0], "end turn", "{r}");
 }
 
 /// A fresh SMOKE1 Ironclad run walked to its first combat decision.

@@ -55,11 +55,21 @@ def resolve_game_version() -> str:
     return normalize_game_version(raw) if raw else DEFAULT_GAME_VERSION
 
 
+def _apphost_name() -> str:
+    """The .NET apphost file name: ``Sts2Headless.exe`` on Windows, else ``Sts2Headless``.
+
+    Without the suffix ``_spawn_cmd``'s ``isfile`` probe never matched on
+    Windows, so every spawn there silently took the slow ``dotnet run``
+    fallback even with the binary built (GH #506).
+    """
+    return "Sts2Headless.exe" if sys.platform == "win32" else "Sts2Headless"
+
+
 def headless_bin(version: str | None = None) -> str:
-    """The built apphost for ``version`` (``bin/<ver>/Debug/net9.0/Sts2Headless``)."""
+    """The built apphost for ``version`` (``bin/<ver>/Debug/net9.0/Sts2Headless[.exe]``)."""
     ver = normalize_game_version(version) if version else GAME_VERSION
     return os.path.join(
-        REPO_ROOT, "src", "Sts2Headless", "bin", ver, "Debug", "net9.0", "Sts2Headless"
+        REPO_ROOT, "src", "Sts2Headless", "bin", ver, "Debug", "net9.0", _apphost_name()
     )
 
 
@@ -620,6 +630,7 @@ class Game:
         lang: str = "en",
         played_save: bool = False,
         act1: str | None = None,
+        interactive_potion_swap: bool = False,
     ) -> dict[str, Any]:
         """Start a new headless run.
 
@@ -640,6 +651,10 @@ class Game:
                 which this harness bypasses; leaving this None keeps the
                 historical default (``GetDefaultList()`` => Overgrowth), which
                 is what made every act-1 parity number so far vacuous.
+            interactive_potion_swap: GH #1069. A potion reward that finds a
+                full belt parks as a ``potion_swap`` decision (discard a held
+                potion to take it, or decline), as the real reward screen
+                allows. Default False keeps the historical silent drop.
         """
         cmd: dict[str, Any] = {
             "cmd": "start_run",
@@ -652,6 +667,8 @@ class Game:
             cmd["played_save"] = True
         if act1 is not None:
             cmd["act1"] = act1
+        if interactive_potion_swap:
+            cmd["interactive_potion_swap"] = True
         return self.send(cmd)
 
     def act(self, action: str, **args: Any) -> dict[str, Any]:

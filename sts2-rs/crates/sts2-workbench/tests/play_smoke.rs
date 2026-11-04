@@ -202,7 +202,9 @@ fn ironclad_plays_through_act_one_start() {
     );
     let header = Workbench::save_header(&payload);
     assert!(header.get("line").is_none());
-    let restored = wb.restore_save(&payload).expect("restore");
+    let restored = wb
+        .restore_save(&payload, sts2_workbench::runlog::DEFAULT_NOW_ISO)
+        .expect("restore");
     assert_eq!(restored["decision"], before["decision"]);
     assert_eq!(
         restored["state"]["player"]["hp"],
@@ -292,6 +294,9 @@ fn bad_requests_get_python_status_codes() {
     assert_eq!(e.status, 501);
     assert!(wb.build_save("   ", "t").is_err_and(|e| e.status == 400));
     assert!(wb
-        .restore_save(&json!({"schema_version": 7}))
+        .restore_save(
+            &json!({"schema_version": 7}),
+            sts2_workbench::runlog::DEFAULT_NOW_ISO
+        )
         .is_err_and(|e| e.status == 404));
 }

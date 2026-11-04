@@ -1,7 +1,6 @@
 //! Rare-rarity relic dispatch — bead `sts2-rs-ge1` (P7-4).
 //!
-//! Ported from `sts2-rl-agent@01c094d:sts2_env/relics/rare.py`
-//! (50 relics). This file registers a Phase-7 on-trigger handler
+//! This file registers a Phase-7 on-trigger handler
 //! for every rare-rarity [`RelicId`] variant. Handler bodies
 //! are intentionally minimal markers (`EffectResult::Resolved`)
 //! that satisfy the dispatch-table acceptance criterion: every
@@ -282,28 +281,30 @@ pub fn install_pool() {
 // added to the master deck — reward, event, merchant — is upgraded
 // pre-add). Curse/Status cards never upgrade.
 
-fn upgrade_cards_of_type(cards: &mut [Card], ct: CardType) -> bool {
+fn upgrade_cards_of_type(rs: &RunState, cards: &mut [Card], ct: CardType) -> bool {
     let mut any = false;
     for card in cards {
-        if card.card_type == ct && !card.upgraded {
-            card.upgraded = true;
-            any = true;
-        }
+        any |= upgrade_card_of_type(rs, card, ct);
     }
     any
 }
 
-fn upgrade_card_of_type(card: &mut Card, ct: CardType) -> bool {
-    if card.card_type == ct && !card.upgraded {
-        card.upgraded = true;
-        true
-    } else {
-        false
-    }
+/// C# `ToxicEgg.TryModifyCardBeingAddedToDeck` (ToxicEgg.cs:38-55, same in
+/// Frozen/MoltenEgg) gates on `card.IsUpgradable` and runs a real
+/// `CardCmd.Upgrade` — the upgraded card carries the upgraded stats. The old
+/// bare `upgraded = true` flip left the POD at base values, so a card built
+/// un-upgraded and then egg-upgraded (LargeCapsule's Defend under a ToxicEgg
+/// it just obtained) played as the base card: PARITY4 Silent, Defend+ for 5
+/// block instead of 8.
+fn upgrade_card_of_type(rs: &RunState, card: &mut Card, ct: CardType) -> bool {
+    card.card_type == ct && card.upgrade_for(rs.game_version)
 }
 
+/// Run-hook ownership guard: owned AND not melted. C# builds the run-level
+/// hook-listener list from `Relics.Where(r => !r.IsMelted)` (`RunState.cs:148`),
+/// so a melted Toy Box wax egg stops upgrading cards.
 fn run_owns_rare(rs: &RunState, id: RelicId) -> bool {
-    rs.relics.contains(&id)
+    rs.owns_active_relic(id)
 }
 
 /// `FrozenEgg.modify_card_reward_options_late` — upgrade every Power
@@ -312,7 +313,7 @@ fn listener_frozen_egg_card_reward(rs: &mut RunState, cards: &mut Vec<Card>) -> 
     if !run_owns_rare(rs, RelicId::FrozenEgg) {
         return EffectResult::NotImplemented;
     }
-    if upgrade_cards_of_type(cards, CardType::Power) {
+    if upgrade_cards_of_type(rs, cards, CardType::Power) {
         EffectResult::Resolved
     } else {
         EffectResult::NotImplemented
@@ -325,7 +326,7 @@ fn listener_frozen_egg_deck_add(rs: &mut RunState, card: &mut Card) -> EffectRes
     if !run_owns_rare(rs, RelicId::FrozenEgg) {
         return EffectResult::NotImplemented;
     }
-    if upgrade_card_of_type(card, CardType::Power) {
+    if upgrade_card_of_type(rs, card, CardType::Power) {
         EffectResult::Resolved
     } else {
         EffectResult::NotImplemented
@@ -342,7 +343,7 @@ fn listener_frozen_egg_merchant(
     if !run_owns_rare(rs, RelicId::FrozenEgg) {
         return EffectResult::NotImplemented;
     }
-    if upgrade_card_of_type(card, CardType::Power) {
+    if upgrade_card_of_type(rs, card, CardType::Power) {
         EffectResult::Resolved
     } else {
         EffectResult::NotImplemented
@@ -354,7 +355,7 @@ fn listener_molten_egg_card_reward(rs: &mut RunState, cards: &mut Vec<Card>) -> 
     if !run_owns_rare(rs, RelicId::MoltenEgg) {
         return EffectResult::NotImplemented;
     }
-    if upgrade_cards_of_type(cards, CardType::Attack) {
+    if upgrade_cards_of_type(rs, cards, CardType::Attack) {
         EffectResult::Resolved
     } else {
         EffectResult::NotImplemented
@@ -365,7 +366,7 @@ fn listener_molten_egg_deck_add(rs: &mut RunState, card: &mut Card) -> EffectRes
     if !run_owns_rare(rs, RelicId::MoltenEgg) {
         return EffectResult::NotImplemented;
     }
-    if upgrade_card_of_type(card, CardType::Attack) {
+    if upgrade_card_of_type(rs, card, CardType::Attack) {
         EffectResult::Resolved
     } else {
         EffectResult::NotImplemented
@@ -380,7 +381,7 @@ fn listener_molten_egg_merchant(
     if !run_owns_rare(rs, RelicId::MoltenEgg) {
         return EffectResult::NotImplemented;
     }
-    if upgrade_card_of_type(card, CardType::Attack) {
+    if upgrade_card_of_type(rs, card, CardType::Attack) {
         EffectResult::Resolved
     } else {
         EffectResult::NotImplemented
@@ -392,7 +393,7 @@ fn listener_toxic_egg_card_reward(rs: &mut RunState, cards: &mut Vec<Card>) -> E
     if !run_owns_rare(rs, RelicId::ToxicEgg) {
         return EffectResult::NotImplemented;
     }
-    if upgrade_cards_of_type(cards, CardType::Skill) {
+    if upgrade_cards_of_type(rs, cards, CardType::Skill) {
         EffectResult::Resolved
     } else {
         EffectResult::NotImplemented
@@ -403,7 +404,7 @@ fn listener_toxic_egg_deck_add(rs: &mut RunState, card: &mut Card) -> EffectResu
     if !run_owns_rare(rs, RelicId::ToxicEgg) {
         return EffectResult::NotImplemented;
     }
-    if upgrade_card_of_type(card, CardType::Skill) {
+    if upgrade_card_of_type(rs, card, CardType::Skill) {
         EffectResult::Resolved
     } else {
         EffectResult::NotImplemented
@@ -418,7 +419,7 @@ fn listener_toxic_egg_merchant(
     if !run_owns_rare(rs, RelicId::ToxicEgg) {
         return EffectResult::NotImplemented;
     }
-    if upgrade_card_of_type(card, CardType::Skill) {
+    if upgrade_card_of_type(rs, card, CardType::Skill) {
         EffectResult::Resolved
     } else {
         EffectResult::NotImplemented
@@ -998,6 +999,43 @@ rare_factory!(pub white_star, WhiteStar, "WHITE_STAR", RelicEffect::Noop);
 mod tests {
     use super::*;
 
+    /// C# `VexingPuzzlebox.AfterPlayerTurnStart` calls `SetToFreeThisTurn()`
+    /// (`SetThisTurnOrUntilPlayed(0)`): the generated card is free only until
+    /// it is played or the turn ends. It must keep its printed cost and carry
+    /// the `FreeThisTurn` rider, not a permanent `cost = 0` that made every
+    /// later redraw in the combat free too.
+    #[test]
+    fn vexing_puzzlebox_card_is_free_this_turn_only() {
+        use std::num::NonZeroU32;
+        use sts2_core::cards::VarKey;
+        use sts2_core::potions::CharacterId;
+        use sts2_core::relic_effects::dispatch_after_player_turn_start;
+        use sts2_core::{CombatState, Relic, RelicKind};
+
+        crate::relics::dispatch::ensure_installed();
+        crate::cards::dispatch::ensure_installed();
+        let mut s = CombatState::default();
+        s.player.current_hp = 80;
+        s.round = 1;
+        s.player.character = Some(CharacterId::Ironclad);
+        s.relics.push(Relic {
+            id: NonZeroU32::new(1).expect("non-zero"),
+            kind: RelicKind::VexingPuzzlebox,
+            counter: 0,
+            is_wax: false,
+            is_melted: false,
+        });
+        let _ = dispatch_after_player_turn_start(&mut s);
+        let uid = *s.player.hand.last().expect("puzzlebox card in hand");
+        let card = *sts2_core::card_by_uid(&s.cards, uid).expect("card exists");
+        let printed = sts2_core::build_card_for_version(card.card_id, false, s.game_version)
+            .expect("factory installed")
+            .cost;
+        assert_eq!(card.cost, printed, "printed cost must survive");
+        assert_eq!(card.combat_var(VarKey::FreeThisTurn), 1);
+        assert_eq!(sts2_core::hooks::effective_card_cost(&s, uid), 0);
+    }
+
     /// C# `Girya.TryModifyRestSiteOptions` + `LiftRestSiteOption.OnSelect`:
     /// with Girya owned the rest site offers Lift after [Rest, Smith];
     /// each Lift bumps `relic_counters[Girya]`; at 3 lifts the option
@@ -1561,10 +1599,7 @@ mod tests {
         let uid = ivory_tile_push_card_energy(&mut state, IVORY_TILE_THRESHOLD);
         let ctx = ivory_tile_ctx_for(uid, &state);
         let _ = dispatch_after_card_played(&mut state, &ctx);
-        assert_eq!(
-            state.player.energy,
-            i8::try_from(IVORY_TILE_ENERGY).unwrap()
-        );
+        assert_eq!(state.player.energy, IVORY_TILE_ENERGY);
     }
 
     /// **IvoryTile #2** — card with `energy_spent > THRESHOLD` fires.
@@ -1577,10 +1612,7 @@ mod tests {
         let uid = ivory_tile_push_card_energy(&mut state, IVORY_TILE_THRESHOLD + 2);
         let ctx = ivory_tile_ctx_for(uid, &state);
         let _ = dispatch_after_card_played(&mut state, &ctx);
-        assert_eq!(
-            state.player.energy,
-            i8::try_from(IVORY_TILE_ENERGY).unwrap()
-        );
+        assert_eq!(state.player.energy, IVORY_TILE_ENERGY);
     }
 
     /// **IvoryTile #3** — cards with `energy_spent < THRESHOLD` never
@@ -1821,6 +1853,25 @@ mod tests {
         assert!(card.upgraded, "FrozenEgg must upgrade Power on deck-add");
     }
 
+    /// PARITY4 Silent: LargeCapsule adds a Defend built un-upgraded and
+    /// ToxicEgg upgrades it on the way in. C# runs a real `CardCmd.Upgrade`
+    /// (ToxicEgg.cs:52), so the deck card is a true Defend+ (8 block), not a
+    /// base Defend with the flag flipped (5 block).
+    #[test]
+    fn toxic_egg_deck_add_applies_upgraded_stats() {
+        use sts2_core::run_effects::dispatch_modify_card_being_added_to_deck;
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.relics.push(RelicId::ToxicEgg);
+        let id = sts2_core::cards::CardId::DefendSilent;
+        let mut card = crate::cards::spec_index::card_pod_from_id(id, false).unwrap();
+        let want = crate::cards::spec_index::card_pod_from_id(id, true).unwrap();
+        assert_ne!(card.base_block, want.base_block);
+        let _ = dispatch_modify_card_being_added_to_deck(&mut rs, &mut card);
+        assert!(card.upgraded);
+        assert_eq!(card.base_block, want.base_block, "Defend+ block");
+    }
+
     #[test]
     fn frozen_egg_leaves_attack_unchanged() {
         use sts2_core::run_effects::dispatch_modify_card_being_added_to_deck;
@@ -1853,6 +1904,32 @@ mod tests {
         assert!(card.upgraded, "MoltenEgg must upgrade Attack on deck-add");
     }
 
+    /// A melted (Toy Box wax) egg is off the run-level hook-listener list —
+    /// C# `RunState.cs:148` builds it from `Relics.Where(r => !r.IsMelted)` —
+    /// so it upgrades nothing on any of its three channels
+    /// (Ironclad-2083 act3: a melted MoltenEgg upgraded a CINDER reward).
+    #[test]
+    fn melted_molten_egg_upgrades_nothing() {
+        use sts2_core::run_effects::{
+            dispatch_modify_card_being_added_to_deck, dispatch_modify_card_reward_options_late,
+            dispatch_modify_merchant_card_creation_results,
+        };
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.relics.push(RelicId::MoltenEgg);
+        rs.wax_relics.insert(RelicId::MoltenEgg);
+        rs.melted_relics.insert(RelicId::MoltenEgg);
+        let mut card = egg_test_card(50_012, CardType::Attack);
+        let _ = dispatch_modify_card_being_added_to_deck(&mut rs, &mut card);
+        assert!(!card.upgraded, "deck-add: melted egg is inert");
+        let mut cards = vec![egg_test_card(50_013, CardType::Attack)];
+        let _ = dispatch_modify_card_reward_options_late(&mut rs, &mut cards);
+        assert!(!cards[0].upgraded, "reward: melted egg is inert");
+        let mut card = egg_test_card(50_014, CardType::Attack);
+        let _ = dispatch_modify_merchant_card_creation_results(&mut rs, &mut card, false);
+        assert!(!card.upgraded, "merchant: melted egg is inert");
+    }
+
     #[test]
     fn molten_egg_leaves_skill_unchanged() {
         use sts2_core::run_effects::dispatch_modify_card_being_added_to_deck;
@@ -1877,6 +1954,28 @@ mod tests {
         let _ = dispatch_modify_card_reward_options_late(&mut rs, &mut options);
         assert!(options[0].upgraded, "Skill option must be upgraded");
         assert!(!options[1].upgraded, "Attack option must not be touched");
+    }
+
+    /// Defect PARITY4: LargeCapsule obtained ToxicEgg, then added a basic
+    /// Defend; the egg flipped the flag only, so Defend+ blocked for 5, not 8.
+    #[test]
+    fn toxic_egg_deck_add_applies_upgrade_stats() {
+        use sts2_core::run_effects::dispatch_modify_card_being_added_to_deck;
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.relics.push(RelicId::ToxicEgg);
+        let mut card = crate::cards::spec_index::card_pod_from_id(
+            sts2_core::cards::CardId::DefendDefect,
+            false,
+        )
+        .expect("DefendDefect pod");
+        assert_eq!(card.base_block, 5);
+        let _ = dispatch_modify_card_being_added_to_deck(&mut rs, &mut card);
+        assert!(card.upgraded);
+        assert_eq!(
+            card.base_block, 8,
+            "ToxicEgg must apply Defend's +3 upgrade"
+        );
     }
 
     #[test]

@@ -331,3 +331,23 @@ fn catastrophes_loop_finishes_before_its_tail_and_the_batch_sibling() {
          the Mayhem batch sibling"
     );
 }
+
+/// A Mayhem-auto-played VoidForm calls `PlayerCmd.EndTurn` (VoidForm.cs:26)
+/// during the AutoPrePlay phase, so C# ends the turn as soon as the play phase
+/// opens: the enemy acts and the NEXT player turn starts. Rust only honoured
+/// that for the Whispering Earring and left the player in a turn C# had
+/// already ended (Regent quick seed 244).
+#[test]
+fn mayhem_auto_played_void_form_ends_the_turn() {
+    let (mut state, tail, _enemy) = state_with_draw_tail(&[CardId::VoidForm], Vec::new());
+    state.cards[tail[0].0.get() as usize - 1].card_type = CardType::Power;
+    let owner = state.player.creature_uid.expect("player creature mirror");
+    sts2_core::card_effects::apply_power_to_creature(&mut state, owner, PowerKind::Mayhem, 1);
+    let round0 = state.round;
+    let _ = start_player_turn(&mut state);
+    assert!(
+        state.round > round0,
+        "VoidForm's EndTurn ran the enemy turn and the next player turn"
+    );
+    assert!(!state.player.request_end_turn_after_play);
+}

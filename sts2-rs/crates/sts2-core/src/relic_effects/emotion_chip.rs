@@ -35,6 +35,11 @@ pub(crate) fn on_after_damage_received_emotion_chip(
 /// fire every orb's passive once and zero the counter. Mirrors Python
 /// `EmotionChip.after_side_turn_start` (`rare.py::EmotionChip`,
 /// pool=DEFECT, hook channel `after_side_turn_start`).
+/// `AfterPlayerTurnStart` entry for [`on_after_side_turn_start_emotion_chip`].
+fn on_after_player_turn_start_emotion_chip(state: &mut CombatState) -> EffectResult {
+    on_after_side_turn_start_emotion_chip(state, Side::Player)
+}
+
 pub(crate) fn on_after_side_turn_start_emotion_chip(
     state: &mut CombatState,
     side: Side,
@@ -122,9 +127,13 @@ pub(crate) fn install() {
         RelicId::EmotionChip,
         on_after_damage_received_emotion_chip as AfterDamageReceivedFn,
     );
-    register_after_side_turn_start(
+    // C# `EmotionChip` overrides `AfterPlayerTurnStart` (both builds), so it rides
+    // that equip-ordered relic walk, not the later `AfterSideTurnStart` walk:
+    // its order against ChoicesParadox / GamblingChip / RoyalPoison is the
+    // player's relic order (GH #1054).
+    register_after_player_turn_start(
         RelicId::EmotionChip,
-        on_after_side_turn_start_emotion_chip as AfterSideTurnStartFn,
+        on_after_player_turn_start_emotion_chip as AfterPlayerTurnStartFn,
     );
     register_owned_after_combat_end(
         RelicId::EmotionChip,

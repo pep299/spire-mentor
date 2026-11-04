@@ -56,12 +56,33 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from typing import Any
 
 sys.path.insert(0, "python")
 
+import sts2_client
 from run_parity import Snap, diff_snaps
 from sts2_client import Game
 from workbench.backends.rust_game import RustGame
+
+
+def _rust_run_manager(character: str, seed: str, ascension: int) -> Any:
+    """A fresh Rust `RunManager` for the build the C# oracle runs.
+
+    ``game_version`` is the selected build (``STS2_GAME_VERSION``), like
+    `act23_map_parity._rust_act_maps` (GH #893). Without it the pool and option
+    checks compared a v0.111.0 C# run against a v0.107.1 Rust run, so every
+    v0.111.0 act pool "diverged" in order.
+    """
+    import sts2_rs  # type: ignore[import-not-found]  # lazy: keep module wheel-free to import
+
+    return sts2_rs.RunManager(
+        string_seed=seed,
+        character=character,
+        ascension_level=ascension,
+        neow_start=True,
+        game_version=sts2_client.GAME_VERSION,
+    )
 
 
 def _rust_backend() -> RustGame:
@@ -149,11 +170,7 @@ def _cs_pools(character: str, seed: str, ascension: int) -> list[list[str]]:
 
 def _rust_pools(character: str, seed: str, ascension: int) -> list[list[str]]:
     """Per-act Rust `events_shuffled` lists (EventId python names)."""
-    import sts2_rs  # type: ignore[import-not-found]  # lazy: keep module wheel-free to import
-
-    rm = sts2_rs.RunManager(
-        string_seed=seed, character=character, ascension_level=ascension, neow_start=True
-    )
+    rm = _rust_run_manager(character, seed, ascension)
     return [list(a.get("events_shuffled", [])) for a in rm.generated_rooms()]
 
 
@@ -211,11 +228,7 @@ def _event_universe(character: str, seed: str, ascension: int) -> list[tuple[str
 
 def _rust_options(character: str, seed: str, ascension: int, name: str) -> list[tuple[str, bool]]:
     """``(canon_option_id, enabled)`` for a forced Rust event, in order."""
-    import sts2_rs  # type: ignore[import-not-found]  # lazy: keep module wheel-free to import
-
-    rm = sts2_rs.RunManager(
-        string_seed=seed, character=character, ascension_level=ascension, neow_start=True
-    )
+    rm = _rust_run_manager(character, seed, ascension)
     if rm.force_event(name) is None:
         raise LookupError(f"rust: unknown event {name!r}")
     opts = rm.event_option_infos() or []

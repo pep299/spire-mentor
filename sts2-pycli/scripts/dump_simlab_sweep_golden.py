@@ -94,7 +94,7 @@ def _normalize(obj: Any) -> Any:
 
 def _start_state_spec() -> dict[str, Any]:
     """A start-state sweep from the same dealt board the axis sweep starts on."""
-    board = sts2_rs.build_scenario_state(
+    board = sts2_rs.build_scenario_state(  # ty: ignore[unresolved-attribute]
         seed=1,
         character="Ironclad",
         deck=["STRIKE_IRONCLAD"] * 5 + ["DEFEND_IRONCLAD"] * 4 + ["BASH"],
@@ -105,7 +105,7 @@ def _start_state_spec() -> dict[str, Any]:
         ascension=3,
         potions=[],
     )
-    wire = json.dumps(sts2_rs.state_to_dict(board), sort_keys=True)
+    wire = json.dumps(sts2_rs.state_to_dict(board), sort_keys=True)  # ty: ignore[unresolved-attribute]
     return {
         "name": "position",
         "encounters": [],
@@ -152,7 +152,7 @@ def main() -> None:
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
     args = ap.parse_args()
     doc = {
-        "engine": {"version": sts2_rs.version(), "src_hash": sts2_rs.src_hash()},
+        "engine": {"version": sts2_rs.version(), "src_hash": sts2_rs.src_hash()},  # ty: ignore[unresolved-attribute]
         "sweeps": [_record(AXIS_SPEC, "random"), _record(_start_state_spec(), "random")],
     }
     args.out.parent.mkdir(parents=True, exist_ok=True)

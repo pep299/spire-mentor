@@ -2794,9 +2794,11 @@ fn run_self_play(
             }
 
             last_action_kind = match &action {
-                Action::PlayCard { .. } => "PlayCard",
+                Action::PlayCard { .. } | Action::PlayCardAtAlly { .. } => "PlayCard",
                 Action::EndTurn => "EndTurn(mcts)",
-                Action::UsePotion { .. } | Action::DrinkPotion { .. } => "Potion",
+                Action::UsePotion { .. }
+                | Action::DrinkPotion { .. }
+                | Action::DrinkPotionAtAlly { .. } => "Potion",
                 Action::Channel { .. } => "Channel",
                 Action::Evoke { .. } => "Evoke",
                 Action::ResolveChoice { .. } => "ResolveChoice",
@@ -2869,7 +2871,7 @@ fn runmanager_pick_action(
         let c = combat?;
         c.player.hand.iter().enumerate().find_map(|(i, uid)| {
             let card = c.cards.get(uid.0.get() as usize - 1)?;
-            let energy = i32::from(c.player.energy);
+            let energy = c.player.energy;
             let cost = sts2_core::hooks::effective_card_cost(c, *uid);
             if cost >= 0 && cost <= energy && card.card_type == want {
                 Some(i)
@@ -2880,7 +2882,7 @@ fn runmanager_pick_action(
     };
     // Power-first only if ≥1 energy would remain (avoids burning the
     // whole turn on a Power with no block down).
-    let energy = i32::from(combat.map_or(0, |c| c.player.energy));
+    let energy = combat.map_or(0, |c| c.player.energy);
     let power_idx = if energy >= 2 {
         pick_by_type(CardType::Power)
     } else {
@@ -3418,6 +3420,7 @@ fn build_combat_state(
         pending_enemy_exec_resume: None,
         combat_log: TurnEvents::default(),
         swipe_stolen: Vec::new(),
+        deck_link: None,
         escaped_creatures: 0,
         coop: sts2_core::coop::CoopState::default(),
         heist_recovered_gold: 0,

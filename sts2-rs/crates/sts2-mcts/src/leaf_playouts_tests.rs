@@ -12,7 +12,7 @@ use crate::values::{playout_value, rng_fingerprint, search_playout, PlayoutMode}
 use rand::RngCore;
 use sts2_core::run_manager::{Phase, RunManager};
 
-fn install() {
+pub(crate) fn install() {
     sts2_content::cards::dispatch::ensure_installed();
     sts2_content::relics::dispatch::ensure_installed();
     sts2_content::potions::dispatch::ensure_installed();
@@ -21,7 +21,7 @@ fn install() {
 
 /// A fresh Ironclad run (seed `seed`) with two draw cards added to the
 /// starter deck, driven by first-option picks into its first combat.
-fn first_combat(seed: i32) -> CombatState {
+pub(crate) fn first_combat(seed: i32) -> CombatState {
     install();
     let mut rm: RunManager =
         sts2_content::run_callbacks::new_run_manager_for_character_with_ascension(

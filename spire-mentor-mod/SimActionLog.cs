@@ -105,7 +105,7 @@ internal static class SimActionLog
 
     private static SimLogPanel? _panel;
 
-    /// <summary>Panel placement/collapse, remembered across F3 toggles so the
+    /// <summary>Panel placement/collapse, remembered across Ctrl+L toggles so the
     /// window comes back where the player put it.</summary>
     internal static Vector2? PanelPosition;
     internal static Vector2? PanelSize;
@@ -172,7 +172,7 @@ internal static class SimActionLog
         }
     }
 
-    /// <summary>Toggle the in-game log panel (F3 / console). Main thread.</summary>
+    /// <summary>Toggle the in-game log panel (Ctrl+L / console). Main thread.</summary>
     public static void TogglePanel()
     {
         try
@@ -444,7 +444,7 @@ internal sealed class SimLogPanel
         _filter.Visible = !collapsed;
         // Short enough to survive the narrower default panel without being
         // squeezed out by the filter box next to it.
-        _title.Text = collapsed ? "▶ action log · F3" : "▼ action log · drag · F3";
+        _title.Text = collapsed ? "▶ action log · Ctrl+L" : "▼ action log · drag · Ctrl+L";
         // Below its minimum the container snaps to the header's height, which
         // is exactly the collapsed look we want.
         _panel.Size = collapsed ? new Vector2(_expandedSize.X, 0f) : _expandedSize;

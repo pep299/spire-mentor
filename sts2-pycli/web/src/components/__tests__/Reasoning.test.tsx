@@ -16,6 +16,25 @@ function enemy(over: Partial<Enemy> & { index: number; name: string }): Enemy {
 }
 
 describe("Reasoning panel", () => {
+  it("names the engine's tie band and the reason for its pick (GH #1022)", () => {
+    render(<Reasoning pv={null} scores={[
+      score({ stable_idx: 2, action: "Inflame+", q: 1.20, is_best: true, in_band: true, pick_rank: 0,
+        pick_reason: "the most searched of the equal moves" }),
+      score({ stable_idx: 0, action: "Strike", q: 1.21, in_band: true, pick_rank: 1 }),
+      score({ stable_idx: 1, action: "Defend", q: 0.90, pick_rank: 2 }),
+    ]} />);
+    expect(screen.getByTestId("tie-band")).toHaveTextContent(
+      "≈ about equal: Inflame+ ≈ Strike · ★ the most searched of the equal moves");
+  });
+
+  it("says nothing about a band that holds only the pick", () => {
+    render(<Reasoning pv={null} scores={[
+      score({ stable_idx: 0, action: "Bash", q: 1.2, is_best: true, in_band: true, pick_rank: 0 }),
+      score({ stable_idx: 1, action: "Defend", q: 0.9, pick_rank: 1 }),
+    ]} />);
+    expect(screen.queryByTestId("tie-band")).toBeNull();
+  });
+
   it("says the call is too close when the top two Q values are inside search noise", () => {
     // Bug report wb-e34ef8b6039bc0f3 showed the panel printing a confident #1
     // on a margin barely above its own seed-to-seed spread. Under the bar, the

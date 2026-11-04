@@ -20,13 +20,27 @@
 //! would be a free trade-in) and `SpawnsPets` (3, all of which the rarity cut
 //! already removes).
 //!
-//! **`IsUsedUp` and `IsMelted` are NOT modelled**, because neither exists at
-//! run level: `RunState::relics` is a bare `Vec<RelicId>` with no per-instance
-//! state, and melting is a combat-side wax mechanic. So a spent MawBank or a
-//! melted relic still reads as tradable here where C# would skip it. That
-//! widens the trade pool slightly; it never narrows it.
+//! `IsMelted` is per-run state (Toy Box's wax relics melt one per combat, see
+//! `RunState::melted_relics`), so it is checked by [`relic_is_tradable_in`],
+//! which every trade event must use — a melted relic is skipped by C#'s
+//! `GetValidRelics` and by the `IsAllowed` counts.
+//!
+//! **`IsUsedUp` is NOT modelled**: `RunState::relics` is a bare `Vec<RelicId>`
+//! with no per-instance "spent" flag, so a spent MawBank still reads as
+//! tradable here where C# would skip it. That widens the trade pool slightly;
+//! it never narrows it.
 
 use sts2_core::relics::RelicId;
+use sts2_core::runstate::RunState;
+
+/// [`relic_is_tradable`] plus the per-run `!IsMelted` clause of C#
+/// `RelicModel.IsTradable` (`Models/RelicModel.cs:188`, both builds): a Toy
+/// Box wax relic that has melted stays in the inventory but no trade event
+/// may take it, nor does it count toward their `IsAllowed` thresholds.
+#[must_use]
+pub fn relic_is_tradable_in(state: &RunState, id: RelicId) -> bool {
+    relic_is_tradable(id) && !state.melted_relics.contains(&id)
+}
 
 /// True when a trade event may take `id` off you — see the module doc.
 ///

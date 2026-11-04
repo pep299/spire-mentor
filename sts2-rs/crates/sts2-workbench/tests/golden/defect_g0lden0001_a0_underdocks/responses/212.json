@@ -1,17 +1,23 @@
 {
  "final_turn_histogram": {
-  "3": 1
+  "3": 2
  },
- "n_losses": 1,
- "n_runs": 1,
+ "n_losses": 2,
+ "n_runs": 2,
  "pattern_tags": {
-  "fast_death": 1
+  "fast_death": 2
  },
  "representative_losses": [
   {
-   "enemy_min_pct": 4.2857,
+   "enemy_min_pct": 4.3478,
    "final_turn": 3,
    "stem": "20260101_000000_Defect_G0LDEN0001",
+   "turn1_q": null
+  },
+  {
+   "enemy_min_pct": 4.2857,
+   "final_turn": 3,
+   "stem": "20260101_000000_Defect_G0LDEN0001_2",
    "turn1_q": null
   }
  ],

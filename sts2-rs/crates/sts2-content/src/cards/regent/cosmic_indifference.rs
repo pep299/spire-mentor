@@ -21,7 +21,6 @@ use super::prelude::*;
 /// `card_select` at the CosmicIndifference play, Rust stayed in `combat`).
 /// Resolved via [`sts2_core::ChoiceKind::PutBack`] (the chosen discard card →
 /// draw-pile top). Bead `sts2-rs-yc2d`.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L139
 // C# source: ../sts2-wiki/decompiled/v0.103.2/MegaCrit.Sts2.Core.Models.Cards/CosmicIndifference.cs
 pub(crate) fn play_cosmic_indifference(
     state: &mut CombatState,

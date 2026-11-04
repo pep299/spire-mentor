@@ -38,35 +38,16 @@ pub(crate) fn play_thinking_ahead(
     _t: Option<CreatureUid>,
 ) -> EffectResult {
     let _ = sts2_core::cards::draw_via_state(state, 2);
-    if state.player.hand.len() <= 1 {
-        // ≤1 hand card → decomp auto-takes it (FromHand count<=MinSelect
-        // short-circuit, `CardSelectCmd.cs:475-478`). Move the single card
-        // (if any) to the top of the draw pile, no choice surfaced.
-        if let Some(uid) = state.player.hand.first().copied() {
-            state.player.hand.remove(0);
-            state.player.draw.insert(0, uid);
-            // Pin top-of-draw so MCTS PIMC re-shuffles preserve the
-            // next-drawn guarantee (mirrors `resolve_putback_choice`).
-            sts2_core::cards::pin_top(&mut state.player, uid);
-        }
+    // C# awaits the whole `CardPileCmd.Draw` before `CardSelectCmd.FromHand`
+    // (ThinkingAhead.cs OnPlay). A Stratagem reshuffle select suspends the
+    // Rust draw mid-way; opening the put-back now would overwrite that select
+    // and offer the pre-draw hand (Necrobinder full seed 4009). Defer it to
+    // the draw's resume instead.
+    if let Some(pdr) = state.pending_draw_resume.as_mut() {
+        pdr.then_put_back_from_hand = true;
         return EffectResult::Resolved;
     }
-    let options: Vec<sts2_core::ChoiceOption> = state
-        .player
-        .hand
-        .iter()
-        .map(|uid| {
-            let idx = uid.0.get() as usize - 1;
-            let card = &state.cards[idx];
-            sts2_core::ChoiceOption {
-                card_id: card.card_id,
-                upgraded: card.upgraded,
-                card_uid: Some(*uid),
-                source_pile: Some(sts2_core::cards::PileKind::Hand),
-            }
-        })
-        .collect();
-    state.request_card_choice(sts2_core::ChoiceKind::PutBack, options, 1, 1, false);
+    state.open_put_back_from_hand();
     EffectResult::Resolved
 }
 

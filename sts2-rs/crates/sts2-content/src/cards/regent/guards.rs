@@ -19,7 +19,6 @@ use super::prelude::*;
 /// Ascension 5, C# entered `card_select` at the Guards play while Rust stayed in
 /// `combat` (AscendersBane shifts the deck onto a hand where Guards is played).
 /// Same family as the Begone fix ([`super::begone`], `sts2-rs-begone-select`).
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L702
 // C# source: ../sts2-wiki/decompiled/v0.103.2/MegaCrit.Sts2.Core.Models.Cards/Guards.cs
 pub(crate) fn play_guards(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     // Empty hand → CardSelectCmd.FromHand selects nothing → no transform.

@@ -3,7 +3,6 @@ use super::prelude::*;
 
 /// Resonance — apply +1 Strength to self, -1 Strength to every
 /// alive enemy.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L513
 pub(crate) fn play_resonance(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     // C# Resonance.cs OnUpgrade bumps the self StrengthPower 1->2 (the -1 to
     // each enemy is a fixed literal, not a var). Bead `sts2-rs-mwts2`.

@@ -60,7 +60,9 @@ pub struct CoopState {
     /// player across swaps where the shared creature row cannot.
     pub seated: u8,
     /// The seat that applied each live instance of an applier-keyed power
-    /// ([`tracks_applier_seat`]). Empty solo; a power absent here is seat 0's.
+    /// ([`tracks_applier_seat`]), and the seat each Imitation Learning copies
+    /// ([`imitation_learning_target`]). Empty solo; a power absent here is
+    /// seat 0's.
     pub power_seat: SmallVec<[(NonZeroU32, u8); 2]>,
     /// A whole co-op fight: every round, every living teammate runs their own
     /// turn start and is hit by the enemy turn, as in C#. False for the
@@ -85,6 +87,31 @@ pub struct CoopState {
     /// rest after. The seats share the run's shuffle stream, so the order
     /// decides who draws what. 0, us first, unless the wire says otherwise.
     pub seat_index: u8,
+    /// The seat id ([`Self::seated`]) of the teammate the `AnyAlly` card being
+    /// played aims at (C# `cardPlay.Target`), for the length of that play,
+    /// replays and a tail parked on a choice included. Set from
+    /// `Action::PlayCardAtAlly` or, for an auto-play, from the
+    /// `CombatTargets` roll ([`roll_any_ally_seat`]).
+    /// `None` at rest, and for a play with no target:
+    /// [`CombatState::any_ally_card_target`] then takes the first living
+    /// teammate, the only one there is with two players.
+    pub card_target: Option<u8>,
+    /// Played cards in Play whose result pile belongs to another player
+    /// (C# `CardLocation.player`), with that player's seat id: rolled as the
+    /// card enters Play ([`roll_result_player`]), spent when it leaves
+    /// ([`hand_over_played_card`]). Only The Ball (GH #1017). Empty at rest.
+    pub result_player: SmallVec<[(crate::CardUid, u8); 1]>,
+    /// Joint search (GH #1046): when we end our turn in a [`Self::full`]
+    /// fight, each teammate still in [`Self::to_play`] is seated and plays
+    /// their turn move by move through [`crate::apply`] instead of all at once
+    /// from the registered policy, so a search branches on their moves too.
+    /// Set by the search on its own root, never by a loader: a world state
+    /// keeps the one-shot [`play_teammates`].
+    pub joint: bool,
+    /// The teammate seated by [`Self::joint`] for their turn, as an `allies`
+    /// index; their `EndTurn` (or the fight ending) seats us again. `None`
+    /// whenever we sit in `state.player`.
+    pub joint_acting: Option<u8>,
 }
 
 /// How many teammates come before us in the run's player order
@@ -213,6 +240,7 @@ pub fn seated_player_died(state: &mut CombatState) -> bool {
     let relics = std::mem::take(&mut state.relics);
     let seat = state.coop.seated;
     state.coop.benched.push((seat, relics));
+    drop_guarded_of(state, seat);
     false
 }
 
@@ -226,7 +254,7 @@ pub(crate) fn revive_the_dead(state: &mut CombatState) {
         if seat == state.coop.seated {
             state.player.current_hp = state.player.current_hp.max(1);
             state.relics = relics;
-        } else if let Some(i) = state.coop.stash.iter().position(|s| s.seat == seat) {
+        } else if let Some(i) = stash_index(state, seat) {
             state.allies[i].current_hp = state.allies[i].current_hp.max(1);
             state.coop.stash[i].relics = relics;
         }
@@ -325,8 +353,11 @@ pub enum SeatRun {
 /// creature it sits on: Strangle and Oblivion to the player who applied them
 /// (C# `InstancedPerApplier`, reacting only to `cardPlay.Card.Owner ==
 /// Applier.Player`); Sandpit and WitheringPresence to the player they target
-/// (C# `base.Target`, one instance per opponent). The seat is the one seated
-/// when the instance was created.
+/// (C# `base.Target`, one instance per opponent); Flanking, Knockdown and Tag
+/// Team to the player who applied them, whose own hits they leave alone
+/// (`dealer == base.Applier`, `card.Owner.Creature == base.Applier`). The seat
+/// is the one seated when the instance was created, or the wire's
+/// `applier_seat`.
 #[must_use]
 pub const fn tracks_applier_seat(kind: PowerKind) -> bool {
     matches!(
@@ -335,7 +366,66 @@ pub const fn tracks_applier_seat(kind: PowerKind) -> bool {
             | PowerKind::Oblivion
             | PowerKind::Sandpit
             | PowerKind::WitheringPresence
+            | PowerKind::Flanking
+            | PowerKind::Knockdown
+            | PowerKind::TagTeam
     )
+}
+
+/// C# `TagTeamPower.ModifyCardPlayCount` and `AfterModifyingCardPlayCount`:
+/// an Attack from a player other than the one who applied Tag Team, aimed at
+/// its owner (AnyEnemy) or at every enemy (AllEnemies), is played `Amount`
+/// more times, and each Tag Team that added plays is removed. Returns the
+/// extra plays. A no-op solo: every Tag Team there is the player's own.
+pub fn tag_team_extra_plays(state: &mut CombatState, ctx: &crate::hooks::CardPlayCountCtx) -> i32 {
+    use crate::cards::TargetType;
+    if ctx.card_type != Some(crate::cards::CardType::Attack)
+        || !state.powers.present_kinds().contains(PowerKind::TagTeam)
+    {
+        return 0;
+    }
+    let Some(target_type) = ctx
+        .card_uid
+        .and_then(|u| state.cards.get(u.0.get() as usize - 1))
+        .map(|c| c.target_type)
+    else {
+        return 0;
+    };
+    let mut extra = 0i32;
+    let mut fired: SmallVec<[NonZeroU32; 2]> = SmallVec::new();
+    for &enemy in &state.enemy_uids {
+        let Some(c) = crate::creature_by_id(&state.creatures, enemy.0) else {
+            continue;
+        };
+        if c.current_hp <= 0 {
+            continue;
+        }
+        let aimed = match target_type {
+            TargetType::Enemy => ctx.target == Some(enemy),
+            TargetType::AllEnemies => true,
+            _ => false,
+        };
+        if !aimed {
+            continue;
+        }
+        for u in &c.powers {
+            let Some(p) = state.powers.get_by_id(u.0) else {
+                continue;
+            };
+            if p.kind == PowerKind::TagTeam && p.amount > 0 && !applied_by_seated(state, p.id) {
+                extra = extra.saturating_add(p.amount);
+                fired.push(p.id);
+            }
+        }
+    }
+    if !fired.is_empty() {
+        state.powers.retain(|p| !fired.contains(&p.id));
+        for c in &mut state.creatures {
+            c.powers.retain(|u| !fired.contains(&u.0));
+        }
+        state.coop.power_seat.retain(|(id, _)| !fired.contains(id));
+    }
+    extra
 }
 
 /// Record that the seated player applied the fresh power `id`. A no-op solo
@@ -344,12 +434,53 @@ pub fn stamp_power_seat(state: &mut CombatState, id: NonZeroU32, kind: PowerKind
     if !has_seats(state) || !tracks_applier_seat(kind) {
         return;
     }
+    bind_power_seat(state, id, state.coop.seated);
+}
+
+/// Record `seat` as the seat of the fresh power `id` in
+/// [`CoopState::power_seat`]. Power ids are reused (`max + 1`), so an entry
+/// left by a removed power with the same id, or by any removed power, goes
+/// first: [`seat_of_power`] and its kin read the first match.
+pub fn bind_power_seat(state: &mut CombatState, id: NonZeroU32, seat: u8) {
     let powers = &state.powers;
     state
         .coop
         .power_seat
         .retain(|(p, _)| *p != id && powers.get_by_id(*p).is_some());
-    state.coop.power_seat.push((id, state.coop.seated));
+    state.coop.power_seat.push((id, seat));
+}
+
+/// Apply `kind` to the seated player and, when that creates a fresh instance
+/// (an instanced kind, or the first stack), bind it to `seat`
+/// ([`bind_power_seat`]). Returns the fresh instance; `None` when the apply
+/// stacked onto an existing one or did nothing.
+pub fn apply_power_bound_to_seat(
+    state: &mut CombatState,
+    kind: PowerKind,
+    amount: i32,
+    seat: u8,
+) -> Option<NonZeroU32> {
+    let row = state.player.creature_uid?;
+    // A fresh power takes the arena's next id (`card_effects`' `max + 1`).
+    let next = state.powers.iter().map(|p| p.id.get()).max().unwrap_or(0) + 1;
+    crate::card_effects::apply_power_to_creature(state, row, kind, amount);
+    let id = NonZeroU32::new(next)?;
+    if state.powers.get_by_id(id).is_none_or(|p| p.kind != kind) {
+        return None;
+    }
+    bind_power_seat(state, id, seat);
+    Some(id)
+}
+
+/// Seat ids in the run's player order ([`CoopState::seat_index`]): the
+/// teammates ahead of us (`ally + 1`), us (0), the rest.
+fn seats_in_run_order(state: &CombatState) -> SmallVec<[u8; 4]> {
+    let ahead = seats_ahead(state);
+    (1..=ahead)
+        .chain([0])
+        .chain(ahead + 1..=state.allies.len())
+        .map(|id| u8::try_from(id).unwrap_or(u8::MAX))
+        .collect()
 }
 
 /// The seat power `id` belongs to ([`tracks_applier_seat`]); 0 when unrecorded.
@@ -368,10 +499,620 @@ pub fn seat_of_power(state: &CombatState, id: NonZeroU32) -> u8 {
 pub fn with_seat(state: &mut CombatState, seat: u8, body: impl FnOnce(&mut CombatState)) {
     if seat == state.coop.seated {
         body(state);
-    } else if let Some(i) = state.coop.stash.iter().position(|s| s.seat == seat) {
+    } else if let Some(i) = stash_index(state, seat) {
         swap_seat(state, i);
         body(state);
         swap_seat(state, i);
+    }
+}
+
+/// Run `body` for every living player other than the seated one, each seated
+/// in turn, in the run's player order (C# `foreach (Player player in
+/// CombatState.Players) if (player != Owner)`): a Hibernating Frost orb's
+/// block. A no-op without seats (teammates sent as HP and block only).
+pub fn each_other_player(state: &mut CombatState, mut body: impl FnMut(&mut CombatState)) {
+    if !has_seats(state) || state.coop.seat_pass {
+        return;
+    }
+    let me = state.coop.seated;
+    for id in seats_in_run_order(state) {
+        if id == me || state.is_over {
+            continue;
+        }
+        with_seat(state, id, |state| {
+            if state.player.current_hp > 0 {
+                body(state);
+            }
+        });
+    }
+}
+
+/// Every player's exhausts this combat: C# Midnight counts the whole
+/// `CardExhaustedEntry` history, whoever exhausted. Each seat keeps its own
+/// count in its event log; the unseated ones wait in their [`SeatStash`].
+#[must_use]
+pub fn cards_exhausted_this_combat(state: &CombatState) -> u32 {
+    state
+        .coop
+        .stash
+        .iter()
+        .fold(state.combat_log.cards_exhausted_this_combat, |n, s| {
+            n.saturating_add(s.combat_log.cards_exhausted_this_combat)
+        })
+}
+
+/// Run `body` for every living player other than the seated one who holds a
+/// `kind` power, each seated in turn, in the run's player order, with the
+/// power's amount: the teammate's own power answering what the seated player
+/// just did (Sneaky's block when someone else plays an Attack, Underworld's
+/// Doom when someone else hits). Their powers wait in a [`SeatStash`] and
+/// hear none of the seated player's events on their own.
+///
+/// A no-op solo, without seats, and inside a seat pass.
+pub fn each_unseated_holder(
+    state: &mut CombatState,
+    kind: PowerKind,
+    mut body: impl FnMut(&mut CombatState, i32),
+) {
+    if !has_seats(state) || state.coop.seat_pass {
+        return;
+    }
+    let holds = |state: &CombatState, i: usize| {
+        state.allies.get(i).is_some_and(|a| a.current_hp > 0)
+            && state.coop.stash.get(i).is_some_and(|s| {
+                s.powers.iter().any(|u| {
+                    state
+                        .powers
+                        .get_by_id(u.0)
+                        .is_some_and(|p| p.kind == kind && p.amount > 0)
+                })
+            })
+    };
+    let seats: SmallVec<[u8; 4]> = seats_in_run_order(state)
+        .into_iter()
+        .filter(|id| stash_index(state, *id).is_some_and(|i| holds(state, i)))
+        .collect();
+    for id in seats {
+        if state.is_over {
+            break;
+        }
+        with_seat(state, id, |state| {
+            let amount = state.player_power_amount(kind);
+            if state.player.current_hp > 0 && amount > 0 {
+                body(state, amount);
+            }
+        });
+    }
+}
+
+/// C# `BeaconOfHopePower.AfterBlockGained`: the seated player gained block,
+/// so every other living player gains `half` Unpowered block. The instance's
+/// `counter` is C#'s `HasAlreadyBeenGivenBlock`: set while it gives, so a
+/// teammate's Beacon answering the gift does not send block back through
+/// this one again. A no-op without a Beacon on the seated player.
+pub fn beacon_of_hope(state: &mut CombatState, half: i32) {
+    if half < 1 {
+        return;
+    }
+    let beacon = state.player_power_uids().into_iter().find(|u| {
+        state
+            .powers
+            .get_by_id(u.0)
+            .is_some_and(|p| p.kind == PowerKind::BeaconOfHope && p.counter == 0)
+    });
+    let Some(beacon) = beacon else {
+        return;
+    };
+    let set = |state: &mut CombatState, on: i32| {
+        if let Some(p) = state.powers.get_mut_by_id(beacon.0) {
+            p.counter = on;
+        }
+    };
+    set(state, 1);
+    each_other_player(state, |state| {
+        let _ = crate::card_effects::gain_block_player_unpowered(state, half);
+    });
+    set(state, 0);
+}
+
+/// C# `TankPower.AfterApplied`: a fresh Tank puts Guarded (the Tank's amount)
+/// on every other living player, applied by the Tank's owner. Each Guarded is
+/// recorded under the owner's seat in [`CoopState::power_seat`], so it can
+/// leave with them ([`drop_guarded_of`]). A no-op without seats.
+pub fn tank_guards_teammates(state: &mut CombatState, amount: i32) {
+    let owner = state.coop.seated;
+    each_other_player(state, |state| {
+        let _ = apply_power_bound_to_seat(state, PowerKind::Guarded, amount, owner);
+    });
+}
+
+/// C# `GuardedPower.AfterDeath`: a Guarded leaves when the player who applied
+/// it dies. Removes every Guarded recorded under `seat` from the waiting
+/// seats; one read off the wire names no applier and stays.
+pub fn drop_guarded_of(state: &mut CombatState, seat: u8) {
+    let gone: SmallVec<[NonZeroU32; 2]> = state
+        .coop
+        .power_seat
+        .iter()
+        .filter(|(id, s)| {
+            *s == seat
+                && state
+                    .powers
+                    .get_by_id(*id)
+                    .is_some_and(|p| p.kind == PowerKind::Guarded)
+        })
+        .map(|(id, _)| *id)
+        .collect();
+    if gone.is_empty() {
+        return;
+    }
+    state.powers.retain(|p| !gone.contains(&p.id));
+    for stash in &mut state.coop.stash {
+        stash.powers.retain(|u| !gone.contains(&u.0));
+    }
+    state.coop.power_seat.retain(|(id, _)| !gone.contains(id));
+}
+
+/// Run `body` for every living player on the seated player's side, each
+/// seated in turn, in the run's player order: C# `GetTeammatesOf(Owner.Creature)
+/// .Where(c => c.IsAlive && c.IsPlayer)`, which includes the owner (Huddle Up,
+/// Plot, Outrage's clones). Without seats, or inside a seat pass, `body` runs
+/// for the seated player alone.
+///
+/// The card being played leaves with its owner's seat: read its values first.
+pub fn every_player(state: &mut CombatState, mut body: impl FnMut(&mut CombatState)) {
+    if !has_seats(state) || state.coop.seat_pass {
+        body(state);
+        return;
+    }
+    for id in seats_in_run_order(state) {
+        if state.is_over {
+            break;
+        }
+        with_seat(state, id, |state| {
+            if state.player.current_hp > 0 {
+                body(state);
+            }
+        });
+    }
+}
+
+/// The seat id of `allies[ally]`: its [`SeatStash::seat`], or `ally + 1`
+/// without stashes (nobody but us is ever seated then).
+#[must_use]
+pub fn seat_of_ally(state: &CombatState, ally: usize) -> u8 {
+    state
+        .coop
+        .stash
+        .get(ally)
+        .map_or_else(|| u8::try_from(ally + 1).unwrap_or(u8::MAX), |s| s.seat)
+}
+
+/// The index into `allies` of the player in seat `seat`; `None` when that is
+/// the seated player or nobody at the table.
+#[must_use]
+pub fn ally_of_seat(state: &CombatState, seat: u8) -> Option<usize> {
+    if seat == state.coop.seated {
+        return None;
+    }
+    if has_seats(state) {
+        return state.coop.stash.iter().position(|s| s.seat == seat);
+    }
+    let i = usize::from(seat).checked_sub(1)?;
+    (i < state.allies.len()).then_some(i)
+}
+
+/// The `AnyAlly` targets a card play may name: every living teammate, as
+/// indices into `allies` (C# `NTargetManager`: a living player who is not
+/// us, `NTargetManager.cs:524-533`; `CardModel.IsValidTarget` then wants it
+/// alive and on our side, `CardModel.cs:1780`).
+#[must_use]
+pub fn any_ally_targets(state: &CombatState) -> SmallVec<[u8; 4]> {
+    state
+        .allies
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| a.current_hp > 0)
+        .filter_map(|(i, _)| u8::try_from(i).ok())
+        .collect()
+}
+
+/// The teammates a potion of `kind` can be thrown at, as indices into
+/// `allies`: every living one for an `AnyPlayer` potion (C#
+/// `PotionModel.CanThrowAtAlly`: `AnyPlayer`, more than one player, combat in
+/// progress; `IsValidTarget`: a living player), none for any other potion or
+/// with nobody else at the table (GH #1017).
+#[must_use]
+pub fn potion_throw_targets(
+    state: &CombatState,
+    kind: crate::potions::PotionKind,
+) -> SmallVec<[u8; 4]> {
+    // Teammates first: `legal_actions` asks for every potion, and a solo
+    // board must not pay the registry lookup.
+    if state.allies.is_empty()
+        || !matches!(
+            crate::potion_effects::lookup_target_type(kind),
+            Some(crate::potions::PotionTargetType::AnyPlayer)
+        )
+    {
+        return SmallVec::new();
+    }
+    any_ally_targets(state)
+}
+
+/// Run `body` with `allies[ally]` seated, then seat the player back: a
+/// potion thrown at that teammate acts on them as on `state.player`.
+pub fn with_ally_seated(state: &mut CombatState, ally: usize, body: impl FnOnce(&mut CombatState)) {
+    swap_seat(state, ally);
+    body(state);
+    swap_seat(state, ally);
+}
+
+/// C# `CardCmd.AutoPlay` for an `AnyAlly` card given no target: it rolls
+/// `Rng.CombatTargets.NextItem` over the other living players in the run's
+/// player order (`combatState.Allies.Where(c => c.IsAlive && c.IsPlayer && c
+/// != card.Owner.Creature)`, `CardCmd.cs:86-97`). Returns the seat id picked;
+/// `None`, without a roll, when no teammate is alive (C# then moves the card
+/// to its result pile unplayed). `NextItem` rolls even over one candidate.
+pub fn roll_any_ally_seat(state: &mut CombatState) -> Option<u8> {
+    let living: SmallVec<[u8; 4]> = seats_in_run_order(state)
+        .into_iter()
+        .filter(|&seat| {
+            ally_of_seat(state, seat)
+                .and_then(|i| state.allies.get(i))
+                .is_some_and(|a| a.current_hp > 0)
+        })
+        .collect();
+    if living.is_empty() {
+        return None;
+    }
+    let n = i32::try_from(living.len()).unwrap_or(i32::MAX);
+    let i = state.run_rng.combat_targets.next_int_exclusive(0, n);
+    living.get(usize::try_from(i).unwrap_or(0)).copied()
+}
+
+/// Run `body` with an `AnyAlly` card's target seated: the teammate
+/// [`CombatState::any_ally_card_target`] names (the one the play chose,
+/// [`CoopState::card_target`]), whose energy, piles, orbs and powers are then
+/// `state.player`'s. Returns whether there was one to seat.
+///
+/// The card being played stays in the owner's Play pile, which goes out with
+/// the owner's seat: read the card's values before calling this.
+pub fn with_card_target(state: &mut CombatState, body: impl FnOnce(&mut CombatState)) -> bool {
+    let Some(ally) = state.any_ally_card_target() else {
+        return false;
+    };
+    let ally = usize::from(ally);
+    swap_seat(state, ally);
+    body(state);
+    swap_seat(state, ally);
+    true
+}
+
+/// The `allies` index of the stash holding seat `id`, while that seat waits
+/// unseated.
+fn stash_index(state: &CombatState, id: u8) -> Option<usize> {
+    state.coop.stash.iter().position(|s| s.seat == id)
+}
+
+/// The seat id of whoever sits in `allies[i]`: its stash's seat, or `i + 1`
+/// without stashes.
+///
+/// Without stashes [`swap_seat`] trades only the [`PlayerCombatState`]s and
+/// no seat id, so a swapped `allies[i]` (holding us) still reads `i + 1`.
+/// Those teammates carry only HP and block and never play a card, so the
+/// callers here (a played card's result player) only meet them through
+/// [`apply_as`] on a hand-built state, where the run order is then a guess.
+fn seat_in_ally(state: &CombatState, i: usize) -> u8 {
+    state
+        .coop
+        .stash
+        .get(i)
+        .map_or_else(|| u8::try_from(i + 1).unwrap_or(u8::MAX), |s| s.seat)
+}
+
+/// The `allies` index holding seat `id` right now ([`seat_in_ally`]'s
+/// inverse); `None` for the seated player or a seat not at the table.
+fn ally_holding(state: &CombatState, id: u8) -> Option<usize> {
+    if has_seats(state) {
+        stash_index(state, id)
+    } else {
+        usize::from(id)
+            .checked_sub(1)
+            .filter(|&i| i < state.allies.len())
+    }
+}
+
+/// Roll the player a card's result pile belongs to, when it is not its owner
+/// (C# `CardLocation.player`), as the card enters Play. Only The Ball moves
+/// players: v0.111.0 `TheBall.GetResultLocationForCardPlay`
+/// (`TheBall.cs:59-77`) takes `CombatState.GetTeammatesOf(Owner.Creature)`
+/// (the player side, in the run's player order), keeps the living players
+/// other than the owner, and picks one with
+/// `Owner.RunState.Rng.CombatTargets.NextItem`. With nobody else alive there
+/// is no roll.
+///
+/// C# asks this at the top of `OnPlayWrapper`, once the card is in Play and
+/// before the play count and `OnPlay` (`CardModel.cs:1881`). The pick waits
+/// in [`CoopState::result_player`] until the card leaves Play
+/// ([`hand_over_played_card`]), whichever exit that is.
+pub fn roll_result_player(state: &mut CombatState, uid: crate::CardUid, id: crate::cards::CardId) {
+    if id != crate::cards::CardId::TheBall || state.allies.is_empty() {
+        return;
+    }
+    let rank = |id: u8| {
+        seats_in_run_order(state)
+            .iter()
+            .position(|&s| s == id)
+            .unwrap_or(usize::MAX)
+    };
+    let mut living: SmallVec<[(usize, u8); 3]> = (0..state.allies.len())
+        .filter(|&i| state.allies[i].current_hp > 0)
+        .map(|i| (rank(seat_in_ally(state, i)), seat_in_ally(state, i)))
+        .collect();
+    living.sort_unstable();
+    let Some(n) = i32::try_from(living.len()).ok().filter(|&n| n > 0) else {
+        return;
+    };
+    let k = state.run_rng.combat_targets.next_int_exclusive(0, n);
+    let Some(&(_, seat)) = usize::try_from(k).ok().and_then(|k| living.get(k)) else {
+        return;
+    };
+    state.coop.result_player.retain(|(u, _)| *u != uid);
+    state.coop.result_player.push((uid, seat));
+}
+
+/// The end of a played card's trip through Play when its result pile belongs
+/// to another player ([`roll_result_player`]): C# `OnPlayWrapper`
+/// (`CardModel.cs:1977-1999`) hands it over with
+/// `CardPileCmd.GiveToAnotherPlayer`, which moves the instance (its grown
+/// damage and all) into that player's pile. A Discard result became their
+/// draw pile at a random place (`Rng.Shuffle.NextInt(Count + 1)`,
+/// `CardPileCmd.cs:511`); an Exhaust result goes to the bottom of their
+/// exhaust pile as a plain pile add, so no exhaust hook fires.
+///
+/// The add is `CardPileCmd.Add(..., isChangingOwners: true)`, which still
+/// fires `Hook.AfterCardChangedPiles` (`CardPileCmd.cs:539-543`). The engine
+/// has no such bus, and no v0.111.0 listener could answer here: BingBong,
+/// BookOfFiveRings, DarkstonePeriapt, LuckyFysh and Hoarder react to Deck
+/// adds, SovereignBlade to itself and SoulFysh to Beckon.
+///
+/// `home` drops the pick: a result pile something else sent back to the
+/// owner (Feral, `FeralPower.cs:58`), or a dupe's `PileType.None`, which is
+/// never handed over (`CardModel.cs:1981`). Returns whether the card was
+/// moved; `false` leaves it to the owner's ordinary routing.
+///
+/// - Combat over or ending: `GiveToAnotherPlayer` returns early
+///   (`CardPileCmd.cs:226`), and so does the owner's fallback `Add`
+///   (`CardPileCmd.cs:379`, `:467`, before the `Shuffle` read), so the card
+///   stays in Play with no RNG read. It is put in our discard with no hook,
+///   not through the routing (whose Nostalgia / Rebound redirects C# never
+///   applies to a Draw result).
+/// - The receiver died during the play: `GiveToAnotherPlayer` returns early
+///   and the card goes to OUR result pile, the draw pile at a random place,
+///   or the ordinary exhaust (left to the caller).
+pub fn hand_over_played_card(
+    state: &mut CombatState,
+    uid: crate::CardUid,
+    home: bool,
+    exhaust: bool,
+) -> bool {
+    let Some(at) = state.coop.result_player.iter().position(|(u, _)| *u == uid) else {
+        return false;
+    };
+    let (_, seat) = state.coop.result_player.remove(at);
+    if home {
+        return false;
+    }
+    let Some(pos) = state.player.play.iter().position(|&u| u == uid) else {
+        return false;
+    };
+    if crate::combat_loop::combat_is_ending(state) {
+        state.player.play.remove(pos);
+        state.player.discard.push(uid);
+        return true;
+    }
+    let receiver = ally_holding(state, seat).filter(|&i| state.allies[i].current_hp > 0);
+    if exhaust && receiver.is_none() {
+        return false;
+    }
+    state.player.play.remove(pos);
+    let pile = match receiver {
+        Some(i) => &mut state.allies[i],
+        None => &mut state.player,
+    };
+    if exhaust {
+        pile.exhaust.push(uid);
+    } else if pile.deferred_draw_order {
+        crate::cards::insert_into_unknown_sorted(pile, uid);
+    } else {
+        let len = i32::try_from(pile.draw.len()).unwrap_or(i32::MAX);
+        let at = state.run_rng.shuffle.next_int(0, len);
+        pile.draw.insert(usize::try_from(at).unwrap_or(0), uid);
+    }
+    true
+}
+
+/// An `AnyAlly` card's power on its target (C# `PowerCmd.Apply(cardPlay.Target,
+/// …, Owner.Creature, this)`), applied with the target seated.
+///
+/// The kinds that react to their applier ([`answers_its_applier`]) get the
+/// card's owner in [`CoopState::power_seat`] ([`seat_of_power`]); a stack
+/// keeps the first applier, as C#'s merged instance does.
+pub fn apply_power_to_card_target(state: &mut CombatState, kind: PowerKind, amount: i32) {
+    let owner = state.coop.seated;
+    with_card_target(state, |state| {
+        if !answers_its_applier(kind) {
+            if let Some(row) = state.player.creature_uid {
+                crate::card_effects::apply_power_to_creature(state, row, kind, amount);
+            }
+            return;
+        }
+        if apply_power_bound_to_seat(state, kind, amount, owner).is_some() {
+            return;
+        }
+        // Stacked: the instance keeps its applier, or takes ours if it named
+        // none (read off the wire).
+        let applied = state
+            .player_power_uids()
+            .into_iter()
+            .find(|p| state.powers.get_by_id(p.0).is_some_and(|p| p.kind == kind));
+        if let Some(id) = applied {
+            if !state.coop.power_seat.iter().any(|(p, _)| *p == id.0) {
+                bind_power_seat(state, id.0, owner);
+            }
+        }
+    });
+}
+
+/// Player powers a teammate puts on you that react to what THAT teammate
+/// does (C# `base.Applier`): Soulbound, whose holder gets Souls when its
+/// applier makes one, and Covered, which counts toward its applier's
+/// Intercept ([`intercept_covered_count`]).
+#[must_use]
+pub const fn answers_its_applier(kind: PowerKind) -> bool {
+    matches!(kind, PowerKind::Soulbound | PowerKind::Covered)
+}
+
+/// How many teammates the player in seat `seat` covers with Intercept: the
+/// live Covered powers bound to them ([`CoopState::power_seat`]). C#
+/// `InterceptPower` keeps the covered creatures in a list, deduplicated
+/// (`AddCoveredCreature`), and multiplies a powered attack on its owner by
+/// `coveredCreatures.Count + 1` (`InterceptPower.cs`). At least 1: an
+/// Intercept always covers someone, even when the board named no applier.
+#[must_use]
+pub fn intercept_covered_count(state: &CombatState, seat: u8) -> i64 {
+    let n = state
+        .powers
+        .iter()
+        .filter(|p| p.kind == PowerKind::Covered && seat_of_power(state, p.id) == seat)
+        .count();
+    i64::try_from(n.max(1)).unwrap_or(1)
+}
+
+/// The seat an Imitation Learning instance copies (C# `PlayerTarget`), held by
+/// the player in seat `owner`: the seat recorded in [`CoopState::power_seat`]
+/// when the card was played (or read off the wire's `applier_seat`), else the
+/// owner's first teammate, which is the only one in a two-player fight.
+#[must_use]
+pub fn imitation_learning_target(state: &CombatState, id: NonZeroU32, owner: u8) -> u8 {
+    state
+        .coop
+        .power_seat
+        .iter()
+        .find(|(p, _)| *p == id)
+        .map_or(u8::from(owner == 0), |(_, seat)| *seat)
+}
+
+/// Every Imitation Learning bound to the seated player, as (holder's seat,
+/// instance), held by a living teammate, in the run's player order. Empty
+/// solo, without seats and inside a seat pass.
+fn imitation_learners(state: &CombatState) -> SmallVec<[(u8, NonZeroU32); 2]> {
+    let mut out = SmallVec::new();
+    if !has_seats(state)
+        || state.coop.seat_pass
+        || !state
+            .powers
+            .present_kinds()
+            .contains(PowerKind::ImitationLearning)
+    {
+        return out;
+    }
+    let player = state.coop.seated;
+    for id in seats_in_run_order(state) {
+        let Some(i) = stash_index(state, id) else {
+            continue;
+        };
+        if id == player || state.allies.get(i).is_none_or(|a| a.current_hp <= 0) {
+            continue;
+        }
+        for u in &state.coop.stash[i].powers {
+            if state
+                .powers
+                .get_by_id(u.0)
+                .is_some_and(|p| p.kind == PowerKind::ImitationLearning)
+                && imitation_learning_target(state, u.0, id) == player
+            {
+                out.push((id, u.0));
+            }
+        }
+    }
+    out
+}
+
+/// C# `ImitationLearningPower.BeforeCardPlayed` (Powers/ImitationLearningPower.cs:59-80):
+/// the clone of `card_uid` to play for each teammate imitating the seated
+/// player, taken at the first play's `BeforeCardPlayed` (`IsFirstInSeries`,
+/// `CreateCloneForPlayer`), so nothing the play itself changes on the card
+/// reaches it. `None` unless it is a Power card and someone imitates the
+/// seated player; the gates in front keep it free for every other play.
+#[must_use]
+pub fn imitation_learning_template(
+    state: &CombatState,
+    card_uid: crate::CardUid,
+    card_type: crate::cards::CardType,
+) -> Option<Box<crate::cards::Card>> {
+    if card_type != crate::cards::CardType::Power
+        || !state
+            .powers
+            .present_kinds()
+            .contains(PowerKind::ImitationLearning)
+        || imitation_learners(state).is_empty()
+    {
+        return None;
+    }
+    state
+        .cards
+        .get(card_uid.0.get() as usize - 1)
+        .copied()
+        .map(Box::new)
+}
+
+/// C# `ImitationLearningPower.AfterCardPlayed` (Powers/ImitationLearningPower.cs:82-95),
+/// at the end of the first play's `AfterCardPlayed` listeners (before any
+/// `AfterCardPlayedLate`): every living teammate holding an Imitation Learning
+/// bound to the seated player (`cardPlay.Card.Owner == _playerTarget`)
+/// decrements it (`PowerCmd.Decrement`, removed at 0) and auto-plays the
+/// clone [`imitation_learning_template`] took as their own
+/// (`CardCmd.AutoPlay(clone, null)`), seated for it. The clone's own play may
+/// set off a teammate's Imitation Learning bound to its new owner in turn, as
+/// in C#. A no-op without a template.
+pub fn imitation_learning_copies(
+    state: &mut CombatState,
+    template: Option<Box<crate::cards::Card>>,
+) {
+    let Some(template) = template else {
+        return;
+    };
+    if state.is_over {
+        return;
+    }
+    for (owner, pid) in imitation_learners(state) {
+        if state.is_over {
+            break;
+        }
+        with_seat(state, owner, |state| {
+            if state.player.current_hp <= 0 {
+                return;
+            }
+            let Some(p) = state.powers.get_mut_by_id(pid) else {
+                return;
+            };
+            p.amount -= 1;
+            let spent = p.amount <= 0;
+            crate::event_log::flash_player_power(state, PowerKind::ImitationLearning);
+            if spent {
+                state.drop_power(pid);
+                state.coop.power_seat.retain(|(p, _)| *p != pid);
+            }
+            let raw = u32::try_from(state.cards.len() + 1).expect("cards arena fits in u32");
+            let uid = crate::CardUid::new(raw).expect("non-zero uid");
+            let mut clone = *template;
+            clone.uid = uid;
+            state.cards.push(clone);
+            state.player.play.push(uid);
+            crate::combat_loop::resolve_auto_played_card(state, uid, false);
+        });
     }
 }
 
@@ -670,6 +1411,9 @@ pub fn register_teammate_policy(policy: TeammatePolicy) {
 /// The answer need not be one of `actions`: those list a multi-pick choice's
 /// single picks only, where the game may take several cards at once.
 /// Replaying a recorded co-op fight answers each pick as the game logged it.
+///
+/// `ally` indexes `allies` as seat 0 sees them, or is [`US_CHOOSING`] when a
+/// teammate's card makes seat 0 choose (Tutor).
 pub type SeatChooser =
     Box<dyn FnMut(&CombatState, usize, &[crate::ChoiceOption], &[Action]) -> Option<Action>>;
 
@@ -684,6 +1428,40 @@ pub fn with_seat_chooser<R>(chooser: SeatChooser, body: impl FnOnce() -> R) -> R
     let out = body();
     SEAT_CHOOSER.with(|c| *c.borrow_mut() = previous);
     out
+}
+
+/// The [`SeatChooser`]'s `ally` for seat 0: a teammate's card makes us choose.
+pub const US_CHOOSING: usize = usize::MAX;
+
+/// The seated player's pick among `options` when a teammate's card makes them
+/// choose on the spot (Tutor: a card from their own draw pile): the installed
+/// [`SeatChooser`]'s, else the [`TeammatePolicy`]'s, else the first option.
+/// `None` without options.
+#[must_use]
+pub fn seated_player_picks(state: &CombatState, options: &[crate::ChoiceOption]) -> Option<usize> {
+    if options.is_empty() {
+        return None;
+    }
+    let chooser = match state.coop.seated {
+        0 => US_CHOOSING,
+        seat => usize::from(seat) - 1,
+    };
+    let actions: SmallVec<[Action; 16]> = (0..options.len())
+        .map(|i| Action::ResolveChoice {
+            selection: smallvec::smallvec![u8::try_from(i).unwrap_or(u8::MAX)],
+        })
+        .collect();
+    let scripted = match scripted_pick(state, chooser, options, &actions) {
+        Some(Action::ResolveChoice { selection }) => selection.first().map(|&i| usize::from(i)),
+        _ => None,
+    };
+    let seed = (u64::from(state.round) << 16) ^ (u64::from(state.coop.seated) << 8) ^ 0x70;
+    let pick = scripted.unwrap_or_else(|| {
+        TEAMMATE_POLICY
+            .get()
+            .map_or(0, |p| p(state, &actions, seed))
+    });
+    Some(pick.min(options.len() - 1))
 }
 
 /// The installed [`SeatChooser`]'s answer, if one is installed and answers.
@@ -738,12 +1516,7 @@ pub fn play_teammates(state: &mut CombatState) {
             }
             let actions: SmallVec<[Action; 16]> = crate::legal_actions(state)
                 .into_iter()
-                .filter(|a| {
-                    !matches!(
-                        a,
-                        Action::EndTurn | Action::UsePotion { .. } | Action::DrinkPotion { .. }
-                    )
-                })
+                .filter(|a| !matches!(a, Action::EndTurn) && a.potion_slot().is_none())
                 .collect();
             if actions.is_empty() {
                 break;
@@ -753,6 +1526,41 @@ pub fn play_teammates(state: &mut CombatState) {
             crate::apply(state, actions[pick].clone());
         }
         swap_seat(state, ally);
+    }
+}
+
+/// [`CoopState::joint`]'s hand-off at the top of our end of turn. Seats us
+/// again if a teammate was acting (their `EndTurn` brought us here), then
+/// seats the next teammate in [`CoopState::to_play`] who is alive and has a
+/// seat, clearing their bit. Returns true when it seated one: the end of turn
+/// stops there, in the play phase, with that teammate to move.
+pub(crate) fn joint_handoff(state: &mut CombatState) -> bool {
+    joint_unseat(state);
+    if !state.coop.joint || !state.coop.full || state.is_over {
+        return false;
+    }
+    for ally in 0..state.allies.len().min(8) {
+        let bit = 1u8 << ally;
+        if state.coop.to_play & bit == 0
+            || state.allies[ally].current_hp <= 0
+            || state.coop.stash.get(ally).is_none()
+        {
+            continue;
+        }
+        state.coop.to_play &= !bit;
+        swap_seat(state, ally);
+        state.coop.joint_acting = u8::try_from(ally).ok();
+        return true;
+    }
+    false
+}
+
+/// Seat us again if a [`CoopState::joint`] teammate is acting. Also run when
+/// the fight ends during their turn, so a finished state always has us
+/// seated.
+pub fn joint_unseat(state: &mut CombatState) {
+    if let Some(ally) = state.coop.joint_acting.take() {
+        swap_seat(state, usize::from(ally));
     }
 }
 

@@ -8,7 +8,7 @@
    "details": [
     "+Relic Lead Paperweight"
    ],
-   "floor": 0,
+   "floor": 1,
    "idx": 0,
    "label": "Choose: Lead Paperweight",
    "turn": null
@@ -19,7 +19,7 @@
    "combat_log": [],
    "decision": "card_select",
    "details": [],
-   "floor": 0,
+   "floor": 1,
    "idx": 1,
    "label": "Select Ultimate Strike",
    "turn": null
@@ -32,7 +32,7 @@
    "details": [
     "Spawned: Fuzzy Wurm Crawler"
    ],
-   "floor": 0,
+   "floor": 1,
    "idx": 2,
    "label": "Map → (2,1)",
    "turn": null
@@ -67,7 +67,7 @@
    "details": [
     "You Block 0→5"
    ],
-   "floor": 1,
+   "floor": 2,
    "idx": 3,
    "label": "Play Defend",
    "turn": 1
@@ -126,7 +126,7 @@
     "Fuzzy Wurm Crawler HP 57→49 (−8)",
     "Fuzzy Wurm Crawler +2 Vulnerable"
    ],
-   "floor": 1,
+   "floor": 2,
    "idx": 4,
    "label": "Play Bash → Fuzzy Wurm Crawler",
    "turn": 1
@@ -185,7 +185,7 @@
     "You Block 5→0",
     "Fuzzy Wurm Crawler Vulnerable 2→1"
    ],
-   "floor": 1,
+   "floor": 2,
    "idx": 5,
    "label": "End turn",
    "turn": 1
@@ -222,7 +222,7 @@
    "details": [
     "Fuzzy Wurm Crawler HP 49→28 (−21)"
    ],
-   "floor": 1,
+   "floor": 2,
    "idx": 6,
    "label": "Play Ultimate Strike → Fuzzy Wurm Crawler",
    "turn": 2
@@ -259,7 +259,7 @@
    "details": [
     "Fuzzy Wurm Crawler HP 28→19 (−9)"
    ],
-   "floor": 1,
+   "floor": 2,
    "idx": 7,
    "label": "Play Strike → Fuzzy Wurm Crawler",
    "turn": 2
@@ -296,7 +296,7 @@
    "details": [
     "Fuzzy Wurm Crawler HP 19→10 (−9)"
    ],
-   "floor": 1,
+   "floor": 2,
    "idx": 8,
    "label": "Play Strike → Fuzzy Wurm Crawler",
    "turn": 2
@@ -353,7 +353,7 @@
     "Fuzzy Wurm Crawler +7 Strength",
     "Fuzzy Wurm Crawler −Vulnerable"
    ],
-   "floor": 1,
+   "floor": 2,
    "idx": 9,
    "label": "End turn",
    "turn": 2
@@ -391,7 +391,7 @@
     "Fuzzy Wurm Crawler HP 10→0  ☠ defeated",
     "Gold 99→110"
    ],
-   "floor": 1,
+   "floor": 2,
    "idx": 10,
    "label": "Play Ultimate Strike → Fuzzy Wurm Crawler",
    "turn": 3
@@ -402,7 +402,7 @@
    "combat_log": [],
    "decision": "card_reward",
    "details": [],
-   "floor": 1,
+   "floor": 2,
    "idx": 11,
    "label": "Take Bloodletting",
    "turn": null
@@ -415,7 +415,7 @@
    "details": [
     "Spawned: Shrinker Beetle"
    ],
-   "floor": 1,
+   "floor": 2,
    "idx": 12,
    "label": "Map → (2,2)",
    "turn": null
@@ -452,7 +452,7 @@
    "details": [
     "Shrinker Beetle HP 40→34 (−6)"
    ],
-   "floor": 2,
+   "floor": 3,
    "idx": 13,
    "label": "Play Strike → Shrinker Beetle",
    "turn": 1
@@ -489,7 +489,7 @@
    "details": [
     "Shrinker Beetle HP 34→28 (−6)"
    ],
-   "floor": 2,
+   "floor": 3,
    "idx": 14,
    "label": "Play Strike → Shrinker Beetle",
    "turn": 1
@@ -526,7 +526,7 @@
    "details": [
     "Shrinker Beetle HP 28→22 (−6)"
    ],
-   "floor": 2,
+   "floor": 3,
    "idx": 15,
    "label": "Play Strike → Shrinker Beetle",
    "turn": 1
@@ -561,7 +561,7 @@
    "details": [
     "You −1 Shrink"
    ],
-   "floor": 2,
+   "floor": 3,
    "idx": 16,
    "label": "End turn",
    "turn": 1
@@ -596,7 +596,7 @@
    "details": [
     "You Block 0→5"
    ],
-   "floor": 2,
+   "floor": 3,
    "idx": 17,
    "label": "Play Defend",
    "turn": 2
@@ -631,7 +631,7 @@
    "details": [
     "You Block 5→10"
    ],
-   "floor": 2,
+   "floor": 3,
    "idx": 18,
    "label": "Play Defend",
    "turn": 2
@@ -668,7 +668,7 @@
    "details": [
     "Shrinker Beetle HP 22→18 (−4)"
    ],
-   "floor": 2,
+   "floor": 3,
    "idx": 19,
    "label": "Play Strike → Shrinker Beetle",
    "turn": 2
@@ -705,7 +705,7 @@
    "details": [
     "You HP 80→77 (−3)"
    ],
-   "floor": 2,
+   "floor": 3,
    "idx": 20,
    "label": "Play Bloodletting",
    "turn": 2
@@ -764,7 +764,7 @@
     "Shrinker Beetle HP 18→13 (−5)",
     "Shrinker Beetle +2 Vulnerable"
    ],
-   "floor": 2,
+   "floor": 3,
    "idx": 21,
    "label": "Play Bash → Shrinker Beetle",
    "turn": 2
@@ -823,7 +823,7 @@
     "You Block 10→0",
     "Shrinker Beetle Vulnerable 2→1"
    ],
-   "floor": 2,
+   "floor": 3,
    "idx": 22,
    "label": "End turn",
    "turn": 2
@@ -863,7 +863,7 @@
     "You −Shrink",
     "Gold 110→125"
    ],
-   "floor": 2,
+   "floor": 3,
    "idx": 23,
    "label": "Play Ultimate Strike → Shrinker Beetle",
    "turn": 3
@@ -874,7 +874,7 @@
    "combat_log": [],
    "decision": "card_reward",
    "details": [],
-   "floor": 2,
+   "floor": 3,
    "idx": 24,
    "label": "Take True Grit",
    "turn": null
@@ -885,7 +885,7 @@
    "combat_log": [],
    "decision": "map_select",
    "details": [],
-   "floor": 2,
+   "floor": 3,
    "idx": 25,
    "label": "Map → (2,3)",
    "turn": null
@@ -899,7 +899,7 @@
     "You HP 80→72 (−8)",
     "Gold 125→193"
    ],
-   "floor": 3,
+   "floor": 4,
    "idx": 26,
    "label": "Choose: Trudge On",
    "turn": null
@@ -912,7 +912,7 @@
    "details": [
     "Spawned: Nibbit"
    ],
-   "floor": 3,
+   "floor": 4,
    "idx": 27,
    "label": "Map → (3,4)",
    "turn": null
@@ -947,7 +947,7 @@
    "details": [
     "You Block 0→7"
    ],
-   "floor": 4,
+   "floor": 5,
    "idx": 28,
    "label": "Play True Grit",
    "turn": 1
@@ -982,7 +982,7 @@
    "details": [
     "You Block 7→12"
    ],
-   "floor": 4,
+   "floor": 5,
    "idx": 29,
    "label": "Play Defend",
    "turn": 1
@@ -1019,7 +1019,7 @@
    "details": [
     "Nibbit HP 43→29 (−14)"
    ],
-   "floor": 4,
+   "floor": 5,
    "idx": 30,
    "label": "Play Ultimate Strike → Nibbit",
    "turn": 1
@@ -1077,7 +1077,7 @@
    "details": [
     "You Block 12→0"
    ],
-   "floor": 4,
+   "floor": 5,
    "idx": 31,
    "label": "End turn",
    "turn": 1
@@ -1112,7 +1112,7 @@
    "details": [
     "You Block 0→5"
    ],
-   "floor": 4,
+   "floor": 5,
    "idx": 32,
    "label": "Play Defend",
    "turn": 2
@@ -1147,7 +1147,7 @@
    "details": [
     "You Block 5→10"
    ],
-   "floor": 4,
+   "floor": 5,
    "idx": 33,
    "label": "Play Defend",
    "turn": 2
@@ -1184,7 +1184,7 @@
    "details": [
     "Nibbit HP 29→23 (−6)"
    ],
-   "floor": 4,
+   "floor": 5,
    "idx": 34,
    "label": "Play Strike → Nibbit",
    "turn": 2
@@ -1221,7 +1221,7 @@
    "details": [
     "You HP 72→69 (−3)"
    ],
-   "floor": 4,
+   "floor": 5,
    "idx": 35,
    "label": "Play Bloodletting",
    "turn": 2
@@ -1258,7 +1258,7 @@
    "details": [
     "Nibbit HP 23→17 (−6)"
    ],
-   "floor": 4,
+   "floor": 5,
    "idx": 36,
    "label": "Play Strike → Nibbit",
    "turn": 2
@@ -1338,7 +1338,7 @@
     "You Block 10→0",
     "Nibbit Block 0→5"
    ],
-   "floor": 4,
+   "floor": 5,
    "idx": 37,
    "label": "End turn",
    "turn": 2
@@ -1373,7 +1373,7 @@
    "details": [
     "You Block 0→5"
    ],
-   "floor": 4,
+   "floor": 5,
    "idx": 38,
    "label": "Play Defend",
    "turn": 3
@@ -1433,7 +1433,7 @@
     "Nibbit Block 5→0",
     "Nibbit +2 Vulnerable"
    ],
-   "floor": 4,
+   "floor": 5,
    "idx": 39,
    "label": "Play Bash → Nibbit",
    "turn": 3
@@ -1470,7 +1470,7 @@
    "details": [
     "You HP 69→66 (−3)"
    ],
-   "floor": 4,
+   "floor": 5,
    "idx": 40,
    "label": "Play Bloodletting",
    "turn": 3
@@ -1507,7 +1507,7 @@
    "details": [
     "Nibbit HP 14→5 (−9)"
    ],
-   "floor": 4,
+   "floor": 5,
    "idx": 41,
    "label": "Play Strike → Nibbit",
    "turn": 3
@@ -1547,7 +1547,7 @@
     "Nibbit HP 5→0  ☠ defeated",
     "Gold 193→209"
    ],
-   "floor": 4,
+   "floor": 5,
    "idx": 42,
    "label": "Play Strike → Nibbit",
    "turn": 3
@@ -1558,7 +1558,7 @@
    "combat_log": [],
    "decision": "card_reward",
    "details": [],
-   "floor": 4,
+   "floor": 5,
    "idx": 43,
    "label": "Take Tremble",
    "turn": null
@@ -1569,7 +1569,7 @@
    "combat_log": [],
    "decision": "map_select",
    "details": [],
-   "floor": 4,
+   "floor": 5,
    "idx": 44,
    "label": "Map → (3,5)",
    "turn": null
@@ -1580,7 +1580,7 @@
    "combat_log": [],
    "decision": "event_choice",
    "details": [],
-   "floor": 5,
+   "floor": 6,
    "idx": 45,
    "label": "Choose: Nab the Map",
    "turn": null
@@ -1594,7 +1594,7 @@
     "Spawned: Snapping Jaxfruit",
     "Spawned: Flyconid"
    ],
-   "floor": 5,
+   "floor": 6,
    "idx": 46,
    "label": "Map → (3,6)",
    "turn": null
@@ -1629,7 +1629,7 @@
    "details": [
     "You Block 0→7"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 47,
    "label": "Play True Grit",
    "turn": 1
@@ -1666,7 +1666,7 @@
    "details": [
     "Snapping Jaxfruit HP 32→26 (−6)"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 48,
    "label": "Play Strike → Snapping Jaxfruit",
    "turn": 1
@@ -1703,7 +1703,7 @@
    "details": [
     "Snapping Jaxfruit HP 26→20 (−6)"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 49,
    "label": "Play Strike → Snapping Jaxfruit",
    "turn": 1
@@ -1850,7 +1850,7 @@
     "You +2 Frail",
     "Snapping Jaxfruit +2 Strength"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 50,
    "label": "End turn",
    "turn": 1
@@ -1885,7 +1885,7 @@
    "details": [
     "You Block 0→3"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 51,
    "label": "Play Defend",
    "turn": 2
@@ -1922,7 +1922,7 @@
    "details": [
     "Snapping Jaxfruit HP 20→6 (−14)"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 52,
    "label": "Play Ultimate Strike → Snapping Jaxfruit",
    "turn": 2
@@ -1959,7 +1959,7 @@
    "details": [
     "Snapping Jaxfruit HP 6→0  ☠ defeated"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 53,
    "label": "Play Strike → Snapping Jaxfruit",
    "turn": 2
@@ -1996,7 +1996,7 @@
    "details": [
     "You HP 68→65 (−3)"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 54,
    "label": "Play Bloodletting",
    "turn": 2
@@ -2033,7 +2033,7 @@
    "details": [
     "Flyconid HP 49→43 (−6)"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 55,
    "label": "Play Strike → Flyconid",
    "turn": 2
@@ -2093,7 +2093,7 @@
     "You Block 3→0",
     "You Frail 2→1"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 56,
    "label": "End turn",
    "turn": 2
@@ -2128,7 +2128,7 @@
    "details": [
     "You Block 0→3"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 57,
    "label": "Play Defend",
    "turn": 3
@@ -2187,7 +2187,7 @@
     "Flyconid HP 43→35 (−8)",
     "Flyconid +2 Vulnerable"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 58,
    "label": "Play Bash → Flyconid",
    "turn": 3
@@ -2246,7 +2246,7 @@
     "You −Frail",
     "Flyconid Vulnerable 2→1"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 59,
    "label": "End turn",
    "turn": 3
@@ -2281,7 +2281,7 @@
    "details": [
     "You Block 0→5"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 60,
    "label": "Play Defend",
    "turn": 4
@@ -2316,7 +2316,7 @@
    "details": [
     "You Block 5→10"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 61,
    "label": "Play Defend",
    "turn": 4
@@ -2353,7 +2353,7 @@
    "details": [
     "Flyconid HP 35→26 (−9)"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 62,
    "label": "Play Strike → Flyconid",
    "turn": 4
@@ -2390,7 +2390,7 @@
    "details": [
     "You HP 57→54 (−3)"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 63,
    "label": "Play Bloodletting",
    "turn": 4
@@ -2473,7 +2473,7 @@
     "You +2 Frail",
     "Flyconid −Vulnerable"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 64,
    "label": "End turn",
    "turn": 4
@@ -2508,7 +2508,7 @@
    "details": [
     "You Block 0→3"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 65,
    "label": "Play Defend",
    "turn": 5
@@ -2567,7 +2567,7 @@
     "Flyconid HP 26→18 (−8)",
     "Flyconid +2 Vulnerable"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 66,
    "label": "Play Bash → Flyconid",
    "turn": 5
@@ -2629,7 +2629,7 @@
     "You −Vulnerable",
     "Flyconid Vulnerable 2→1"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 67,
    "label": "End turn",
    "turn": 5
@@ -2664,7 +2664,7 @@
    "details": [
     "You Block 0→5"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 68,
    "label": "Play True Grit",
    "turn": 6
@@ -2705,7 +2705,7 @@
     "You −Frail",
     "Gold 209→221"
    ],
-   "floor": 6,
+   "floor": 7,
    "idx": 69,
    "label": "Play Ultimate Strike → Flyconid",
    "turn": 6
@@ -2716,7 +2716,7 @@
    "combat_log": [],
    "decision": "card_reward",
    "details": [],
-   "floor": 6,
+   "floor": 7,
    "idx": 70,
    "label": "Take Molten Fist",
    "turn": null
@@ -2727,7 +2727,7 @@
    "combat_log": [],
    "decision": "map_select",
    "details": [],
-   "floor": 6,
+   "floor": 7,
    "idx": 71,
    "label": "Map → (2,7)",
    "turn": null
@@ -2740,7 +2740,7 @@
    "details": [
     "You HP 45→69 (+24)"
    ],
-   "floor": 7,
+   "floor": 8,
    "idx": 72,
    "label": "Choose: Rest",
    "turn": null
@@ -2751,7 +2751,7 @@
    "combat_log": [],
    "decision": "map_select",
    "details": [],
-   "floor": 7,
+   "floor": 8,
    "idx": 73,
    "label": "Map → (2,8)",
    "turn": null
@@ -2764,7 +2764,7 @@
    "details": [
     "Gold 221→169"
    ],
-   "floor": 8,
+   "floor": 9,
    "idx": 74,
    "label": "Buy Pommel Strike",
    "turn": null
@@ -2775,10 +2775,10 @@
    "combat_log": [],
    "decision": "shop",
    "details": [
-    "Gold 169→119",
+    "Gold 169→118",
     "+Potion Energy Potion"
    ],
-   "floor": 8,
+   "floor": 9,
    "idx": 75,
    "label": "Buy Energy Potion",
    "turn": null
@@ -2789,7 +2789,7 @@
    "combat_log": [],
    "decision": "shop",
    "details": [],
-   "floor": 8,
+   "floor": 9,
    "idx": 76,
    "label": "remove_card",
    "turn": null
@@ -2800,9 +2800,9 @@
    "combat_log": [],
    "decision": "card_select",
    "details": [
-    "Gold 119→44"
+    "Gold 118→43"
    ],
-   "floor": 8,
+   "floor": 9,
    "idx": 77,
    "label": "Remove Strike",
    "turn": null
@@ -2813,7 +2813,7 @@
    "combat_log": [],
    "decision": "shop",
    "details": [],
-   "floor": 8,
+   "floor": 9,
    "idx": 78,
    "label": "leave_room",
    "turn": null
@@ -2824,10 +2824,10 @@
    "combat_log": [],
    "decision": "map_select",
    "details": [
-    "Gold 44→92",
+    "Gold 43→91",
     "+Relic Centennial Puzzle"
    ],
-   "floor": 8,
+   "floor": 9,
    "idx": 79,
    "label": "Map → (2,9)",
    "turn": null
@@ -2838,7 +2838,7 @@
    "combat_log": [],
    "decision": "map_select",
    "details": [],
-   "floor": 9,
+   "floor": 10,
    "idx": 80,
    "label": "Map → (1,10)",
    "turn": null
@@ -2849,7 +2849,7 @@
    "combat_log": [],
    "decision": "rest_site",
    "details": [],
-   "floor": 10,
+   "floor": 11,
    "idx": 81,
    "label": "Choose: Smith",
    "turn": null
@@ -2860,7 +2860,7 @@
    "combat_log": [],
    "decision": "card_select",
    "details": [],
-   "floor": 10,
+   "floor": 11,
    "idx": 82,
    "label": "Upgrade Strike",
    "turn": null
@@ -2873,7 +2873,7 @@
    "details": [
     "Spawned: Fogmog"
    ],
-   "floor": 10,
+   "floor": 11,
    "idx": 83,
    "label": "Map → (2,11)",
    "turn": null
@@ -2908,7 +2908,7 @@
    "details": [
     "Used Energy Potion"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 84,
    "label": "Drink Energy Potion → Fogmog",
    "turn": 1
@@ -2945,7 +2945,7 @@
    "details": [
     "Fogmog HP 74→65 (−9)"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 85,
    "label": "Play Pommel Strike → Fogmog",
    "turn": 1
@@ -3004,7 +3004,7 @@
     "Fogmog HP 65→57 (−8)",
     "Fogmog +2 Vulnerable"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 86,
    "label": "Play Bash → Fogmog",
    "turn": 1
@@ -3041,7 +3041,7 @@
    "details": [
     "Fogmog HP 57→48 (−9)"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 87,
    "label": "Play Strike → Fogmog",
    "turn": 1
@@ -3076,7 +3076,7 @@
    "details": [
     "You Block 0→5"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 88,
    "label": "Play Defend",
    "turn": 1
@@ -3158,7 +3158,7 @@
     "Fogmog −Vulnerable",
     "Spawned: Fogmog"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 89,
    "label": "End turn",
    "turn": 1
@@ -3195,7 +3195,7 @@
    "details": [
     "Eye with Teeth HP 6→0  ☠ defeated"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 90,
    "label": "Play Molten Fist → Eye with Teeth",
    "turn": 2
@@ -3232,7 +3232,7 @@
    "details": [
     "Fogmog HP 48→35 (−13)"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 91,
    "label": "Play Strike+ → Fogmog",
    "turn": 2
@@ -3269,7 +3269,7 @@
    "details": [
     "Fogmog HP 35→26 (−9)"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 92,
    "label": "Play Strike → Fogmog",
    "turn": 2
@@ -3351,7 +3351,7 @@
     "Fogmog −Vulnerable",
     "Spawned: Eye with Teeth"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 93,
    "label": "End turn",
    "turn": 2
@@ -3388,7 +3388,7 @@
    "details": [
     "Eye with Teeth HP 6→0  ☠ defeated"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 94,
    "label": "Play Ultimate Strike → Eye with Teeth",
    "turn": 3
@@ -3423,7 +3423,7 @@
    "details": [
     "You Block 0→7"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 95,
    "label": "Play True Grit",
    "turn": 3
@@ -3458,7 +3458,7 @@
    "details": [
     "You Block 7→12"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 96,
    "label": "Play Defend",
    "turn": 3
@@ -3539,7 +3539,7 @@
     "Fogmog Strength 1→2",
     "Spawned: Eye with Teeth"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 97,
    "label": "End turn",
    "turn": 3
@@ -3576,7 +3576,7 @@
    "details": [
     "Eye with Teeth HP 6→0  ☠ defeated"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 98,
    "label": "Play Strike+ → Eye with Teeth",
    "turn": 4
@@ -3635,7 +3635,7 @@
     "Fogmog HP 26→18 (−8)",
     "Fogmog +2 Vulnerable"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 99,
    "label": "Play Bash → Fogmog",
    "turn": 4
@@ -3695,7 +3695,7 @@
     "Fogmog Vulnerable 2→1",
     "Spawned: Eye with Teeth"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 100,
    "label": "End turn",
    "turn": 4
@@ -3732,7 +3732,7 @@
    "details": [
     "Eye with Teeth HP 6→0  ☠ defeated"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 101,
    "label": "Play Ultimate Strike → Eye with Teeth",
    "turn": 5
@@ -3767,7 +3767,7 @@
    "details": [
     "You Block 0→7"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 102,
    "label": "Play True Grit",
    "turn": 5
@@ -3804,7 +3804,7 @@
    "details": [
     "Fogmog HP 18→5 (−13)"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 103,
    "label": "Play Pommel Strike → Fogmog",
    "turn": 5
@@ -3887,7 +3887,7 @@
     "Fogmog −Vulnerable",
     "Spawned: Eye with Teeth"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 104,
    "label": "End turn",
    "turn": 5
@@ -3925,9 +3925,9 @@
     "You HP 42→48 (+6)",
     "Eye with Teeth HP 6→0  ☠ defeated",
     "Fogmog HP 5→0  ☠ defeated",
-    "Gold 92→107"
+    "Gold 91→106"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 105,
    "label": "Play Strike+ → Fogmog",
    "turn": 6
@@ -3938,7 +3938,7 @@
    "combat_log": [],
    "decision": "card_reward",
    "details": [],
-   "floor": 11,
+   "floor": 12,
    "idx": 106,
    "label": "Take Cinder",
    "turn": null
@@ -3952,7 +3952,7 @@
     "Spawned: Nibbit #1",
     "Spawned: Nibbit #2"
    ],
-   "floor": 11,
+   "floor": 12,
    "idx": 107,
    "label": "Map → (1,12)",
    "turn": null
@@ -3987,7 +3987,7 @@
    "details": [
     "You Block 0→5"
    ],
-   "floor": 12,
+   "floor": 13,
    "idx": 108,
    "label": "Play Defend",
    "turn": 1
@@ -4022,7 +4022,7 @@
    "details": [
     "You Block 5→10"
    ],
-   "floor": 12,
+   "floor": 13,
    "idx": 109,
    "label": "Play Defend",
    "turn": 1
@@ -4057,7 +4057,7 @@
    "details": [
     "Nibbit #1 +3 Vulnerable"
    ],
-   "floor": 12,
+   "floor": 13,
    "idx": 110,
    "label": "Play Tremble → Nibbit #1",
    "turn": 1
@@ -4181,7 +4181,7 @@
     "Nibbit #1 Vulnerable 3→2",
     "Nibbit #2 +2 Strength"
    ],
-   "floor": 12,
+   "floor": 13,
    "idx": 111,
    "label": "End turn",
    "turn": 1
@@ -4218,7 +4218,7 @@
    "details": [
     "Nibbit #2 HP 43→25 (−18)"
    ],
-   "floor": 12,
+   "floor": 13,
    "idx": 112,
    "label": "Play Cinder → Nibbit #2",
    "turn": 2
@@ -4255,7 +4255,7 @@
    "details": [
     "Nibbit #2 HP 25→19 (−6)"
    ],
-   "floor": 12,
+   "floor": 13,
    "idx": 113,
    "label": "Play Strike → Nibbit #2",
    "turn": 2
@@ -4358,7 +4358,7 @@
     "Nibbit #1 Vulnerable 2→1",
     "Nibbit #1 +2 Strength"
    ],
-   "floor": 12,
+   "floor": 13,
    "idx": 114,
    "label": "End turn",
    "turn": 2
@@ -4393,7 +4393,7 @@
    "details": [
     "You Block 0→7"
    ],
-   "floor": 12,
+   "floor": 13,
    "idx": 115,
    "label": "Play True Grit",
    "turn": 3
@@ -4428,7 +4428,7 @@
    "details": [
     "You Block 7→12"
    ],
-   "floor": 12,
+   "floor": 13,
    "idx": 116,
    "label": "Play Defend",
    "turn": 3
@@ -4463,7 +4463,7 @@
    "details": [
     "You Block 12→17"
    ],
-   "floor": 12,
+   "floor": 13,
    "idx": 117,
    "label": "Play Defend",
    "turn": 3
@@ -4500,7 +4500,7 @@
    "details": [
     "You HP 34→31 (−3)"
    ],
-   "floor": 12,
+   "floor": 13,
    "idx": 118,
    "label": "Play Bloodletting",
    "turn": 3
@@ -4537,7 +4537,7 @@
    "details": [
     "Nibbit #2 HP 19→5 (−14)"
    ],
-   "floor": 12,
+   "floor": 13,
    "idx": 119,
    "label": "Play Ultimate Strike → Nibbit #2",
    "turn": 3
@@ -4574,7 +4574,7 @@
    "details": [
     "Nibbit #2 HP 5→0  ☠ defeated"
    ],
-   "floor": 12,
+   "floor": 13,
    "idx": 120,
    "label": "Play Molten Fist → Nibbit #2",
    "turn": 3
@@ -4633,7 +4633,7 @@
     "You Block 17→0",
     "Nibbit −Vulnerable"
    ],
-   "floor": 12,
+   "floor": 13,
    "idx": 121,
    "label": "End turn",
    "turn": 3
@@ -4668,7 +4668,7 @@
    "details": [
     "You Block 0→5"
    ],
-   "floor": 12,
+   "floor": 13,
    "idx": 122,
    "label": "Play Defend",
    "turn": 4
@@ -4705,7 +4705,7 @@
    "details": [
     "Nibbit HP 42→24 (−18)"
    ],
-   "floor": 12,
+   "floor": 13,
    "idx": 123,
    "label": "Play Cinder → Nibbit",
    "turn": 4
@@ -4786,7 +4786,7 @@
     "You Block 5→0",
     "Nibbit Block 0→5"
    ],
-   "floor": 12,
+   "floor": 13,
    "idx": 124,
    "label": "End turn",
    "turn": 4
@@ -4821,7 +4821,7 @@
    "details": [
     "You Block 0→5"
    ],
-   "floor": 12,
+   "floor": 13,
    "idx": 125,
    "label": "Play Defend",
    "turn": 5
@@ -4859,7 +4859,7 @@
     "Nibbit HP 24→20 (−4)",
     "Nibbit Block 5→0"
    ],
-   "floor": 12,
+   "floor": 13,
    "idx": 126,
    "label": "Play Strike+ → Nibbit",
    "turn": 5
@@ -4896,7 +4896,7 @@
    "details": [
     "Nibbit HP 20→14 (−6)"
    ],
-   "floor": 12,
+   "floor": 13,
    "idx": 127,
    "label": "Play Strike → Nibbit",
    "turn": 5
@@ -4953,7 +4953,7 @@
     "You Block 5→0",
     "Nibbit Strength 2→4"
    ],
-   "floor": 12,
+   "floor": 13,
    "idx": 128,
    "label": "End turn",
    "turn": 5
@@ -4990,10 +4990,10 @@
    "details": [
     "You HP 28→34 (+6)",
     "Nibbit HP 14→0  ☠ defeated",
-    "Gold 107→120",
+    "Gold 106→119",
     "+Potion Block Potion"
    ],
-   "floor": 12,
+   "floor": 13,
    "idx": 129,
    "label": "Play Cinder → Nibbit",
    "turn": 6
@@ -5004,7 +5004,7 @@
    "combat_log": [],
    "decision": "card_reward",
    "details": [],
-   "floor": 12,
+   "floor": 13,
    "idx": 130,
    "label": "Take Colossus",
    "turn": null
@@ -5017,7 +5017,7 @@
    "details": [
     "Spawned: Cubex Construct"
    ],
-   "floor": 12,
+   "floor": 13,
    "idx": 131,
    "label": "Map → (0,13)",
    "turn": null
@@ -5053,7 +5053,7 @@
     "You Block 0→12",
     "Used Block Potion"
    ],
-   "floor": 13,
+   "floor": 14,
    "idx": 132,
    "label": "Drink Block Potion → Cubex Construct",
    "turn": 1
@@ -5090,7 +5090,7 @@
    "details": [
     "Cubex Construct HP 65→55 (−10)"
    ],
-   "floor": 13,
+   "floor": 14,
    "idx": 133,
    "label": "Play Molten Fist → Cubex Construct",
    "turn": 1
@@ -5127,7 +5127,7 @@
    "details": [
     "Cubex Construct HP 55→46 (−9)"
    ],
-   "floor": 13,
+   "floor": 14,
    "idx": 134,
    "label": "Play Pommel Strike → Cubex Construct",
    "turn": 1
@@ -5164,7 +5164,7 @@
    "details": [
     "Cubex Construct HP 46→37 (−9)"
    ],
-   "floor": 13,
+   "floor": 14,
    "idx": 135,
    "label": "Play Strike+ → Cubex Construct",
    "turn": 1
@@ -5201,7 +5201,7 @@
    "details": [
     "You HP 34→31 (−3)"
    ],
-   "floor": 13,
+   "floor": 14,
    "idx": 136,
    "label": "Play Bloodletting",
    "turn": 1
@@ -5238,7 +5238,7 @@
    "details": [
     "Cubex Construct HP 37→23 (−14)"
    ],
-   "floor": 13,
+   "floor": 14,
    "idx": 137,
    "label": "Play Ultimate Strike → Cubex Construct",
    "turn": 1
@@ -5275,7 +5275,7 @@
    "details": [
     "Cubex Construct HP 23→17 (−6)"
    ],
-   "floor": 13,
+   "floor": 14,
    "idx": 138,
    "label": "Play Strike → Cubex Construct",
    "turn": 1
@@ -5332,7 +5332,7 @@
     "You Block 12→0",
     "Cubex Construct +2 Strength"
    ],
-   "floor": 13,
+   "floor": 14,
    "idx": 139,
    "label": "End turn",
    "turn": 1
@@ -5367,7 +5367,7 @@
    "details": [
     "You Block 0→5"
    ],
-   "floor": 13,
+   "floor": 14,
    "idx": 140,
    "label": "Play Defend",
    "turn": 2
@@ -5402,7 +5402,7 @@
    "details": [
     "You Block 5→10"
    ],
-   "floor": 13,
+   "floor": 14,
    "idx": 141,
    "label": "Play Defend",
    "turn": 2
@@ -5439,7 +5439,7 @@
    "details": [
     "Cubex Construct HP 17→11 (−6)"
    ],
-   "floor": 13,
+   "floor": 14,
    "idx": 142,
    "label": "Play Strike → Cubex Construct",
    "turn": 2
@@ -5519,7 +5519,7 @@
     "You Block 10→0",
     "Cubex Construct Strength 2→4"
    ],
-   "floor": 13,
+   "floor": 14,
    "idx": 143,
    "label": "End turn",
    "turn": 2
@@ -5556,10 +5556,10 @@
    "details": [
     "You HP 31→37 (+6)",
     "Cubex Construct HP 11→0  ☠ defeated",
-    "Gold 120→138",
+    "Gold 119→137",
     "+Potion Speed Potion"
    ],
-   "floor": 13,
+   "floor": 14,
    "idx": 144,
    "label": "Play Cinder → Cubex Construct",
    "turn": 3
@@ -5570,7 +5570,7 @@
    "combat_log": [],
    "decision": "card_reward",
    "details": [],
-   "floor": 13,
+   "floor": 14,
    "idx": 145,
    "label": "Take Blood Wall",
    "turn": null
@@ -5586,7 +5586,7 @@
     "Spawned: Leaf Slime (S)",
     "Spawned: Twig Slime (S)"
    ],
-   "floor": 13,
+   "floor": 14,
    "idx": 146,
    "label": "Map → (0,14)",
    "turn": null
@@ -5665,7 +5665,7 @@
     "You +5 Speed Potion",
     "Used Speed Potion"
    ],
-   "floor": 14,
+   "floor": 15,
    "idx": 147,
    "label": "Drink Speed Potion → Twig Slime (S)",
    "turn": 1
@@ -5702,7 +5702,7 @@
    "details": [
     "Twig Slime (S) HP 9→0  ☠ defeated"
    ],
-   "floor": 14,
+   "floor": 15,
    "idx": 148,
    "label": "Play Ultimate Strike → Twig Slime (S)",
    "turn": 1
@@ -5761,7 +5761,7 @@
     "You HP 37→35 (−2)",
     "You Block 0→21"
    ],
-   "floor": 14,
+   "floor": 15,
    "idx": 149,
    "label": "Play Blood Wall",
    "turn": 1
@@ -5947,7 +5947,7 @@
     "You −Dexterity",
     "You −Speed Potion"
    ],
-   "floor": 14,
+   "floor": 15,
    "idx": 150,
    "label": "End turn",
    "turn": 1
@@ -5984,7 +5984,7 @@
    "details": [
     "Leaf Slime (S) HP 11→0  ☠ defeated"
    ],
-   "floor": 14,
+   "floor": 15,
    "idx": 151,
    "label": "Play Cinder → Leaf Slime (S)",
    "turn": 2
@@ -6019,7 +6019,7 @@
    "details": [
     "You Block 0→5"
    ],
-   "floor": 14,
+   "floor": 15,
    "idx": 152,
    "label": "Play Defend",
    "turn": 2
@@ -6122,7 +6122,7 @@
     "You HP 35→21 (−14)",
     "You Block 5→0"
    ],
-   "floor": 14,
+   "floor": 15,
    "idx": 153,
    "label": "End turn",
    "turn": 2
@@ -6159,7 +6159,7 @@
    "details": [
     "Twig Slime (M) HP 28→19 (−9)"
    ],
-   "floor": 14,
+   "floor": 15,
    "idx": 154,
    "label": "Play Strike+ → Twig Slime (M)",
    "turn": 3
@@ -6196,7 +6196,7 @@
    "details": [
     "Twig Slime (M) HP 19→13 (−6)"
    ],
-   "floor": 14,
+   "floor": 15,
    "idx": 155,
    "label": "Play Strike → Twig Slime (M)",
    "turn": 3
@@ -6233,7 +6233,7 @@
    "details": [
     "Twig Slime (M) HP 13→7 (−6)"
    ],
-   "floor": 14,
+   "floor": 15,
    "idx": 156,
    "label": "Play Strike → Twig Slime (M)",
    "turn": 3
@@ -6270,7 +6270,7 @@
    "details": [
     "You HP 21→18 (−3)"
    ],
-   "floor": 14,
+   "floor": 15,
    "idx": 157,
    "label": "Play Bloodletting",
    "turn": 3
@@ -6305,7 +6305,7 @@
    "details": [
     "You Block 0→5"
    ],
-   "floor": 14,
+   "floor": 15,
    "idx": 158,
    "label": "Play Defend",
    "turn": 3
@@ -6424,7 +6424,7 @@
    "details": [
     "You Block 5→0"
    ],
-   "floor": 14,
+   "floor": 15,
    "idx": 159,
    "label": "End turn",
    "turn": 3
@@ -6461,7 +6461,7 @@
    "details": [
     "Twig Slime (M) HP 7→0  ☠ defeated"
    ],
-   "floor": 14,
+   "floor": 15,
    "idx": 160,
    "label": "Play Bash → Twig Slime (M)",
    "turn": 4
@@ -6496,7 +6496,7 @@
    "details": [
     "You Block 0→5"
    ],
-   "floor": 14,
+   "floor": 15,
    "idx": 161,
    "label": "Play Defend",
    "turn": 4
@@ -6555,7 +6555,7 @@
     "You HP 18→15 (−3)",
     "You Block 5→0"
    ],
-   "floor": 14,
+   "floor": 15,
    "idx": 162,
    "label": "End turn",
    "turn": 4
@@ -6592,7 +6592,7 @@
    "details": [
     "Leaf Slime (M) HP 33→24 (−9)"
    ],
-   "floor": 14,
+   "floor": 15,
    "idx": 163,
    "label": "Play Strike+ → Leaf Slime (M)",
    "turn": 5
@@ -6629,7 +6629,7 @@
    "details": [
     "Leaf Slime (M) HP 24→15 (−9)"
    ],
-   "floor": 14,
+   "floor": 15,
    "idx": 164,
    "label": "Play Pommel Strike → Leaf Slime (M)",
    "turn": 5
@@ -6664,7 +6664,7 @@
    "details": [
     "Leaf Slime (M) +3 Vulnerable"
    ],
-   "floor": 14,
+   "floor": 15,
    "idx": 165,
    "label": "Play Tremble → Leaf Slime (M)",
    "turn": 5
@@ -6741,7 +6741,7 @@
    "details": [
     "Leaf Slime (M) Vulnerable 3→2"
    ],
-   "floor": 14,
+   "floor": 15,
    "idx": 166,
    "label": "End turn",
    "turn": 5
@@ -6778,10 +6778,10 @@
    "details": [
     "You HP 15→21 (+6)",
     "Leaf Slime (M) HP 15→0  ☠ defeated",
-    "Gold 138→158",
+    "Gold 137→157",
     "+Potion Weak Potion"
    ],
-   "floor": 14,
+   "floor": 15,
    "idx": 167,
    "label": "Play Cinder → Leaf Slime (M)",
    "turn": 6
@@ -6792,7 +6792,7 @@
    "combat_log": [],
    "decision": "card_reward",
    "details": [],
-   "floor": 14,
+   "floor": 15,
    "idx": 168,
    "label": "Take Shrug It Off",
    "turn": null
@@ -6803,7 +6803,7 @@
    "combat_log": [],
    "decision": "map_select",
    "details": [],
-   "floor": 14,
+   "floor": 15,
    "idx": 169,
    "label": "Map → (1,15)",
    "turn": null
@@ -6816,7 +6816,7 @@
    "details": [
     "You HP 21→45 (+24)"
    ],
-   "floor": 15,
+   "floor": 16,
    "idx": 170,
    "label": "Choose: Rest",
    "turn": null
@@ -6829,7 +6829,7 @@
    "details": [
     "Spawned: Vantom"
    ],
-   "floor": 15,
+   "floor": 16,
    "idx": 171,
    "label": "Map → (3,16)",
    "turn": null
@@ -6886,7 +6886,7 @@
     "Vantom +3 Weak",
     "Used Weak Potion"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 172,
    "label": "Drink Weak Potion → Vantom",
    "turn": 1
@@ -6921,7 +6921,7 @@
    "details": [
     "You Block 0→5"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 173,
    "label": "Play Defend",
    "turn": 1
@@ -6980,7 +6980,7 @@
     "Vantom HP 173→172 (−1)",
     "Vantom Slippery 8→7"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 174,
    "label": "Play Cinder → Vantom",
    "turn": 1
@@ -7039,7 +7039,7 @@
     "You Block 5→0",
     "Vantom Weak 3→2"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 175,
    "label": "End turn",
    "turn": 1
@@ -7074,7 +7074,7 @@
    "details": [
     "You Block 0→7"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 176,
    "label": "Play True Grit",
    "turn": 2
@@ -7109,7 +7109,7 @@
    "details": [
     "You Block 7→12"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 177,
    "label": "Play Defend",
    "turn": 2
@@ -7168,7 +7168,7 @@
     "Vantom HP 172→171 (−1)",
     "Vantom Slippery 7→6"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 178,
    "label": "Play Ultimate Strike → Vantom",
    "turn": 2
@@ -7250,7 +7250,7 @@
     "You Block 12→0",
     "Vantom Weak 2→1"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 179,
    "label": "End turn",
    "turn": 2
@@ -7309,7 +7309,7 @@
     "You HP 45→43 (−2)",
     "You Block 0→16"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 180,
    "label": "Play Blood Wall",
    "turn": 3
@@ -7344,7 +7344,7 @@
    "details": [
     "You Block 16→24"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 181,
    "label": "Play Shrug It Off",
    "turn": 3
@@ -7466,7 +7466,7 @@
     "You Block 24→0",
     "Vantom −Weak"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 182,
    "label": "End turn",
    "turn": 3
@@ -7501,7 +7501,7 @@
    "details": [
     "You Block 0→5"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 183,
    "label": "Play Defend",
    "turn": 4
@@ -7560,7 +7560,7 @@
     "Vantom HP 171→170 (−1)",
     "Vantom Slippery 6→5"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 184,
    "label": "Play Cinder → Vantom",
    "turn": 4
@@ -7617,7 +7617,7 @@
     "You Block 5→0",
     "Vantom +2 Strength"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 185,
    "label": "End turn",
    "turn": 4
@@ -7652,7 +7652,7 @@
    "details": [
     "You Block 0→5"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 186,
    "label": "Play Defend",
    "turn": 5
@@ -7711,7 +7711,7 @@
     "Vantom HP 170→169 (−1)",
     "Vantom Slippery 5→4"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 187,
    "label": "Play Ultimate Strike → Vantom",
    "turn": 5
@@ -7770,7 +7770,7 @@
     "Vantom HP 169→168 (−1)",
     "Vantom Slippery 4→3"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 188,
    "label": "Play Strike → Vantom",
    "turn": 5
@@ -7829,7 +7829,7 @@
     "You HP 43→39 (−4)",
     "You Block 5→0"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 189,
    "label": "End turn",
    "turn": 5
@@ -7886,7 +7886,7 @@
     "You Block 0→5",
     "You +1 Colossus"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 190,
    "label": "Play Colossus",
    "turn": 6
@@ -7921,7 +7921,7 @@
    "details": [
     "You Block 5→10"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 191,
    "label": "Play Defend",
    "turn": 6
@@ -7980,7 +7980,7 @@
     "Vantom HP 168→167 (−1)",
     "Vantom Slippery 3→2"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 192,
    "label": "Play Pommel Strike → Vantom",
    "turn": 6
@@ -8063,7 +8063,7 @@
     "You Block 10→0",
     "You −Colossus"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 193,
    "label": "End turn",
    "turn": 6
@@ -8122,7 +8122,7 @@
     "You HP 33→31 (−2)",
     "You Block 0→16"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 194,
    "label": "Play Blood Wall",
    "turn": 7
@@ -8157,7 +8157,7 @@
    "details": [
     "You Block 16→24"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 195,
    "label": "Play Shrug It Off",
    "turn": 7
@@ -8279,7 +8279,7 @@
     "You HP 31→27 (−4)",
     "You Block 24→0"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 196,
    "label": "End turn",
    "turn": 7
@@ -8336,7 +8336,7 @@
     "You Block 0→5",
     "You +1 Colossus"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 197,
    "label": "Play Colossus",
    "turn": 8
@@ -8395,7 +8395,7 @@
     "Vantom HP 167→166 (−1)",
     "Vantom Slippery 2→1"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 198,
    "label": "Play Cinder → Vantom",
    "turn": 8
@@ -8453,7 +8453,7 @@
     "You −Colossus",
     "Vantom Strength 2→4"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 199,
    "label": "End turn",
    "turn": 8
@@ -8512,7 +8512,7 @@
     "Vantom HP 166→165 (−1)",
     "Vantom −Slippery"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 200,
    "label": "Play Pommel Strike → Vantom",
    "turn": 9
@@ -8571,7 +8571,7 @@
     "Vantom HP 165→157 (−8)",
     "Vantom +2 Vulnerable"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 201,
    "label": "Play Bash → Vantom",
    "turn": 9
@@ -8630,7 +8630,7 @@
     "You HP 27→16 (−11)",
     "Vantom Vulnerable 2→1"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 202,
    "label": "End turn",
    "turn": 9
@@ -8689,7 +8689,7 @@
     "You HP 16→14 (−2)",
     "You Block 0→16"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 203,
    "label": "Play Blood Wall",
    "turn": 10
@@ -8724,7 +8724,7 @@
    "details": [
     "You Block 16→21"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 204,
    "label": "Play Defend",
    "turn": 10
@@ -8806,7 +8806,7 @@
     "You Block 21→0",
     "Vantom −Vulnerable"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 205,
    "label": "End turn",
    "turn": 10
@@ -8863,7 +8863,7 @@
     "You Block 0→5",
     "You +1 Colossus"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 206,
    "label": "Play Colossus",
    "turn": 11
@@ -8900,7 +8900,7 @@
    "details": [
     "Vantom HP 157→139 (−18)"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 207,
    "label": "Play Cinder → Vantom",
    "turn": 11
@@ -8961,7 +8961,7 @@
     "Vantom HP 139→0  ☠ defeated",
     "You −Colossus"
    ],
-   "floor": 16,
+   "floor": 17,
    "idx": 208,
    "label": "End turn",
    "turn": 11
@@ -8972,7 +8972,7 @@
    "combat_log": [],
    "decision": "game_over",
    "details": [],
-   "floor": 16,
+   "floor": 17,
    "idx": 209,
    "label": "",
    "turn": null

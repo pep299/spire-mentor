@@ -55,7 +55,7 @@
    "decision": "event_choice",
    "details": [],
    "error": false,
-   "floor": 0,
+   "floor": 1,
    "id": 0,
    "idx": 0,
    "label": "Started Necrobinder (seed G0LDEN0002, A0, act1 overgrowth)",
@@ -74,7 +74,7 @@
     "+Relic Fishing Rod"
    ],
    "error": false,
-   "floor": 0,
+   "floor": 1,
    "id": 1,
    "idx": 1,
    "label": "Choose: Fishing Rod",
@@ -93,7 +93,7 @@
     "Spawned: Fuzzy Wurm Crawler"
    ],
    "error": false,
-   "floor": 1,
+   "floor": 2,
    "id": 2,
    "idx": 2,
    "label": "Map → (2,1)",
@@ -135,7 +135,7 @@
     "You Block 0→5"
    ],
    "error": false,
-   "floor": 1,
+   "floor": 2,
    "id": 3,
    "idx": 3,
    "label": "Play Defend",
@@ -179,7 +179,7 @@
     "Fuzzy Wurm Crawler HP 55→49 (−6)"
    ],
    "error": false,
-   "floor": 1,
+   "floor": 2,
    "id": 4,
    "idx": 4,
    "label": "Play Strike → Fuzzy Wurm Crawler",
@@ -221,7 +221,7 @@
     "You Block 5→10"
    ],
    "error": false,
-   "floor": 1,
+   "floor": 2,
    "id": 5,
    "idx": 5,
    "label": "Play Defend",
@@ -285,7 +285,7 @@
     "You Block 10→0"
    ],
    "error": false,
-   "floor": 1,
+   "floor": 2,
    "id": 6,
    "idx": 6,
    "label": "End turn",
@@ -329,7 +329,7 @@
     "Fuzzy Wurm Crawler HP 49→43 (−6)"
    ],
    "error": false,
-   "floor": 1,
+   "floor": 2,
    "id": 7,
    "idx": 7,
    "label": "Play Strike → Fuzzy Wurm Crawler",
@@ -348,7 +348,7 @@
     "Play Bodyguard"
    ],
    "error": false,
-   "floor": 1,
+   "floor": 2,
    "id": 8,
    "idx": 8,
    "label": "Play Bodyguard",
@@ -392,7 +392,7 @@
     "Fuzzy Wurm Crawler HP 43→37 (−6)"
    ],
    "error": false,
-   "floor": 1,
+   "floor": 2,
    "id": 9,
    "idx": 9,
    "label": "Play Strike → Fuzzy Wurm Crawler",
@@ -454,7 +454,7 @@
     "Fuzzy Wurm Crawler +7 Strength"
    ],
    "error": false,
-   "floor": 1,
+   "floor": 2,
    "id": 10,
    "idx": 10,
    "label": "End turn",
@@ -496,7 +496,7 @@
     "You Block 0→5"
    ],
    "error": false,
-   "floor": 1,
+   "floor": 2,
    "id": 11,
    "idx": 11,
    "label": "Play Defend",
@@ -540,7 +540,7 @@
     "Fuzzy Wurm Crawler HP 37→31 (−6)"
    ],
    "error": false,
-   "floor": 1,
+   "floor": 2,
    "id": 12,
    "idx": 12,
    "label": "Play Strike → Fuzzy Wurm Crawler",
@@ -584,7 +584,7 @@
     "Fuzzy Wurm Crawler HP 31→25 (−6)"
    ],
    "error": false,
-   "floor": 1,
+   "floor": 2,
    "id": 13,
    "idx": 13,
    "label": "Play Strike → Fuzzy Wurm Crawler",
@@ -648,7 +648,7 @@
     "You Block 5→0"
    ],
    "error": false,
-   "floor": 1,
+   "floor": 2,
    "id": 14,
    "idx": 14,
    "label": "End turn",
@@ -690,7 +690,7 @@
     "You Block 0→5"
    ],
    "error": false,
-   "floor": 1,
+   "floor": 2,
    "id": 15,
    "idx": 15,
    "label": "Play Defend",
@@ -709,7 +709,7 @@
     "Play Bodyguard"
    ],
    "error": false,
-   "floor": 1,
+   "floor": 2,
    "id": 16,
    "idx": 16,
    "label": "Play Bodyguard",
@@ -751,7 +751,7 @@
     "You Block 5→10"
    ],
    "error": false,
-   "floor": 1,
+   "floor": 2,
    "id": 17,
    "idx": 17,
    "label": "Play Defend",
@@ -815,7 +815,7 @@
     "You Block 10→0"
    ],
    "error": false,
-   "floor": 1,
+   "floor": 2,
    "id": 18,
    "idx": 18,
    "label": "End turn",
@@ -859,7 +859,7 @@
     "Fuzzy Wurm Crawler HP 25→19 (−6)"
    ],
    "error": false,
-   "floor": 1,
+   "floor": 2,
    "id": 19,
    "idx": 19,
    "label": "Play Strike → Fuzzy Wurm Crawler",
@@ -903,7 +903,7 @@
     "Fuzzy Wurm Crawler HP 19→5 (−14)"
    ],
    "error": false,
-   "floor": 1,
+   "floor": 2,
    "id": 20,
    "idx": 20,
    "label": "Play Unleash → Fuzzy Wurm Crawler",
@@ -945,7 +945,7 @@
     "You Block 0→5"
    ],
    "error": false,
-   "floor": 1,
+   "floor": 2,
    "id": 21,
    "idx": 21,
    "label": "Play Defend",
@@ -1008,7 +1008,7 @@
     "Fuzzy Wurm Crawler Strength 7→14"
    ],
    "error": false,
-   "floor": 1,
+   "floor": 2,
    "id": 22,
    "idx": 22,
    "label": "End turn",
@@ -1050,7 +1050,7 @@
     "You Block 0→5"
    ],
    "error": false,
-   "floor": 1,
+   "floor": 2,
    "id": 23,
    "idx": 23,
    "label": "Play Defend",
@@ -1096,7 +1096,7 @@
     "Gold 99→109"
    ],
    "error": false,
-   "floor": 1,
+   "floor": 2,
    "id": 24,
    "idx": 24,
    "label": "Play Strike → Fuzzy Wurm Crawler",
@@ -1113,7 +1113,7 @@
    "decision": "map_select",
    "details": [],
    "error": false,
-   "floor": 1,
+   "floor": 2,
    "id": 25,
    "idx": 25,
    "label": "Take Negative Pulse",
@@ -1132,7 +1132,7 @@
     "Spawned: Nibbit"
    ],
    "error": false,
-   "floor": 2,
+   "floor": 3,
    "id": 26,
    "idx": 26,
    "label": "Map → (2,2)",
@@ -1176,7 +1176,7 @@
     "Nibbit HP 42→36 (−6)"
    ],
    "error": false,
-   "floor": 2,
+   "floor": 3,
    "id": 27,
    "idx": 27,
    "label": "Play Strike → Nibbit",
@@ -1218,7 +1218,7 @@
     "You Block 0→5"
    ],
    "error": false,
-   "floor": 2,
+   "floor": 3,
    "id": 28,
    "idx": 28,
    "label": "Play Defend",
@@ -1262,7 +1262,7 @@
     "Nibbit HP 36→29 (−7)"
    ],
    "error": false,
-   "floor": 2,
+   "floor": 3,
    "id": 29,
    "idx": 29,
    "label": "Play Unleash → Nibbit",
@@ -1327,7 +1327,7 @@
     "You Block 5→0"
    ],
    "error": false,
-   "floor": 2,
+   "floor": 3,
    "id": 30,
    "idx": 30,
    "label": "End turn",
@@ -1369,7 +1369,7 @@
     "You Block 0→5"
    ],
    "error": false,
-   "floor": 2,
+   "floor": 3,
    "id": 31,
    "idx": 31,
    "label": "Play Defend",
@@ -1413,7 +1413,7 @@
     "Nibbit HP 29→23 (−6)"
    ],
    "error": false,
-   "floor": 2,
+   "floor": 3,
    "id": 32,
    "idx": 32,
    "label": "Play Strike → Nibbit",
@@ -1432,7 +1432,7 @@
     "Play Bodyguard"
    ],
    "error": false,
-   "floor": 2,
+   "floor": 3,
    "id": 33,
    "idx": 33,
    "label": "Play Bodyguard",
@@ -1518,7 +1518,7 @@
     "Nibbit Block 0→5"
    ],
    "error": false,
-   "floor": 2,
+   "floor": 3,
    "id": 34,
    "idx": 34,
    "label": "End turn",
@@ -1560,7 +1560,7 @@
     "You Block 0→5"
    ],
    "error": false,
-   "floor": 2,
+   "floor": 3,
    "id": 35,
    "idx": 35,
    "label": "Play Defend",
@@ -1602,7 +1602,7 @@
     "You Block 5→10"
    ],
    "error": false,
-   "floor": 2,
+   "floor": 3,
    "id": 36,
    "idx": 36,
    "label": "Play Defend",
@@ -1647,7 +1647,7 @@
     "Nibbit Block 5→0"
    ],
    "error": false,
-   "floor": 2,
+   "floor": 3,
    "id": 37,
    "idx": 37,
    "label": "Play Strike → Nibbit",
@@ -1710,7 +1710,7 @@
     "Nibbit +2 Strength"
    ],
    "error": false,
-   "floor": 2,
+   "floor": 3,
    "id": 38,
    "idx": 38,
    "label": "End turn",
@@ -1754,7 +1754,7 @@
     "Nibbit HP 22→16 (−6)"
    ],
    "error": false,
-   "floor": 2,
+   "floor": 3,
    "id": 39,
    "idx": 39,
    "label": "Play Strike → Nibbit",
@@ -1796,7 +1796,7 @@
     "You Block 0→5"
    ],
    "error": false,
-   "floor": 2,
+   "floor": 3,
    "id": 40,
    "idx": 40,
    "label": "Play Defend",
@@ -1840,7 +1840,7 @@
     "Nibbit HP 16→3 (−13)"
    ],
    "error": false,
-   "floor": 2,
+   "floor": 3,
    "id": 41,
    "idx": 41,
    "label": "Play Unleash → Nibbit",
@@ -1903,7 +1903,7 @@
     "You Block 5→0"
    ],
    "error": false,
-   "floor": 2,
+   "floor": 3,
    "id": 42,
    "idx": 42,
    "label": "End turn",

@@ -173,3 +173,63 @@ def test_build_advice_reports_the_veto_in_its_note() -> None:
     assert advice["best"]["card_index"] == 1
     assert "vetoed 1" in advice["note"]
     assert "BlockedByHook" in advice["note"]
+
+
+def test_vetoed_pick_passes_the_crown_to_the_engines_next_choice() -> None:
+    """GH #1022: the heir is the engine's own next choice (lowest
+    ``pick_rank``), not the survivor with the highest win probability.
+
+    The engine ranked Defend second -- an in-band block the tie rule prefers
+    -- although Strike reads higher on p_win.
+    """
+    state = _state(
+        [
+            _card("BASH", playable=False, reason="EnergyCostTooHigh"),
+            _card("STRIKE_IRONCLAD"),
+            _card("DEFEND_IRONCLAD"),
+        ]
+    )
+    tags = [
+        _tag(0, q=0.9, is_best=True)._replace(pick_rank=0, in_band=True),
+        _tag(1, q=0.8)._replace(pick_rank=2, in_band=True),
+        _tag(2, q=0.7)._replace(pick_rank=1, in_band=True),
+    ]
+
+    kept, vetoed = ra.veto_unplayable(tags, state)
+
+    assert [t.stable_idx for t in kept] == [2, 1]
+    assert kept[0].is_best and not kept[1].is_best
+    assert vetoed == ["hand[0]:EnergyCostTooHigh"]
+
+
+def test_advice_carries_the_engine_pick_only_while_it_stands() -> None:
+    """``advice.pick`` explains the engine's pick; once a veto moved the
+    crown it would explain a move nobody plays, so it is dropped."""
+    pick = {
+        "rule": "band_visits",
+        "reason": "the most searched of the equal moves",
+        "gap_q": -0.00412345,
+        "gap_z": None,
+        "gap_hp": 1.5,
+    }
+    tags = [
+        _tag(0, q=0.9, is_best=True)._replace(pick_rank=0, in_band=True),
+        _tag(1, q=0.8)._replace(pick_rank=1, in_band=True),
+    ]
+    playable = _state([_card("BASH"), _card("STRIKE_IRONCLAD")])
+    advice = ra.build_advice(tags, playable, sims=8, pick=pick)
+    assert advice["pick"] == {
+        "rule": "band_visits",
+        "reason": pick["reason"],
+        "gap_q": -0.0041,
+        "gap_z": None,
+        "gap_hp": 1.5,
+    }
+    assert [(o["in_band"], o["pick_rank"]) for o in advice["options"]] == [(True, 0), (True, 1)]
+
+    refused = _state(
+        [_card("BASH", playable=False, reason="EnergyCostTooHigh"), _card("STRIKE_IRONCLAD")]
+    )
+    advice = ra.build_advice(tags, refused, sims=8, pick=pick)
+    assert "pick" not in advice
+    assert advice["options"][0]["is_best"] and advice["options"][0]["card_index"] == 1

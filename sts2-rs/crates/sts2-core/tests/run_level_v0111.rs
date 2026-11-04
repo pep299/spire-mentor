@@ -56,14 +56,15 @@ fn cook_interactive_defers_the_gain_to_the_removal_v0111() {
     assert_eq!((rs.max_hp, rs.master_deck.len()), (80, 6), "nothing yet");
 }
 
-/// v0.107.1 Cook stays the pre-port no-op (bit-identical baseline).
+/// v0.107.1 Cook runs the same body with `GainMaxHp(9)`
+/// (`CookRestSiteOption.cs:17`; act23 probe Silent 1012).
 #[test]
-fn cook_is_unchanged_in_v0107() {
+fn cook_removes_two_cards_and_gains_nine_max_hp_v0107() {
     let mut rs = run(GameVersion::V0_107_1);
-    let before = rs.clone();
     let out = rs.do_rest_site_action(RestSiteOption::Cook { enabled: true });
-    assert_eq!(out, RestSiteActionOutcome::Unsupported);
-    assert_eq!(rs, before);
+    assert_eq!(out, RestSiteActionOutcome::Cooked);
+    assert_eq!(rs.master_deck.len(), 4);
+    assert_eq!((rs.max_hp, rs.current_hp), (89, 69));
 }
 
 fn force_always(_rs: &mut RunState, _rt: RoomType, force: &mut bool) -> EffectResult {
@@ -107,11 +108,20 @@ fn before_combat_reward_offered_fires_only_v0111() {
     let set = CombatRewardsSet {
         room_type: RoomType::Monster,
         rewards: vec![Reward::Card(CardReward::from_options(vec![CardId::Bash]))],
+        hook_relics: Vec::new(),
     };
     let mut old = run(GameVersion::V0_107_1);
     dispatch_before_combat_reward_offered(&mut old, &set);
     assert_eq!(OFFERED.load(Ordering::SeqCst), 0);
     let mut new = run(GameVersion::V0_111_0);
     dispatch_before_combat_reward_offered(&mut new, &set);
+    assert_eq!(OFFERED.load(Ordering::SeqCst), 1);
+    // A relic the set itself grants (not among the set's hook relics) does
+    // not hear the hook: C# fires it before any reward is taken.
+    let elite_drop = CombatRewardsSet {
+        hook_relics: vec![RelicId::Anchor],
+        ..set
+    };
+    dispatch_before_combat_reward_offered(&mut new, &elite_drop);
     assert_eq!(OFFERED.load(Ordering::SeqCst), 1);
 }

@@ -95,6 +95,15 @@ Four deliberate distortions, each of which can flip a verdict:
 
 Distortion 3 is the dangerous one, and it is why §4 exists.
 
+Distortion 4 can also run a control arm *backwards*. In the GH #977 curse
+screen (`docs/experiments/2026-10-28-card-kind-screen.md`), the preset's
+A0–A4 world unlearned curse removal that the A10 campaign learned within ten
+iterations (Decay 0.63 → 0.30 in the screen, → 0.80 in the campaign). At A0–A4
+a curse rarely costs a run. **For an idea whose payoff only shows at high
+ascension, screen in the campaign's own world** (`--ascension-weights 10:1
+--sims 250 --boss-sims 1000`), and check that the control arm reproduces the
+campaign's movement before reading arm B.
+
 ---
 
 ## 1. Tools

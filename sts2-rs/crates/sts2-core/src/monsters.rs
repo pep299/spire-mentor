@@ -392,8 +392,7 @@ pub enum MonsterKind {
     TestSubject,
     // ── Shared / event / dummy monsters (bead `sts2-rs-qz5p` /
     //    parent `sts2-rs-78ks` rc-monster-wiring-gap) ──
-    // Ported from sts2-rl-agent@01c094d:sts2_env/monsters/shared.py
-    // (`create_*` factories with no spawn-arg config). DSL-driven; the
+    // DSL-driven; the
     // placeholder `roll_intent` arms below are only exercised by
     // `MonsterKind`-only call sites (same pattern as Nibbit + acts 1-3).
     /// Architect — HP 9999 (fixed). Python id `ARCHITECT`. Pet /

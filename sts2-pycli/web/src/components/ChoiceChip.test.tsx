@@ -1,6 +1,8 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
-import ChoiceChip, { checkSummary, ordinal } from "./ChoiceChip";
+import { ordinal } from "../coach/coachText";
+import ChoiceChip from "./ChoiceChip";
+import { checkSummary } from "./choiceCheck";
 import { api, type ChoiceCheck, type ChoiceGrade, type DecisionAdvisorCandidate } from "../api";
 
 function grade(over: Partial<ChoiceGrade> = {}): ChoiceGrade {

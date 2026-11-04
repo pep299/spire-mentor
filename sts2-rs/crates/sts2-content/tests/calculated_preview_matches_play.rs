@@ -309,3 +309,16 @@ fn precise_cut_face_does_not_count_itself() {
         "the number must not change as the card leaves your hand to resolve"
     );
 }
+
+#[test]
+fn normality_face_counts_down_with_the_plays_started_this_turn() {
+    let (mut state, _) = busy_board();
+    let uid = push_card(&mut state, CardId::Normality, 0);
+    let idx = uid.0.get() as usize - 1;
+    let face = |s: &CombatState| calculated_value(s, &s.cards[idx], None);
+    assert_eq!(face(&state), Some(3));
+    state.player.card_plays_started_this_turn = 2;
+    assert_eq!(face(&state), Some(1));
+    state.player.card_plays_started_this_turn = 5;
+    assert_eq!(face(&state), Some(0));
+}

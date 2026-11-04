@@ -16,6 +16,12 @@
 // 100 / help 101) at the top-left, pushed below the game's top bar by
 // SimTopBarLayout.
 //
+// Placement: docked under the game's top bar by default; the grip at the
+// row's left end drags it anywhere (the strip can cover something the player
+// needs to see), and double-clicking the grip docks it again. The dragged
+// position lasts for the session, like the action log's. The advice panel and
+// the coach chips follow a dragged strip (UndockedRect, AdviceColumn).
+//
 // Refresh model: SimRuntime.Changed handles mode flips from any surface;
 // a 150 ms Godot.Timer handles the state that raises no event (SimSpeed,
 // AdvisorAutoplayArmed, top-bar drift). No source generators -> no _Process
@@ -65,6 +71,15 @@ internal sealed class SimToolbar
     private DateTime? _buildStartedUtc;
     private string _lastActionSummary = "";
     private string? _note;
+
+    // Grip drag state (same click-vs-drag threshold idiom as SimActionLog's
+    // header). _undockedPosition is null while docked under the top bar.
+    private const float DragThreshold = 4f;
+    private bool _gripPressed;
+    private bool _dragging;
+    private Vector2 _grabOffset;
+    private Vector2 _pressPosition;
+    private Vector2? _undockedPosition;
 
     // ------------------------------------------------------------------
     // Public entry points (any thread)
@@ -143,16 +158,30 @@ internal sealed class SimToolbar
     }
 
     /// <summary>Bottom edge (global Y) of the visible strip, or null when not
-    /// built -- SimHud parks the advice panel below this.</summary>
+    /// built or dragged off its dock -- the docked panels park below this.
+    /// A dragged strip is <see cref="UndockedRect"/>.</summary>
     public float? BottomY()
     {
         if (_container == null || !GodotObject.IsInstanceValid(_container) ||
-            !_container.IsVisibleInTree())
+            !_container.IsVisibleInTree() || _undockedPosition != null)
         {
             return null;
         }
         Rect2 rect = _container.GetGlobalRect();
         return rect.Position.Y + rect.Size.Y;
+    }
+
+    /// <summary>The visible strip's global rect and the viewport size while
+    /// the player has dragged it off its dock, else null (docked: BottomY).
+    /// SimHud moves the advice panel and the coach chips along with it.</summary>
+    public (Rect2 Rect, Vector2 Viewport)? UndockedRect()
+    {
+        if (_undockedPosition == null || _container == null ||
+            !GodotObject.IsInstanceValid(_container) || !_container.IsVisibleInTree())
+        {
+            return null;
+        }
+        return (_container.GetGlobalRect(), _container.GetViewportRect().Size);
     }
 
     // ------------------------------------------------------------------
@@ -183,7 +212,7 @@ internal sealed class SimToolbar
             var container = new VBoxContainer
             {
                 Name = "SpireMentorToolbar",
-                Position = new Vector2(PanelLeft, SimTopBarLayout.FallbackTop),
+                Position = _undockedPosition ?? new Vector2(PanelLeft, SimTopBarLayout.FallbackTop),
                 MouseFilter = Control.MouseFilterEnum.Ignore,
             };
             container.AddThemeConstantOverride("separation", 2);
@@ -195,6 +224,18 @@ internal sealed class SimToolbar
                 MouseFilter = Control.MouseFilterEnum.Ignore,
             };
             row.AddThemeConstantOverride("separation", 6);
+
+            // The drag handle: a Stop region of its own, so the pill and the
+            // buttons keep plain click semantics.
+            Label grip = SimUiKit.SmallLabel("⠿", new Color(0.85f, 0.88f, 0.95f), 18);
+            grip.MouseFilter = Control.MouseFilterEnum.Stop;
+            grip.MouseDefaultCursorShape = Control.CursorShape.Move;
+            grip.VerticalAlignment = VerticalAlignment.Center;
+            grip.Connect(Control.SignalName.GuiInput, Callable.From<InputEvent>(OnGripGuiInput));
+            grip.Connect(Control.SignalName.MouseEntered, Callable.From(() =>
+                SetHint("Drag to move the toolbar · double-click to put it back")));
+            grip.Connect(Control.SignalName.MouseExited, Callable.From(() => SetHint(null)));
+            row.AddChild(grip);
 
             _pill = SimUiKit.MakeButton("Spire Mentor", "Show / hide the Spire Mentor toolbar", TogglePill, SetHint);
             row.AddChild(_pill);
@@ -266,13 +307,15 @@ internal sealed class SimToolbar
                     new("⟲⟲ Back", "Rewind one room further back", SimActions.BackOneRoom),
                 }, SetHint));
             buttons.AddChild(SimUiKit.MakeMenuButton("Panels",
-                "Log (F3) · HUD (F4) · Help (F1) · Settings (works mid-run)",
+                "Hide all (Ctrl+H) · Log (Ctrl+L) · HUD (F4) · Help (F1) · Settings (works mid-run) · Report a bug (Ctrl+Shift+B)",
                 new SimUiKit.MenuEntry[]
                 {
-                    new("Log  (F3)", "Show / hide the action log (F3)", SimActions.ToggleLog),
+                    new("Hide all  (Ctrl+H)", "Hide everything but the pill for a quick look -- click the pill or Ctrl+H to bring it back", SimActions.ToggleHideAll),
+                    new("Log  (Ctrl+L)", "Show / hide the action log (Ctrl+L)", SimActions.ToggleLog),
                     new("HUD  (F4)", "Show / hide the advice HUD (F4)", SimActions.ToggleHud),
                     new("Help  (F1)", "What everything does (F1)", SimActions.ToggleHelp),
                     new("Settings", "Mod settings -- works mid-run (the main-menu page is run-locked)", SimSettingsPanel.Instance.Toggle),
+                    new("Report a bug  (Ctrl+Shift+B)", "Send this position and the logs to the developers, with a note on what went wrong", SimActions.ReportBug),
                 }, SetHint));
             buttons.AddChild(SimUiKit.MakeMenuButton("Workbench",
                 "Open the workbench in your browser · Copy state (Ctrl+Shift+C) to paste a position into it",
@@ -333,10 +376,73 @@ internal sealed class SimToolbar
 
     private void TogglePill()
     {
+        // While everything is hidden the pill is the "show it again" button.
+        if (SimUiHide.Hidden)
+        {
+            SimUiHide.Toggle();
+            return;
+        }
         _expanded = !_expanded;
         SpireMentorModConfig.ToolbarExpanded = _expanded;
         SpireMentorModConfig.SaveSoon();
         Refresh();
+    }
+
+    private void OnGripGuiInput(InputEvent ev)
+    {
+        try
+        {
+            if (_container == null || !GodotObject.IsInstanceValid(_container))
+            {
+                return;
+            }
+            if (ev is InputEventMouseButton mb && mb.ButtonIndex == MouseButton.Left)
+            {
+                if (mb.Pressed && mb.DoubleClick)
+                {
+                    _gripPressed = false;
+                    _dragging = false;
+                    _undockedPosition = null; // OnTick re-docks it
+                }
+                else if (mb.Pressed)
+                {
+                    _gripPressed = true;
+                    _dragging = false;
+                    _pressPosition = mb.GlobalPosition;
+                    _grabOffset = mb.GlobalPosition - _container.Position;
+                }
+                else
+                {
+                    _gripPressed = false;
+                    _dragging = false;
+                }
+                return;
+            }
+
+            if (ev is InputEventMouseMotion mm && _gripPressed)
+            {
+                if (!_dragging && mm.GlobalPosition.DistanceTo(_pressPosition) < DragThreshold)
+                {
+                    return;
+                }
+                _dragging = true;
+                _undockedPosition = ClampToViewport(mm.GlobalPosition - _grabOffset);
+                _container.Position = _undockedPosition.Value;
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Log($"[SimToolbar] Grip input failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>Keep the grip on screen so the strip can always be grabbed
+    /// again (the grip is the row's first child, at the container's origin).</summary>
+    private Vector2 ClampToViewport(Vector2 position)
+    {
+        Vector2 view = _container!.GetViewportRect().Size;
+        return new Vector2(Math.Clamp(position.X, 0f, Math.Max(0f, view.X - 30f)),
+                           Math.Clamp(position.Y, 0f, Math.Max(0f, view.Y - 30f)));
     }
 
     private void SetHint(string? hint)
@@ -357,10 +463,14 @@ internal sealed class SimToolbar
             {
                 return;
             }
-            float top = SimTopBarLayout.SafeTopY(_container);
-            if (Math.Abs(_container.Position.Y - top) > 0.5f)
+            // Docked: follow the game's top bar. Undocked: stay where the
+            // player put it, but come back on screen if the window shrank.
+            Vector2 want = _undockedPosition is { } moved
+                ? ClampToViewport(moved)
+                : new Vector2(PanelLeft, SimTopBarLayout.SafeTopY(_container));
+            if (_container.Position.DistanceTo(want) > 0.5f)
             {
-                _container.Position = new Vector2(PanelLeft, top);
+                _container.Position = want;
             }
             // Speed and autoplay-armed raise no Changed event; poll them.
             RefreshLiveLabels();
@@ -394,7 +504,7 @@ internal sealed class SimToolbar
 
         if (_strip != null && GodotObject.IsInstanceValid(_strip))
         {
-            _strip.Visible = _expanded;
+            _strip.Visible = _expanded && !SimUiHide.Hidden;
         }
 
         if (_pill != null && GodotObject.IsInstanceValid(_pill))
@@ -439,6 +549,8 @@ internal sealed class SimToolbar
     private string PillText(SimMode mode) =>
         _advisorStatus == SimAdvisorStatus.Building
             ? $"▸ Spire Mentor — building engine… {BuildElapsed()} (leave running)"
+            : SimUiHide.Hidden
+                ? "▸ Spire Mentor — hidden (click or Ctrl+H)"
             : _expanded
                 ? "▾ Spire Mentor"
                 : mode == SimMode.Off
@@ -534,7 +646,7 @@ internal sealed class SimToolbar
         bool interesting = _expanded ||
             (SimRuntime.Mode == SimMode.Autopilot && !SimRuntime.AutopilotEngaged);
         _statusLabel.Text = status;
-        _statusLabel.Visible = interesting && SimRuntime.Mode != SimMode.Off;
+        _statusLabel.Visible = interesting && SimRuntime.Mode != SimMode.Off && !SimUiHide.Hidden;
     }
 
     private static void RunOnMainThread(Action action)

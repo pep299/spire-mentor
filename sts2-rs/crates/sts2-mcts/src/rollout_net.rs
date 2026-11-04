@@ -697,7 +697,7 @@ impl StepCtx {
         let hp = p.current_hp.max(0);
         let max_hp = p.max_hp.max(1);
         let block = p.block.max(0);
-        let energy = i32::from(p.energy.max(0));
+        let energy = p.energy.max(0);
         let mut incoming = 0i32;
         let (mut hp_sum, mut max_sum, mut block_sum, mut str_sum) = (0i32, 0i32, 0i32, 0i32);
         let mut min_hp = i32::MAX;
@@ -741,13 +741,8 @@ impl StepCtx {
         let strength = state.player_power_amount(PowerKind::Strength);
         let dexterity = state.player_power_amount(PowerKind::Dexterity);
         let player_weak = state.player_power_amount(PowerKind::Weak) > 0;
-        let playable = u32::try_from(
-            actions
-                .iter()
-                .filter(|a| matches!(a, Action::PlayCard { .. }))
-                .count(),
-        )
-        .unwrap_or(u32::MAX);
+        let playable = u32::try_from(actions.iter().filter(|a| a.card_play().is_some()).count())
+            .unwrap_or(u32::MAX);
         let mhp = max_hp as f32;
         let (removed_hp, removed_max) = if version.removed_counts_forms() {
             crate::enemy_eval::enemy_hp_remaining(state, true)
@@ -1091,7 +1086,11 @@ pub fn action_features(
         3.0,
     );
     let key = match action {
-        Action::PlayCard { hand_index, target } => {
+        // A teammate-targeted play (`PlayCardAtAlly`) has no enemy slot: its
+        // target features stay zero, so the net scores it as the card alone.
+        Action::PlayCard { .. } | Action::PlayCardAtAlly { .. } => {
+            let (hi, tgt) = action.card_play().expect("a card play");
+            let (hand_index, target) = (&hi, &tgt);
             let Some(card) = state
                 .player
                 .hand
@@ -1202,19 +1201,24 @@ pub fn action_features(
             x[23] = clampf(ctx.unblocked as f32 / mhp, 0.0, 3.0);
             ActionKey::EndTurn
         }
-        Action::DrinkPotion {
-            potion_slot: slot,
-            target,
-        }
-        | Action::UsePotion { slot, target } => {
+        // A potion thrown at a teammate (`DrinkPotionAtAlly`) has no enemy
+        // slot either: the net scores it as the potion alone.
+        Action::DrinkPotion { .. }
+        | Action::UsePotion { .. }
+        | Action::DrinkPotionAtAlly { .. } => {
+            let slot = action.potion_slot().expect("a potion use");
+            let target = match *action {
+                Action::DrinkPotion { target, .. } | Action::UsePotion { target, .. } => target,
+                _ => None,
+            };
             x[2] = 1.0;
             x[7] = ctx.energy as f32 / 3.0;
             x[15] = if target.is_some() { 1.0 } else { 0.0 };
             x[23] = clampf(ctx.unblocked as f32 / mhp, 0.0, 3.0);
             if ctx.version == FeatureVersion::V2 {
-                target_facts(ctx, *target, &mut x);
+                target_facts(ctx, target, &mut x);
             }
-            match state.player.potions.get(usize::from(*slot)) {
+            match state.player.potions.get(usize::from(slot)) {
                 Some(k) => ActionKey::Potion(*k),
                 None => ActionKey::Other,
             }
@@ -1277,6 +1281,12 @@ pub struct RolloutNet {
     other_row: u32,
     /// Number of embedding rows (row 0 = unknown key).
     pub rows: usize,
+    /// `w1` transposed (`state_dim × hidden`), for [`Self::prepare_sparse`].
+    w1t: Vec<f32>,
+    /// `w2` transposed (`hidden × emb_dim`), for [`Self::prepare_sparse`].
+    w2t: Vec<f32>,
+    /// Whether the dims fit [`Self::prepare_sparse`].
+    sparse_ok: bool,
 }
 
 fn default_feature_version() -> u32 {
@@ -1317,6 +1327,17 @@ struct NetFile {
     #[serde(default)]
     monster_emb: Option<Vec<Vec<f32>>>,
 }
+
+/// Row-major `rows × cols` to row-major `cols × rows`.
+fn transpose(m: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+    (0..cols)
+        .flat_map(|c| (0..rows).map(move |r| m[r * cols + c]))
+        .collect()
+}
+
+/// Widest `hidden` / `emb_dim` [`RolloutNet::prepare_sparse`] takes.
+const SPARSE_HIDDEN: usize = 64;
+const SPARSE_QUERY: usize = 32;
 
 fn flatten(m: &[Vec<f32>], rows: usize, cols: usize, what: &str) -> Result<Vec<f32>, String> {
     if m.len() != rows || m.iter().any(|r| r.len() != cols) {
@@ -1454,15 +1475,20 @@ impl RolloutNet {
                 )
             }
         };
+        let w1 = flatten(&f.w1, h, sd, "w1")?;
+        let w2 = flatten(&f.w2, d, h, "w2")?;
         Ok(Self {
             hidden: h,
             emb_dim: d,
             state_dim: sd,
             action_dim: ad,
             spec,
-            w1: flatten(&f.w1, h, sd, "w1")?,
+            w1t: transpose(&w1, h, sd),
+            w2t: transpose(&w2, d, h),
+            sparse_ok: sd % 8 == 0 && h % 8 == 0 && h <= SPARSE_HIDDEN && d <= SPARSE_QUERY,
+            w1,
             b1: (f.b1.len() == h).then_some(f.b1).ok_or("b1")?,
-            w2: flatten(&f.w2, d, h, "w2")?,
+            w2,
             b2: (f.b2.len() == d).then_some(f.b2).ok_or("b2")?,
             emb: flatten(&f.emb, rows, d, "emb")?,
             bias: (f.bias.len() == rows).then_some(f.bias).ok_or("bias")?,
@@ -1527,6 +1553,15 @@ impl RolloutNet {
     /// [`Self::prepare`] from a state vector (`state_dim` wide) and the
     /// encounter-embedding rows.
     fn prepare_raw(&self, s: &[f32], monsters: &[u16; MONSTER_SLOTS]) -> StepQuery {
+        if self.sparse_ok {
+            self.prepare_sparse(s, monsters)
+        } else {
+            self.prepare_dense(s, monsters)
+        }
+    }
+
+    /// [`Self::prepare_raw`] by one [`dot`] per output.
+    fn prepare_dense(&self, s: &[f32], monsters: &[u16; MONSTER_SLOTS]) -> StepQuery {
         let s = &s[..self.state_dim];
         let hid: SmallVec<[f32; 64]> = if self.monster_emb.is_empty() {
             self.w1
@@ -1558,6 +1593,62 @@ impl RolloutNet {
             .zip(&self.b2)
             .map(|(row, b)| b + dot(row, &hid))
             .collect();
+        self.project(q)
+    }
+
+    /// [`Self::prepare_raw`] column by column, skipping zero inputs (in the
+    /// Ironclad net's playouts about half the state features and a quarter of
+    /// the hidden units are zero; ~30% faster). Bit-identical to the [`dot`]
+    /// path: each output keeps `dot`'s eight lane sums, lane `c % 8` adding
+    /// its products in the same order, and a skipped product is an exact
+    /// `±0` that leaves a lane sum unchanged (a lane sum is never `-0`).
+    fn prepare_sparse(&self, s: &[f32], monsters: &[u16; MONSTER_SLOTS]) -> StepQuery {
+        let (hidden, query) = (self.hidden, self.emb_dim);
+        let mut acc = [[0.0f32; SPARSE_HIDDEN]; 8];
+        for (c, &x) in s[..self.state_dim].iter().enumerate() {
+            if x != 0.0 {
+                let col = &self.w1t[c * hidden..(c + 1) * hidden];
+                for (a, w) in acc[c % 8][..hidden].iter_mut().zip(col) {
+                    *a += w * x;
+                }
+            }
+        }
+        let mut hid = lane_sums(&acc, hidden);
+        for (v, b) in hid[..hidden].iter_mut().zip(&self.b1) {
+            *v += b;
+        }
+        for &r in monsters.iter().filter(|r| **r != 0) {
+            let start = (usize::from(r) - 1) * hidden;
+            for (v, m) in hid[..hidden]
+                .iter_mut()
+                .zip(&self.monster_emb[start..start + hidden])
+            {
+                *v += m;
+            }
+        }
+        for v in &mut hid[..hidden] {
+            *v = v.max(0.0);
+        }
+        let mut acc = [[0.0f32; SPARSE_QUERY]; 8];
+        for (j, &x) in hid[..hidden].iter().enumerate() {
+            if x != 0.0 {
+                let col = &self.w2t[j * query..(j + 1) * query];
+                for (a, w) in acc[j % 8][..query].iter_mut().zip(col) {
+                    *a += w * x;
+                }
+            }
+        }
+        let sums = lane_sums(&acc, query);
+        let q: SmallVec<[f32; 32]> = sums[..query]
+            .iter()
+            .zip(&self.b2)
+            .map(|(t, b)| b + t)
+            .collect();
+        self.project(q)
+    }
+
+    /// The [`StepQuery`] of a state query `q`: `w = lin + Pᵀ·q`.
+    fn project(&self, q: SmallVec<[f32; 32]>) -> StepQuery {
         let mut w = [0.0f32; ACTION_DIM_MAX];
         w[..self.action_dim].copy_from_slice(&self.lin);
         for (q_j, p_row) in q.iter().zip(self.proj.chunks_exact(self.action_dim)) {
@@ -1674,6 +1765,24 @@ fn dot(a: &[f32], b: &[f32]) -> f32 {
     acc.iter().sum::<f32>() + tail
 }
 
+/// Each of the first `n` outputs' total over [`dot`]'s eight lane sums,
+/// with exactly `dot`'s adds: a `sum` fold over lanes 0..8, plus its empty
+/// tail (the width is a multiple of 8). Lane-major, so it vectorizes across
+/// outputs.
+fn lane_sums<const N: usize>(acc: &[[f32; N]; 8], n: usize) -> [f32; N] {
+    let zero = std::iter::empty::<f32>().sum::<f32>();
+    let mut t = [zero; N];
+    for lane in acc {
+        for (t, a) in t[..n].iter_mut().zip(&lane[..n]) {
+            *t += a;
+        }
+    }
+    for t in &mut t[..n] {
+        *t += zero;
+    }
+    t
+}
+
 /// One recorded playout decision with at least two allowed actions (a
 /// forced step carries no policy gradient).
 #[derive(Clone, Debug)]
@@ -1784,7 +1893,7 @@ fn play_recorded<R: Rng>(
             net.spec.version.incoming(),
         );
         let query = net.prepare(&ctx);
-        let any_card = acts.iter().any(|a| matches!(a, Action::PlayCard { .. }));
+        let any_card = acts.iter().any(|a| a.card_play().is_some());
         let mut step = TrajStep {
             state: ctx.state,
             monsters: ctx.monsters,
@@ -2072,6 +2181,13 @@ pub fn pick_incoming<R: Rng>(
     incoming: crate::enemy_eval::IncomingDamage,
 ) -> usize {
     match net_for(state) {
+        // A forced step: `sample` over one finite logit returns 0 after one
+        // `f32` draw. Skip the net but keep the draw, so the playout's RNG
+        // stream is unchanged.
+        Some(_) if actions.len() == 1 => {
+            let _: f32 = rng.gen();
+            0
+        }
         Some(net) => pick_with(
             net,
             rng,
@@ -2119,7 +2235,7 @@ pub fn pick_logits(
     no_early_end_turn: bool,
 ) -> SmallVec<[f32; 16]> {
     let mut logits = net.logits(state, actions, end_turn_priority);
-    if no_early_end_turn && actions.iter().any(|a| matches!(a, Action::PlayCard { .. })) {
+    if no_early_end_turn && actions.iter().any(|a| a.card_play().is_some()) {
         for (l, a) in logits.iter_mut().zip(actions) {
             if matches!(a, Action::EndTurn) {
                 *l = f32::NEG_INFINITY;
@@ -2565,5 +2681,115 @@ mod tests {
             counts[1] > 3700 && counts[0] > 100 && counts[2] == 0,
             "{counts:?}"
         );
+    }
+
+    /// States the built-in Ironclad net's own playouts pass through, from
+    /// the first combats of eight runs.
+    #[cfg(rollout_net_ironclad)]
+    fn playout_states(n: usize) -> Vec<CombatState> {
+        use rand::SeedableRng;
+        let net = builtin_net(CharacterId::Ironclad).expect("built-in Ironclad net");
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(7);
+        let mut out = Vec::new();
+        let starts: Vec<CombatState> = (1..=8)
+            .map(crate::leaf_playouts_tests::first_combat)
+            .collect();
+        for start in starts.iter().cycle() {
+            if out.len() >= n {
+                break;
+            }
+            let mut s = start.clone();
+            while !sts2_core::is_terminal(&s) && out.len() < n {
+                let acts = sts2_core::legal_actions(&s);
+                if acts.is_empty() {
+                    break;
+                }
+                out.push(s.clone());
+                let end = crate::expert::END_TURN_PRIORITY;
+                let i = pick_with(net, &mut rng, &s, &acts, end, 1.0, false);
+                let _ = sts2_core::apply(&mut s, acts[i].clone());
+            }
+        }
+        out
+    }
+
+    /// Every built-in playout net, plus the Ironclad move prior, on the
+    /// states of Ironclad playouts.
+    #[cfg(rollout_net_ironclad)]
+    #[test]
+    fn sparse_prepare_matches_dense_bit_for_bit() {
+        let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        let states = playout_states(400);
+        let prior = builtin_prior_json(CharacterId::Ironclad)
+            .map(|t| RolloutNet::from_json(t).expect("built-in Ironclad prior"));
+        let nets = [
+            CharacterId::Ironclad,
+            CharacterId::Silent,
+            CharacterId::Defect,
+            CharacterId::Regent,
+            CharacterId::Necrobinder,
+        ]
+        .into_iter()
+        .filter_map(|c| builtin_net(c).map(|n| (format!("{c:?}"), n)))
+        .chain(prior.as_ref().map(|n| ("Ironclad prior".to_owned(), n)));
+        let mut checked = 0;
+        for (c, net) in nets {
+            assert!(net.sparse_ok, "{c}");
+            for s in &states {
+                let ctx = StepCtx::with_spec(s, &sts2_core::legal_actions(s), &net.spec);
+                let x = &ctx.state[..net.state_dim];
+                let b = net.prepare_dense(x, &ctx.monsters);
+                let a = net.prepare_sparse(x, &ctx.monsters);
+                assert_eq!(bits(&a.q), bits(&b.q), "{c}");
+                assert_eq!(bits(&a.w), bits(&b.w), "{c}");
+                checked += 1;
+            }
+        }
+        assert!(checked >= 400, "{checked}");
+    }
+
+    /// The encounter-embedding branch, which no built-in net has: a random
+    /// v2 net with a `monster_emb` table, on sparse inputs (with `-0.0`
+    /// entries) and random monster slots.
+    #[test]
+    fn sparse_prepare_matches_dense_with_monster_emb() {
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(11);
+        let mut mat = |rows: usize, cols: usize| -> Vec<Vec<f32>> {
+            (0..rows)
+                .map(|_| (0..cols).map(|_| rng.gen_range(-0.5f32..0.5)).collect())
+                .collect()
+        };
+        let (hidden, query, keys) = (16usize, 8usize, ["<unk>", "end_turn"]);
+        let json = serde_json::json!({
+            "feature_version": 2, "state_dim": STATE_DIM_V2, "action_dim": ACTION_DIM_V2,
+            "hidden": hidden, "emb_dim": query, "temperature": 1.0, "keys": keys,
+            "w1": mat(hidden, STATE_DIM_V2), "b1": mat(1, hidden)[0], "w2": mat(query, hidden),
+            "b2": mat(1, query)[0], "emb": mat(keys.len(), query), "bias": mat(1, keys.len())[0],
+            "proj": mat(query, ACTION_DIM_V2), "lin": mat(1, ACTION_DIM_V2)[0],
+            "monster_act": {"Nibbit": 1}, "monster_keys": ["Nibbit", "Other"],
+            "monster_emb": mat(2, hidden),
+        });
+        let net = RolloutNet::from_json(&json.to_string()).expect("net");
+        assert!(net.sparse_ok);
+        let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(12);
+        for i in 0..300 {
+            let x: Vec<f32> = (0..STATE_DIM_V2)
+                .map(|_| match rng.gen_range(0..4) {
+                    0 => 0.0,
+                    1 => -0.0,
+                    _ => rng.gen_range(-2.0f32..2.0),
+                })
+                .collect();
+            let mut monsters = [0u16; MONSTER_SLOTS];
+            for m in &mut monsters {
+                *m = rng.gen_range(0..3);
+            }
+            let dense = net.prepare_dense(&x, &monsters);
+            let sparse = net.prepare_sparse(&x, &monsters);
+            assert_eq!(bits(&sparse.q), bits(&dense.q), "case {i}");
+            assert_eq!(bits(&sparse.w), bits(&dense.w), "case {i}");
+        }
     }
 }

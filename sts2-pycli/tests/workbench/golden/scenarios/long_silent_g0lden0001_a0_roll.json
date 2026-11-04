@@ -29,10 +29,6 @@
    "kind": "choice_ranker"
   },
   {
-   "at": 31,
-   "kind": "last_move_regret"
-  },
-  {
    "at": 35,
    "kind": "reward_preview"
   },
@@ -74,10 +70,6 @@
    "kind": "search_tree"
   },
   {
-   "at": 56,
-   "kind": "last_move_regret"
-  },
-  {
    "at": 60,
    "kind": "save",
    "name": "golden mid"
@@ -116,10 +108,6 @@
    "kind": "choice_ranker"
   },
   {
-   "at": 81,
-   "kind": "last_move_regret"
-  },
-  {
    "at": 85,
    "kind": "reward_preview"
   },
@@ -148,10 +136,6 @@
    "kind": "search_tree"
   },
   {
-   "at": 106,
-   "kind": "last_move_regret"
-  },
-  {
    "at": 125,
    "kind": "state"
   },
@@ -166,10 +150,6 @@
   {
    "at": 130,
    "kind": "choice_ranker"
-  },
-  {
-   "at": 131,
-   "kind": "last_move_regret"
   },
   {
    "at": 150,

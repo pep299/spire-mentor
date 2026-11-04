@@ -144,6 +144,12 @@ export default function KaiserCrab({
     track: number, side: string, action?: ArmAction,
     prev?: React.MutableRefObject<number | undefined>,
   ) => void) | null>(null);
+  // The latest `onMeasure` and arm actions, for effects that must not re-run
+  // when only those props' identities change (the load effect, the per-nonce
+  // arm one-shots).
+  const measureRef = useRef(onMeasure); measureRef.current = onMeasure;
+  const leftActionRef = useRef(leftAction); leftActionRef.current = leftAction;
+  const rightActionRef = useRef(rightAction); rightActionRef.current = rightAction;
   const prevLeft = useRef<number | undefined>(undefined);
   const prevRight = useRef<number | undefined>(undefined);
   const frameRef = useRef<{ sideMw: number; topMw: number; botMw: number } | null>(null);
@@ -331,7 +337,7 @@ export default function KaiserCrab({
         r.drawSkeleton(skeleton, false);
         r.end();
       },
-      error() { setFailed(true); onMeasure?.(null); },
+      error() { setFailed(true); measureRef.current?.(null); },
     };
 
     let canvas: spine.SpineCanvas | null = null;
@@ -376,8 +382,9 @@ export default function KaiserCrab({
 
   playArmRef.current = playArm;
 
-  useEffect(() => { playArm(LEFT_TRACK, "left", leftAction, prevLeft); }, [leftAction?.nonce]);
-  useEffect(() => { playArm(RIGHT_TRACK, "right", rightAction, prevRight); }, [rightAction?.nonce]);
+  const leftNonce = leftAction?.nonce, rightNonce = rightAction?.nonce;
+  useEffect(() => { playArmRef.current?.(LEFT_TRACK, "left", leftActionRef.current, prevLeft); }, [leftNonce]);
+  useEffect(() => { playArmRef.current?.(RIGHT_TRACK, "right", rightActionRef.current, prevRight); }, [rightNonce]);
 
   const dropShadow = "drop-shadow(0 12px 10px rgba(0,0,0,.55))";
   // Rig units → px, per render. No box fit: the authored scale IS the size.
@@ -389,8 +396,8 @@ export default function KaiserCrab({
   const canvasBottom = world ? (world.y - world.botMw) * k : 0;
   // Reported from an effect so a re-fit re-reports without the rig reloading.
   // `onMeasure` is a parent setState; keying on the numbers (not the object)
-  // keeps that from looping.
-  const measureRef = useRef(onMeasure); measureRef.current = onMeasure;
+  // keeps that from looping. (`measureRef` itself is declared above the load
+  // effect, which reports a failed load through it.)
   const scaleBox = (b: ClawBox): ClawBox => ({
     cx: b.cx * k, left: b.left * k, right: b.right * k, top: b.top * k, bottom: b.bottom * k,
   });

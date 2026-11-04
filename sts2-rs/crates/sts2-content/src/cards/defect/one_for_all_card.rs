@@ -8,10 +8,12 @@ use super::prelude::*;
 ///
 /// `Players` includes the owner, so in single-player the owner gets it.
 pub(crate) fn play_one_for_all(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
-    // v0.111.0: OneForAllPower 3 (upg 4) on every player — just the owner in
-    // SP (decomp OneForAll.cs:24-30). The power's behaviour is S8b's (#794).
+    // v0.111.0: OneForAllPower 3 (upg 4) on every player (decomp
+    // OneForAll.cs:24-30). The power's behaviour is S8b's (#794).
     let amt = if current_card_upgraded(state) { 4 } else { 3 };
-    apply_power_to_player(state, PowerKind::OneForAll, amt);
+    sts2_core::coop::every_player(state, |state| {
+        apply_power_to_player(state, PowerKind::OneForAll, amt);
+    });
     EffectResult::Resolved
 }
 

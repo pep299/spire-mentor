@@ -25,7 +25,9 @@ pub(crate) fn play_piercing_wail(state: &mut CombatState, _t: Option<CreatureUid
         apply_power_to_enemy(state, uid, PowerKind::PiercingWail, loss);
         let now = power_amount_on_creature(state, uid, PowerKind::PiercingWail);
         if now > prev {
-            apply_power_signed_to_creature(state, uid, PowerKind::Strength, -loss);
+            // TemporaryStrengthPower.BeforeApplied drains the modified (landed)
+            // amount (PowerCmd.cs:129-136), e.g. doubled by Unsettling Lamp.
+            apply_power_signed_to_creature(state, uid, PowerKind::Strength, -(now - prev));
         }
     }
     EffectResult::Resolved

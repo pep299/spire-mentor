@@ -102,6 +102,8 @@ identical everywhere.
 | `played_cost` | int\|null | What `base_cost` becomes the moment the card is PLAYED -- same re-fold skipping `LocalCostModifierExpiration.WhenPlayed`, mirroring `CardEnergyCost.AfterCardPlayedCleanup()`. The game's "costs N this turn" helpers are really `SetThisTurnOrUntilPlayed` (`EndOfTurn \| WhenPlayed`), so a consumer that only expires discounts at the turn boundary keeps a spent discount alive. Null when it cannot differ. |
 | `stable_cost` | int\|null | The cost once BOTH transient edges have passed (re-fold skipping `EndOfTurn \| WhenPlayed`) -- tells a consumer whether a `(persistent, played)` pair came from one combined this-turn-or-until-played modifier or two independent ones. Null when it cannot differ. |
 | `effective_cost` | int | **Authoritative for "what will be deducted".** `CardEnergyCost.GetAmountToSpend()` -- what the engine will actually deduct (handles X-cost cards, which report their owner's current energy here). |
+| `star_cost` | int\|null | The card's current **star** cost (`CardModel.CurrentStarCost`: base star cost with its temporary star costs applied, the global `Hook.ModifyStarCost` effects excluded -- the star twin of `base_cost`). Null for a card with no star cost (`BaseStarCost < 0` -- every card but the Regent star cards) and for X star cost. `SetToFreeThisTurn` (Splash, Discovery, Infernal Blade, the generative potions) zeroes it along with the energy cost, which is what makes a generated Regent star card playable by a star-less character. |
+| `persistent_star_cost` | int\|null | What `star_cost` becomes once this turn's temporary star costs wear off (`CardModel.GetStarCostThisCombat()`). 0 means star-free for the rest of the combat (`SetToFreeThisCombat`: Touch of Insanity); `star_cost` 0 with a positive value here is the this-turn rider. Same null cases as `star_cost`. |
 | `costs_x` | bool | Whether this is an X-cost card (`CardEnergyCost.CostsX`). |
 | `type` | string | `CardType`: `Attack`\|`Skill`\|`Power`\|`Status`\|`Curse`\|`Quest`. |
 | `rarity` | string | `CardRarity`: `Basic`\|`Common`\|`Uncommon`\|`Rare`\|`Curse`\|`Status`\|`Event`\|`Quest`\|`Ancient`. |
@@ -132,7 +134,7 @@ identical everywhere.
 | `name` | string | Rendered title. |
 | `description` | string | Rendered dynamic description. |
 | `rarity` | string | `RelicRarity`: `None`\|`Starter`\|`Common`\|`Uncommon`\|`Rare`\|`Shop`\|`Event`\|`Ancient`. |
-| `counter` | int\|null | The relic's UI counter badge value (`RelicModel.DisplayAmount`), null if this relic doesn't show one (`ShowCounter == false`). Covers every relic with a visible counter (Pen Nib, Nunchaku, Girya, Pumpkin Candle, ...) generically via the same public API the game's own UI badge uses -- not a hardcoded per-relic list. |
+| `counter` | int\|null | The relic's UI counter badge value (`RelicModel.DisplayAmount`), null if this relic doesn't show one (`ShowCounter == false`). Covers every relic with a visible counter (Pen Nib, Nunchaku, Girya, Pumpkin Candle, ...) generically via the same public API the game's own UI badge uses -- not a hardcoded per-relic list. Read as it is once the relic's one-second activation flash ends (`_isActivating` cleared for the read): during it about twenty relics (Joss Paper, Pen Nib, Kunai, ...) show their threshold, not their count. A few counter-less once-per-combat latches are sent here too: Vambrace, Ruined Helmet, Permafrost and Centennial Puzzle as 1 when spent, Unsettling Lamp as 2 (the engine's "finished"). |
 | `stack_count` | int | For stackable relics (e.g. Circlet). |
 | `is_wax` | bool | Wax Choker mechanic. |
 | `is_melted` | bool | Melt mechanic. |
@@ -164,7 +166,9 @@ Used for `player.powers` and each creature's `powers`.
 | `name` | string | Rendered title. |
 | `amount` | int | Current stack amount. |
 | `display_amount` | int | `PowerModel.DisplayAmount` -- the player-facing (and, for Counter powers like Slow/WitheringPresence, the actually-scaling) value; `amount` is only the stack count for those. |
-| `vars` | object\|null | The power's `DynamicVars` as `{name: (int)BaseValue}` (e.g. CrimsonMantle/Inferno `{"SelfDamage": n}`, Thievery `{"Gold": n}`) -- the per-instance accumulators neither `amount` nor `display_amount` describes. Emitted for EVERY creature's powers (player, enemies, pets), same as the headless twin `RunSimulator.PowerVars` since the 2026-08-02 wire-completeness round (enemy powers were player-only there before). Null when the power has no vars. |
+| `vars` | object\|null | The power's `DynamicVars` as `{name: (int)BaseValue}` (e.g. CrimsonMantle/Inferno `{"SelfDamage": n}`, Thievery `{"Gold": n}`) -- the per-instance accumulators neither `amount` nor `display_amount` describes. Emitted for EVERY creature's powers (player, enemies, pets), same as the headless twin `RunSimulator.PowerVars` since the 2026-08-02 wire-completeness round (enemy powers were player-only there before). Null when the power has no vars. Since GH #989 Skittish also carries `HasGainedBlockThisTurn` (0/1, its once-a-turn latch, from the public getter) and Surrounded `Facing` (0 Right, 1 Left, which crab arm is behind the player), though neither is a DynamicVar. |
+| `applier` | string (optional) | Co-op (GH #1004): the `net_id` of the player who applied the power (`PowerModel.Applier.Player`), as the board names players. Absent when no player applied it (a monster, a relic, the game). A teammate's Flanking, Knockdown and Tag Team help every player but the one who applied them. |
+| `player_target` | string (optional) | Co-op (GH #992): the `net_id` of the teammate an `ImitationLearningPower` copies (its `PlayerTarget`; v0.111.0). Absent on every other power (the mod checks the type name before reading it). The hint adapter turns it into that power's `applier_seat`. |
 | `type` | string | `PowerType`: `Buff`\|`Debuff` (etc). |
 | `description` | string | Rendered hover-tip description text. |
 
@@ -228,6 +232,12 @@ Sent once per card-play decision (~4x/s during combat).
 |---|---|---|
 | `player.hp` / `max_hp` / `block` / `energy` / `max_energy` | int | |
 | `player.powers` | Power[] | |
+| `player.unblocked_hits_this_combat` | int | **New (GH #989).** The hits that took our HP this combat (`DamageReceivedEntry` with unblocked damage): Tear Asunder's hit count. |
+| `player.powered_hits_this_turn` | `{enemy, hits}`[] | **New (GH #989).** Our powered hits (`IsPoweredAttack`) on each enemy this turn, `enemy` being its place in `enemies`; enemies we did not hit are left out. A teammate's Gang Up counts them. |
+| `player.cards_exhausted_this_combat` | int | **New.** The cards we exhausted this combat (`CardExhaustedEntry` with us as the actor). A Midnight entering combat starts cheaper by every player's. |
+| `player.cards_exhausted_this_turn` | int | **New (GH #989).** The cards we exhausted this turn: Evil Eye blocks twice and Forgotten Ritual gives energy after one. |
+| `player.card_block_gains_this_turn` | int | **New (GH #989).** Block gains from our card plays this turn (`BlockGainedEntry` with a `CardPlay` of ours): Unmovable doubles a card's block only while there are fewer than its amount. |
+| `player.extra_turns_taken_this_combat` | int | **New (GH #812).** Extra turns we took this combat (PaelsEye, v0.111.0 Ambergris): `PlayerCombatState.TurnNumber - RoundNumber`, which an extra turn advances only for the players taking it. The turn-number gates (BagOfPreparation, Lantern, the turn-1 Innate floor) read round + this. Usually 0. |
 | `player.cards_played_this_turn` | int[5] | Player card plays started this turn, bucketed by card type in the Rust engine's `CardType::index` order (`Attack, Skill, Power, Curse, Status`). Feeds mid-turn ShouldPlay gates (Ringing / Normality / Sloth) in the client's rebuilt search state. |
 | `hand` | Card[] | **With legality** (`playable`/`unplayable_reason`/`valid_target_indices` populated). |
 | `draw_pile` / `discard_pile` / `exhaust_pile` | Pile object `{type, count, cards: Card[]}` | Full contents, engine order. **Draw pile index 0 is the next card that will be drawn** (verified against `CardPile`/`CardPileCmd.Draw` in the v0.107.1 decomp). |
@@ -240,7 +250,7 @@ Sent once per card-play decision (~4x/s during combat).
 | `available_actions` | string[] | `["PLAY","END_TURN"]` plus `"POTION"` iff any potion slot has `can_use=true`. |
 | `round` | int | `CombatState.RoundNumber`. |
 | `room_type` | string | The live `RunState.CurrentRoom.RoomType` (`Monster`\|`Elite`\|`Boss`\|`Event`\|...), same enum string the headless `RunContext` emits as `context.room_type`. The client maps `"Elite"` onto the engine's `is_elite` flag (an eval-net feature). Defaults to `"Combat"` when no room is known. |
-| `allies` | object[] | **New (co-op phase 3).** One entry per OTHER player in the run, as this peer simulates them; empty in single-player. Each: `character` (string id), `hp` / `max_hp` / `block` (int), `is_dead` (bool), `energy` / `max_energy` (int), `powers` (Power[]), `hand` (Card[], serialized without legality), `ended_turn` (bool, `CombatManager.IsPlayerReadyToEndTurn`); since the co-op replay fields also `net_id` (string), `draw_pile` / `discard_pile` / `exhaust_pile` / `play_pile` (Pile, as ours), `relics` (Relic[]) and `stars` (int), and `player.net_id` names us. Every peer runs every player's draws, so the teammate's hand is real data even though the game's UI only shows its size. Monster attacks hit every player (`TargetingAllOpponents`), so `enemies[].intents` damage is already ours. **Absent** in every mod build before the field. |
+| `allies` | object[] | **New (co-op phase 3).** One entry per OTHER player in the run, as this peer simulates them; empty in single-player. Each: `character` (string id), `hp` / `max_hp` / `block` (int), `is_dead` (bool), `energy` / `max_energy` (int), `powers` (Power[]), `hand` (Card[], serialized without legality), `ended_turn` (bool, `CombatManager.IsPlayerReadyToEndTurn`); since the co-op replay fields also `net_id` (string), `draw_pile` / `discard_pile` / `exhaust_pile` / `play_pile` (Pile, as ours), `relics` (Relic[]) and `stars` (int), and `player.net_id` names us; since the teammate-orbs fix also `orbs` (Orb[]) and `orb_capacity` (int), as ours (Chaos channels orbs for any character). Since GH #989 also `unblocked_hits_this_combat`, `powered_hits_this_turn` and `cards_played_this_turn`, as ours (a teammate's Ripple Basin and Juggling count their Attacks), and since Midnight's fix `cards_exhausted_this_combat`, as ours, and since the fresh-recording fixes `cards_exhausted_this_turn` and `card_block_gains_this_turn`, as ours, and since GH #812 `extra_turns_taken_this_combat`, as ours. Since GH #1017 also `pets` (Creature[], as ours: a Necrobinder teammate's Osty). Every peer runs every player's draws, so the teammate's hand is real data even though the game's UI only shows its size. Monster attacks hit every player (`TargetingAllOpponents`), so `enemies[].intents` damage is already ours. **Absent** in every mod build before the field. A teammate whose entry fails to read is still sent, minimal (`character`, `hp`, `max_hp`, `block`, `is_dead`, `net_id`): an `AnyAlly` play names its teammate by `allies[]` index (GH #1017), so no entry may go missing. |
 | `player.stars` | int | **Regent only** (same condition as headless `RunSimulator.CombatPlayState`: `pcs.Stars >= 0` and character `REGENT`). The star economy for star-cost cards; the client hoists it to the headless dialect's top-level `stars`. |
 
 ### `map_select`
@@ -296,6 +306,14 @@ same schema:
 | `options` | array | `{index, action:"divine_cell", x, y, enabled:true}` per hidden cell, plus a trailing `{index, action:"proceed", enabled:true}` if proceed is available. |
 
 If there are no hidden cells and no enabled proceed button, no message is sent (the handler waits for game animation instead).
+
+The game enables proceed only once every divination is spent, and the mod
+selects the Big tool (the game's default) before every reveal, which also undoes
+a player's switch to Small, so a `divine_cell` clears that cell and its eight
+neighbours. The reference agent (`sts2-pycli/python/crystal_sphere_policy.py`,
+GH #872) proceeds whenever proceed is offered and otherwise divines the next
+centre of a fixed column-first block order, the same order F7 plays
+(`CrystalSpherePick.cs`).
 
 Proceed availability is re-evaluated for every (re-)send. A `choose` of the
 proceed index when proceed is not enabled at the time the reply arrives (or
@@ -363,6 +381,8 @@ Same shape as `treasure`, `action:"pick_relic"`.
 | Field | Type | Meaning |
 |---|---|---|
 | `options` | array | `{index, id, action:"pick_reward", label, description, enabled, reward?}` per reward, plus an optional trailing `{index, id:"proceed", action:"proceed", enabled:true}`. `reward` (new, optional): a Card[] for `CardReward` (one entry per offered card), a Potion object for `PotionReward`, a Relic object for `RelicReward`, or `{amount}` for `GoldReward`. |
+
+**Full-belt potion rewards (GH #1069).** A `PotionReward` that only a full belt blocks (no free slot, but no hook such as Sozu refuses it) is not a `pick_reward`. It comes as a group of `{index, id:"PotionReward", action:"potion_swap", label, description, enabled:true, reward, reward_button, discard_slot}` options, after the claimable rewards and before `proceed`: first `discard_slot: null` (label `"decline"`: leave it on the screen, never offered again on this screen), then one per belt slot `k` (label `"discard <POTION_ID>"`: discard the held potion in slot `k` with `PotionCmd.Discard`, the discard the game's potion popup offers, then claim the reward into the freed slot). `reward_button` numbers the blocked potion rewards, so two groups can be told apart. The group mirrors the engines' `potion_swap` decision (`RunAction::PotionSwap`, headless `potion_swap`): decline first, then slot order. A potion reward a hook refuses stays hidden, because no discard helps.
 
 Proceed availability is re-evaluated for every (re-)send. A `choose` of the
 proceed index when proceed is not enabled at the time the reply arrives (or
@@ -498,9 +518,9 @@ phase1-target.md section 2.1/2.2), generalized to one field.
 
 | Verb | Payload | Behavior |
 |---|---|---|
-| `play` | `{action:"play", card_index:int, target_index:int?, state_id:int?}` | `card_index` **always** addresses `hand[card_index]` (0-based). **Phase 1a change**: the old `card_index >= 10` -> "treat as potion slot `card_index - 10`" reinterpretation has been removed -- it silently made hand cards at index >= 10 unreachable for hands larger than 10 cards. Use the `potion` verb to use a potion. `target_index` (optional, default -1 = auto-pick first hittable enemy) is only consulted for `AnyEnemy`-targeted cards. |
+| `play` | `{action:"play", card_index:int, target_index:int?, ally_index:int?, state_id:int?}` | `card_index` **always** addresses `hand[card_index]` (0-based). **Phase 1a change**: the old `card_index >= 10` -> "treat as potion slot `card_index - 10`" reinterpretation has been removed -- it silently made hand cards at index >= 10 unreachable for hands larger than 10 cards. Use the `potion` verb to use a potion. `target_index` (optional, default -1 = auto-pick first hittable enemy) is only consulted for `AnyEnemy`-targeted cards. `ally_index` (optional, co-op, GH #1017) is only consulted for `AnyAlly` cards: the teammate, an index into the request's `allies[]` (every other player in run order, dead ones included; the mod never leaves one out). Without it (or -1) the play goes to the first living teammate, the only one with two players, as before. A named teammate must be alive, else `error:"invalid_target"`, except that with exactly one living teammate any index goes to them. |
 | `end_turn` | `{action:"end_turn", state_id:int?}` | Ends the turn. |
-| `potion` | `{action:"potion", slot:int, target_index:int?, discard:bool?, state_id:int?}` | **Phase 1b: payload extended.** Uses (or, if `discard:true`, discards via `PotionCmd.Discard`) the potion at `slot` (0-based index into `potions[]`/`run_state.potions[]`). For a use (non-discard) with `TargetType.AnyEnemy`: same auto-pick-first-hittable-if-omitted resolution as `play`'s `target_index`; an explicit-but-invalid index sends `error:"invalid_target"`, an omitted index with no hittable enemy sends `error:"target_required"`. `Self`/`AnyPlayer`/`AnyAlly` potions target the player automatically, no `target_index` needed. `discard:true` ignores `target_index` entirely; discarding an empty slot sends `error:"empty_potion_slot"`, discarding a potion already mid-use (`PotionModel.IsQueued`) sends `error:"potion_busy"` (the engine's own `PotionCmd.Discard` has no such guard -- verified against the v0.107.1 decomp -- so the mod adds it, mirroring the game's own UI, which disables the Discard button in that state). |
+| `potion` | `{action:"potion", slot:int, target_index:int?, ally_index:int?, discard:bool?, state_id:int?}` | **Phase 1b: payload extended.** Uses (or, if `discard:true`, discards via `PotionCmd.Discard`) the potion at `slot` (0-based index into `potions[]`/`run_state.potions[]`). For a use (non-discard) with `TargetType.AnyEnemy`: same auto-pick-first-hittable-if-omitted resolution as `play`'s `target_index`; an explicit-but-invalid index sends `error:"invalid_target"`, an omitted index with no hittable enemy sends `error:"target_required"`. `Self`/`AnyPlayer`/`AnyAlly` potions target the player automatically, no `target_index` needed. `ally_index` (optional, co-op, GH #1017) THROWS an `AnyPlayer` potion at that teammate instead, an index into the request's `allies[]` as `play`'s (C# `PotionModel.CanThrowAtAlly`: more than one player, in combat); a potion that cannot be thrown, or an index naming no living teammate, sends `error:"invalid_target"`. `discard:true` ignores `target_index` entirely; discarding an empty slot sends `error:"empty_potion_slot"`, discarding a potion already mid-use (`PotionModel.IsQueued`) sends `error:"potion_busy"` (the engine's own `PotionCmd.Discard` has no such guard -- verified against the v0.107.1 decomp -- so the mod adds it, mirroring the game's own UI, which disables the Discard button in that state). |
 
 **Phase 1b**: every rejection above (bad `card_index`/`slot`, unplayable
 card, missing/invalid target, unknown action, malformed JSON, stale
@@ -658,7 +678,7 @@ workbench and it needs a stable key.
 
 Co-op replay fields: a `card_play_started` row also carries `owner` (the
 card's player as `net_id`, a string; `null` if unreadable), `target`
-(`{kind, id, uid}` or `null`), `target_index` (the target's position in the
+(`{kind, id, uid}` or `null`; a player also carries `net_id`, the board's, since GH #1017, so a replay knows which teammate an `AnyAlly` card went to), `target_index` (the target's position in the
 combat's enemies, `null` for a player, a pet or no target) and `play_index`
 (> 0 for a repeat of the same play — Echo Form, Burst — not a new one). A
 `potion` row carries `owner` and `target_index` the same way. Creatures on rows
@@ -672,7 +692,9 @@ only) is the `rng` block's shape and content, kept off `rng` because live the
 teammates draw from the shared streams between our decisions; a Bolas /
 Thrumming Hatchet card carries `combat_vars.return_if_played_round` (the round
 it was played this turn or last, from the game's History), the engine's
-`VarKey` wire name.
+`VarKey` wire name. Any card may carry `base_replay_count` (C#
+`CardModel.BaseReplayCount`, omitted when 0): extra plays the instance gained
+this combat, as Soldier's Stew gives every Strike.
 
 A `player_choice` row is a pick a player made mid-combat (a Survivor discard,
 a Discovery card, a Toolbox pick), ours or a teammate's, as the game syncs it
@@ -681,8 +703,12 @@ History entry: it sits before the first entry recorded after the pick. Fields:
 `owner` (net id), `choice_id` (the per-player sequence number), `choice_type`
 (C# `PlayerChoiceType`: `CombatCard`, `CanonicalCard`, `DeckCard`,
 `MutableCard`, `Index`, `Player`), `cards` (`[{id, upgraded}]`, in the order
-picked; empty for a skip or a non-card choice), `indexes` (an `Index` choice)
-and `player` (a `Player` choice's net id). A teammate's pick lands when it
+picked; empty for a skip or a non-card choice), `indexes` (an `Index` choice),
+`player` (a `Player` choice's net id) and, on an `Index` pick from a
+choose-a-card screen (a Skill Potion, Discovery), `offered` (`[{id, upgraded}]`,
+the cards the screen showed, in screen order; C#
+`CardSelectCmd.FromChooseACardScreen` runs on every peer, so it is sent for a
+teammate's screen too). A teammate's pick lands when it
 arrives over the network, which can be a little before the play that asks for
 it.
 
@@ -719,7 +745,8 @@ gone, so its deck value is the wrong question and the note flags it.
 Answered **mod-side**, no round trip, because they are not judgement calls:
 the loot screen (`NRewardsScreen`: claim everything, then proceed), the chest's
 open/proceed steps, the rest site's proceed, and the crystal sphere (every
-remaining cell is hidden — there is nothing to rank). The game-over screen is
+remaining cell is hidden — there is nothing to rank; the cell is the next one
+in `CrystalSpherePick`'s fixed 3x3 block order, GH #872). The game-over screen is
 described but never clicked: it only exists so autoplay can stop cleanly.
 
 Every one of these goes through `realgame_ppo._PPO_NONCOMBAT_BUILDERS` — the
@@ -749,7 +776,10 @@ never appears as an `advice_request`.
                "label":"Bash → Cultist","p_win":0.73,"q":0.31,
                "visits":1420,"visit_share":0.47,
                "wins":900,"losses":420,"ties":100,
-               "is_best":true,"low_confidence":false}],
+               "is_best":true,"low_confidence":false,
+               "in_band":true,"pick_rank":0}],
+   "pick":{"rule":"band_visits","reason":"the most searched of the equal moves",
+           "gap_q":-0.004,"gap_z":-0.6,"gap_hp":-0.8},
    "pv":["Bash → Cultist","Strike → Cultist","end turn"]}}
 ```
 
@@ -760,13 +790,15 @@ never appears as an `advice_request`.
 | `advice.note` | string | Status line (search config, sim count). |
 | `advice.p_win` | number | Position win probability. Shown as text only: it saturates at ~1.0 for every legal action in a fight the search expects to win, so the HUD's eval bar is driven by the best option's `q` instead (the workbench's Reasoning panel made the same call). |
 | `advice.options[]` | array | Ranked candidate actions. `label` is the display text; `card_index` (optional) anchors a per-card label using `play`'s hand indexing; `p_win`/`q`/`visits`/`visit_share`/`wins`/`losses`/`ties` come straight from the MCTS root outcome; `is_best` marks the recommendation (gold highlight); `low_confidence` marks flagged rows. For screen advice there is no per-action Q, so the net's probability rides on `visit_share` (the field the HUD draws as a bar) and `index` names the option to click. |
+| `advice.options[].in_band` / `pick_rank` | bool / int | **New (GH #1022), combat only.** `in_band`: the engine cannot tell this move from its pick -- it lies inside the band (`tie_eps`, root Q) its pick rule decided in. `pick_rank`: the engine's own preference order, 0 = its pick; when the advisor has to drop the pick (a card the game refuses), the crown goes to the lowest surviving rank, the engine's next choice, never to the highest `p_win`. The HUD names the in-band moves ("about equal: …") instead of applying a near-tie threshold of its own. Absent on older advisors: `in_band` false. |
+| `advice.pick` | object | **New (GH #1022), combat only.** Why the engine took its pick: `rule` (`argmax`, `band_visits`, `block_guard`, `free_play`, `junk_dispose`, `proven_win`, `lost_position`, `illegal_fallback`, and the default-off `free_lasting`, `spend`, `order`, `order_block`, `upgraded`, `keep_potion`), `reason` (the rule's player-facing words, written once in the engine: `sts2_mcts::PickRule::reason`), and the pick's lead over the runner-up (the best-scored other move) as `gap_q` (root Q; negative when the band handed the pick to a lower-scored move), `gap_z` (that lead over its standard error; null without variance) and `gap_hp` (mean final HP; null without resolved playouts). Absent when the advice no longer recommends the engine's pick (a veto moved the crown), on screens, in the fair mode and on older advisors. |
 | `advice.best.action` | string | `play` / `end_turn` / `potion` for combat; `choose` (with `index`) or `skip` for screen decisions, which the mod executes by clicking the screen. |
-| `advice.best` | object | Convenience copy of the recommended option (`stable_idx`/`target_index` are what phase 7's "AI takes this decision" executes). |
+| `advice.best` | object | Convenience copy of the recommended option (`stable_idx`/`target_index` are what phase 7's "AI takes this decision" executes). For a co-op `AnyAlly` card `ally_index` names the teammate, an index into the request's `allies[]` (as `play`'s; GH #1017); the advisor sends one only with two or more living teammates, and `options[]` rows carry it the same way. A `potion` best carries `ally_index` when the advisor recommends throwing it at that teammate, with any number of teammates. |
 | `advice.best.label` | string | Also the takeover's **cross-check**: before clicking option `index`, the mod compares this against the option list it can see right now, and re-anchors (or refuses) if the list moved under it. Card screens spell it from `CardModel.Title` on both sides. |
 | `advice.options[].col/row` | int | `map_select` only: the option's map-graph coordinate, so the HUD can pin its score to the node on the map instead of printing a coordinate in a panel. |
 | `advice.path[]` | array | `map_select` only: the **projected route** through the act — `{col, row, type, hop, hp}`, `hop` 0 being the node being chosen now and `hp` the HP the projection expects to *arrive* at that node with (before its own room resolves). Produced by re-querying the same policy hop by hop with `map_coord` walked along the graph and HP walked forward through the run-AI's expected-cost tables, so the route runs the whole act rather than stopping a few floors out. Deck, gold, relics and potions stay frozen and the HP deltas are flat per-act expectations, so it is a projection, not a plan, and the HUD says so. `hp` is absent when the engine could not supply its cost tables (older wheel) — the route then draws with HP frozen, as it did before. Absent entirely when the net cannot see a route (single-child chains still count). |
 | `advice.pv` | array of string | Principal variation, rendered as the "line:" row. |
-| `advice.hand_back` | string | **New (GH #874).** Present when the answer is not really the AI deciding: an unranked surface (`best` is the first option, "NOT a recommendation"), a borrowed head (`treasure`, `card_bundle` — GH #379), no run-policy net, an inference failure, an advisor error. The value is a short player-facing reason. Under the mod's `pause_on: "unsupported"` (the default) F7 autoplay stops on it and hands the decision to the player; everything else (HUD, `best`, F6) is unchanged. Absent on a real recommendation and on older advisors. The mod applies the same verdict itself to what it answers without a round trip (the crystal sphere's reveals). |
+| `advice.hand_back` | string | **New (GH #874).** Present when the answer is not really the AI deciding: an unranked surface (`best` is the first option, "NOT a recommendation"), a borrowed head (`treasure`, `card_bundle` — GH #379), no run-policy net, an inference failure, an advisor error. The value is a short player-facing reason. Under the mod's `pause_on: "unsupported"` (the default) F7 autoplay stops on it and hands the decision to the player; everything else (HUD, `best`, F6) is unchanged. Absent on a real recommendation and on older advisors. The mod applies the same verdict itself to what it answers without a round trip (the crystal sphere's reveals did, until they got a policy in GH #872). |
 | `capabilities` | object | **New in v5 / coach.** Top level of the `advice` message, next to `advice` (not inside it). What this advisor build understands: `{"coach": 1}` = it accepts the v5 `human_action` kinds (`end_turn`, non-combat choices) and grades them; `{"coach": 2}` (v5.1) = also accepts `combat_ended` / Advisor-mode `game_over` and answers them with `recap` / `autopsy` records. Absent on older advisors: treat as `{}`. The mod reads it from every reply (`SimAdvisor.AdvisorCoachCapability`) and also accepts `advice.capabilities`. |
 | `advice.unsupported_game_version` | string \| any | **New (GH #800).** Present only on a **refusal**: the request's envelope `game_version` (section 1) names a build the advisor has no engine for. The value is that `game_version` as sent; `advice.note` is the player-facing explanation (the build, the supported builds, what to do), and there is no `best` / `options` / `p_win` -- nothing to render or execute. A missing or `"v0.107.1"` `game_version` is never refused. |
 
@@ -795,6 +827,7 @@ A **card play** additionally carries the MACHINE form of the action:
 | `card` | object \| null | `{"id": "HEADBUTT", "upgraded": false}` -- the card played. `null` for anything that is not a card play. |
 | `potion` | object \| null | `{"id": "ATTACK_POTION"}` -- the potion drunk. `null` for anything that is not a drink. No `upgraded` twin (a potion has none) and no slot: two belt slots holding the same potion are interchangeable, so a client locates it by identity in its OWN belt, exactly as it locates a card in its own hand. The two sides then never have to agree on belt order. |
 | `target_index` | int \| null | Index into the full `Enemies` list -- the same frame `SimCombatHandler.ResolveTarget` reads, so a corpse keeps its slot. `null` when the card or potion took no target. For a drink this is advisory: the engine resolves a null potion target to the first alive enemy exactly as C# `RunSimulator.DoUsePotion` does, and no potion that opens a card-select is single-enemy targeted. |
+| `ally_index` | int, optional | Co-op, GH #1017: a co-op `AnyAlly` card played at a teammate names them, an index into the board's `allies[]` (as `play`'s). Sent only with two or more living teammates, the only case the engine has a play per teammate (`PlayCardAtAlly`); absent otherwise, so two-player card plays are unchanged. A potion thrown at a teammate names them too, with any number of teammates (drinking and throwing are different moves, `DrinkPotionAtAlly`). |
 
 `detail` alone is a display string ("Bash -> Cultist"), which is enough to
 LOG an action and not enough to REPLAY one. A client that wants to keep an

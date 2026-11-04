@@ -10,7 +10,7 @@
   "bg_col": 1,
   "bg_row": 4,
   "bg_seed": "11180935036767329045",
-  "floor": 4,
+  "floor": 5,
   "step_no": 0,
   "turn": 3
  },
@@ -261,7 +261,7 @@
    }
   ],
   "exhaust_pile_count": 2,
-  "floor": 4,
+  "floor": 5,
   "game_version": "v0.111.0",
   "hand": [
    {

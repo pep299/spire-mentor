@@ -53,6 +53,42 @@ fn play_and_quit(wb: &mut Workbench, seed: &str, steps: usize) -> sts2_workbench
     log
 }
 
+/// A run that a new start replaces is quit, not dropped: its log waits for
+/// the host stamped with the start's `now`, as Python's `LiveRuns.replace`
+/// writes it. Both logs of a quit-after-restart come out, oldest first.
+#[test]
+fn a_replaced_run_leaves_its_log() {
+    let mut wb = new_wb();
+    let start = |wb: &mut Workbench, now: &str| {
+        call(
+            wb,
+            "POST",
+            "/api/live/start-faithful",
+            json!({"character": "Ironclad", "seed": "run_11", "sims": 4, "boss_sims": 8, "now": now}),
+        );
+        call(wb, "POST", "/api/live/run-mode-step", json!({}));
+    };
+    start(&mut wb, "2026-09-03T04:22:57Z");
+    assert!(wb.take_run_log().is_none(), "nothing was live to replace");
+    start(&mut wb, "2026-09-03T04:23:10Z");
+    call(
+        &mut wb,
+        "POST",
+        "/api/live/quit",
+        json!({"now": "2026-09-03T04:24:00Z"}),
+    );
+    let names: Vec<String> = std::iter::from_fn(|| wb.take_run_log())
+        .map(|l| l.filename)
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            "20260903_042310_Ironclad_11.jsonl".to_string(),
+            "20260903_042400_Ironclad_11.jsonl".to_string(),
+        ]
+    );
+}
+
 #[test]
 fn quit_writes_the_active_path_as_a_run_log() {
     let mut wb = new_wb();
@@ -136,7 +172,7 @@ fn load_run_and_the_replay_projections() {
         assert!(s["label"].as_str().is_some_and(|l| !l.is_empty()), "{s}");
         assert!(s["details"].is_array());
     }
-    assert_eq!(steps[0]["floor"], json!(0));
+    assert_eq!(steps[0]["floor"], json!(1), "Neow is the game's floor 1");
     assert!(steps
         .iter()
         .any(|s| s["combat_log"].as_array().is_some_and(|c| !c.is_empty())));

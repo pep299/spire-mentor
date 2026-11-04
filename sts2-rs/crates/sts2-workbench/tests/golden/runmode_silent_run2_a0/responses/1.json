@@ -16,7 +16,7 @@
    "bg_col": null,
    "bg_row": null,
    "bg_seed": 2,
-   "floor": 0,
+   "floor": 1,
    "step_no": 0,
    "turn": null
   },
@@ -50,7 +50,7 @@
     }
    ],
    "decision": "map_select",
-   "floor": 0,
+   "floor": 1,
    "full_map": {
     "boss": {
      "col": 3,

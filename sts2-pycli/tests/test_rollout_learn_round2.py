@@ -875,6 +875,35 @@ def test_train_init_starts_exactly_at_the_init_net(tmp_path: Path) -> None:
     assert json.loads(e1.read_text())["meta"]["kl_init"] == pytest.approx(0.5)
 
 
+def test_gen_records_q_and_cq_tilts_the_init_toward_the_best_q(tmp_path: Path) -> None:
+    """`gen` keeps each action's mean backed-up Q (NaN only where unvisited);
+    `train --cq-tau` keeps the init's policy at a huge tau and moves the
+    target's top-1 to the highest-Q action at a tiny one."""
+    w = rollout_learn.ShardWriter(str(tmp_path / "gen"), 10_000)
+    for i, f in enumerate((ELITE, HALL)):
+        rows = rollout_learn.gen_fight((f, i, 1, 50, 16, 24, False, 1, 0))
+        assert rows["decisions"] and "error" not in rows
+        for r in rows["decisions"]:
+            assert len(r["q"]) == len(r["visits"])
+            assert all((v > 0) == (q == q) for q, v in zip(r["q"], r["visits"], strict=True))
+        w.add(rows["decisions"])
+    w.flush()
+    data, _, _ = rollout_learn.load_shards([str(tmp_path / "gen")])
+    n_act = data["n_act"].astype(np.int64)
+    starts = np.concatenate([[0], np.cumsum(n_act)[:-1]])
+    q = rollout_learn._fill_q(data, starts, n_act)
+    assert not np.isnan(q).any()
+    seen = data["visits"] > 0
+    assert np.allclose(q[seen], data["q"][seen])
+    init = Path(__file__).resolve().parents[2] / "sts2-rs" / "data" / "prior_nets" / "ironclad.json"
+    base = ["train", "--data", str(tmp_path / "gen"), "--init", str(init), "--device", "cpu"]
+    base += ["--val-frac", "0.5", "--epochs", "1"]
+    for tau in ("1e9", "1e-6"):
+        out = tmp_path / f"cq{tau}.json"
+        assert rollout_learn.main([*base, "--out", str(out), "--cq-tau", tau]) == 0
+        assert json.loads(out.read_text())["meta"]["cq_tau"] == pytest.approx(float(tau))
+
+
 def test_gen_replay_records_the_pilot_from_a_replayed_turn(tmp_path: Path) -> None:
     """`gen-replay` replays a SpireCodex fight to an in-sync turn start and
     records the pilot's decisions from there (mode pilot) or after the

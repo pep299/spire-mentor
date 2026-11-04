@@ -31,7 +31,7 @@ move.</sub>
 ### AI
 
 - MCTS-based combat  
-- PPO / reinforcement-learning-based run-level AI, trained over many weeks, with the best win rates of any STS2 AI I'm aware of (e.g. Ironclad champion `cardmods_it850`: 30% A10 in the simulator at the advisor's 4,000 sims per decision, 16,000 in boss fights; its predecessor won 96% at A0 at 8,000)  
+- PPO / reinforcement-learning-based run-level AI, trained over many weeks, with the best win rates of any STS2 AI I'm aware of (e.g. Ironclad champion `cont300_it1150`: 30% A10 in the simulator at the advisor's 4,000 sims per decision, 16,000 in boss fights; its predecessor won 96% at A0 at 8,000)  
 - **non-clairvoyant** / using chance nodes, i.e. it doesn’t cheat by exploiting the RNG or using information like which card it’s about to draw
 
 ### UI / workbench
@@ -67,28 +67,31 @@ except the first Ironclad row, see below):
 
 | Character | A0 | A4 | A8 | A9 | A10 | Mean A0–A10 | Promotion gate (vs previous champion) |
 |---|---|---|---|---|---|---|---|
-| Ironclad `cardmods_it850` (4,000/16,000 sims, 400 runs) | – | – | – | 56.5%* | 30.0% | – | A10: +6.4 pp, p = 9e-5 |
-| Ironclad, previous champion `a10_it700` | 96.0% | 95.0% | 84.5% | 56.4% | 27.2% | **83.6%** | pooled +1.6 pp, p = 0.11 (missed); promoted on A10: +6.9 pp, p = 9e-7 |
+| Ironclad `cont300_it1150` (4,000/16,000 sims, 400 runs) | – | – | – | 59.2%* | 30.0% | – | A10: +3.7 pp, p = 0.021 (missed p < 0.01); promoted by owner decision |
+| Ironclad, champion before last `a10_it700` | 96.0% | 95.0% | 84.5% | 56.4% | 27.2% | **83.6%** | pooled +1.6 pp, p = 0.11 (missed); promoted on A10: +6.9 pp, p = 9e-7 |
 | Defect | 93.0% | 90.5% | 70.0% | 39.2% | 22.0% | **76.1%** | +5.5 pp, p = 2e-6 |
 | Silent | 78.5% | 67.5% | 55.5% | 20.0% | 9.0% | **59.9%** | +5.6 pp, p = 7e-7, all 11 levels up |
 | Regent | 67.5% | 66.0% | 43.5% | 15.6% | 6.2% | **53.8%** | +4.6 pp, p = 1e-4 |
 | Necrobinder | 66.5% | 62.5% | 44.5% | 13.8% | 5.6% | **51.7%** | +6.8 pp, p = 6e-10, all 11 levels up |
 
-The current Ironclad champion, `cardmods_it850` (promoted 27 October 2026),
+The current Ironclad champion, `cont300_it1150` (promoted 31 October 2026),
 has so far been measured only at A10, on a different budget from the rest of
 the table: 400 runs at the advisor's 4,000 sims per decision (16,000 in boss
 fights), on a separate seed panel. It won 30.0% (95% interval 25.7–34.7%).
 \*The A9 cell is an estimate from those same A10 runs, not an A9 sweep: A10
 is A9 plus a second final boss, so a run that beats the first one has won the
-A9 run's last fight; 56.5% did (51.6–61.3%). On the same seeds and budget the
-previous champion won 26.75% at A10 (52.25% A9 estimate). A0–A8 have not been
-re-run for the new net; the previous champion's row, at 8,000 sims, is kept
-below it. Record:
-[`docs/experiments/2026-10-27-ironclad-a10-cardmods.md`](docs/experiments/2026-10-27-ironclad-a10-cardmods.md).
+A9 run's last fight; 59.2% did. On the same seeds, budget and engine the
+previous champion, `cardmods_it850`, won 27.0% at A10 (57.2% A9 estimate).
+This row is on an engine that fixed a simulator bug in A10's favour: it used to
+give rewards after the first of the two final bosses, and the game gives none.
+The other rows were measured before that fix, so their A10 cells are somewhat
+flattering. A0–A8 have not been re-run for the new net; the row of the
+champion before last, at 8,000 sims, is kept below it. Record:
+[`docs/experiments/2026-10-31-ironclad-a10-cont300.md`](docs/experiments/2026-10-31-ironclad-a10-cont300.md).
 
 Win rates for every ascension level are in the
 [docs](https://tfriedel.github.io/spire-mentor/#ai). The table mixes dates
-and generations of combat search: the previous Ironclad row was re-measured on 26
+and generations of combat search: the second Ironclad row was re-measured on 26
 October 2026 with that champion (`a10_it700`) and the combat search the
 run agent has shipped for Ironclad since 26 October (a gated layer of search
 settings plus a move prior in elite and boss fights, on top of the learned

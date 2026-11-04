@@ -10,7 +10,7 @@
   "bg_col": 2,
   "bg_row": 3,
   "bg_seed": 1772253313,
-  "floor": 3,
+  "floor": 4,
   "step_no": 0,
   "turn": null
  },
@@ -47,7 +47,7 @@
     "title": "Rest"
    }
   ],
-  "floor": 3,
+  "floor": 4,
   "options": [
    {
     "action": "choose_option",

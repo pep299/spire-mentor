@@ -3,7 +3,6 @@ use super::prelude::*;
 
 /// Celestial Might — 3 hits of `base_damage`, breaking on kill.
 /// Python pin: `regent.py:L113-L122`.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L113
 pub(crate) fn play_celestial_might(
     state: &mut CombatState,
     target: Option<CreatureUid>,

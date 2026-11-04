@@ -77,6 +77,13 @@ internal sealed class SimAdviceOption
     public bool IsBest;
     public bool LowConfidence;
 
+    /// <summary>`in_band`: the engine cannot tell this move from its pick
+    /// (GH #1022). False on screen advice and older advisors.</summary>
+    public bool InBand;
+
+    /// <summary>`pick_rank`: the engine's preference order, 0 = its pick.</summary>
+    public int? PickRank;
+
     /// <summary>Hand index for card options (drives the per-card label).</summary>
     public int? CardIndex;
 
@@ -97,6 +104,9 @@ internal sealed class SimBestAction
     public string Action = ""; // "play" | "end_turn" | "potion" | "choose" | "skip"
     public int CardIndex = -1;
     public int TargetIndex = -1;
+    /// <summary>Co-op: an AnyAlly card's teammate, an index into the
+    /// request's <c>allies[]</c> (GH #1017); -1 when the advice names none.</summary>
+    public int AllyIndex = -1;
     public int Slot = -1;
 
     /// <summary>Option index for screen decisions ("choose").</summary>
@@ -154,6 +164,13 @@ internal sealed class SimAdvice
     /// <summary>Projected route through the act (map advice only).</summary>
     public readonly List<SimPathNode> Path = new();
 
+    /// <summary>`advice.pick` (combat, GH #1022): why the engine took its
+    /// pick over the other in-band options, and the HP gap to the
+    /// runner-up. Null reason when the advice carries no engine pick
+    /// (screens, a vetoed pick, older advisors).</summary>
+    public string? PickReason;
+    public double? PickGapHp;
+
     /// <summary>
     /// Q of the recommended option, in [-1,1]. This -- not p_win -- is what
     /// the eval bar and the per-option numbers show: win_prob saturates at
@@ -186,6 +203,11 @@ internal sealed class SimAdvice
         {
             advice.WaitForAllyMs = Math.Max(0, ReadInt(waitEl, "max_ms") ?? 0);
         }
+        if (el.TryGetProperty("pick", out JsonElement pickEl) && pickEl.ValueKind == JsonValueKind.Object)
+        {
+            advice.PickReason = ReadString(pickEl, "reason");
+            advice.PickGapHp = ReadDouble(pickEl, "gap_hp");
+        }
 
         if (el.TryGetProperty("best", out JsonElement bestEl) && bestEl.ValueKind == JsonValueKind.Object)
         {
@@ -194,6 +216,7 @@ internal sealed class SimAdvice
                 Action = ReadString(bestEl, "action") ?? "play",
                 CardIndex = ReadInt(bestEl, "card_index") ?? -1,
                 TargetIndex = ReadInt(bestEl, "target_index") ?? -1,
+                AllyIndex = ReadInt(bestEl, "ally_index") ?? -1,
                 Slot = ReadInt(bestEl, "slot") ?? -1,
                 Index = ReadInt(bestEl, "index") ?? -1,
                 Label = ReadString(bestEl, "label") ?? "",
@@ -220,6 +243,8 @@ internal sealed class SimAdvice
                     Ties = ReadLong(o, "ties"),
                     IsBest = ReadBool(o, "is_best") ?? false,
                     LowConfidence = ReadBool(o, "low_confidence") ?? false,
+                    InBand = ReadBool(o, "in_band") ?? false,
+                    PickRank = ReadInt(o, "pick_rank"),
                     CardIndex = ReadInt(o, "card_index"),
                     Col = ReadInt(o, "col"),
                     Row = ReadInt(o, "row"),
@@ -675,7 +700,7 @@ internal sealed class SimHud
             return;
         }
 
-        _layer!.Visible = HudVisible;
+        _layer!.Visible = HudVisible && !SimUiHide.Hidden;
         // The status text itself lives on the toolbar now; the advice note
         // rides along (and clears on note-less refreshes, as the chip did).
         SimToolbar.Instance.SetNote(HudVisible && !SimRuntime.CoachStyleActive ? note : null);
@@ -734,16 +759,19 @@ internal sealed class SimHud
                 _adviceRows.AddChildSafely(BuildRankedToggle(ranked.Count - maxRows));
             }
 
-            // Say when the ranking is not really a ranking. In a fight the
-            // search expects to win, every reasonable line ends in a win, so
-            // the Qs converge and the order is noise -- printing them without
-            // comment invites reading a 0.003 gap as a real preference.
-            double? spread = QSpread(ranked, maxRows);
-            if (spread != null && spread.Value < 0.01)
+            // Say when the ranking is not really a ranking: the moves the
+            // engine's tie band holds, and why it took its pick over them. In
+            // a fight the search expects to win the Qs converge, and a 0.003
+            // gap printed without comment reads as a real preference. The
+            // band and the reason are the engine's own (GH #1022), not a
+            // threshold of this HUD's.
+            List<SimAdviceOption> band = advice.Options.FindAll(o => o.InBand);
+            band.Sort((a, b) => (a.IsBest ? -1 : a.PickRank ?? int.MaxValue)
+                .CompareTo(b.IsBest ? -1 : b.PickRank ?? int.MaxValue));
+            List<string> inBand = band.ConvertAll(o => o.Label);
+            foreach (string line in TieBandText.Lines(inBand, advice.PickReason, advice.PickGapHp))
             {
-                _adviceRows.AddChildSafely(SmallLabel(
-                    "top moves within ±0.01 — the search rates them equivalent",
-                    new Color(0.7f, 0.7f, 0.75f)));
+                _adviceRows.AddChildSafely(SmallLabel(line, new Color(0.7f, 0.7f, 0.75f)));
             }
         }
 
@@ -763,6 +791,8 @@ internal sealed class SimHud
         {
             _adviceRows.AddChildSafely(SmallLabel("low confidence", new Color(0.95f, 0.75f, 0.3f)));
         }
+
+        ShrinkAdvicePanelToFit();
     }
 
     /// <summary>
@@ -919,10 +949,31 @@ internal sealed class SimHud
         {
             return;
         }
+        // Detach before freeing: a queued-free child stays in the tree (and in
+        // the container's minimum size) until the end of the frame.
         foreach (Node child in _adviceRows.GetChildren())
         {
+            _adviceRows.RemoveChild(child);
             child.QueueFreeSafely();
         }
+    }
+
+    /// <summary>
+    /// Containers grow to fit their children but never shrink back on their
+    /// own, so "show fewer" left the panel at its expanded height. Zeroing the
+    /// size clamps it to the new minimum; deferred so it runs after the rows
+    /// AddChildSafely may itself have deferred.
+    /// </summary>
+    private void ShrinkAdvicePanelToFit()
+    {
+        PanelContainer? panel = _advicePanel;
+        Callable.From(() =>
+        {
+            if (panel != null && GodotObject.IsInstanceValid(panel))
+            {
+                panel.Size = Vector2.Zero;
+            }
+        }).CallDeferred();
     }
 
     // ------------------------------------------------------------------
@@ -1656,12 +1707,13 @@ internal sealed class SimHud
                 Layer = 99,
             };
 
-            // Advice panel (below the toolbar strip -- see RepositionPanels).
+            // Advice panel (below the toolbar strip, docked or dragged -- see
+            // RepositionPanels).
             var panel = new PanelContainer
             {
                 Name = "SpireMentorAdvicePanel",
                 Position = new Vector2(PanelLeft, ChipFallbackTop + ChipToPanelGap),
-                CustomMinimumSize = new Vector2(430f, 0f),
+                CustomMinimumSize = new Vector2(PanelWidth, 0f),
                 MouseFilter = Control.MouseFilterEnum.Ignore,
                 Visible = false,
             };
@@ -1727,14 +1779,13 @@ internal sealed class SimHud
     /// <summary>Chip bottom to advice-panel top. The two used to be 16 and 96.</summary>
     private const float ChipToPanelGap = 80f;
 
-    /// <summary>
-    /// Keep the chip and the advice panel clear of the game's own top bar
-    /// (measured every tick -- see SimTopBarLayout.SafeTopY for the why).
-    /// </summary>
+    /// <summary>Advice panel width (its minimum; a coach chip is as wide).</summary>
+    private const float PanelWidth = 430f;
+
     /// <summary>
     /// Where the coach chip (SimCoachChip) goes: just below the advice panel
-    /// when it is showing, else in the panel's own slot under the toolbar.
-    /// Viewport pixels. Main thread.
+    /// when it is showing, else in the panel's own slot (under the toolbar,
+    /// wherever the toolbar is). Viewport pixels. Main thread.
     /// </summary>
     public Vector2 ChipSlot()
     {
@@ -1745,13 +1796,18 @@ internal sealed class SimHud
                 float top = _advicePanel.Position.Y;
                 if (_advicePanel.IsVisibleInTree())
                 {
-                    top += _advicePanel.Size.Y + 8f;
+                    top += _advicePanel.Size.Y + AdviceColumn.Gap;
                 }
-                return new Vector2(PanelLeft, top);
+                return new Vector2(_advicePanel.Position.X, top);
+            }
+            if (SimToolbar.Instance.UndockedRect() is { } toolbar)
+            {
+                return FollowToolbar(toolbar.Rect, toolbar.Viewport, PanelWidth,
+                    SimCoachChip.Instance.StackHeight());
             }
             float? toolbarBottom = SimToolbar.Instance.BottomY();
             return new Vector2(PanelLeft, toolbarBottom.HasValue
-                ? toolbarBottom.Value + 8f
+                ? toolbarBottom.Value + AdviceColumn.Gap
                 : ChipFallbackTop + ChipToPanelGap);
         }
         catch (Exception)
@@ -1760,6 +1816,12 @@ internal sealed class SimHud
         }
     }
 
+    /// <summary>
+    /// Docked toolbar: keep the advice panel (and the chip under it) clear of
+    /// the game's own top bar (measured every tick -- see
+    /// SimTopBarLayout.SafeTopY for the why). Dragged toolbar: the panel and
+    /// the chips travel with it, as one block (AdviceColumn).
+    /// </summary>
     private void RepositionPanels()
     {
         try
@@ -1769,22 +1831,40 @@ internal sealed class SimHud
                 return;
             }
 
-            float top = SimTopBarLayout.SafeTopY(_advicePanel);
-            // Below the toolbar strip when there is one; otherwise leave the
-            // old chip-sized gap so the panel is where it always was.
-            float? toolbarBottom = SimToolbar.Instance.BottomY();
-            float panelTop = toolbarBottom.HasValue
-                ? Math.Max(top, toolbarBottom.Value + 8f)
-                : top + ChipToPanelGap;
-            if (Math.Abs(_advicePanel.Position.Y - panelTop) > 0.5f)
+            Vector2 want;
+            if (SimToolbar.Instance.UndockedRect() is { } toolbar)
             {
-                _advicePanel.Position = new Vector2(PanelLeft, panelTop);
+                float height = AdviceColumn.BlockHeight(_advicePanel.Size.Y,
+                    _advicePanel.IsVisibleInTree(), SimCoachChip.Instance.StackHeight());
+                want = FollowToolbar(toolbar.Rect, toolbar.Viewport,
+                    Math.Max(PanelWidth, _advicePanel.Size.X), height);
+            }
+            else
+            {
+                float top = SimTopBarLayout.SafeTopY(_advicePanel);
+                // Below the toolbar strip when there is one; otherwise leave
+                // the old chip-sized gap so the panel is where it always was.
+                float? toolbarBottom = SimToolbar.Instance.BottomY();
+                want = new Vector2(PanelLeft, toolbarBottom.HasValue
+                    ? Math.Max(top, toolbarBottom.Value + AdviceColumn.Gap)
+                    : top + ChipToPanelGap);
+            }
+            if (_advicePanel.Position.DistanceTo(want) > 0.5f)
+            {
+                _advicePanel.Position = want;
             }
         }
         catch (Exception ex)
         {
             Logger.Log($"[SimHud] RepositionPanels failed: {ex.Message}");
         }
+    }
+
+    private static Vector2 FollowToolbar(Rect2 toolbar, Vector2 viewport, float width, float height)
+    {
+        (float x, float y) = AdviceColumn.BlockTopLeft(toolbar.Position.X, toolbar.Position.Y,
+            toolbar.Size.Y, width, height, viewport.X, viewport.Y);
+        return new Vector2(x, y);
     }
 
     private void EnsureCombatEndedSubscription()
@@ -1849,25 +1929,5 @@ internal sealed class SimHud
         Color even = new(0.7f, 0.72f, 0.78f);
         Color bad = new(0.9f, 0.35f, 0.3f);
         return even.Lerp(bad, (float)loss);
-    }
-
-    /// <summary>Q spread across the shown rows, or null if fewer than two carry a Q.</summary>
-    private static double? QSpread(List<SimAdviceOption> ranked, int maxRows)
-    {
-        double min = double.MaxValue;
-        double max = double.MinValue;
-        int seen = 0;
-        for (int i = 0; i < ranked.Count && i < maxRows; i++)
-        {
-            double? q = ranked[i].Q ?? (ranked[i].PWin != null ? ranked[i].PWin!.Value * 2 - 1 : (double?)null);
-            if (q == null)
-            {
-                continue;
-            }
-            seen++;
-            min = Math.Min(min, q.Value);
-            max = Math.Max(max, q.Value);
-        }
-        return seen >= 2 ? max - min : null;
     }
 }

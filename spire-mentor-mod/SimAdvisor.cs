@@ -243,6 +243,11 @@ internal sealed class SimAdvisor
     /// accepted action. See <see cref="OnActionRefused" />.</summary>
     private int _refusedInARow;
 
+    /// <summary>Decision screens the poll has seen come up; the refused-action
+    /// watchdog compares it to tell a move that opened a pick from one the
+    /// game dropped (<see cref="RefusalWatch" />).</summary>
+    private int _decisionScreensSeen;
+
     /// <summary>Co-op autoplay: combat replies in a row that carried no
     /// move (the advisor failed on the position). See
     /// <see cref="OnNoMoveInCoop"/>.</summary>
@@ -525,6 +530,7 @@ internal sealed class SimAdvisor
             _polledSignature = signature;
             if (current != null)
             {
+                _decisionScreensSeen++;
                 Logger.Log($"[SimAdvisor] Decision up: {current.ScreenName} [{signature}]");
             }
             ScheduleAdvice();
@@ -1210,37 +1216,48 @@ internal sealed class SimAdvisor
             // the Rust engine emits for a simulated one. Display only; the
             // advisor ignores it.
             WatchPlayerChoices();
-            state["combat_log"] = SimCombatLog.Drain();
-            state["capabilities"] = ModCapabilities();
-
-            DropInflight();
-
-            string json;
+            // Rows not yet handed to the bridge: given back on every way out
+            // but a sent request, so the next one carries them (GH #989).
+            List<Dictionary<string, object?>>? combatLog = SimCombatLog.Drain();
             try
             {
-                json = JsonSerializer.Serialize(state);
-            }
-            catch (Exception ex)
-            {
-                Logger.Log($"[SimAdvisor] Could not serialize advice_request: {ex.Message}");
-                return;
-            }
+                state["combat_log"] = combatLog;
+                state["capabilities"] = ModCapabilities();
 
-            string? requestId = BridgeServer.Instance.SendAdviceRequest(json, OnAdviceReply);
-            if (requestId == null)
-            {
-                SimHud.Instance.SetAdvisorStatus(SimAdvisorStatus.None);
-                _adviceDeferredNoClient = true;
-                return;
+                DropInflight();
+
+                string json;
+                try
+                {
+                    json = JsonSerializer.Serialize(state);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log($"[SimAdvisor] Could not serialize advice_request: {ex.Message}");
+                    return;
+                }
+
+                string? requestId = BridgeServer.Instance.SendAdviceRequest(json, OnAdviceReply);
+                if (requestId == null)
+                {
+                    SimHud.Instance.SetAdvisorStatus(SimAdvisorStatus.None);
+                    _adviceDeferredNoClient = true;
+                    return;
+                }
+                combatLog = null; // sent
+                _adviceDeferredNoClient = false;
+                _inflightRequestId = requestId;
+                _inflightStateId = stateId;
+                _inflightEpoch = _positionEpoch;
+                _inflightSignature = "";
+                ClearActedFrom();
+                UpdateThinkFps();
+                SimHud.Instance.SetAdvisorStatus(SimAdvisorStatus.Thinking);
             }
-            _adviceDeferredNoClient = false;
-            _inflightRequestId = requestId;
-            _inflightStateId = stateId;
-            _inflightEpoch = _positionEpoch;
-            _inflightSignature = "";
-            ClearActedFrom();
-            UpdateThinkFps();
-            SimHud.Instance.SetAdvisorStatus(SimAdvisorStatus.Thinking);
+            finally
+            {
+                SimCombatLog.Requeue(combatLog);
+            }
         }
         catch (Exception ex)
         {
@@ -1312,46 +1329,57 @@ internal sealed class SimAdvisor
         }
 
         long stateId = screen.State.TryGetValue("state_id", out object? sidObj) && sidObj is long sid ? sid : -1;
-        var payload = new Dictionary<string, object>(screen.State)
-        {
-            ["type"] = "advice_request",
-            ["advice_for"] = screen.AdviceFor,
-            // Drain here too: a fight's LAST rows (the killing blow, the
-            // end-of-combat powers) land after its final combat decision, so
-            // without this they would sit unsent until the next fight.
-            ["combat_log"] = SimCombatLog.Drain(),
-            ["capabilities"] = ModCapabilities(),
-        };
-
-        DropInflight();
-
-        string json;
+        // Given back on every way out but a sent request, as in
+        // RequestAdviceNow (GH #989).
+        List<Dictionary<string, object?>>? screenLog = SimCombatLog.Drain();
         try
         {
-            json = JsonSerializer.Serialize(payload);
-        }
-        catch (Exception ex)
-        {
-            Logger.Log($"[SimAdvisor] Could not serialize {screen.AdviceFor} advice_request: {ex.Message}");
-            return;
-        }
+            var payload = new Dictionary<string, object>(screen.State)
+            {
+                ["type"] = "advice_request",
+                ["advice_for"] = screen.AdviceFor,
+                // Drain here too: a fight's LAST rows (the killing blow, the
+                // end-of-combat powers) land after its final combat decision, so
+                // without this they would sit unsent until the next fight.
+                ["combat_log"] = screenLog,
+                ["capabilities"] = ModCapabilities(),
+            };
 
-        string? requestId = BridgeServer.Instance.SendAdviceRequest(json, OnAdviceReply);
-        if (requestId == null)
-        {
-            SimHud.Instance.SetAdvisorStatus(SimAdvisorStatus.None);
-            _adviceDeferredNoClient = true;
-            return;
+            DropInflight();
+
+            string json;
+            try
+            {
+                json = JsonSerializer.Serialize(payload);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"[SimAdvisor] Could not serialize {screen.AdviceFor} advice_request: {ex.Message}");
+                return;
+            }
+
+            string? requestId = BridgeServer.Instance.SendAdviceRequest(json, OnAdviceReply);
+            if (requestId == null)
+            {
+                SimHud.Instance.SetAdvisorStatus(SimAdvisorStatus.None);
+                _adviceDeferredNoClient = true;
+                return;
+            }
+            screenLog = null; // sent
+            _adviceDeferredNoClient = false;
+            _inflightRequestId = requestId;
+            _inflightStateId = stateId;
+            _inflightScreen = screen.Screen;
+            _inflightEpoch = _positionEpoch;
+            _inflightSignature = screen.SignatureOrDefault;
+            ClearActedFrom();
+            UpdateThinkFps();
+            SimHud.Instance.SetAdvisorStatus(SimAdvisorStatus.Thinking);
         }
-        _adviceDeferredNoClient = false;
-        _inflightRequestId = requestId;
-        _inflightStateId = stateId;
-        _inflightScreen = screen.Screen;
-        _inflightEpoch = _positionEpoch;
-        _inflightSignature = screen.SignatureOrDefault;
-        ClearActedFrom();
-        UpdateThinkFps();
-        SimHud.Instance.SetAdvisorStatus(SimAdvisorStatus.Thinking);
+        finally
+        {
+            SimCombatLog.Requeue(screenLog);
+        }
     }
 
     private void DropInflight()
@@ -1644,7 +1672,7 @@ internal sealed class SimAdvisor
                         OnActionRefused(player);
                         return;
                     }
-                    var target = SimCombatHandler.ResolveTarget(card, best.TargetIndex);
+                    var target = SimCombatHandler.ResolveTarget(card, best.TargetIndex, best.AllyIndex);
                     if ((card.TargetType == TargetType.AnyEnemy || card.TargetType == TargetType.AnyAlly) &&
                         target == null)
                     {
@@ -1676,11 +1704,13 @@ internal sealed class SimAdvisor
                         Logger.Log($"[SimAdvisor] Takeover: no potion in slot {best.Slot}.");
                         return;
                     }
-                    var target = SimCombatHandler.ResolvePotionTarget(player, potion, best.TargetIndex);
+                    var target = SimCombatHandler.ResolvePotionTarget(
+                        player, potion, best.TargetIndex, best.AllyIndex);
                     // Same guard as a card: the game drops a targeted potion
                     // with no target in silence (an AnyAlly one has none when
-                    // no teammate is alive).
-                    if ((potion.TargetType == TargetType.AnyEnemy || potion.TargetType == TargetType.AnyAlly) &&
+                    // no teammate is alive, a throw when its teammate died).
+                    if ((potion.TargetType == TargetType.AnyEnemy || potion.TargetType == TargetType.AnyAlly ||
+                         best.AllyIndex >= 0) &&
                         target == null)
                     {
                         Logger.Log("[SimAdvisor] Takeover: no valid target for the recommended potion.");
@@ -1792,9 +1822,11 @@ internal sealed class SimAdvisor
     ///
     /// The screen lane already has this safety net -- its 0.5 s poll re-asks.
     /// This is the combat lane's: if the action changed nothing and nothing is
-    /// in flight, ask again against the CURRENT board.
+    /// in flight, ask again against the CURRENT board. An action waiting on a
+    /// pick it opened (Skill Potion's card choice) is not that: the watchdog
+    /// looks again once the pick has had time to land.
     /// </summary>
-    private void WatchForRefusedAction(CombatManager cm, string label)
+    private void WatchForRefusedAction(CombatManager cm, string label, int? markAtAction = null, int? screensAtAction = null)
     {
         try
         {
@@ -1802,7 +1834,8 @@ internal sealed class SimAdvisor
             {
                 return;
             }
-            int mark = CombatHistoryMark();
+            int mark = markAtAction ?? CombatHistoryMark();
+            int screens = screensAtAction ?? _decisionScreensSeen;
             SceneTreeTimer timer = tree.CreateTimer(RefusedActionWatchdogSeconds);
             timer.Connect(SceneTreeTimer.SignalName.Timeout, Callable.From(() =>
             {
@@ -1833,12 +1866,22 @@ internal sealed class SimAdvisor
                     {
                         return;
                     }
-                    if (CombatHistoryMark() != mark)
+                    switch (RefusalWatch.Judge(
+                        mark, CombatHistoryMark(), SimScreenAdvice.Describe() != null,
+                        screens, _decisionScreensSeen))
                     {
-                        // The board moved: this action was accepted. THIS is
-                        // acceptance, and the only place the streak may reset.
-                        _refusedInARow = 0;
-                        return;
+                        case RefusalVerdict.Accepted:
+                            // The board moved: this action was accepted. THIS is
+                            // acceptance, and the only place the streak may reset.
+                            _refusedInARow = 0;
+                            return;
+                        case RefusalVerdict.WaitForPick:
+                            // Same mark, screens counted from now: a pick that
+                            // closes without moving the board still ends as a
+                            // refusal on the next look. While the pick stays
+                            // open the screen lane owns it (and its pause).
+                            WatchForRefusedAction(cm, label, mark, _decisionScreensSeen);
+                            return;
                     }
                     // Counted, not just retried. An unbounded re-request is
                     // only a fix when the board is expected to move on its
@@ -2465,6 +2508,12 @@ internal sealed class SimAdvisor
                 : new Dictionary<string, object?> { ["id"] = drink.Potion.Id.Entry },
             ["target_index"] = drink != null ? PotionTargetIndexOf(drink) : TargetIndexOf(play),
         };
+        // An AnyAlly card played, or a potion thrown, at a teammate: which one
+        // (GH #1017), as the advisor's own actions name it. Absent otherwise,
+        // so older advisors and every other action see the old message.
+        int? ally = drink == null ? AllyIndexOf(play) : PotionAllyIndexOf(drink);
+        if (ally != null)
+            msg["ally_index"] = ally;
         SendHumanActionMessage(msg);
     }
 
@@ -2879,6 +2928,67 @@ internal sealed class SimAdvisor
         }
     }
 
+    /// <summary>The played card's target as an index into the board's
+    /// <c>allies[]</c> (<see cref="AllyIndexOfTarget"/>) when it is a
+    /// teammate, else null. Null too with fewer than two living teammates:
+    /// the engine then has one untargeted play for the card (it offers
+    /// <c>PlayCardAtAlly</c> only with two or more), and two-player messages
+    /// stay as they were.</summary>
+    private static int? AllyIndexOf(CardPlay? play)
+    {
+        try
+        {
+            RunState? runState = RunManager.Instance.DebugOnlyGetState();
+            Player? me = LocalContext.GetMe(runState);
+            if (runState == null || me == null ||
+                runState.Players.Count(p => !ReferenceEquals(p, me) && (p.Creature?.IsAlive ?? false)) < 2)
+            {
+                return null;
+            }
+            return AllyIndexOfTarget(play?.Target);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>A potion thrown at a teammate: their index into the board's
+    /// <c>allies[]</c>, else null (drunk, at an enemy, or untargeted). A throw
+    /// is a choice even with one teammate, so no living-count rule here
+    /// (GH #1017; the engine's <c>DrinkPotionAtAlly</c>).</summary>
+    private static int? PotionAllyIndexOf(PotionUsedEntry drink)
+    {
+        try
+        {
+            return AllyIndexOfTarget(drink.Target);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary><paramref name="target"/>'s index into the board's
+    /// <c>allies[]</c> (<see cref="TeammateTargetPick.AllyIndex"/>) when it is
+    /// another player, else null. Only our own actions are reported, so "us"
+    /// is the local player (not a card's owner, which The Ball changes after
+    /// its play).</summary>
+    private static int? AllyIndexOfTarget(Creature? target)
+    {
+        RunState? runState = RunManager.Instance.DebugOnlyGetState();
+        Player? me = LocalContext.GetMe(runState);
+        if (target == null || !target.IsPlayer || runState == null || me == null)
+        {
+            return null;
+        }
+        var players = runState.Players.ToList();
+        int idx = players.FindIndex(p => ReferenceEquals(p.Creature, target));
+        var isMe = players.Select(p => ReferenceEquals(p, me)).ToList();
+        int ally = TeammateTargetPick.AllyIndex(isMe, idx);
+        return ally >= 0 ? ally : null;
+    }
+
     /// <summary>The drink's target as an index into the full <c>Enemies</c>
     /// list, in the same frame <see cref="TargetIndexOf"/> uses, or null when
     /// the potion took no target.
@@ -2965,6 +3075,32 @@ internal sealed class SimAdvisor
         catch (Exception ex)
         {
             Logger.Log($"[SimAdvisor] Ignoring error (never breaks gameplay): {ex.Message}");
+        }
+    }
+}
+
+/// <summary>
+/// The cards a choose-a-card screen offers (a Skill Potion, Discovery), for
+/// the combat log (<see cref="SimCombatLog.RecordOffer"/>). Runs on every
+/// peer, for our screens and each teammate's. Target, identical in both
+/// supported builds: <c>CardSelectCmd.FromChooseACardScreen(PlayerChoiceContext
+/// context, IReadOnlyList&lt;CardModel&gt; cards, Player player, bool canSkip)</c>.
+/// </summary>
+[HarmonyLib.HarmonyPatch(typeof(CardSelectCmd), nameof(CardSelectCmd.FromChooseACardScreen))]
+public static class ChooseACardOfferPatch
+{
+    [HarmonyLib.HarmonyPrefix]
+    static void Prefix(IReadOnlyList<CardModel> cards, Player player)
+    {
+        try
+        {
+            SimCombatLog.RecordOffer(
+                player.NetId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                cards.Select(c => SimCombatLog.ChoiceCard(c.Id.Entry, c.IsUpgraded)).ToList());
+        }
+        catch (Exception ex)
+        {
+            Logger.Log($"[SimAdvisor] Could not log a card offer: {ex.Message}");
         }
     }
 }

@@ -3,9 +3,9 @@ use super::prelude::*;
 
 /// Capacitor. Cost 1, Power. Gain 2 orb slots. P7-7 retrofit.
 pub(crate) fn play_capacitor(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
-    if state.player.orbs.capacity == 0 {
-        state.player.orbs = sts2_core::OrbSlots::with_default_capacity();
-    }
+    // Lazy Defect base for an unsized fixture belt only; a belt Bulk Up
+    // emptied grows from 0, as C# `OrbCmd.AddSlots` does.
+    state.player.orbs.ensure_defect_base();
     // Bead `sts2-rs-2kuv9`: C# `Capacitor.cs` `RepeatVar(2)` with `OnUpgrade
     // UpgradeValueBy(1m)` → 2 base / 3 upgraded orb slots.
     let slots: usize = if current_card_upgraded(state) { 3 } else { 2 };

@@ -1640,43 +1640,6 @@ class BranchingLiveSession:
             return reasoning.score_native(cs, named, config)
         return reasoning.score(named, config)
 
-    def last_move_regret(self, config: dict[str, Any]) -> dict[str, Any] | None:
-        """Regret of the move that produced the active node — the "blunder right
-        after you did one" signal.
-
-        Re-scores the *parent* combat state (the position the last move was
-        chosen from) and diffs the taken move against the MCTS line. Returns
-        ``None`` when the active node has no parent or the parent was not a
-        combat decision; an ``{"error": ...}`` payload when scoring is
-        unavailable; otherwise a :class:`~workbench.regret_review.DecisionRegret`
-        dict (``is_blunder`` tells the UI whether to warn).
-        """
-        node = self._active()
-        if node.parent_id is None:
-            return None
-        parent = self._nodes[node.parent_id]
-        if parent.state.get("decision") != "combat_play":
-            return None
-        cfg = dict(config or {})
-        blunder_pct = float(cfg.pop("blunder_pct", regret_review.DEFAULT_BLUNDER_DROP_PCT))
-        named = localization.resolve_state_names(parent.state, self._loc)
-        # The engine sits at the active node, so the parent's native CombatState
-        # is no longer in hand — score from the recorded dict (lossy but enough
-        # for an at-a-glance blunder flag).
-        result = reasoning.score(named, cfg)
-        scores = result.get("scores", [])
-        if not scores:
-            return {"error": result.get("error", "no MCTS scores available"), "regret": None}
-        step = {
-            "idx": parent.idx,
-            "state": named,
-            "scores": scores,
-            "chosen_action": {"args": _native_action(node.action, node.args)},
-            "meta": {"turn": named.get("round")},
-        }
-        d = regret_review.assess_decision(step, blunder_pct=blunder_pct)
-        return d.to_dict() if d is not None else None
-
     def _agent_scores(self, parent: Any, child: Any) -> list[dict[str, Any]]:
         """The root distribution of the search that actually chose ``child``.
 

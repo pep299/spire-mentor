@@ -12,21 +12,33 @@ use sts2_core::{
 };
 
 use super::{
-    always_allowed, amalgamator_allowed, any_enchantable_deck_card, byrdonis_nest_allowed,
-    default_option_info_from_spec, punch_off_allowed, EventOptionSpec, EventSpec,
+    always_allowed, amalgamator_allowed, byrdonis_nest_allowed, default_option_info_from_spec,
+    grave_of_the_forgotten_allowed, punch_off_allowed, EventOptionSpec, EventSpec,
 };
 
 // ── LostWisp ─────────────────────────────────────────────────────────
 
-/// Default `LostWisp` gold-search payout. Python's
-/// `LostWisp.calculate_vars` randomizes this within ±15 of 60
-/// (`sts2-rl-agent@01c094d:sts2_env/events/shared.py:1066`); this
-/// bead pins the deterministic midpoint until a `RunState.rng`
-/// surface lands. Documented divergence — sub-bead `6ynt.4.rng`
-/// will swap in `rng.up_front.next_int(-15, 16)`.
+/// C# `LostWisp._baseGold`: the Search payout before the `CalculateVars` roll.
 pub const LOST_WISP_GOLD: i32 = 60;
+/// C# `LostWisp._goldVariance`: `CalculateVars` adds
+/// `base.Rng.NextInt(-15, 16)` (max-exclusive, so [-15, 15]).
+pub const LOST_WISP_GOLD_VARIANCE: i32 = 15;
+/// `LostWisp`'s `Id.Entry` — names its own (non-shared) event RNG stream.
+const LOST_WISP_STREAM: &str = "LOST_WISP";
 
-fn lost_wisp_generate_options(_state: &RunState, _spec: &EventSpec) -> Vec<EventOptionInfo> {
+/// The Search payout: `60 + base.Rng.NextInt(-15, 16)`, rolled once by
+/// `CalculateVars` at `BeginEvent` (`LostWisp.cs:44`, `EventModel.cs:242`) as
+/// read #1 of the event's own stream, identical in v0.107.1 and v0.111.0. The
+/// stream is private to this event and nothing else reads it, so re-deriving
+/// it per call gives the same value the event displayed. The old flat 60 left
+/// the gold off by the roll (EVTPAR0: C# +72, Rust +60).
+fn lost_wisp_rolled_gold(state: &RunState) -> i32 {
+    let mut rng = event_rng(state, LOST_WISP_STREAM);
+    LOST_WISP_GOLD + rng.next_int_exclusive(-LOST_WISP_GOLD_VARIANCE, LOST_WISP_GOLD_VARIANCE + 1)
+}
+
+fn lost_wisp_generate_options(state: &RunState, _spec: &EventSpec) -> Vec<EventOptionInfo> {
+    let gold = lost_wisp_rolled_gold(state);
     vec![
         EventOptionInfo {
             option_id: "claim",
@@ -40,10 +52,10 @@ fn lost_wisp_generate_options(_state: &RunState, _spec: &EventSpec) -> Vec<Event
         EventOptionInfo {
             option_id: "search",
             loc_key: "LOST_WISP.pages.INITIAL.options.SEARCH",
-            vars: Vec::new(),
+            vars: vec![("Gold", gold.into())],
             title_vars: Vec::new(),
             label: "Search".to_string(),
-            description: format!("Gain {LOST_WISP_GOLD} gold."),
+            description: format!("Gain {gold} gold."),
             enabled: true,
         },
     ]
@@ -73,8 +85,9 @@ fn lost_wisp_claim(state: &mut RunState) -> EventOutcome {
 }
 
 fn lost_wisp_search(state: &mut RunState) -> EventOutcome {
-    state.gain_gold(LOST_WISP_GOLD);
-    EventOutcome::finished(format!("Gained {LOST_WISP_GOLD} gold."))
+    let gold = lost_wisp_rolled_gold(state);
+    state.gain_gold(gold);
+    EventOutcome::finished(format!("Gained {gold} gold."))
 }
 
 const LOST_WISP_OPTIONS: &[EventOptionSpec] = &[
@@ -96,8 +109,8 @@ const LOST_WISP_OPTIONS: &[EventOptionSpec] = &[
         loc_key: "LOST_WISP.pages.INITIAL.options.SEARCH",
         default_label: "Search",
         default_description: "Gain ~60 gold.",
-        default_vars: &[("Gold", EventVarSpec::Int(LOST_WISP_GOLD as i64))],
-        vars_fn: None,
+        default_vars: &[],
+        vars_fn: Some(|s| vec![("Gold", lost_wisp_rolled_gold(s).into())]),
         title_vars_fn: None,
         handler: lost_wisp_search,
     },
@@ -341,15 +354,59 @@ fn amalgamator_remove_basic_tagged(
 // `Reward::Card(empty)` push surfaced an unrelated random 3-card reward
 // pick and never removed the Strikes (wrong deck + extra step). Bead
 // `sts2-rs-RP28`.
+//
+// Interactive hosts (`interactive_card_removal`, e.g. the workbench and the
+// C#-lockstep harness) get the player's pick: the batch is queued with the
+// `IsValid` filter as the offer restriction, and the Ultimate card waits in
+// `pending_post_removal_cards` until both picks resolve (C# adds it after
+// `RemoveFromDeck` returns). Removing the first matches eagerly skipped the
+// card_select the game shows and could take an upgraded Strike the player
+// would keep.
+//
+// With at most 2 eligible cards there is no screen to show:
+// `FromDeckGeneric` returns the whole list when `list.Count <= MinSelect`
+// and the prefs need no manual confirmation (`CardSelectCmd.cs:776`).
+// `new CardSelectorPrefs(prompt, 2)` has Min == Max, so they never do.
+// Queuing the picks anyway left Rust on a card_select while C# was back on
+// the map (GH #1054, Regent:1001).
+fn amalgamator_combine(
+    state: &mut RunState,
+    tag: sts2_core::cards::CardTag,
+    ultimate: sts2_core::cards::CardId,
+) {
+    const PICKS: usize = 2;
+    if state.interactive_card_removal {
+        state.pending_removal_basic_tag = Some(tag);
+        let eligible = state.removal_offer_order().len();
+        state.pending_removal_basic_tag = None;
+        if eligible > PICKS {
+            state.pending_removal_basic_tag = Some(tag);
+            state.pending_deck_removals += PICKS as u32;
+            if let Some(card) = crate::cards::spec_index::card_pod_from_id(ultimate, false) {
+                state.pending_post_removal_cards.push(card);
+            }
+            return;
+        }
+    }
+    amalgamator_remove_basic_tagged(state, tag, PICKS);
+    bugslayer_add_card(state, ultimate);
+}
+
 fn amalgamator_combine_strikes(state: &mut RunState) -> EventOutcome {
-    amalgamator_remove_basic_tagged(state, sts2_core::cards::CardTag::Strike, 2);
-    bugslayer_add_card(state, sts2_core::cards::CardId::UltimateStrike);
+    amalgamator_combine(
+        state,
+        sts2_core::cards::CardTag::Strike,
+        sts2_core::cards::CardId::UltimateStrike,
+    );
     EventOutcome::finished("Removed 2 Strikes, added Ultimate Strike.")
 }
 
 fn amalgamator_combine_defends(state: &mut RunState) -> EventOutcome {
-    amalgamator_remove_basic_tagged(state, sts2_core::cards::CardTag::Defend, 2);
-    bugslayer_add_card(state, sts2_core::cards::CardId::UltimateDefend);
+    amalgamator_combine(
+        state,
+        sts2_core::cards::CardTag::Defend,
+        sts2_core::cards::CardId::UltimateDefend,
+    );
     EventOutcome::finished("Removed 2 Defends, added Ultimate Defend.")
 }
 
@@ -523,8 +580,9 @@ fn battleworn_setting_3(state: &mut RunState) -> EventOutcome {
 /// ran out of time (`RanOutOfTime`) — then NO reward is granted, matching
 /// the C# `DEFEAT` branch. On a clean victory each setting grants the
 /// reward it previously modeled at instant-victory time:
-/// - Setting1: one potion rolled via `PlayerRng.Rewards.NextItem`
-///   (sentinel `PotionReward::empty()` rolled at drain time).
+/// - Setting1: one potion rolled via `PlayerRng.Rewards.NextItem` over the
+///   full character ++ shared pool at resume time (pre-populated reward,
+///   no rarity float).
 /// - Setting2: `Where(IsUpgradable).StableShuffle(Rng.Niche).Take(2)` →
 ///   `CardCmd.Upgrade` (immediate, no pick).
 /// - Setting3: `RelicCmd.Obtain(RelicFactory.PullNextRelicFromFront)` —
@@ -547,9 +605,20 @@ pub fn battleworn_dummy_resume(
     }
     match setting {
         BattlewornDummySetting::Setting1 => {
-            state
-                .pending_rewards
-                .push(Reward::Potion(PotionReward::empty()));
+            // C# `BattlewornDummy.cs:102-108` (v0.111.0): ONE
+            // `PlayerRng.Rewards.NextItem` over the character ++ shared
+            // potion pool, offered as an already-populated `PotionReward`
+            // (so `PotionReward.Populate` never rolls a rarity float). The
+            // empty-sentinel path rolled [rarity float, item] at drain time
+            // and left the rewards cursor one read ahead (Ironclad:1014).
+            if let Some(kind) = crate::potions::all::roll_event_potion_full_pool(
+                &mut state.rng.rewards,
+                state.character_id,
+            ) {
+                state
+                    .pending_rewards
+                    .push(Reward::Potion(PotionReward::with_kind(kind)));
+            }
         }
         BattlewornDummySetting::Setting2 => {
             // C# `BattlewornDummy.cs:97` (v0.107.1):
@@ -765,9 +834,8 @@ const BYRDONIS_OPTIONS: &[EventOptionSpec] = &[
     },
 ];
 
-/// `ByrdonisNest` spec. Pin: `shared.py:586`. `is_allowed`'s
-/// `has_event_pet()` precondition deferred (no event-pet tracking
-/// on RunState yet); defaults to always-allowed.
+/// `ByrdonisNest` spec. Pin: `shared.py:586`. `is_allowed` is C#
+/// `!HasEventPet()` ([`super::byrdonis_nest_allowed`]).
 pub const BYRDONIS_NEST: EventSpec = EventSpec {
     id: EventId::ByrdonisNest,
     python_name: "ByrdonisNest",
@@ -1453,19 +1521,47 @@ fn grave_confront(state: &mut RunState) -> EventOutcome {
     // TWO things, NEITHER a card-reward choice:
     //  1. `CardPileCmd.AddCurseToDeck<Decay>` — adds one specific Decay curse
     //     directly to the deck (`CardPileCmd.cs:960-978`: CreateCard + Add).
-    //  2. `CardSelectCmd.FromDeckForEnchantment(SoulsPower, 1)` + `Enchant` —
-    //     ENCHANTS an existing deck card; it adds NO card.
-    // The old two `Reward::Card(empty)` placeholders surfaced two random 3-card
-    // ADD choices, inflating the deck by 2 vs C#. Add the Decay curse directly;
-    // the Souls-Power enchant needs an enchant-selection surface (not yet wired)
-    // so it's left unimplemented rather than faked with a phantom card-add —
-    // dropping the phantom keeps deck size correct. Bead `sts2-rs-RP27`.
+    //  2. `CardSelectCmd.FromDeckForEnchantment(SoulsPower, 1)` (MinSelect 1)
+    //     + `Enchant<SoulsPower>` — ENCHANTS an existing Exhaust deck card
+    //     (`SoulsPower.OnEnchant` removes its Exhaust keyword); adds NO card.
+    // Decay goes in first; as a Curse it is never an enchant candidate. The
+    // selector lists eligible cards in deck order and auto-takes at
+    // count <= MinSelect (`CardSelectCmd.cs:676-697`); the interactive host
+    // queues a `pending_deck_enchants` pick — same shape as
+    // `field_of_man_sized_holes_enter`. Bead `sts2-rs-RP27`, GH #1054.
+    use sts2_core::cards::EnchantmentId;
     if let Some(card) =
         crate::cards::spec_index::card_pod_from_id(sts2_core::cards::CardId::Decay, false)
     {
         state.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::EventGain);
     }
-    EventOutcome::finished("Added Decay to the deck (Soul's Power enchant deferred).")
+    let version = state.game_version;
+    let eligible = state
+        .master_deck
+        .iter()
+        .filter(|c| super::souls_power_can_enchant(c, version))
+        .count();
+    if state.interactive_card_transform && eligible > 1 {
+        state
+            .pending_deck_enchants
+            .push(sts2_core::PendingDeckEnchant {
+                enchantment: EnchantmentId::SoulsPower,
+                amount: 1,
+                type_restriction: None,
+                secondary_type: None,
+                optional: false,
+            });
+        EventOutcome::finished("Added Decay; pick a card to enchant with Soul's Power.")
+    } else {
+        if let Some(card) = state
+            .master_deck
+            .iter_mut()
+            .find(|c| super::souls_power_can_enchant(c, version))
+        {
+            card.set_enchantment(EnchantmentId::SoulsPower, 1);
+        }
+        EventOutcome::finished("Added Decay and enchanted a card with Soul's Power.")
+    }
 }
 
 fn grave_accept(state: &mut RunState) -> EventOutcome {
@@ -1503,7 +1599,7 @@ const GRAVE_OPTIONS: &[EventOptionSpec] = &[
 pub const GRAVE_OF_THE_FORGOTTEN: EventSpec = EventSpec {
     id: EventId::GraveOfTheForgotten,
     python_name: "GraveOfTheForgotten",
-    is_allowed: any_enchantable_deck_card,
+    is_allowed: grave_of_the_forgotten_allowed,
     generate_options: default_option_info_from_spec,
     options: GRAVE_OPTIONS,
 };
@@ -1517,12 +1613,13 @@ fn mushrooms_big(state: &mut RunState) -> EventOutcome {
     EventOutcome::finished("Gained Big Mushroom relic.")
 }
 
+// C# `HungryForMushrooms.FragrantMushroom` (`HungryForMushrooms.cs:28`) only
+// does `RelicCmd.Obtain<FragrantMushroom>`: the 15 HP loss is the relic's own
+// `AfterObtained` (`FragrantMushroom.cs:29`); the option's `ThatDoesDamage(15)`
+// is a red-flash warning, not damage. Taking it here as well cost 30 HP.
 fn mushrooms_fragrant(state: &mut RunState) -> EventOutcome {
-    let dmg = state.lose_hp(HUNGRY_FRAGRANT_DAMAGE);
     state.grant_event_relic(RelicId::FragrantMushroom);
-    EventOutcome::finished(format!(
-        "Took {dmg} damage, gained Fragrant Mushroom relic."
-    ))
+    EventOutcome::finished("Gained Fragrant Mushroom relic.")
 }
 
 const MUSHROOMS_OPTIONS: &[EventOptionSpec] = &[
@@ -1972,10 +2069,20 @@ mod tests {
             EventEncounter::BattlewornDummy(BattlewornDummySetting::Setting1)
         );
         assert!(rs.pending_rewards.is_empty(), "no reward before victory");
-        // Clean victory → one potion reward.
+        // Clean victory → one pre-rolled potion reward, costing exactly ONE
+        // rewards read (C# `BattlewornDummy.cs:104` `Rewards.NextItem`; no
+        // rarity float because the reward arrives populated).
+        let before = rs.rng.rewards.counter();
         battleworn_dummy_resume(&mut rs, BattlewornDummySetting::Setting1, true);
+        assert_eq!(rs.rng.rewards.counter(), before + 1);
         assert_eq!(rs.pending_rewards.len(), 1);
-        assert!(matches!(rs.pending_rewards[0], Reward::Potion(_)));
+        assert!(matches!(
+            rs.pending_rewards[0],
+            Reward::Potion(PotionReward {
+                potion_kind: Some(_),
+                ..
+            })
+        ));
     }
 
     /// Each setting's option previews the HP of the dummy it will stage, so
@@ -2160,12 +2267,28 @@ mod tests {
     }
 
     #[test]
-    fn lost_wisp_search_grants_60_gold() {
+    fn lost_wisp_search_grants_rolled_gold() {
         let mut rs = RunState::new();
         let before = rs.gold;
+        let rolled = lost_wisp_rolled_gold(&rs);
+        assert!((LOST_WISP_GOLD - 15..=LOST_WISP_GOLD + 15).contains(&rolled));
         let outcome = (LOST_WISP.options[1].handler)(&mut rs);
         assert!(outcome.finished);
-        assert_eq!(rs.gold, before + LOST_WISP_GOLD);
+        assert_eq!(rs.gold, before + rolled);
+    }
+
+    /// `LostWisp.CalculateVars` (`LostWisp.cs:44`): Search pays
+    /// `60 + base.Rng.NextInt(-15, 16)` off the event's own `LOST_WISP`
+    /// stream, not a flat 60. Pins the first draw of that stream so a
+    /// regression to the flat payout (or to a different stream) fails.
+    #[test]
+    fn lost_wisp_gold_is_first_draw_of_event_stream() {
+        let rs = RunState::new();
+        let mut rng = rs.rng.named("LOST_WISP");
+        let expected = 60 + rng.next_int_exclusive(-15, 16);
+        assert_eq!(lost_wisp_rolled_gold(&rs), expected);
+        let opts = (LOST_WISP.generate_options)(&rs, &LOST_WISP);
+        assert!(opts[1].description.contains(&expected.to_string()));
     }
 
     /// `LostWisp.Claim` (`LostWisp.cs:49`, same in both builds): Decay, then
@@ -2366,6 +2489,72 @@ mod tests {
         );
     }
 
+    /// C# `Amalgamator.CombineStrikes` (`Amalgamator.cs:43`) asks the player
+    /// to pick the 2 Strikes (`FromDeckForRemoval` with the `IsValid`
+    /// filter) and only then adds Ultimate Strike. Interactive mode must queue
+    /// that pick restricted to Basic Strikes, not remove eagerly.
+    #[test]
+    fn amalgamator_interactive_queues_filtered_strike_pick_then_adds_ultimate() {
+        use sts2_core::cards::{CardId, CardTag};
+        crate::cards::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.interactive_card_removal = true;
+        rs.master_deck.clear();
+        for id in [
+            CardId::DefendIronclad,
+            CardId::StrikeIronclad,
+            CardId::Bash,
+            CardId::StrikeIronclad,
+            CardId::StrikeIronclad,
+        ] {
+            rs.master_deck
+                .push(crate::cards::spec_index::card_pod_from_id(id, false).unwrap());
+        }
+        let outcome = (AMALGAMATOR.options[0].handler)(&mut rs);
+        assert!(outcome.finished);
+        assert_eq!(rs.master_deck.len(), 5, "nothing removed before the pick");
+        assert_eq!(rs.pending_deck_removals, 2);
+        assert_eq!(rs.pending_removal_basic_tag, Some(CardTag::Strike));
+        // Only the three Basic Strikes are offered, in deck order.
+        assert_eq!(rs.removal_offer_order(), vec![1, 3, 4]);
+        assert_eq!(rs.pending_post_removal_cards.len(), 1);
+        assert_eq!(
+            rs.pending_post_removal_cards[0].card_id,
+            CardId::UltimateStrike
+        );
+    }
+
+    /// With exactly 2 eligible Basic Defends C# skips the screen
+    /// (`CardSelectCmd.cs:776`): both are removed and Ultimate Defend added
+    /// at once, with no pick queued. GH #1054 (Regent:1001).
+    #[test]
+    fn amalgamator_interactive_auto_selects_when_only_two_eligible() {
+        use sts2_core::cards::CardId;
+        crate::cards::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.interactive_card_removal = true;
+        rs.master_deck.clear();
+        for id in [
+            CardId::DefendIronclad,
+            CardId::StrikeIronclad,
+            CardId::DefendIronclad,
+            CardId::Bash,
+        ] {
+            rs.master_deck
+                .push(crate::cards::spec_index::card_pod_from_id(id, false).unwrap());
+        }
+        let outcome = (AMALGAMATOR.options[1].handler)(&mut rs);
+        assert!(outcome.finished);
+        assert_eq!(rs.pending_deck_removals, 0, "no pick queued");
+        assert_eq!(rs.pending_removal_basic_tag, None);
+        assert!(rs.pending_post_removal_cards.is_empty());
+        let ids: Vec<CardId> = rs.master_deck.iter().map(|c| c.card_id).collect();
+        assert_eq!(
+            ids,
+            vec![CardId::StrikeIronclad, CardId::Bash, CardId::UltimateDefend]
+        );
+    }
+
     #[test]
     fn trash_heap_is_allowed_gates_on_hp_above_5() {
         let mut rs = RunState::new();
@@ -2384,7 +2573,9 @@ mod tests {
         assert_eq!(opts.len(), 2);
         assert_eq!(opts[0].option_id, "claim");
         assert_eq!(opts[1].option_id, "search");
-        assert!(opts[1].description.contains(&LOST_WISP_GOLD.to_string()));
+        assert!(opts[1]
+            .description
+            .contains(&lost_wisp_rolled_gold(&rs).to_string()));
     }
 
     // ── Wave A coverage (bead sts2-rs-6ynt.4.4) ──────────────────────
@@ -2691,11 +2882,12 @@ mod tests {
     }
 
     #[test]
-    fn hungry_fragrant_loses_15_hp_and_queues_fragrant_mushroom() {
+    fn hungry_fragrant_queues_fragrant_mushroom_without_event_damage() {
         let mut rs = RunState::new();
         let hp_before = rs.current_hp;
         (HUNGRY_FOR_MUSHROOMS.options[1].handler)(&mut rs);
-        assert_eq!(rs.current_hp, hp_before - HUNGRY_FRAGRANT_DAMAGE);
+        // The 15 HP loss belongs to the relic's AfterObtained, not the event.
+        assert_eq!(rs.current_hp, hp_before);
         assert_eq!(rs.relic_rewards.len(), 1);
         assert_eq!(rs.relic_rewards[0].relic_id, RelicId::FragrantMushroom);
     }
@@ -2735,6 +2927,56 @@ mod tests {
             Some(sts2_core::cards::CardId::Decay),
         );
         assert!(rs.pending_rewards.is_empty(), "no phantom card reward");
+    }
+
+    fn grave_deck_card(id: sts2_core::cards::CardId) -> sts2_core::cards::Card {
+        crate::cards::spec_index::card_pod_from_id(id, false).unwrap()
+    }
+
+    #[test]
+    fn grave_confront_queues_souls_power_pick_with_several_exhaust_cards() {
+        // C# `FromDeckForEnchantment(SoulsPower, 1)` surfaces the selector
+        // when more than MinSelect (1) cards can take Soul's Power
+        // (`GraveOfTheForgotten.cs:52-66`, `CardSelectCmd.cs:676-697`).
+        use sts2_core::cards::{CardId, EnchantmentId};
+        let mut rs = RunState::new();
+        rs.interactive_card_transform = true;
+        rs.master_deck.push(grave_deck_card(CardId::FiendFire));
+        rs.master_deck.push(grave_deck_card(CardId::Impervious));
+        (GRAVE_OF_THE_FORGOTTEN.options[0].handler)(&mut rs);
+        assert_eq!(rs.pending_deck_enchants.len(), 1);
+        assert_eq!(
+            rs.pending_deck_enchants[0].enchantment,
+            EnchantmentId::SoulsPower
+        );
+        assert!(!rs.pending_deck_enchants[0].optional);
+        assert!(rs.master_deck.iter().all(|c| c.enchantments.is_empty()));
+    }
+
+    #[test]
+    fn grave_confront_auto_enchants_the_single_exhaust_card() {
+        // One eligible card ⇒ C# auto-takes it (count <= MinSelect); Soul's
+        // Power strips Exhaust so the card no longer exhausts on play.
+        use sts2_core::cards::{CardId, EnchantmentId};
+        let mut rs = RunState::new();
+        rs.interactive_card_transform = true;
+        rs.master_deck.push(grave_deck_card(CardId::StrikeIronclad));
+        rs.master_deck.push(grave_deck_card(CardId::FiendFire));
+        (GRAVE_OF_THE_FORGOTTEN.options[0].handler)(&mut rs);
+        assert!(rs.pending_deck_enchants.is_empty());
+        let ff = rs
+            .master_deck
+            .iter()
+            .find(|c| c.card_id == CardId::FiendFire)
+            .unwrap();
+        assert!(ff.has_enchantment(EnchantmentId::SoulsPower));
+        assert!(!sts2_core::card_effects::card_exhausts_inst(ff));
+        let strike = rs
+            .master_deck
+            .iter()
+            .find(|c| c.card_id == CardId::StrikeIronclad)
+            .unwrap();
+        assert!(strike.enchantments.is_empty(), "non-Exhaust card untouched");
     }
 
     #[test]

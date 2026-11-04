@@ -8,7 +8,6 @@ use super::prelude::*;
 /// Damage scaling rides the base spec / `current_damage`; the
 /// +1-star upgrade rider was dropped in the original port. Bead
 /// `sts2-rs-1paq6`.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L252
 pub(crate) fn play_solar_strike(
     state: &mut CombatState,
     target: Option<CreatureUid>,

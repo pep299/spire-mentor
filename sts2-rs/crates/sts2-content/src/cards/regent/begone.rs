@@ -24,7 +24,6 @@ use super::prelude::*;
 /// Empty-hand guard: when the hand is empty the transform is skipped —
 /// matching C#'s `FirstOrDefault()` returning null (and Python's
 /// `if not combat.hand: return`).
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L90
 // C# source: ../sts2-wiki/decompiled/v0.103.2/MegaCrit.Sts2.Core.Models.Cards/Begone.cs
 pub(crate) fn play_begone(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     // No damage — Begone is a Self-targeted Skill in the C# source.

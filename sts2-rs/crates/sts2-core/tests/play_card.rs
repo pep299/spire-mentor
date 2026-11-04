@@ -160,6 +160,7 @@ fn build_handful(cards: &[(CardId, i32, i32, i8, TargetType)]) -> CombatState {
         pending_enemy_exec_resume: None,
         combat_log: TurnEvents::default(),
         swipe_stolen: Vec::new(),
+        deck_link: None,
         escaped_creatures: 0,
         coop: sts2_core::coop::CoopState::default(),
         heist_recovered_gold: 0,
@@ -346,7 +347,7 @@ fn play_strike_without_enough_energy_is_noop() {
         },
     );
 
-    assert_eq!(result, StepResult::Advanced);
+    assert_eq!(result, StepResult::IllegalPlay);
     assert_eq!(state.creatures[0].current_hp, 48, "no damage");
     assert_eq!(state.player.energy, 0);
     assert_eq!(state.player.hand.len(), 1, "card stays in hand");
@@ -364,7 +365,7 @@ fn play_strike_out_of_bounds_hand_index_is_noop() {
         },
     );
 
-    assert_eq!(result, StepResult::Advanced);
+    assert_eq!(result, StepResult::IllegalPlay);
     assert_eq!(state.creatures[0].current_hp, 48);
     assert_eq!(state.player.hand.len(), 1);
 }
@@ -880,4 +881,40 @@ fn stomp_discount_clamps_at_zero_then_restores_at_turn_start() {
         state.cards[stomp].cost, 3,
         "cost restored to base 3 at the owner's next turn start"
     );
+}
+
+/// An Absolute combat-long set (`SetToFreeThisCombat` = Touch of Insanity /
+/// Metamorphosis, `EnergyCost.SetThisCombat`) appended after Stomp's
+/// relative `AddThisTurn(-n)` shaves owns the cost once those shaves expire:
+/// C# folds local modifiers in insertion order (`CardEnergyCost.cs:110-115`)
+/// and `EndOfTurnCleanup` (`CardEnergyCost.cs:331-335`) drops only the
+/// shaves, leaving `Absolute(0)` -> 0. The banked shave must not come back
+/// at the next turn start (Ironclad-2031 act-3: retained Stomp C# 0, Rust 2).
+#[test]
+fn stomp_set_free_this_combat_drops_banked_shave() {
+    let mut state = build_handful(&[(CardId::Stomp, 12, 0, 3, TargetType::AllEnemies)]);
+    let stomp = state
+        .cards
+        .iter()
+        .position(|c| c.card_id == CardId::Stomp)
+        .expect("Stomp in arena");
+
+    state.discount_stomp_on_attack_played();
+    state.discount_stomp_on_attack_played();
+    assert_eq!(state.cards[stomp].cost, 1);
+    state.cards[stomp].set_free_this_combat();
+    assert_eq!(state.cards[stomp].cost, 0);
+
+    state.restore_stomp_costs_for_turn_start();
+    assert_eq!(
+        state.cards[stomp].cost, 0,
+        "SetThisCombat(0) supersedes the expired Stomp shaves"
+    );
+
+    // Same for an explicit `SetThisCombat(n)`.
+    state.cards[stomp].cost = 3;
+    state.discount_stomp_on_attack_played();
+    state.cards[stomp].set_cost_this_combat(1);
+    state.restore_stomp_costs_for_turn_start();
+    assert_eq!(state.cards[stomp].cost, 1);
 }

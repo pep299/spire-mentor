@@ -165,6 +165,28 @@ pub fn encounter_index(def: &EncounterDef) -> usize {
     panic!("encounter_index: unknown encounter id {:?}", def.id);
 }
 
+/// The encounter at stable index `idx` of the [`n_encounters`] index space:
+/// the inverse of [`encounter_index`]. `None` past the end. Lets a reader of
+/// `RunState::current_encounter_idx` name the encounter (the e2e campaign's
+/// `CombatState.encounter_id`, GH #1097).
+#[must_use]
+pub fn by_index(idx: usize) -> Option<&'static EncounterDef> {
+    let tables: [&'static [EncounterDef]; 4] = [
+        act1_overgrowth::ACT1_ENCOUNTERS,
+        act2_hive::ACT2_ENCOUNTERS,
+        act3_glory::ACT3_ENCOUNTERS,
+        act1_underdocks::ACT1_UNDERDOCKS_ENCOUNTERS,
+    ];
+    let mut rest = idx;
+    for table in tables {
+        if rest < table.len() {
+            return Some(&table[rest]);
+        }
+        rest -= table.len();
+    }
+    None
+}
+
 /// Encounter table row. Keyed by the Python pin's canonical encounter
 /// id (`UPPER_SNAKE`). `display` is the human-readable label rendered by
 /// `sts2-cli list encounters`.
@@ -384,5 +406,20 @@ mod tests {
         {
             assert!(encounter_index(e) < n_encounters());
         }
+    }
+
+    /// [`by_index`] inverts [`encounter_index`] over the whole index space and
+    /// stops at its end.
+    #[test]
+    fn by_index_inverts_encounter_index() {
+        for idx in 0..n_encounters() {
+            let def = by_index(idx).expect("in range");
+            assert_eq!(encounter_index(def), idx, "{}", def.id);
+        }
+        assert!(by_index(n_encounters()).is_none());
+        assert_eq!(
+            by_index(encounter_index(find("QUEEN_BOSS").unwrap())).map(|e| e.id),
+            Some("QUEEN_BOSS")
+        );
     }
 }

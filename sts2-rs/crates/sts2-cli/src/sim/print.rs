@@ -212,6 +212,13 @@ pub fn print_combat_prompt<W: Write>(
 
 pub(crate) fn format_action_for_menu(state: &CombatState, action: &Action) -> String {
     match action {
+        Action::PlayCardAtAlly { hand_index, ally } => {
+            let card_name = state.player.hand.get(usize::from(*hand_index)).map_or_else(
+                || "<oob>".to_string(),
+                |uid| format!("{:?}", card_by_uid(state, *uid).card_id),
+            );
+            format!("play {hand_index} ally {ally}  ({card_name} → ally {ally})")
+        }
         Action::PlayCard { hand_index, target } => {
             let card_name = state.player.hand.get(usize::from(*hand_index)).map_or_else(
                 || "<oob>".to_string(),

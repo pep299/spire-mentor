@@ -361,6 +361,35 @@ fn fetch_draws_once_per_turn() {
     }
 }
 
+/// GH #1054: `Fetch.cs:40` checks `CheckMissingWithAnim` once, BEFORE the
+/// attack. An Osty killed by the target's Thorns during the hit still lets
+/// the draw at `Fetch.cs:45-48` happen.
+#[test]
+#[serial_test::serial(global_registry)]
+fn fetch_draws_when_osty_dies_to_thorns() {
+    for v in BOTH {
+        let (mut state, enemy) = fresh(v, true);
+        let osty = state.player.pet_uid.expect("osty");
+        if let Some(c) = state.creatures.iter_mut().find(|c| c.id == osty.0) {
+            c.current_hp = 2;
+            c.max_hp = 2;
+        }
+        give(&mut state, enemy, PowerKind::Thorns, 5);
+        for _ in 0..3 {
+            let _ = add_to(&mut state, CardId::StrikeNecrobinder, PileKind::Draw);
+        }
+        let fetch = add_to(&mut state, CardId::Fetch, PileKind::Hand);
+        play(&mut state, fetch, Some(0));
+        assert_eq!(hp(&state, enemy), 197, "{v:?}: Osty hit the enemy");
+        assert_eq!(hp(&state, osty), 0, "{v:?}: Thorns killed the Osty");
+        assert_eq!(
+            state.player.hand.len(),
+            1,
+            "{v:?}: Fetch still draws after the Osty died mid-attack"
+        );
+    }
+}
+
 // ── HardenedShell: AfterDamageGiven runs before AfterDamageReceived ───────
 
 /// `CreatureCmd.Damage` fires `AfterDamageGiven` (ReaperForm's Doom, whose

@@ -10,7 +10,6 @@ use super::prelude::*;
 /// (a Splash/OrobicAcid-generated Supermassive dealt only `extra × count`,
 /// matching the CrescentSpear `base_damage 0` class of bug, `sts2-rs-qz6v3`).
 /// Bead `sts2-rs-8h2q` wires the generated-card counter consumed here.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L571
 pub(crate) fn play_supermassive(
     state: &mut CombatState,
     target: Option<CreatureUid>,

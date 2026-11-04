@@ -2,7 +2,6 @@
 use super::prelude::*;
 
 /// Devastate — single-target attack. Pure damage.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L336
 pub(crate) fn play_devastate(state: &mut CombatState, target: Option<CreatureUid>) -> EffectResult {
     let t = target.expect("Devastate: Enemy-targeted");
     let _ = deal_damage_player_to_enemy(state, t, current_damage(state));

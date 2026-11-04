@@ -170,9 +170,10 @@ class TestParityWithRecordedTorch:
         # worth failing on. The one exception is an APPENDED slot a champion
         # predates: `C_ENCH_AMT` (GH #947, `card_mods`) is the trailing cont
         # column and both consumers slice it off a 25-cont graph, so the
-        # pre-#947 width is the only narrower one allowed here.
+        # pre-#947 width is the only narrower one allowed here. Likewise the
+        # card type / rarity columns (GH #977, `card_kind`) trail `cat`.
         assert policy.n_cont in (schema.N_CONT, schema.C_ENCH_AMT)
-        assert policy.n_cat == schema.N_CAT
+        assert policy.n_cat in (schema.N_CAT, schema.CAT_CARD_TYPE)
 
 
 class TestBudgetOverflow:

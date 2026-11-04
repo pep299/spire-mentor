@@ -133,6 +133,31 @@ _OPTION_ENCH_KEYS = (
 )
 
 
+# GH #978, `card_bundles`: the gated branch needs a Scroll Boxes pick, which
+# only exists when the run took Scroll Boxes at Neow. The relic is on offer in
+# ~1 seed in 4, but a greedy walk need not take it, so in this mode the walk
+# takes it whenever Neow offers it and the quota is still short
+# (`_scroll_boxes_option`).
+CARD_BUNDLES_ROWS = 2
+
+# GH #977, `card_kind`: every row with a deck stamps it, so a few rows past the
+# dense walk are enough; the walk itself spans every type and most rarities.
+CARD_KIND_ROWS = 3
+
+
+def _scroll_boxes_option(obs: dict, actions: list[dict]) -> int | None:
+    """Index of Neow's Scroll Boxes option among `actions`, if offered."""
+    if obs.get("event_name") != "Neow":
+        return None
+    opts = obs.get("event_options") or []
+    for j, a in enumerate(actions):
+        i = a.get("idx")
+        if a.get("action") == "event_choice" and isinstance(i, int) and 0 <= i < len(opts):
+            if str(opts[i].get("label") or "").upper() == "SCROLL_BOXES":
+                return j
+    return None
+
+
 def _gated(obs: dict) -> dict[str, bool]:
     """Which experiment features' gated branch this obs exercises."""
     option_mod = any(any(obs.get(k) or []) for k in _OPTION_ENCH_KEYS)
@@ -147,6 +172,8 @@ def _gated(obs: dict) -> dict[str, bool]:
         schema.REWARD_UPGRADE: any(obs.get("card_reward_option_upgraded") or []),
         schema.CARD_MODS: any(deck_ench) or option_mod,
         "card_mods_option": option_mod,
+        schema.CARD_BUNDLES: bool(obs.get("card_reward_bundles")),
+        schema.CARD_KIND: bool(obs.get("deck")),
     }
 
 
@@ -155,6 +182,8 @@ _FEATURE_QUOTA = {
     schema.REWARD_UPGRADE: REWARD_UPGRADE_ROWS,
     schema.CARD_MODS: CARD_MODS_ROWS,
     "card_mods_option": CARD_MODS_OPTION_ROWS,
+    schema.CARD_BUNDLES: CARD_BUNDLES_ROWS,
+    schema.CARD_KIND: CARD_KIND_ROWS,
 }
 
 
@@ -337,7 +366,13 @@ def dump(ckpt: str, out: str, seeds: list[int], max_rows: int, asc_seeds: list[i
                         "value": value,
                     }
                 )
-            out_d = env.step(int(np.argmax(probs)))
+            pick = int(np.argmax(probs))
+            if schema.CARD_BUNDLES in quota_keys and (
+                gated_rows[schema.CARD_BUNDLES] < CARD_BUNDLES_ROWS
+            ):
+                forced = _scroll_boxes_option(out_d.obs, out_d.actions)
+                pick = pick if forced is None else forced
+            out_d = env.step(pick)
     # The whole point of the supplementary fixture: without a row that
     # exercises the gated branch, both arms emit the same tokens and the Rust
     # gate pins nothing (`reward_upgrade`: act 1 can never produce one, see

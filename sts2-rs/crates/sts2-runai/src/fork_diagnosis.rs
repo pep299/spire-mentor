@@ -96,7 +96,7 @@ pub struct TraceStep {
     pub round: u16,
     pub hp: i32,
     pub block: i32,
-    pub energy: i8,
+    pub energy: i32,
     pub draw_n: usize,
     pub discard_n: usize,
     /// Card tokens currently in hand (`CARD.X` / `CARD.X+`).

@@ -2,14 +2,14 @@
 
 from parity_fuzz_scenario import (
     ACT1_ENCOUNTERS,
-    ALL_COLORLESS_CARDS,
     ALL_ENCOUNTERS,
-    ALL_IC_CARDS,
     ALL_POTIONS,
     ALL_RELICS,
     IC_CARDS,
     SAFE_RELICS,
     Scenario,
+    class_cards_for_build,
+    colorless_cards_for_build,
     generate,
     generate_v2,
 )
@@ -77,7 +77,8 @@ def test_generate_v2_deterministic() -> None:
 
 
 def test_generate_v2_full_pools() -> None:
-    pool = set(ALL_IC_CARDS + ALL_COLORLESS_CARDS)
+    # the pools of the selected build (`--game-version`): v0.111.0 drops/adds cards
+    pool = set(class_cards_for_build("Ironclad") + colorless_cards_for_build())
     encounters, relics_seen, upgraded_seen = set(), set(), False
     for seed in range(300):
         s = generate_v2(seed)

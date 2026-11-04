@@ -217,12 +217,9 @@ fn build_ai_for_encounter(encounter: &str) -> (&'static str, MonsterAi) {
 /// Bead `sts2-rs-lwkz`.
 fn apply_start_of_combat_powers(state: &mut CombatState, enemy_uid: CreatureUid, encounter: &str) {
     if encounter == "ThievingHopper" {
-        // Port-pin: sts2-rl-agent@01c094d:sts2_env/monsters/act2.py:L60
         apply_power_to_creature(state, enemy_uid, PowerKind::Thievery, 15);
     }
     if encounter == "Entomancer" {
-        // Port-pin: sts2-rl-agent@01c094d:sts2_env/monsters/act2.py
-        // (Entomancer ctor seeds PERSONAL_HIVE x1 at spawn).
         apply_power_to_creature(state, enemy_uid, PowerKind::PersonalHive, 1);
     }
 }
@@ -357,6 +354,7 @@ fn build_state(fixture_initial: &Value, encounter: &str, seed: u64) -> CombatSta
         pending_enemy_exec_resume: None,
         combat_log: TurnEvents::default(),
         swipe_stolen: Vec::new(),
+        deck_link: None,
         escaped_creatures: 0,
         coop: sts2_core::coop::CoopState::default(),
         heist_recovered_gold: 0,

@@ -1,10 +1,18 @@
 {
  "runs": [
   {
-   "enemy_min_pct": 5.2632,
-   "final_floor": 10,
-   "final_turn": null,
+   "enemy_min_pct": 6.9767,
+   "final_floor": 6,
+   "final_turn": 2,
    "stem": "20260101_000000_Silent_2",
+   "turn1_q": 1.2391,
+   "won": false
+  },
+  {
+   "enemy_min_pct": 5.2632,
+   "final_floor": 11,
+   "final_turn": null,
+   "stem": "20260101_000000_Silent_2_2",
    "turn1_q": 1.2213,
    "won": false
   }

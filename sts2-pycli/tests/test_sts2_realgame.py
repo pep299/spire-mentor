@@ -629,6 +629,117 @@ def test_reward_screen_gold_only_proceeds_to_next_room(
     assert result["decision"] == "map_select"
 
 
+def _swap_reward_screen(base: dict[str, Any]) -> dict[str, Any]:
+    """A reward screen with one full-belt potion reward (GH #1069): the mod's
+    decline + one discard option per belt slot, then CardReward and proceed."""
+    reward = {"id": "STABLE_SERUM", "name": "Stable Serum", "slot": -1}
+    held = ["FIRE_POTION", "BLOCK_POTION", "ENERGY_POTION"]
+    swaps = [
+        {
+            "index": 0,
+            "id": "PotionReward",
+            "action": "potion_swap",
+            "label": "decline",
+            "reward": reward,
+            "reward_button": 0,
+            "discard_slot": None,
+        }
+    ] + [
+        {
+            "index": 1 + k,
+            "id": "PotionReward",
+            "action": "potion_swap",
+            "label": f"discard {pid}",
+            "reward": reward,
+            "reward_button": 0,
+            "discard_slot": k,
+        }
+        for k, pid in enumerate(held)
+    ]
+    return {
+        **base,
+        "options": [
+            *swaps,
+            {"index": 4, "id": "CardReward", "action": "pick_reward"},
+            {"index": 5, "id": "proceed", "action": "proceed"},
+        ],
+    }
+
+
+def test_reward_screen_full_belt_potion_declined_by_default(
+    fake_server: FakeServer, rg: RealGame
+) -> None:
+    """Without interactive_potion_swap the full-belt potion is left on the
+    screen (its decline option), as the engines drop it with the swap off."""
+    reward_screen = _swap_reward_screen(_state("reward_screen_with_card.json"))
+    card_reward = _state("card_reward.json")
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(rg.start)
+        fake_server.wait_for_connection()
+        fake_server.send_json_line(reward_screen)
+
+        sent = fake_server.recv_line()
+        assert sent["index"] == 0  # decline
+
+        fake_server.send_json_line(
+            {
+                **reward_screen,
+                "options": [{"index": 0, "id": "CardReward", "action": "pick_reward"}],
+            }
+        )
+        sent = fake_server.recv_line()
+        assert sent["index"] == 0  # CardReward
+
+        fake_server.send_json_line(card_reward)
+        result = future.result(timeout=5)
+
+    assert result["decision"] == "card_reward"
+
+
+def test_reward_screen_full_belt_potion_surfaces_potion_swap(
+    fake_server: FakeServer, rg: RealGame
+) -> None:
+    """interactive_potion_swap=True: the swap surfaces as the headless
+    ``potion_swap`` decision, and ``act("potion_swap", discard_slot=1)``
+    clicks the mod's option for slot 1."""
+    reward_screen = _swap_reward_screen(_state("reward_screen_with_card.json"))
+    card_reward = _state("card_reward.json")
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(rg.start, interactive_potion_swap=True)
+        fake_server.wait_for_connection()
+        fake_server.send_json_line(reward_screen)
+        decision = future.result(timeout=5)
+
+        assert decision["decision"] == "potion_swap"
+        assert decision["potion"] == "STABLE_SERUM"
+        assert [o["discard_slot"] for o in decision["options"]] == [None, 0, 1, 2]
+        assert [o["index"] for o in decision["options"]] == [0, 1, 2, 3]
+        assert decision["options"][2]["label"] == "discard BLOCK_POTION"
+
+        assert rg.act("potion_swap", discard_slot=7)["type"] == "error"
+
+        future = pool.submit(rg.act, "potion_swap", discard_slot=1)
+        sent = fake_server.recv_line()
+        assert sent["action"] == "choose"
+        assert sent["index"] == 2  # the mod's "discard slot 1" option
+
+        fake_server.send_json_line(
+            {
+                **reward_screen,
+                "options": [{"index": 0, "id": "CardReward", "action": "pick_reward"}],
+            }
+        )
+        sent = fake_server.recv_line()
+        assert sent["index"] == 0  # CardReward
+
+        fake_server.send_json_line(card_reward)
+        result = future.result(timeout=5)
+
+    assert result["decision"] == "card_reward"
+
+
 def test_boss_relic_round_trip_surfaces_as_event_choice(
     fake_server: FakeServer, rg: RealGame
 ) -> None:

@@ -140,8 +140,8 @@ pub fn install_default_registry() {
         divine_destiny::install();
         akabeko::install();
         bag_of_marbles::install();
-        fake_blood_vial::install();
-        blood_vial::install();
+        // BloodVial / FakeBloodVial: no bus registration. They run in the
+        // `AfterPlayerTurnStartLate` pass, `blood_vial::dispatch_after_player_turn_start_late`.
         bound_phylactery::install();
         anchor::install();
         fake_anchor::install();

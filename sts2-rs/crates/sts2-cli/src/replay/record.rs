@@ -22,7 +22,7 @@ use sts2_core::{
     apply, combat_loop, is_terminal, legal_actions, Action, CombatPhase, CombatState, Creature,
     PowerKind, StepResult,
 };
-use sts2_mcts::{Mcts, MctsConfig, RolloutPolicyKind, RootOutcome};
+use sts2_mcts::{Mcts, MctsConfig, RolloutPolicyKind};
 
 use crate::scenario_to_combat_state;
 use crate::sim::scenario::toml_file::{load_scenario_file, ScenarioFile};
@@ -106,7 +106,7 @@ pub struct StateSnapshot {
     pub player_hp: i32,
     pub player_max_hp: i32,
     pub player_block: i32,
-    pub player_energy: i8,
+    pub player_energy: i32,
     pub player_max_energy: i8,
     pub draw_n: usize,
     pub discard_n: usize,
@@ -283,14 +283,11 @@ fn drive_combat(
             )
         });
 
-        // GitHub issue #32: in observed-lost positions (every root child
-        // has 0 wins), MCTS argmax(Q) prefers `EndTurn` into lethal
-        // because losing-fast keeps leaf_eval near the start. Defer to
-        // the 1-ply damage-dealt override so replay records and the
-        // engine itself agree on "play out dealing damage before dying".
-        let recommended_action = mcts
-            .lost_position_override()
-            .or_else(|| pick_recommended(&outcomes));
+        // The engine's own pick (`Mcts::explain_root_pick`: the GH #32
+        // lost-position override, proven wins, the tie band and its rules),
+        // so a replay record recommends what the run agent plays rather
+        // than a Q-then-visits re-rank of its own (GH #1022).
+        let recommended_action = mcts.explain_root_pick().ok().map(|p| p.action);
         // Bead `sts2-rs-h9qge`: format each PV step against a state
         // advanced by all prior PV steps, not the outer decision state.
         // `format_action` reads `state.player.hand[hand_index]` to label
@@ -390,20 +387,6 @@ fn drive_combat(
     }
 }
 
-fn pick_recommended(outcomes: &[RootOutcome]) -> Option<Action> {
-    // Canonical Q-then-visits order (matches `MctsAgent::pick` and
-    // `agent::human::print_hint`).
-    outcomes
-        .iter()
-        .max_by(|a, b| {
-            a.mean_value
-                .partial_cmp(&b.mean_value)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.visits.cmp(&b.visits))
-        })
-        .map(|o| o.action.clone())
-}
-
 fn propagate_terminal(state: &mut CombatState, step: StepResult) {
     match step {
         StepResult::CombatWon => {
@@ -414,7 +397,10 @@ fn propagate_terminal(state: &mut CombatState, step: StepResult) {
             state.is_over = true;
             state.player_won = false;
         }
-        StepResult::Advanced | StepResult::PendingChoice | StepResult::InvalidTarget => {}
+        StepResult::Advanced
+        | StepResult::PendingChoice
+        | StepResult::InvalidTarget
+        | StepResult::IllegalPlay => {}
     }
 }
 
@@ -510,6 +496,14 @@ pub fn format_action(state: &CombatState, action: &Action) -> String {
                 || format!("Play {card_name} (h{hand_index})"),
                 |t| format!("Play {card_name} (h{hand_index}) → enemy {t}"),
             )
+        }
+        Action::PlayCardAtAlly { hand_index, ally } => {
+            let card_name = card_name_at(state, *hand_index);
+            format!("Play {card_name} (h{hand_index}) → ally {ally}")
+        }
+        Action::DrinkPotionAtAlly { potion_slot, ally } => {
+            let name = potion_name_at(state, *potion_slot);
+            format!("Throw {name} (slot {potion_slot}) → ally {ally}")
         }
         Action::EndTurn => "End turn".to_string(),
         Action::UsePotion { slot, target } => {
@@ -621,8 +615,8 @@ mod tests {
         let mut pv_state = state.clone();
         for a in &pv {
             advanced.push(format_action(&pv_state, a));
-            if let Action::PlayCard { hand_index, .. } = a {
-                let idx = usize::from(*hand_index);
+            if let Some((hand_index, _)) = a.card_play() {
+                let idx = usize::from(hand_index);
                 if idx < pv_state.player.hand.len() {
                     pv_state.player.hand.remove(idx);
                 }

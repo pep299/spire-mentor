@@ -939,7 +939,6 @@ fn burst_deep_pin_action_duplication_semantics() {
 //     amount into the budget; one hand card survives the flush.
 //
 /// Tactician (STS2) gives +1 energy on play. No retain side effect.
-/// Pin: `sts2-rl-agent@01c094d:sts2_env/cards/silent.py:594-596`.
 #[test]
 fn tactician_grants_energy_no_self_retain() {
     install_pool();
@@ -1981,8 +1980,8 @@ fn speedster_damages_enemies_on_card_effect_draw_not_hand_draw() {
     state.enemy_uids.push(CreatureUid(e2));
     // Speedster(2) on the player.
     apply_power_to_player(&mut state, PowerKind::Speedster, 2);
-    // Two drawable cards in the draw pile.
-    for _ in 0..2_u32 {
+    // Three drawable cards in the draw pile.
+    for _ in 0..3_u32 {
         let raw = u32::try_from(state.cards.len() + 1).expect("fits");
         let uid = sts2_core::CardUid::new(raw).expect("non-zero");
         state.cards.push(Card {
@@ -2017,6 +2016,18 @@ fn speedster_damages_enemies_on_card_effect_draw_not_hand_draw() {
     assert_eq!(
         state.creatures[1].current_hp, 98,
         "hand-draw does not trigger Speedster"
+    );
+    // A card-effect draw during the ENEMY turn (Centennial Puzzle on an enemy
+    // hit) fails the `CurrentSide == Owner.Side` gate (`SpeedsterPower.cs:17`).
+    state.side = sts2_core::Side::Enemy;
+    let _ = sts2_core::cards::draw_via_state(&mut state, 1);
+    assert_eq!(
+        state.creatures[0].current_hp, 98,
+        "enemy-turn draw does not trigger Speedster"
+    );
+    assert_eq!(
+        state.creatures[1].current_hp, 98,
+        "enemy-turn draw does not trigger Speedster"
     );
 }
 
@@ -2105,6 +2116,34 @@ fn handtrick_state(n_skills: usize) -> CombatState {
         state.player.hand.push(uid);
     }
     state
+}
+
+/// Flechettes counts C# `Type == CardType.Skill` (`Flechettes.cs:23`). A Quest
+/// card (`SpoilsMap`, C# `CardType.Quest`) is modelled as a Skill in Rust but
+/// must not count: hand = SpoilsMap + one real Skill -> exactly 1 hit.
+/// Regression for act23 parity Silent seed 1019 (#1054 item 7).
+#[test]
+fn flechettes_does_not_count_quest_cards_as_skills() {
+    install_pool();
+    let (mut state, euid) = fresh_state(CardId::Flechettes, 5, 0);
+    for card_id in [CardId::SpoilsMap, CardId::DefendSilent] {
+        let raw = u32::try_from(state.cards.len() + 1).expect("fits");
+        let uid = sts2_core::CardUid::new(raw).expect("non-zero");
+        state.cards.push(Card {
+            uid,
+            card_id,
+            cost: 1,
+            card_type: CardType::Skill,
+            target_type: TargetType::Self_,
+            ..Card::pod_defaults()
+        });
+        state.player.hand.push(uid);
+    }
+    let _ = lookup(CardId::Flechettes).expect("registered")(&mut state, Some(euid));
+    assert_eq!(
+        state.creatures[0].current_hp, 95,
+        "1 real Skill -> 1 hit of 5; SpoilsMap (Quest) does not count"
+    );
 }
 
 /// HandTrick gains block and, with ≥2 eligible Skills, opens an
@@ -2618,6 +2657,10 @@ fn knife_trap_auto_plays_each_exhaust_shiv_as_real_card_play() {
         rng: sts2_core::dotnet_rng::Rng::new(0_i32),
         ..Default::default()
     };
+    // Alive player: a dead one ends the combat, and C# `CardCmd.AutoPlay`
+    // does nothing once combat `IsOverOrEnding` (CardCmd.cs:54).
+    state.player.current_hp = 80;
+    state.player.max_hp = 80;
     let enemy_id = NonZeroU32::new(1).expect("nz");
     state.creatures.push(Creature {
         id: enemy_id,
@@ -2689,6 +2732,10 @@ fn calculated_gamble_auto_plays_single_turn_sly_discard() {
         rng: sts2_core::dotnet_rng::Rng::new(0_i32),
         ..Default::default()
     };
+    // Alive player: a dead one ends the combat, and C# `CardCmd.AutoPlay`
+    // does nothing once combat `IsOverOrEnding` (CardCmd.cs:54).
+    state.player.current_hp = 80;
+    state.player.max_hp = 80;
     let enemy_id = NonZeroU32::new(1).expect("nz");
     state.creatures.push(Creature {
         id: enemy_id,
@@ -2779,6 +2826,8 @@ fn reflex_discarded_via_helper_draws_two_not_four() {
         rng: sts2_core::dotnet_rng::Rng::new(0_i32),
         ..Default::default()
     };
+    // A live player: a dead one makes the combat ending, so draws move no card.
+    state.player.current_hp = 80;
     // REFLEX (uid 1) in hand — `Sly` keyword (registered above).
     let reflex = sts2_core::CardUid(NonZeroU32::new(1).expect("nz"));
     state.cards.push(Card {
@@ -3476,12 +3525,15 @@ fn nightmare_with_an_unrecoverable_card_still_expires_on_hand_draw() {
 
 /// Bead `sts2-rs-1xmxp`: with > 2 hand cards, HiddenDaggers opens a
 /// `DiscardFromHand` player choice (exactly 2) instead of a random
-/// discard, and spawns 2 Shivs. The Shivs are added immediately but
-/// are NOT offered as discard candidates (snapshot taken first);
-/// resolving the choice discards the 2 chosen sentinels.
+/// discard. The 2 Shivs come AFTER the discard resolves (C# awaits the
+/// select and the discard before `Shiv.CreateInHand`), so they are never
+/// discard candidates; resolving the choice discards the 2 chosen
+/// sentinels and then spawns the Shivs.
 #[test]
 fn play_hidden_daggers_opens_discard_choice_then_resolves() {
     install_pool();
+    // The deferred Shivs are built through the core card factory.
+    sts2_core::register_card_factory(crate::cards::spec_index::card_pod_from_id);
     let (mut state, _) = fresh_state(CardId::HiddenDaggers, 0, 0);
     // Push 3 sentinel hand cards (uids 2..=4 — fresh_state used uid 1
     // for the play-pile card).
@@ -3524,8 +3576,8 @@ fn play_hidden_daggers_opens_discard_choice_then_resolves() {
     assert!(state.player.discard.is_empty(), "no discard until resolved");
     assert_eq!(
         state.player.hand.len(),
-        5,
-        "3 sentinels + 2 freshly-spawned Shivs",
+        3,
+        "the Shivs wait for the discard to resolve",
     );
 
     // Resolve: discard the first two sentinels (selection [0, 1]).
@@ -3559,6 +3611,62 @@ fn play_hidden_daggers_opens_discard_choice_then_resolves() {
         })
         .count();
     assert_eq!(shivs_in_hand, 2, "both Shivs retained in hand");
+}
+
+/// GH #1054 (Silent-1001 act-3 `hand_costs` split): a Sly card discarded
+/// by HiddenDaggers auto-plays inside C# `CardCmd.Discard`, before
+/// `Shiv.CreateInHand` runs. So Reflex's draw lands in hand BEFORE the
+/// two Shivs. Rust spawned the Shivs when the choice opened, putting them
+/// ahead of Reflex's draw.
+#[test]
+fn play_hidden_daggers_sly_draw_lands_before_the_shivs() {
+    install_pool();
+    // The deferred Shivs are built through the core card factory.
+    sts2_core::register_card_factory(crate::cards::spec_index::card_pod_from_id);
+    sts2_core::card_effects::register_card_sly(CardId::Reflex);
+    let (mut state, _) = fresh_state(CardId::HiddenDaggers, 0, 0);
+    let push = |state: &mut CombatState, slot: u32, card_id: CardId, card_type: CardType| {
+        let uid = sts2_core::CardUid(NonZeroU32::new(slot).expect("nz"));
+        state.cards.push(Card {
+            uid,
+            card_id,
+            cost: 1,
+            card_type,
+            target_type: TargetType::Self_,
+            ..Card::pod_defaults()
+        });
+        uid
+    };
+    let reflex = push(&mut state, 2, CardId::Reflex, CardType::Skill);
+    let keep = push(&mut state, 3, CardId::DefendSilent, CardType::Skill);
+    let other = push(&mut state, 4, CardId::DefendSilent, CardType::Skill);
+    state.player.hand.extend([reflex, keep, other]);
+    let drawn_a = push(&mut state, 5, CardId::StrikeSilent, CardType::Attack);
+    let drawn_b = push(&mut state, 6, CardId::StrikeSilent, CardType::Attack);
+    state.player.draw.extend([drawn_b, drawn_a]);
+
+    let _ = lookup(CardId::HiddenDaggers).expect("registered")(&mut state, None);
+    // Discard Reflex and `other` (option order = hand order).
+    let selection: smallvec::SmallVec<[u8; 4]> = [0u8, 2].into_iter().collect();
+    let _ = sts2_core::apply(&mut state, sts2_core::Action::ResolveChoice { selection });
+
+    let ids: Vec<CardId> = state
+        .player
+        .hand
+        .iter()
+        .map(|u| state.cards[u.0.get() as usize - 1].card_id)
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            CardId::DefendSilent,
+            CardId::StrikeSilent,
+            CardId::StrikeSilent,
+            CardId::Shiv,
+            CardId::Shiv,
+        ],
+        "Reflex's 2 draws come before HiddenDaggers' Shivs",
+    );
 }
 
 /// Bead `sts2-rs-1xmxp`: with ≤ 2 hand cards there is no real choice

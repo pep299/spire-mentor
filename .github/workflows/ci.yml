@@ -40,7 +40,7 @@ jobs:
       run:
         working-directory: sts2-rs
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.99.1
@@ -65,7 +65,7 @@ jobs:
       run:
         working-directory: sts2-pycli
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # uv sync builds the sts2_rs PyO3 wheel from ../sts2-rs (editable path dep).
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -74,7 +74,7 @@ jobs:
         with:
           workspaces: sts2-rs
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           save-cache: ${{ github.ref == 'refs/heads/main' }}
@@ -89,8 +89,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           save-cache: ${{ github.ref == 'refs/heads/main' }}
@@ -116,8 +116,8 @@ jobs:
       run:
         working-directory: sts2-pycli/web
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 24   # the npm (11) the lockfile is maintained with; npm 10 rejects it
           cache: npm
@@ -135,7 +135,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.99.1
@@ -143,7 +143,7 @@ jobs:
         with:
           workspaces: sts2-rs
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           save-cache: ${{ github.ref == 'refs/heads/main' }}

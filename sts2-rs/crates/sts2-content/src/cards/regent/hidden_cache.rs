@@ -3,7 +3,6 @@ use super::prelude::*;
 
 /// Hidden Cache — apply `StarNextTurn` 3 to self + gain 1 Star.
 /// Python pin: `regent.py:L205-L209`.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L205
 pub(crate) fn play_hidden_cache(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     // C# HiddenCache.cs OnUpgrade bumps StarNextTurnPower 3->4. Python
     // pin port had only base. StarsVar(1) stays — the gain_stars call

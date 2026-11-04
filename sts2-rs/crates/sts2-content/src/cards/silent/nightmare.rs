@@ -56,7 +56,6 @@ use super::prelude::*;
 /// must use, since [`sts2_core::CombatState::request_card_choice`] hardcodes
 /// `post_effect: None`) does NOT carry `request_card_choice`'s
 /// `is_over || combat_is_ending` check.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/silent.py::nightmare
 // C# source: ../sts2-wiki/decompiled/v0.103.2/MegaCrit.Sts2.Core.Models.Cards/Nightmare.cs
 pub(crate) fn play_nightmare(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     // C# `FromHand` short-circuits to an empty selection once combat is over or

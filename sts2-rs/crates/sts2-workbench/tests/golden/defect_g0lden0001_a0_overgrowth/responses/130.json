@@ -10,7 +10,7 @@
   "bg_col": 0,
   "bg_row": 11,
   "bg_seed": 1772253313,
-  "floor": 11,
+  "floor": 12,
   "step_no": 0,
   "turn": 1
  },
@@ -329,7 +329,7 @@
   "energy_image": "https://assets.test/sprite_fonts/defect_energy_icon.png",
   "exhaust_pile": [],
   "exhaust_pile_count": 0,
-  "floor": 11,
+  "floor": 12,
   "hand": [
    {
     "base_cost": -1,
@@ -594,7 +594,7 @@
      "upgraded": false
     }
    ],
-   "gold": 92,
+   "gold": 91,
    "hp": 43,
    "image": "https://assets.test/character_sprites/defect.png",
    "max_hp": 75,

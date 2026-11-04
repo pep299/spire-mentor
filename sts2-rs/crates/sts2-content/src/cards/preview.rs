@@ -269,6 +269,10 @@ pub fn calculated_value(
             crate::cards::defect::voltaic::preview_voltaic,
             ValueKind::Count,
         ),
+        // `Normality.cs:27-31`: `CalculatedCards` = CalculationBase(3) +
+        // CalculationExtra(-1) x min(3, card plays started this turn), so the
+        // plays still allowed. Same on both builds.
+        CardId::Normality => (preview_normality, ValueKind::Count),
         _ => return None,
     };
     let raw = f(state, card, target);
@@ -340,4 +344,11 @@ fn absent_creature(state: &CombatState) -> CreatureRef {
         .unwrap_or(0)
         .saturating_add(1);
     CreatureRef::Enemy(CreatureUid::new(free).expect("max id + 1 is non-zero"))
+}
+
+/// `Normality`'s `{CalculatedCards}`: plays still allowed this turn. Reads the
+/// same counter as the `ShouldPlay` veto, `History.CardPlaysStarted`.
+fn preview_normality(state: &CombatState, _card: &Card, _target: Option<CreatureUid>) -> i32 {
+    let started = i32::try_from(state.player.card_plays_started_this_turn).unwrap_or(i32::MAX);
+    3 - started.min(3)
 }

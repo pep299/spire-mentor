@@ -193,7 +193,8 @@ fn listener_neows_sacrifice(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::NeowsSacrifice) {
         return EffectResult::NotImplemented;
     }
-    let _ = rs.procure_potion(PotionReward::with_kind(
+    // `PotionCmd.TryToProcure<Ambergris>` — direct, no reward screen.
+    let _ = rs.procure_potion(PotionReward::direct(
         sts2_core::potions::PotionKind::Ambergris,
     ));
     if let Some(card) = card_pod_from_id(CardId::Guilty, false) {
@@ -241,12 +242,13 @@ fn listener_silken_tress_card_reward(rs: &mut RunState, cards: &mut Vec<Card>) -
         return EffectResult::NotImplemented;
     }
     let pool = crate::names::deck_card_spec_pool();
+    let version = rs.game_version;
     for card in cards.iter_mut() {
         let Some(spec) = pool.iter().find(|s| s.id == card.card_id) else {
             continue;
         };
         // `glam.CanEnchant(card)` (`SilkenTress.cs:65`).
-        if crate::enchantments::can_enchant_card(spec, card, EnchantmentId::Glam) {
+        if crate::enchantments::can_enchant_card(spec, card, EnchantmentId::Glam, version) {
             // `CardCmd.Enchant<Glam>(card, 1m)` (`SilkenTress.cs:68`).
             let _ = crate::enchantments::apply_static_enchantment(card, EnchantmentId::Glam, 1);
         }
@@ -607,7 +609,9 @@ fn listener_phial_holster(rs: &mut RunState) -> EffectResult {
     for kind in potions {
         // Sozu (should_procure_potion veto) may drop a procure; ignore the
         // bool, matching C# TryToProcure's fire-and-forget semantics.
-        let _ = rs.procure_potion(PotionReward::with_kind(kind));
+        // Direct `TryToProcure`: no reward screen, so a full belt drops the
+        // potion instead of offering a swap (GH #1069).
+        let _ = rs.procure_potion(PotionReward::direct(kind));
     }
 
     EffectResult::Resolved

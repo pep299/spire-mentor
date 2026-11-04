@@ -7,9 +7,10 @@ training.
 - **Game-behavior source of truth:** the C# decompilation at
   `../sts2-wiki/decompiled/v0.107.1/` (a sibling in the monorepo — useful for
   verifying mechanics, **not** required to build or test this workspace).
-- **Port provenance:** the engine scaffolding was originally ported from an
-  archived Python sim; see [`PYTHON_SIM_PIN.md`](PYTHON_SIM_PIN.md) for what the
-  `// Ported from sts2-rl-agent@…` headers mean.
+- **Provenance:** the early combat-loop scaffolding followed an archived
+  Python sim; the engine has since been rewritten against the C# decomp. See
+  [`PYTHON_SIM_PIN.md`](PYTHON_SIM_PIN.md) for the remaining
+  `sts2-rl-agent@…` citations in doc comments.
 - **What is and is not redistributable:** see [`../PROVENANCE.md`](../PROVENANCE.md).
 
 ## Quickstart (standalone)

@@ -10,7 +10,7 @@
   "bg_col": 2,
   "bg_row": 9,
   "bg_seed": 1772253313,
-  "floor": 9,
+  "floor": 10,
   "step_no": 0,
   "turn": null
  },
@@ -34,7 +34,7 @@
    }
   ],
   "decision": "map_select",
-  "floor": 9,
+  "floor": 10,
   "full_map": {
    "boss": {
     "col": 3,
@@ -54,14 +54,14 @@
     "best_col": 1,
     "columns": [
      {
-      "baseline_score": 0.4543,
+      "baseline_score": 0.4545,
       "can_skip_elite": true,
       "col": 1,
       "is_pick": true,
       "max_elites": 1,
       "min_elites": 0,
       "n_paths": 2,
-      "score": 0.4543
+      "score": 0.4545
      }
     ],
     "diverged": false,
@@ -1228,7 +1228,7 @@
      "upgraded": false
     }
    ],
-   "gold": 92,
+   "gold": 91,
    "hp": 37,
    "max_hp": 66,
    "name": "Necrobinder",

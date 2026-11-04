@@ -232,3 +232,24 @@ def test_unknown_action_kind_still_raises() -> None:
 
     with pytest.raises(KeyError):
         tags_from_result({"actions": [_entry({"action": "teleport"}, p_win=0.5)]}, [])
+
+
+def test_unmappable_engine_pick_crowns_the_engines_next_choice() -> None:
+    """GH #1022: when the dropped row was the engine's pick, the crown goes to
+    its own next choice (lowest ``pick_rank``), not to the best ``p_win``."""
+    from sts2_hint.recommender import tags_from_result
+
+    hand = [{"stable_idx": 7}, {"stable_idx": 9}]
+    result = {
+        "actions": [
+            {
+                **_entry({"action": "play", "card_index": 2}, p_win=0.9, is_best=True),
+                "pick_rank": 0,
+            },
+            {**_entry({"action": "play", "card_index": 1}, p_win=0.6), "pick_rank": 2},
+            {**_entry({"action": "end_turn"}, p_win=0.3), "pick_rank": 1, "in_band": True},
+        ]
+    }
+    tags = tags_from_result(result, hand)
+    assert [(t.stable_idx, t.is_best) for t in tags] == [(END_TURN_STABLE_IDX, True), (9, False)]
+    assert tags[0].pick_rank == 1 and tags[0].in_band

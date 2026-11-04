@@ -11,18 +11,38 @@
  * it back. Same schema, same id format (`wb-` + 16 hex), so `?report=<id>`
  * opens either kind and `scripts/bug_reports.py` reads both.
  *
- * Routes (functions/api/bugreport.ts, functions/api/bugreport/[id].ts):
+ * Routes (functions/api/bugreport.ts, functions/api/bugreport/[id].ts,
+ * functions/intake/bugreport.ts):
  *   GET  /api/bugreport        {ok, store}  — the probe the SPA uses to show
  *                              the button (a host without Functions answers
  *                              HTML or 404, never this JSON).
- *   POST /api/bugreport        the dump → {id, url}
+ *   POST /api/bugreport        the page's dump → {id, url}; same origin only
  *   GET  /api/bugreport/<id>   the stored dump
+ *   POST /intake/bugreport     a non-browser client's dump → {id, url}
+ *   GET  /intake/bugreport     {ok, store, intake: true} — the same probe,
+ *                              for checking the intake is reachable
+ *
+ * Why a second path for posting. The deployed site sits behind a sign-in
+ * (Cloudflare Access, Google accounts), and the clients that are not the
+ * page cannot sign in: the Spire Mentor mod's in-game "Report a bug"
+ * (SimBugReport.cs, `meta.source = "mod"`) and the advisor's control plane
+ * forwarding the mod-bundled workbench's reports (realgame_control.py).
+ * Access exempts a path together with everything under it and has no
+ * exact-path rule, so exempting `/api/bugreport` would also open
+ * `/api/bugreport/<id>` — every stored report — to anyone. `/intake/` holds
+ * nothing to read: its one route only writes, and every other path under it
+ * is a 404 (functions/intake/[[path]].ts), so the Access exemption there
+ * (deploy/DEPLOY.md, "Bug-report intake") exposes no page, asset or report.
  *
  * Abuse budget: there is no rate-limit binding on Pages' free plan. The
  * cap is the body size (a flood of 20 MiB bodies still costs nothing — KV
  * writes are free up to 1,000 a day and then fail, which is the worst
- * case: reports lost for a day) plus a same-origin check on POST, which
- * stops drive-by posts without stopping anything a browser does.
+ * case: reports lost for a day) plus an origin check on POST: a request
+ * that names a foreign `Origin` is refused on both paths, which stops
+ * drive-by posts from other sites' pages. The intake also takes a request
+ * with NO `Origin` — browsers always send one on a POST, so that is a
+ * non-browser client, which could forge the header anyway; `/api/` keeps
+ * requiring the page's own origin.
  */
 import type { Env, KvNamespace } from "../env";
 
@@ -75,19 +95,24 @@ export function validateDump(body: unknown): string | null {
   return null;
 }
 
-/** What a listing shows without fetching the value (KV metadata ≤ 1024 B). */
+/** What a listing shows without fetching the value (KV metadata ≤ 1024 B).
+ *  `build` is the workbench commit for a page's report, the mod version
+ *  for the mod's; `source` is set only on reports that say where they came
+ *  from (the mod's: "mod"). */
 export function metadataOf(dump: Json, capturedAt: string): Json {
   const meta = dump.meta as Json;
   const ui = dump.ui as Json;
   const note = typeof dump.note === "string" ? dump.note.slice(0, NOTE_META_CHARS) : null;
-  return {
+  const out: Json = {
     captured_at: capturedAt,
     mode: meta.mode ?? null,
     character: meta.character ?? null,
     screen: ui.screen ?? null,
-    build: meta.workbench_commit ?? null,
+    build: meta.workbench_commit ?? meta.mod_version ?? null,
     note,
   };
+  if (typeof meta.source === "string") out.source = meta.source.slice(0, 16);
+  return out;
 }
 
 export interface StoreDeps {
@@ -117,11 +142,29 @@ export async function storeDump(
   return id;
 }
 
-/** `POST /api/bugreport`. */
-export async function handlePost(request: Request, env: Env, deps: StoreDeps = {}): Promise<Response> {
+/** Who may post: the page's own origin always; a request with no `Origin`
+ *  (a non-browser client) only on the intake. */
+export type OriginPolicy = "same-origin" | "intake";
+
+/** `POST /api/bugreport` (`"same-origin"`) and `POST /intake/bugreport`
+ *  (`"intake"`). */
+export async function handlePost(
+  request: Request,
+  env: Env,
+  deps: StoreDeps = {},
+  policy: OriginPolicy = "same-origin",
+): Promise<Response> {
   const url = new URL(request.url);
   const origin = request.headers.get("origin");
-  if (origin !== url.origin) return detail(403, "bug reports are accepted from the workbench page only");
+  const allowed = origin === url.origin || (policy === "intake" && origin === null);
+  if (!allowed) {
+    return detail(
+      403,
+      policy === "intake"
+        ? "the intake takes reports from the mod and its advisor, not from other sites' pages"
+        : "bug reports are accepted from the workbench page only",
+    );
+  }
   const declared = Number(request.headers.get("content-length") ?? "0");
   if (declared > MAX_BODY_BYTES) return detail(413, `report too large (${declared} bytes; limit ${MAX_BODY_BYTES})`);
   const text = await request.text();
@@ -141,6 +184,17 @@ export async function handlePost(request: Request, env: Env, deps: StoreDeps = {
 /** `GET /api/bugreport` — the probe. */
 export function handleProbe(): Response {
   return json({ ok: true, store: "kv" });
+}
+
+/** `GET /intake/bugreport` — the probe, saying it is the intake: a
+ *  signed-out `curl` of it proves the Access exemption works. */
+export function handleIntakeProbe(): Response {
+  return json({ ok: true, store: "kv", intake: true });
+}
+
+/** Any other path under `/intake/`: nothing lives there. */
+export function handleIntakeMiss(): Response {
+  return detail(404, "the intake has one route: POST /intake/bugreport");
 }
 
 /** `GET /api/bugreport/<id>`. */

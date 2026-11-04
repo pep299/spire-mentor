@@ -20,10 +20,13 @@ use super::prelude::*;
 /// terminates when a pass yields no new kills. Prior port only did one
 /// AoE pass.
 pub(crate) fn play_echoing_slash(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
-    let base = current_card_damage(state);
     let mut attack_count: i32 = 1;
     while attack_count > 0 {
         attack_count -= 1;
+        // Re-read every wave: C# passes the live `DynamicVars.Damage`, so a
+        // wave that kills a Dampen caster re-upgrades this card
+        // (`DampenPower.AfterDeath`) and the next wave hits harder.
+        let base = current_card_damage(state);
         // C# counts `DamageResult.WasTargetKilled` for THIS wave's hits
         // (`EchoingSlash.cs:34`: `attackCount += enumerable.Count(r =>
         // r.WasTargetKilled)`), so the rewave count is the number of hits that

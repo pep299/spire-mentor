@@ -75,7 +75,7 @@ macro_rules! ensure {
 /// invariants (e.g. energy delta == card cost).
 #[derive(Debug)]
 pub struct PreStep {
-    pub energy: i8,
+    pub energy: i32,
     pub is_over: bool,
     /// If the action being applied is `PlayCard`, the
     /// `(id, cost, x_cost, weighted_drain)` tuple of the referenced card
@@ -95,7 +95,8 @@ pub struct PreStep {
 
 #[must_use]
 pub fn snapshot_pre(state: &CombatState, action: &Action) -> PreStep {
-    let played = if let Action::PlayCard { hand_index, .. } = action {
+    let played = if let Some((hand_index, _)) = action.card_play() {
+        let hand_index = &hand_index;
         state
             .player
             .hand
@@ -383,8 +384,8 @@ pub fn check_combat_invariants(state: &CombatState, ctx: &str) -> Result<(), Str
     //     PlayCard targets.
     let legal = legal_actions(state);
     for a in &legal {
-        if let Action::PlayCard { hand_index, .. } = a {
-            if let Some(uid) = state.player.hand.get(*hand_index as usize) {
+        if let Some((hand_index, _)) = a.card_play() {
+            if let Some(uid) = state.player.hand.get(usize::from(hand_index)) {
                 if let Some(card) = state.cards.iter().find(|c| c.uid == *uid) {
                     ensure!(
                         !card_unplayable(card.card_id),
@@ -435,7 +436,7 @@ pub fn check_post_step(pre: &PreStep, state: &CombatState, ctx: &str) -> Result<
         {
             // The Weighted drain clamps at 0 rather than going negative
             // (`PlayerCmd.LoseEnergy`), so the floor is part of the contract.
-            let expected = (pre.energy - cost - weighted).max(0);
+            let expected = (pre.energy - i32::from(cost) - i32::from(weighted)).max(0);
             let actual = state.player.energy;
             // Cards whose own OnPlay gains energy (`PlayerCmd.GainEnergy`)
             // legitimately end above `expected`. The gain amount varies

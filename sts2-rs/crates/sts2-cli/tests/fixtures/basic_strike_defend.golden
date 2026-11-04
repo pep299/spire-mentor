@@ -86,7 +86,8 @@ sts2-cli v0.0.1 — seed=0 encounter=nibbit (Nibbit) player=Ironclad agent=Human
     [1] play 1 0  (StrikeIronclad → enemy 0)
     [2] end           (end player turn)
 << play 2 0
-  -> Advanced
+  -> IllegalPlay
+  illegal play; play not applied
 ── combat state ─────────────────────────
   phase   : PlayerPlayPhase
   round   : 1

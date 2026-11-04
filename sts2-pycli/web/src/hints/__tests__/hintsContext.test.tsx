@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { HintsProvider, useHints } from "../HintsContext";
+import { HintsProvider } from "../HintsContext";
+import { useHints } from "../useHints";
 
 function Probe() {
   const { on, style, toggle } = useHints();

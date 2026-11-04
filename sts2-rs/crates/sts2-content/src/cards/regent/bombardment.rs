@@ -15,7 +15,6 @@ use super::prelude::*;
 /// identical from-exhaust auto-play) rather than in this `play_*` body. This
 /// handler covers only the on-play damage, shared by the normal-play and
 /// auto-play paths. Bead `sts2-rs-bombardment-handraw`.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L619
 pub(crate) fn play_bombardment(
     state: &mut CombatState,
     target: Option<CreatureUid>,

@@ -19,15 +19,17 @@ pub(crate) fn on_before_combat_start_petrified_toad(state: &mut CombatState) -> 
     }
     // First-free-slot insert (C# AddPotionInternal) — a belt with a hole
     // from a pre-combat drink gets the Rock in the HOLE, not appended.
-    let _ = state
-        .player
-        .add_potion_first_free_slot(crate::potions::PotionKind::PotionShapedRock);
+    // `TryToProcure` asks the Sozu veto first.
+    let _ = state.try_procure_potion(crate::potions::PotionKind::PotionShapedRock);
     EffectResult::Resolved
 }
 
 pub(crate) fn install() {
-    register_before_combat_start(
+    // C# overrides only `BeforeCombatStartLate` (PetrifiedToad.cs:16, both
+    // builds): the Late walk runs after every listener's `BeforeCombatStart`
+    // (Hook.cs:455-467), so the Rock lands after Delicate Frond's fill.
+    register_before_combat_start_late(
         RelicId::PetrifiedToad,
-        on_before_combat_start_petrified_toad as BeforeCombatStartFn,
+        on_before_combat_start_petrified_toad as BeforeCombatStartLateFn,
     );
 }

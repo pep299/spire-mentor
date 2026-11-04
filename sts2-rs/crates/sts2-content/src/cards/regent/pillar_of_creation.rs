@@ -2,7 +2,6 @@
 use super::prelude::*;
 
 /// PillarOfCreation — apply 3 PillarOfCreation to self.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L469
 pub(crate) fn play_pillar_of_creation(
     state: &mut CombatState,
     _t: Option<CreatureUid>,

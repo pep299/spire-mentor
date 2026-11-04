@@ -149,7 +149,7 @@ const ORDER_READER_CARDS: &[CardId] = &[
     CardId::ThrummingHatchet,
 ];
 
-fn enemies(s: &CombatState) -> impl Iterator<Item = &sts2_core::Creature> {
+pub(crate) fn enemies(s: &CombatState) -> impl Iterator<Item = &sts2_core::Creature> {
     s.enemy_uids
         .iter()
         .filter_map(|u| s.creatures.iter().find(|c| c.id == u.0))
@@ -176,6 +176,17 @@ pub fn enemy_hp_not_monotone(s: &CombatState) -> bool {
             .any(|o| matches!(o, Orb::Dark { .. }))
 }
 
+/// `true` when more player block is not provably better in `s`: Orichalcum
+/// (and its fake) give block at the end of a turn that ends with none
+/// (`Relics/{Orichalcum,FakeOrichalcum}.cs`), so a line with a little more
+/// block can end the turn with less. Every other reader of the player's
+/// block in the decompiled v0.107.1 content either scales with it (Body
+/// Slam, Barricade, Juggernaut) or modifies a gain the same in either order
+/// (Dexterity, Frail).
+pub fn block_not_monotone(s: &CombatState) -> bool {
+    s.relics.owns(RelicKind::Orichalcum) || s.relics.owns(RelicKind::FakeOrichalcum)
+}
+
 /// `true` when discard order or the last card played can change the game.
 pub fn order_is_observable(s: &CombatState) -> bool {
     s.relics.owns(RelicKind::HistoryCourse)
@@ -192,7 +203,7 @@ pub fn order_is_observable(s: &CombatState) -> bool {
         })
 }
 
-fn player_hp_block(s: &CombatState) -> (i32, i32) {
+pub(crate) fn player_hp_block(s: &CombatState) -> (i32, i32) {
     s.player
         .creature_uid
         .and_then(|u| s.creatures.iter().find(|c| c.id == u.0))
@@ -205,15 +216,21 @@ fn enemy_hps(s: &CombatState) -> SmallVec<[i32; 6]> {
     enemies(s).map(|c| c.current_hp.max(0)).collect()
 }
 
-/// Zero enemy HP (the compared axis), drop the workbench's play log and,
-/// when `relax`, the two order artefacts no reader observes, so the hash
-/// compares everything else.
-fn neutralize(s: &mut CombatState, relax: bool) {
+/// Zero enemy HP (the compared axis) and, when `block`, the player's block
+/// (the second one), drop the workbench's play log and, when `relax`, the
+/// two order artefacts no reader observes, so the hash compares everything
+/// else.
+fn neutralize(s: &mut CombatState, relax: bool, block: bool) {
     let player = s.player.creature_uid.map(|u| u.0);
     for c in &mut s.creatures {
         if Some(c.id) != player {
             c.current_hp = 0;
+        } else if block {
+            c.block = 0;
         }
+    }
+    if block {
+        s.player.block = 0;
     }
     // A UI/diagnostics log the workbench switches on
     // (`record_card_play_log`); no game rule reads it.
@@ -250,6 +267,26 @@ fn play_uid(s: &CombatState, uid: sts2_core::CardUid, target: Option<u8>) -> Opt
 /// candidate; real turns rarely chain more plays than this.
 pub const MAX_LINE: usize = 6;
 
+/// The card plays proven at least as good played BEFORE `first` as after
+/// it, at `root`: [`pruned_followups`] over the one-play line
+/// `[(root, first)]`, as edges at `root · first`. Empty unless `first` is a
+/// card play that keeps the turn going without drawing randomness. The root
+/// order rules of `pick_root` read it (GH #1022): `TieRules::ORDER` with
+/// `block = false`, and `TieRules::ORDER_BLOCK` with `block = true`, which
+/// also counts more player block as better — Rage before the attacks, Feel
+/// No Pain before an Exhaust card — unless [`block_not_monotone`].
+#[must_use]
+pub fn played_before(root: &CombatState, first: &Action, block: bool) -> Vec<EdgeAction> {
+    if !matches!(first, Action::PlayCard { .. }) {
+        return Vec::new();
+    }
+    let mut child = root.clone();
+    if !step(&mut child, first.clone()) {
+        return Vec::new();
+    }
+    followups(&[(root, first.clone())], &child, block)
+}
+
 /// Follow-up plays to drop at `child`, reached by the same-turn card plays
 /// `line = [(P₁, b₁), …, (Pₖ, bₖ)]` (`Pⱼ · bⱼ = Pⱼ₊₁`, `Pₖ · bₖ = child`).
 ///
@@ -262,6 +299,15 @@ pub const MAX_LINE: usize = 6;
 /// Every `bⱼ` must have drawn no randomness (the caller only extends the
 /// line across deterministic decision-to-decision hops).
 pub fn pruned_followups(line: &[(&CombatState, Action)], child: &CombatState) -> Vec<EdgeAction> {
+    followups(line, child, false)
+}
+
+/// [`pruned_followups`], with `block` also counting more player block as
+/// better: the earlier line must then keep the same player HP and at least
+/// the same block, and beat the later one on some enemy's HP or on block.
+/// `block` falls back to the plain rule where [`block_not_monotone`].
+fn followups(line: &[(&CombatState, Action)], child: &CombatState, block: bool) -> Vec<EdgeAction> {
+    let block = block && !block_not_monotone(child);
     if line.is_empty()
         || child.is_over
         || child.phase != CombatPhase::PlayerPlayPhase
@@ -318,20 +364,28 @@ pub fn pruned_followups(line: &[(&CombatState, Action)], child: &CombatState) ->
             let replayed = plays[j..]
                 .iter()
                 .all(|&(_, uid, t)| play_uid(&early, uid, t).is_some_and(|b| step(&mut early, b)));
-            if !replayed || player_hp_block(&early) != late_hp {
+            if !replayed {
+                continue;
+            }
+            let (early_hp, early_block) = player_hp_block(&early);
+            let more_block = block && early_block > late_hp.1;
+            if early_hp != late_hp.0
+                || early_block < late_hp.1
+                || (!block && early_block != late_hp.1)
+            {
                 continue;
             }
             let he = enemy_hps(&early);
             if he.len() != late_enemy.len()
                 || he.iter().zip(&late_enemy).any(|(x, y)| x > y)
-                || he == late_enemy
+                || (he == late_enemy && !more_block)
             {
                 continue;
             }
-            neutralize(&mut early, relax);
+            neutralize(&mut early, relax, block);
             let late_key = *late_key.get_or_insert_with(|| {
                 let mut n = late.clone();
-                neutralize(&mut n, relax);
+                neutralize(&mut n, relax, block);
                 sts2_core::state_hash(&n)
             });
             if sts2_core::state_hash(&early) == late_key {

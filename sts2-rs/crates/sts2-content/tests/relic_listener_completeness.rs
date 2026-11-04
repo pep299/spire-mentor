@@ -35,7 +35,15 @@ use sts2_core::relics::RelicId;
 /// registry channel. Behaviour exists; there is intentionally no
 /// listener registration. (Plan §"Gaps surfaced": 10 relics.)
 const INLINE_HANDLED: &[RelicId] = &[
+    // BloodVial / FakeBloodVial: the `AfterPlayerTurnStartLate` pass is called
+    // straight from the turn-start tail
+    // (`relic_effects::blood_vial::dispatch_after_player_turn_start_late`).
+    RelicId::BloodVial,
+    RelicId::FakeBloodVial,
     RelicId::Bread,
+    // BowlerHat's `ModifyGoldGained` x1.25 is folded into
+    // `RunState::gain_gold` and `card_effects::gain_gold_in_combat`.
+    RelicId::BowlerHat,
     RelicId::IceCream,
     RelicId::LizardTail,
     RelicId::PaelsWing,
@@ -58,6 +66,11 @@ const INLINE_HANDLED: &[RelicId] = &[
     // `run_bridge::exit_combat` (combat-end → run deck mutation), not via
     // a registry channel.
     RelicId::FishingRod,
+    // LordsParasol's merchant-room free buys + forced removal are
+    // `RunManager::lords_parasol_purchase_everything`: they need the run
+    // manager's Courier restock and reward drains, and must suspend on a
+    // bought relic's pick, which a RunState-level listener cannot do.
+    RelicId::LordsParasol,
 ];
 
 /// Relics that are genuinely behaviourless in the authoritative C#
@@ -140,11 +153,13 @@ fn has_typed_listener(id: RelicId) -> bool {
         || sts2_core::relic_effects::lookup_after_turn_end(id).is_some()
         || sts2_core::relic_effects::lookup_before_card_played(id).is_some()
         || sts2_core::relic_effects::lookup_before_combat_start(id).is_some()
+        || sts2_core::relic_effects::lookup_before_combat_start_late(id).is_some()
         || sts2_core::relic_effects::lookup_before_hand_draw(id).is_some()
         || sts2_core::relic_effects::lookup_before_play_phase_start(id).is_some()
         || sts2_core::relic_effects::lookup_before_power_amount_changed(id).is_some()
         || sts2_core::relic_effects::lookup_before_side_turn_start(id).is_some()
         || sts2_core::relic_effects::lookup_before_turn_end(id).is_some()
+        || sts2_core::relic_effects::lookup_before_turn_end_early(id).is_some()
         || sts2_core::relic_effects::lookup_count_pets(id).is_some()
         || sts2_core::relic_effects::lookup_modify_block_multiplicative(id).is_some()
         || sts2_core::relic_effects::lookup_modify_card_reward_options_late(id).is_some()

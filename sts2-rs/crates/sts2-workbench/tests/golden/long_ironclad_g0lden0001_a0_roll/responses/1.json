@@ -16,7 +16,7 @@
    "bg_col": null,
    "bg_row": null,
    "bg_seed": 1772253313,
-   "floor": 0,
+   "floor": 1,
    "step_no": 0,
    "turn": null
   },
@@ -57,7 +57,7 @@
     }
    ],
    "decision": "card_select",
-   "floor": 0,
+   "floor": 1,
    "max_select": 1,
    "min_select": 0,
    "options": [

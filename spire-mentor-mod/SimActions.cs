@@ -16,11 +16,18 @@ internal static class SimActions
 
     public static void ToggleLog() => SimActionLog.TogglePanel();
 
+    /// <summary>Hide every mod panel down to the toolbar pill, or bring them
+    /// all back (Ctrl+H / the pill / Panels menu).</summary>
+    public static void ToggleHideAll() => SimUiHide.Toggle();
+
     public static void NudgeSpeed(double offset) => SimSpeed.Nudge(offset);
 
     /// <summary>Copy this position to the clipboard for the workbench's
     /// live-state import (SimStateCopy).</summary>
     public static void CopyState() => SimStateCopy.Copy();
+
+    /// <summary>Open (or close) the Report a bug dialog (SimBugReport).</summary>
+    public static void ReportBug() => SimBugReport.Toggle();
 
     /// <summary>Undo to the start of the current combat turn (replays the
     /// game's own combat tape -- SimCombatUndo).</summary>

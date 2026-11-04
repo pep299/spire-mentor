@@ -18,7 +18,7 @@ pub(crate) fn play_momentum_strike(
         sts2_core::card_effects::resolving_card_uid(state).map(|u| u.0.get() as usize - 1)
     {
         if let Some(card) = state.cards.get_mut(idx) {
-            card.set_combat_cost(0);
+            card.set_cost_this_combat(0);
         }
     }
     EffectResult::Resolved
