@@ -483,6 +483,9 @@ class InvRun:
     checkpoints: list[int] = field(default_factory=list)
     # ``random_loadout``: what the run was grafted with.
     loadout: Loadout | None = None
+    # A one-sided C# reject's ``stack_trace`` (GH #1147): printed by the sweep
+    # too, so a sweep-only harness exception names its throwing frame.
+    cs_stack: str | None = None
 
 
 @dataclass
@@ -1151,8 +1154,10 @@ def run_one_invincible(
                 if cs_err or rs_err:
                     rs_msg = (nxt_rs.get("error") or nxt_rs.get("message")) if rs_err else None
                     cs_msg = nxt_cs.get("message") if cs_err else None
-                    if cs_err and verbose and nxt_cs.get("stack_trace"):
-                        res.trace.append(f"C# stack_trace:\n{nxt_cs['stack_trace']}")
+                    if cs_err and nxt_cs.get("stack_trace"):
+                        out.cs_stack = nxt_cs["stack_trace"]
+                        if verbose:
+                            res.trace.append(f"C# stack_trace:\n{out.cs_stack}")
                     res.divergence = Divergence(
                         step,
                         cs_snap.phase,
@@ -1211,9 +1216,21 @@ class SweepReport:
     checkpointed: int = 0  # runs that ended at their last checkpoint
 
 
+# Frames of a one-sided C# reject's stack trace a sweep prints per run.
+SWEEP_STACK_FRAMES = 8
+
+
+def _stack_head(stack: str | None) -> list[str]:
+    """The first ``SWEEP_STACK_FRAMES`` frames of a C# stack trace, compacted."""
+    if not stack:
+        return []
+    frames = [ln.strip() for ln in stack.splitlines() if ln.strip()]
+    return frames[:SWEEP_STACK_FRAMES]
+
+
 def _worker(
     job: dict[str, Any],
-) -> tuple[str, str, int, str, str | None, int, int, FullSplit | None]:
+) -> tuple[str, str, int, str, str | None, int, int, FullSplit | None, list[str]]:
     """Run one sweep job: ``label`` plus ``run_one_invincible`` keyword args."""
     kwargs = dict(job)
     label = kwargs.pop("label")
@@ -1234,6 +1251,7 @@ def _worker(
         out.hp_artifacts,
         out.max_hp_artifact,
         out.full_split,
+        _stack_head(out.cs_stack),
     )
 
 
@@ -1299,7 +1317,7 @@ def sweep(
     with ProcessPoolExecutor(max_workers=workers) as ex:
         futs = {ex.submit(_worker, j): j["label"] for j in jobs}
         for fut in as_completed(futs):
-            label, sig, max_act, term, div, hp_arts, max_hp_art, split = fut.result()
+            label, sig, max_act, term, div, hp_arts, max_hp_art, split, stack = fut.result()
             rep.runs += 1
             rep.act_hist[max_act] += 1
             rep.term_hist[term] += 1
@@ -1330,6 +1348,11 @@ def sweep(
                     if split.suspects:
                         full += f" src={','.join(split.suspects)}"
             print(f"  {label:24s} act{max_act} {term:16s} {sig}{art}{full}", flush=True)
+            if div and stack:
+                # One-sided C# reject: name the throwing frame (GH #1147).
+                print(f"    {label} {div}", flush=True)
+                for frame in stack:
+                    print(f"      cs_stack| {frame}", flush=True)
     return rep
 
 

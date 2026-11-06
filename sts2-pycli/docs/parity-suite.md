@@ -360,6 +360,17 @@ Act-3 carried-state parity stays **0%-reached**: every run hits one of the above
 Act-2 divergences first. Reproduce a single class with
 `python python/act23_state_parity.py --character <C> --seed <S> --verbose`.
 
+A divergence a sweep shows but the same seed alone does not is a harness
+race until proven otherwise (GH #1147). A sweep prints the C# stack of any
+one-sided C# reject (`cs_stack|` lines), and `STS2_THREAD_PROBE=<dir>` makes
+every oracle log game-state writes made off its game thread to
+`<dir>/probe-<pid>.log` (`ThreadProbe` in `src/Sts2Headless/RunSimulator.cs`). Writes during
+`end_turn`, `play_card`, `use_potion` or `cmd=-(idle)` are a race; writes
+during the handler that started a pool task (`choose_option`,
+`select_map_node`, shop buys) are expected. Harness code that starts game
+code on the pool goes through `RunOnPool`, which installs the game's sync
+context there.
+
 See agent memory `project_parity_gap_closure_8_tools` and
 `project_ic_random_seed_parity_complete` for the full history.
 
