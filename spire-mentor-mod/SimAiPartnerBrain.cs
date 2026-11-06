@@ -79,7 +79,9 @@ internal sealed class SimAiPartnerBrain
             return;
         }
         Player? me = Me;
-        if (me == null)
+        // A loaded run is in progress a tick before its location buffer is
+        // set up (continue-1: every step reads Location).
+        if (me == null || RunManager.Instance.RunLocationTargetedBuffer == null)
         {
             return;
         }
@@ -90,6 +92,15 @@ internal sealed class SimAiPartnerBrain
         if (CombatManager.Instance.IsInProgress)
         {
             Step("combat", () => TickCombat(me));
+            return;
+        }
+        // One screen at a time, as a player has: no room decision while one
+        // of our prompts or reward sets is still open. Two of our prompts open
+        // at once (a card reward's pick, then a smith's upgrade) once had the
+        // upgrade's deck card answer the card reward: the card reward threw
+        // on every peer and the run diverged (mixed-1, plan phase 4).
+        if (Choices.HasPendingChoice || _openRewardSets.Count > 0)
+        {
             return;
         }
         Step("event", () => TickEvent(me));
@@ -336,7 +347,7 @@ internal sealed class SimAiPartnerBrain
     }
 
     private static Player? HostPlayer =>
-        RunManager.Instance.DebugOnlyGetState()?.Players.FirstOrDefault(pl => !SimAiPartner.IsPartner(pl.NetId));
+        SimAiPartnerSession.Active?.HostNetId is ulong id ? RunManager.Instance.DebugOnlyGetState()?.GetPlayer(id) : null;
 
     private static RunLocation Location => RunManager.Instance.RunLocationTargetedBuffer.CurrentLocation;
 
@@ -385,7 +396,7 @@ internal sealed class SimAiPartnerBrain
             // Each player has a mutable copy; the canonical model throws on
             // CurrentOptions (AssertMutable).
             IReadOnlyList<EventOption> shared = sync.GetEventForPlayer(me).CurrentOptions;
-            Player? host = RunManager.Instance.DebugOnlyGetState()?.Players.FirstOrDefault(pl => !SimAiPartner.IsPartner(pl.NetId));
+            Player? host = HostPlayer;
             uint? hostVote = host != null ? sync.GetPlayerVote(host) : null;
             int pick = hostVote.HasValue && hostVote.Value < shared.Count ? (int)hostVote.Value : FirstUnlocked(shared);
             if (pick < 0 || !Once($"vote:{location}:{canonical.Id.Entry}:{page}"))
@@ -1062,33 +1073,85 @@ internal static class SimAiPartnerPatches
             Patch(patcher, m, prefix: nameof(PromptPrefix), quiet: true);
         }
         Patch(patcher, AccessTools.Method(typeof(CardReward), "OnSelect"), prefix: nameof(CardRewardPrefix));
+        InstallHookResumes(patcher);
     }
 
-    private static readonly PropertyInfo? ResumeForRemotePlayers =
-        // By name: the type is test support, looked up rather than referenced.
-        typeof(CardSelectCmd).Assembly.GetTypes().FirstOrDefault(t => t.Name == "TestFlags" && t.IsAbstract && t.IsSealed)
-            ?.GetProperty("ShouldSendResumeForRemotePlayers", BindingFlags.Public | BindingFlags.Static);
+    // ---- hook choices: the host resumes for its partners ---------------------
+    //
+    // A choice inside a hook or a shared-queue action (Seeker Strike's pick,
+    // a relic's "choose a card") pauses a game action that only its OWNER
+    // resumes: the owner's peer sends RequestEnqueueHookActionMessage /
+    // RequestResumeActionAfterPlayerChoiceMessage, every other peer waits
+    // (HookPlayerChoiceContext, GameActionPlayerChoiceContext: `OwnerId ==
+    // local player`). A partner runs no simulation, so nothing on its side
+    // would ever see the pause. The host does it for the partner instead,
+    // through the same calls the owner's peer makes (the host-side
+    // RequestEnqueueHookAction / RequestResumeActionAfterPlayerChoice
+    // enqueue / resume and broadcast it). The game's tests do this for every
+    // remote player with TestFlags.ShouldSendResumeForRemotePlayers; that
+    // would also resume for a human client's choices (plan, phase 4), so
+    // these patches do it for a partner's actions only. The same code in both
+    // builds (v0.107.1 has no TestFlags).
 
-    /// <summary>
-    /// For the length of a session: while every remote player is an AI
-    /// partner, the host itself sends the hook-action enqueue and the resume
-    /// a choosing client would (HookPlayerChoiceContext /
-    /// GameActionPlayerChoiceContext), exactly what this test flag is for.
-    /// v0.111.0 only; a human client in the lobby needs a per-owner patch
-    /// instead (plan, phase 4).
-    /// </summary>
-    public static void SetHostResumesForPartners(bool on)
+    private static readonly FieldInfo? HookContextLocalPlayer =
+        AccessTools.Field(typeof(HookPlayerChoiceContext), "_localPlayerId");
+
+    private static void InstallHookResumes(Harmony patcher)
     {
-        if (ResumeForRemotePlayers == null)
+        if (HookContextLocalPlayer == null)
         {
-            if (on)
-            {
-                Logger.Log("[SimAiPartner] TestFlags.ShouldSendResumeForRemotePlayers absent (v0.107.1): partner hook choices will stall.");
-            }
-            return;
+            Logger.Log("  patch skipped: SimAiPartner hook choices (HookPlayerChoiceContext._localPlayerId not found)");
         }
-        ResumeForRemotePlayers.SetValue(null, on);
-        Logger.Log($"[SimAiPartner] TestFlags.ShouldSendResumeForRemotePlayers = {on}.");
+        else
+        {
+            Patch(patcher, AccessTools.Method(typeof(HookPlayerChoiceContext), nameof(HookPlayerChoiceContext.SignalPlayerChoiceBegun)),
+                prefix: nameof(HookChoiceBegunPrefix));
+        }
+        Patch(patcher, AccessTools.Method(typeof(GameActionPlayerChoiceContext), nameof(GameActionPlayerChoiceContext.SignalPlayerChoiceEnded)),
+            prefix: nameof(ActionChoiceEndedPrefix));
+    }
+
+    /// <summary>The context's game action is the chooser's, and the context
+    /// enqueues / resumes it when its "local player" is the owner: make the
+    /// partner the local player of its own choice's context. Runs before
+    /// the async body, which reads the field after its awaits. The action's
+    /// owner is the chooser (v0.111.0's argument) or the context's Owner
+    /// (v0.107.1 takes no chooser).</summary>
+    private static void HookChoiceBegunPrefix(HookPlayerChoiceContext __instance, object[] __args)
+    {
+        try
+        {
+            Player? chooser = __args.OfType<Player>().FirstOrDefault() ?? __instance.Owner;
+            if (chooser != null && PartnerFor(chooser) != null)
+            {
+                HookContextLocalPlayer!.SetValue(__instance, chooser.NetId);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Log($"[SimAiPartner] hook choice: {ex.Message}");
+        }
+    }
+
+    /// <summary>A shared-queue action's choice ends: its owner's peer
+    /// requests the resume (`Action.OwnerId == LocalContext.NetId`), so the
+    /// host does for a partner's. The original then only waits.</summary>
+    private static void ActionChoiceEndedPrefix(GameActionPlayerChoiceContext __instance)
+    {
+        try
+        {
+            GameAction action = __instance.Action;
+            if (!SimAiPartner.All.Any(p => p.Joined && p.NetId == action.OwnerId))
+            {
+                return;
+            }
+            Logger.Log($"[SimAiPartner] resuming {action} after its owner's choice (partner {action.OwnerId}).");
+            RunManager.Instance.ActionQueueSynchronizer.RequestResumeActionAfterPlayerChoice(action);
+        }
+        catch (Exception ex)
+        {
+            Logger.Log($"[SimAiPartner] action choice resume: {ex.Message}");
+        }
     }
 
     private static void Patch(Harmony patcher, MethodBase? target, string? prefix = null, string? postfix = null, bool quiet = false)

@@ -54,7 +54,7 @@ internal static class SimAiPartnerMenu
     /// <summary>Opt-in while the feature is experimental:
     /// <c>ai_partners_menu</c> in SpireMentor.conf, or the test lane's
     /// <c>--spire-mentor-ai-partners N</c>.</summary>
-    private static bool Enabled => SimConfig.Instance.AiPartnersMenu || SimMp.AiPartnersOverride > 0;
+    internal static bool Enabled => SimConfig.Instance.AiPartnersMenu || SimMp.AiPartnersOverride > 0 || SimMp.AiPartnerJoinOverride > 0;
 
     private static void AddButton(NMultiplayerHostSubmenu submenu)
     {
@@ -153,9 +153,12 @@ internal static class SimAiPartnerMenu
 }
 
 /// <summary>
-/// The session runs on the null platform (no Steam lobby), whose names are
-/// "Test Host" / "Test Client N". Show the player's own Steam name for the
-/// host and "AI partner N" for the partners instead.
+/// "AI partner N (Character)" for the partners, on any platform (Steam
+/// knows no name for a partner's id). A session of its own runs on the null
+/// platform, whose names are "Test Host" / "Test Client N": the host shows
+/// the player's own Steam name there. Only the host's game runs this; a
+/// human client without the mod names a partner however its platform does
+/// (Steam: a blank or "[unknown]").
 /// </summary>
 internal static class SimAiPartnerNames
 {
@@ -173,7 +176,7 @@ internal static class SimAiPartnerNames
 
     private static void GetPlayerNameRawPostfix(PlatformType platformType, ulong playerId, ref string __result)
     {
-        if (platformType != PlatformType.None || SimAiPartnerSession.Active == null)
+        if (SimAiPartnerSession.Active is not { } session)
         {
             return;
         }
@@ -187,7 +190,8 @@ internal static class SimAiPartnerNames
                     return;
                 }
             }
-            if (playerId == SimLoopbackHost.HostId && LocalSteamName() is { Length: > 0 } name)
+            if (platformType == PlatformType.None && !session.Mixed && playerId == session.HostNetId
+                && LocalSteamName() is { Length: > 0 } name)
             {
                 __result = name;
             }

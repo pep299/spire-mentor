@@ -29,7 +29,7 @@ Autoplay limited to the fights: the AI plays every combat, and every run-level d
 _Avoid_: auto-battler, combat autoplay
 
 **AI partner**:
-A co-op teammate played by the AI inside the host's own game process: a virtual peer that joins the lobby like a remote client, reads its player off the host's state, and sends only the messages a remote client sends (`SimAiPartner`, docs/plans/2026-11-05-ai-coop-partners.md). Not the **dummy** of the co-op test lane, which is a second game instance on autoplay.
+A co-op teammate played by the AI inside the host's own game process: a virtual peer that joins the lobby like a remote client, reads its player off the host's state, and sends only the messages a remote client sends (`SimAiPartner`, docs/plans/2026-11-05-ai-coop-partners.md). Either alone with the player (a session of its own, in-memory) or added to a Steam lobby next to human friends, who need no mod to play with it. Not the **dummy** of the co-op test lane, which is a second game instance on autoplay.
 _Avoid_: bot, AI player, fake client
 
 **Bug report**:

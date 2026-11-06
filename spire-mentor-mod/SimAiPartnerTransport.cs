@@ -25,6 +25,7 @@ using MegaCrit.Sts2.Core.Multiplayer;
 using MegaCrit.Sts2.Core.Multiplayer.Connection;
 using MegaCrit.Sts2.Core.Multiplayer.Transport;
 using MegaCrit.Sts2.Core.Platform;
+using MegaCrit.Sts2.Core.Platform.Steam;
 
 namespace SpireMentor;
 
@@ -33,10 +34,12 @@ internal readonly record struct SimLoopbackPacket(byte[] Bytes, NetTransferMode 
 /// <summary>The host end. Its handler is the host's NetHostGameService.</summary>
 internal sealed class SimLoopbackHost : NetHost
 {
-    /// <summary>The host's net id, as the game's own fastmp host uses
-    /// (the null platform names it; SimAiPartnerNames shows the player's
-    /// own name instead).</summary>
+    /// <summary>The host's net id in a session of its own, as the game's own
+    /// fastmp host uses (the null platform names it; SimAiPartnerNames shows
+    /// the player's own name instead).</summary>
     public const ulong HostId = 1uL;
+
+    private readonly ulong _hostId;
 
     private readonly Dictionary<ulong, SimLoopbackClient> _clients = new();
     private readonly Queue<ulong> _connected = new();
@@ -44,16 +47,21 @@ internal sealed class SimLoopbackHost : NetHost
     private readonly Queue<(ulong From, SimLoopbackPacket Packet)> _inbox = new();
     private bool _running;
 
-    public SimLoopbackHost(INetHostHandler handler)
+    /// <param name="hostId">The host's net id: <see cref="HostId"/> on its
+    /// own, the game's host's (a Steam id) inside a <see cref="SimMixedHost"/>.</param>
+    public SimLoopbackHost(INetHostHandler handler, ulong hostId = HostId)
         : base(handler)
     {
+        _hostId = hostId;
     }
 
     public override IEnumerable<ulong> ConnectedPeerIds => _clients.Keys.ToList();
 
     public override bool IsConnected => _running;
 
-    public override ulong NetId => HostId;
+    public override ulong NetId => _hostId;
+
+    public bool HasPeer(ulong peer) => _clients.ContainsKey(peer);
 
     public void Start() => _running = true;
 
@@ -112,20 +120,30 @@ internal sealed class SimLoopbackHost : NetHost
 
     public override void StopHost(NetError why, bool immediately = false)
     {
+        if (Stop(why))
+        {
+            _handler.OnDisconnected(ErrorInfo(why, ours: true));
+        }
+    }
+
+    /// <summary>Drops every partner and stops, without telling the host's
+    /// service: inside a <see cref="SimMixedHost"/> the game's own host
+    /// reports the stop. False if already stopped.</summary>
+    internal bool Stop(NetError why)
+    {
         if (!_running)
         {
-            return;
+            return false;
         }
         foreach (ulong id in _clients.Keys.ToList())
         {
-            DisconnectClient(id, why, immediately);
+            DisconnectClient(id, why);
         }
         _running = false;
         _connected.Clear();
         _inbox.Clear();
         _disconnected.Clear();
-        NetErrorInfo stopped = ErrorInfo(why, ours: true);
-        _handler.OnDisconnected(stopped);
+        return true;
     }
 
     /// <summary>A disconnect's error; <paramref name="ours"/> = this end
@@ -162,6 +180,81 @@ internal sealed class SimLoopbackHost : NetHost
         Buffer.BlockCopy(bytes, 0, copy, 0, length);
         return copy;
     }
+}
+
+/// <summary>
+/// The game's own host (Steam, or ENet for fastmp) with AI partners next to
+/// its human clients (plan, phase 4). The host's NetHostGameService holds
+/// one NetHost; this one routes by peer id: a partner's packets to the
+/// loopback, everyone else's to the game's host. Both ends already call the
+/// same handler (the service), so receiving needs no routing. The platform
+/// stays the game's: names and invites are Steam's as before.
+/// </summary>
+internal sealed class SimMixedHost : NetHost
+{
+    private readonly NetHost _game;
+
+    public SimMixedHost(INetHostHandler handler, NetHost game, SimLoopbackHost partners)
+        : base(handler)
+    {
+        _game = game;
+        Partners = partners;
+    }
+
+    public SimLoopbackHost Partners { get; }
+
+    public override IEnumerable<ulong> ConnectedPeerIds => _game.ConnectedPeerIds.Concat(Partners.ConnectedPeerIds).ToList();
+
+    public override bool IsConnected => _game.IsConnected;
+
+    public override ulong NetId => _game.NetId;
+
+    public override void Update()
+    {
+        _game.Update();
+        Partners.Update();
+    }
+
+    public override void SetHostIsClosed(bool closed) => _game.SetHostIsClosed(closed);
+
+    public override void SendMessageToClient(ulong peer, byte[] data, int count, NetTransferMode transfer, int lane = 0)
+    {
+        if (Partners.HasPeer(peer))
+        {
+            Partners.SendMessageToClient(peer, data, count, transfer, lane);
+        }
+        else
+        {
+            _game.SendMessageToClient(peer, data, count, transfer, lane);
+        }
+    }
+
+    public override void SendMessageToAll(byte[] data, int count, NetTransferMode transfer, int lane = 0)
+    {
+        _game.SendMessageToAll(data, count, transfer, lane);
+        Partners.SendMessageToAll(data, count, transfer, lane);
+    }
+
+    public override void DisconnectClient(ulong peer, NetError why, bool immediately = false)
+    {
+        if (Partners.HasPeer(peer))
+        {
+            Partners.DisconnectClient(peer, why, immediately);
+        }
+        else
+        {
+            _game.DisconnectClient(peer, why, immediately);
+        }
+    }
+
+    public override void StopHost(NetError why, bool immediately = false)
+    {
+        Partners.Stop(why);
+        // The game's host reports the stop to the service, once.
+        _game.StopHost(why, immediately);
+    }
+
+    public override string? GetRawLobbyIdentifier() => _game.GetRawLobbyIdentifier();
 }
 
 /// <summary>A partner's end. Its handler is the partner's NetClientGameService.</summary>
@@ -303,10 +396,62 @@ internal static class SimLoopbackHosting
         var service = (NetHostGameService)(version != null
             ? Activator.CreateInstance(typeof(NetHostGameService), version)!
             : Activator.CreateInstance(typeof(NetHostGameService))!);
-        var host = new SimLoopbackHost(service);
+        var host = new SimLoopbackHost(service, LocalHostId());
         NetHostField.SetValue(service, host);
         host.Start();
         return (service, host);
+    }
+
+    /// <summary>
+    /// Puts AI partners next to the game's own host of a lobby the player
+    /// opened (Steam, or ENet for fastmp): the service's NetHost becomes a
+    /// <see cref="SimMixedHost"/> over it. Idempotent. Null when the service
+    /// hosts on nothing, or on the loopback alone (a session of its own).
+    /// </summary>
+    public static SimLoopbackHost? AttachToGameHost(NetHostGameService service)
+    {
+        if (NetHostField == null)
+        {
+            throw new MissingFieldException(nameof(NetHostGameService), "_netHost");
+        }
+        switch (NetHostField.GetValue(service))
+        {
+            case SimMixedHost mixed:
+                return mixed.Partners;
+            case SimLoopbackHost:
+                return null;
+            case NetHost game when game.IsConnected:
+                var partners = new SimLoopbackHost(service, game.NetId);
+                NetHostField.SetValue(service, new SimMixedHost(service, game, partners));
+                partners.Start();
+                return partners;
+            default:
+                return null;
+        }
+    }
+
+    /// <summary>
+    /// The host's net id in a session of its own: the player's Steam id. The
+    /// run is saved under its players' ids, and "Load" checks the save
+    /// against the local Steam id (RunManager.CanonicalizeSave), so a run
+    /// saved under the null platform's id 1 could never be continued (the
+    /// game sets such a save aside as broken). Without Steam: 1.
+    /// </summary>
+    private static ulong LocalHostId()
+    {
+        try
+        {
+            if (!SteamInitializer.Initialized)
+            {
+                return SimLoopbackHost.HostId;
+            }
+            ulong steam = PlatformUtil.GetLocalPlayerId(PlatformType.Steam);
+            return steam != 0 ? steam : SimLoopbackHost.HostId;
+        }
+        catch (Exception)
+        {
+            return SimLoopbackHost.HostId;
+        }
     }
 
     /// <summary>The local PeerVersionInfo (a v0.111.0-only type), or null.</summary>

@@ -55,10 +55,16 @@ internal sealed class SimAiPartnerChoices
     private (string Key, SimAdvice Advice)? _reply;
     private readonly HashSet<string> _gaveUp = new();
 
-    /// <summary>The latest prompt opened for this partner.</summary>
+    /// <summary>The latest prompt opened for this partner, not yet bound to
+    /// a choice id.</summary>
     public SimAiPartnerPrompt? Prompt;
 
-    private readonly Queue<uint> _pendingChoices = new();
+    /// <summary>The host's remote-choice waits for this partner, each with
+    /// the prompt that opened it. A prompt opens (the From* / OnSelect
+    /// prefix) and then waits for its choice id synchronously, so the wait
+    /// takes the prompt opened just before it; a later prompt cannot
+    /// relabel an earlier wait.</summary>
+    private readonly Queue<(uint Id, SimAiPartnerPrompt? Prompt)> _pendingChoices = new();
 
     public SimAiPartnerChoices(SimAiPartner partner, SimAiPartnerBrain brain)
     {
@@ -66,7 +72,11 @@ internal sealed class SimAiPartnerChoices
         _brain = brain;
     }
 
-    public void OnRemoteChoiceAwaited(uint choiceId) => _pendingChoices.Enqueue(choiceId);
+    public void OnRemoteChoiceAwaited(uint choiceId)
+    {
+        _pendingChoices.Enqueue((choiceId, Prompt));
+        Prompt = null;
+    }
 
     public bool HasPendingChoice => _pendingChoices.Count > 0;
 
@@ -209,8 +219,7 @@ internal sealed class SimAiPartnerChoices
         {
             return;
         }
-        uint id = _pendingChoices.Peek();
-        SimAiPartnerPrompt? prompt = Prompt;
+        (uint id, SimAiPartnerPrompt? prompt) = _pendingChoices.Peek();
         string kind = prompt?.Kind ?? "?";
         PlayerChoiceResult? result = Answer(me, id, prompt, out string how);
         if (result == null)

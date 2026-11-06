@@ -46,10 +46,11 @@ namespace SpireMentor;
 
 internal sealed class SimAiPartner
 {
-    /// <summary>The null platform names these "Test Client 1..3"
-    /// (NullPlatformUtilStrategy); SimAiPartnerNames renames them. None
-    /// collides with the host's id 1.</summary>
-    internal static readonly ulong[] NetIds = { 1000uL, 2000uL, 3000uL };
+    /// <summary>SimAiPartnerNames names these on the host. None collides
+    /// with the host's id 1 on the null platform, the game's fastmp client
+    /// ids (`--clientId`, 1000 up in the test lanes) or a Steam id (2^56
+    /// and up), which a human client next to the partners has.</summary>
+    internal static readonly ulong[] NetIds = { 7001uL, 7002uL, 7003uL };
 
     private const double TickSeconds = 0.25;
 
@@ -93,13 +94,17 @@ internal sealed class SimAiPartner
     }
 
     private readonly string? _characterName;
+    private readonly CharacterModel? _saved;
     private object? _flow;
 
-    public SimAiPartner(int seat, string? characterName)
+    /// <param name="saved">The seat's character in a saved run being
+    /// continued (a load lobby), else null.</param>
+    public SimAiPartner(int seat, string? characterName, CharacterModel? saved = null)
     {
         Seat = seat;
         NetId = NetIds[seat];
         _characterName = characterName;
+        _saved = saved;
         Label = $"AI partner {seat + 1}";
         Brain = new SimAiPartnerBrain(this);
     }
@@ -114,6 +119,8 @@ internal sealed class SimAiPartner
             SimAiPartnerPatches.Install(patcher);
             SimAiPartnerMenu.Install(patcher);
             SimAiPartnerNames.Install(patcher);
+            SimAiPartnerLobby.Install(patcher);
+            SimAiPartnerContinue.Install(patcher);
             if (Engine.GetMainLoop() is not SceneTree tree || _loopsInstalled)
             {
                 return;
@@ -125,7 +132,11 @@ internal sealed class SimAiPartner
             // Each partner's service must be updated every frame, as the
             // game updates its own (JoinFlow / NGame update loops).
             tree.Connect(SceneTree.SignalName.ProcessFrame, Callable.From(UpdateAll));
-            if (SimMp.AiPartnersOverride > 0)
+            if (SimMp.AiPartnerContinue)
+            {
+                TaskHelper.RunSafely(SimAiPartnerContinue.ContinueFromCommandLineAsync(tree));
+            }
+            else if (SimMp.AiPartnersOverride > 0)
             {
                 TaskHelper.RunSafely(SimAiPartnerSession.StartFromCommandLineAsync(tree));
             }
@@ -207,7 +218,7 @@ internal sealed class SimAiPartner
             {
                 throw new InvalidOperationException("JoinFlow left no net service");
             }
-            if (SimAiPartnerSession.Active?.Host != host)
+            if (SimAiPartnerSession.Active?.Host != host || !SimAiPartnerSession.Active.Partners.Contains(this))
             {
                 // The host left the lobby while we were joining.
                 service.Disconnect(NetError.Quit);
@@ -264,6 +275,15 @@ internal sealed class SimAiPartner
 
     private void ChooseCharacterAndReady()
     {
+        if (_saved != null)
+        {
+            // A load lobby (LoadRunLobby): the seat and character are the
+            // save's; a player only readies.
+            Character = _saved;
+            Logger.Log($"[SimAiPartner] {Label} rejoins the saved run as {Character.Id.Entry} and readies.");
+            Send(new LobbyPlayerSetReadyMessage { ready = true });
+            return;
+        }
         Character = PickCharacter();
         Logger.Log($"[SimAiPartner] {Label} picks {Character.Id.Entry} and readies.");
         Send(new LobbyPlayerChangedCharacterMessage { character = Character });
@@ -297,11 +317,17 @@ internal sealed class SimAiPartner
     }
 }
 
-/// <summary>One hosted lobby + run with AI partners.</summary>
+/// <summary>
+/// One hosted lobby + run with AI partners: either a session of its own on
+/// the in-memory transport ("With AI partners", the player alone with the
+/// AI), or partners added to a lobby the player hosts the game's way (Steam,
+/// or fastmp's ENet), next to human clients (<see cref="Mixed"/>; plan,
+/// phase 4).
+/// </summary>
 internal sealed class SimAiPartnerSession
 {
     /// <summary>The game's own host lobby size (NMultiplayerHostSubmenu).</summary>
-    private const int MaxPlayers = 4;
+    public const int MaxPlayers = 4;
 
     private static readonly TimeSpan MainMenuWait = TimeSpan.FromSeconds(90);
     private const string MainMenuNodePath = "/root/Game/RootSceneContainer/MainMenu";
@@ -309,14 +335,28 @@ internal sealed class SimAiPartnerSession
     public static SimAiPartnerSession? Active { get; private set; }
 
     public NetHostGameService Service { get; }
-    public SimLoopbackHost Host { get; }
-    public List<SimAiPartner> Partners { get; }
 
-    private SimAiPartnerSession(NetHostGameService service, SimLoopbackHost host, List<SimAiPartner> partners)
+    /// <summary>The partners' end of the host (inside a SimMixedHost when
+    /// <see cref="Mixed"/>).</summary>
+    public SimLoopbackHost Host { get; }
+
+    public List<SimAiPartner> Partners { get; } = new();
+
+    /// <summary>True when the lobby is the game's own (Steam / ENet), so
+    /// human clients may be in it too.</summary>
+    public bool Mixed { get; }
+
+    /// <summary>The host player's net id: 1 in a session of its own, the
+    /// player's Steam id in a Steam lobby.</summary>
+    public ulong HostNetId => Host.NetId;
+
+    private Task _joins = Task.CompletedTask;
+
+    private SimAiPartnerSession(NetHostGameService service, SimLoopbackHost host, bool mixed)
     {
         Service = service;
         Host = host;
-        Partners = partners;
+        Mixed = mixed;
     }
 
     /// <summary>
@@ -326,63 +366,126 @@ internal sealed class SimAiPartnerSession
     /// </summary>
     public static bool Start(NSubmenuStack stack, int partnerCount, IReadOnlyList<string>? characters = null)
     {
-        if (Active != null)
-        {
-            Logger.Log("[SimAiPartner] A session is already active; ending it first.");
-            Active.End("restart");
-        }
+        Active?.End("restart");
         partnerCount = Math.Clamp(partnerCount, 1, SimAiPartner.NetIds.Length);
         (NetHostGameService service, SimLoopbackHost host) = SimLoopbackHosting.Start();
-        var partners = Enumerable.Range(0, partnerCount)
-            .Select(i => new SimAiPartner(i, characters != null && i < characters.Count ? characters[i] : null))
-            .ToList();
-        var session = new SimAiPartnerSession(service, host, partners);
-        Active = session;
-        service.Disconnected += _ => session.End("host disconnected");
-        SimAiPartnerPatches.SetHostResumesForPartners(true);
-        // Early: an advisor takes a while to load its nets, and the first
-        // fight is only a Neow away.
-        foreach (SimAiPartner p in partners)
-        {
-            p.StartAdvisor();
-        }
+        SimAiPartnerSession session = Begin(service, host, mixed: false);
 
         NCharacterSelectScreen screen = stack.GetSubmenuType<NCharacterSelectScreen>();
         screen.InitializeMultiplayerAsHost(service, MaxPlayers);
         stack.Push(screen);
         Logger.Log($"[SimAiPartner] Hosting a co-op lobby with {partnerCount} AI partner(s) (in-memory transport).");
-
-        if (Engine.GetMainLoop() is SceneTree tree)
+        for (int i = 0; i < partnerCount; i++)
         {
-            TaskHelper.RunSafely(session.JoinWhenLobbyUpAsync(tree, screen));
+            session.Add(characters != null && i < characters.Count ? characters[i] : null, screen);
         }
+        session.ShootLobbyWhenJoined();
         return true;
     }
 
-    private async Task JoinWhenLobbyUpAsync(SceneTree tree, NCharacterSelectScreen screen)
+    /// <summary>
+    /// The session of a lobby the player hosts the game's way, created on the
+    /// first "Add AI partner": the host's NetHost becomes a SimMixedHost
+    /// (Steam / ENet for the humans, the loopback for the partners). Null if
+    /// the service does not host on a game host.
+    /// </summary>
+    public static SimAiPartnerSession? ForLobby(NetHostGameService service)
     {
+        if (Active is { } active && ReferenceEquals(active.Service, service))
+        {
+            return active;
+        }
+        SimLoopbackHost? partners = SimLoopbackHosting.AttachToGameHost(service);
+        if (partners == null)
+        {
+            return null;
+        }
+        Active?.End("another lobby");
+        Logger.Log($"[SimAiPartner] AI partners join the game's own lobby (host {partners.NetId}; human players may join too).");
+        return Begin(service, partners, mixed: true);
+    }
+
+    private static SimAiPartnerSession Begin(NetHostGameService service, SimLoopbackHost host, bool mixed)
+    {
+        var session = new SimAiPartnerSession(service, host, mixed);
+        Active = session;
+        service.Disconnected += _ => session.End("host disconnected");
+        return session;
+    }
+
+    /// <summary>
+    /// Adds one partner in the first free seat; it starts its advisor (early:
+    /// the nets take a while to load, and the first fight is only a Neow
+    /// away) and joins once the lobby is on screen. Joins run one at a time.
+    /// </summary>
+    public SimAiPartner? Add(string? character, CanvasItem? lobbyScreen, int? savedSeat = null, CharacterModel? saved = null)
+    {
+        int seat = savedSeat ?? Enumerable.Range(0, SimAiPartner.NetIds.Length).FirstOrDefault(s => Partners.All(p => p.Seat != s), -1);
+        if (seat < 0 || seat >= SimAiPartner.NetIds.Length || Partners.Any(p => p.Seat == seat) || Active != this)
+        {
+            return null;
+        }
+        var partner = new SimAiPartner(seat, character, saved);
+        Partners.Add(partner);
+        partner.StartAdvisor();
+        if (Engine.GetMainLoop() is SceneTree tree)
+        {
+            _joins = JoinAfterAsync(_joins, partner, tree, lobbyScreen);
+            TaskHelper.RunSafely(_joins);
+        }
+        return partner;
+    }
+
+    private async Task JoinAfterAsync(Task previous, SimAiPartner partner, SceneTree tree, CanvasItem? lobbyScreen)
+    {
+        await previous;
         // The lobby registers its handlers in InitializeMultiplayerAsHost;
         // waiting for the screen keeps the joins visible to the player.
-        for (int i = 0; i < 100 && Active == this && !screen.IsVisibleInTree(); i++)
+        for (int i = 0; i < 100 && Active == this && lobbyScreen != null && GodotObject.IsInstanceValid(lobbyScreen)
+                        && !lobbyScreen.IsVisibleInTree(); i++)
         {
             await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
         }
-        foreach (SimAiPartner p in Partners)
+        if (Active == this && Partners.Contains(partner))
         {
-            if (Active != this)
-            {
-                return;
-            }
-            await p.JoinAsync(Host, tree);
+            await partner.JoinAsync(Host, tree);
         }
-        if (SimMp.AiPartnerShotPath is { Length: > 0 } shot && Active == this)
+    }
+
+    /// <summary>Drops the most recently added partner: it leaves the lobby
+    /// as a disconnecting client does, freeing its seat.</summary>
+    public void RemoveLast()
+    {
+        if (Partners.Count == 0)
         {
-            // The lane's check of the lobby (names, characters, ready).
-            await Task.Delay(400);
-            string path = System.IO.Path.ChangeExtension(shot, null) + "_lobby.png";
-            Error err = tree.Root.GetViewport().GetTexture().GetImage().SavePng(path);
-            Logger.Log($"[SimAiPartner] lobby screenshot -> {path} ({err}).");
+            return;
         }
+        SimAiPartner partner = Partners[^1];
+        Partners.RemoveAt(Partners.Count - 1);
+        Logger.Log($"[SimAiPartner] {partner.Label} leaves the lobby.");
+        partner.Leave();
+    }
+
+    private void ShootLobbyWhenJoined()
+    {
+        if (SimMp.AiPartnerShotPath is not { Length: > 0 } shot || Engine.GetMainLoop() is not SceneTree tree)
+        {
+            return;
+        }
+        TaskHelper.RunSafely(ShootAsync(_joins, tree, System.IO.Path.ChangeExtension(shot, null) + "_lobby.png"));
+    }
+
+    private async Task ShootAsync(Task joins, SceneTree tree, string path)
+    {
+        await joins;
+        if (Active != this)
+        {
+            return;
+        }
+        // The lane's check of the lobby (names, characters, ready).
+        await Task.Delay(400);
+        Error err = tree.Root.GetViewport().GetTexture().GetImage().SavePng(path);
+        Logger.Log($"[SimAiPartner] lobby screenshot -> {path} ({err}).");
     }
 
     public void End(string why)
@@ -392,7 +495,6 @@ internal sealed class SimAiPartnerSession
             return;
         }
         Active = null;
-        SimAiPartnerPatches.SetHostResumesForPartners(false);
         foreach (SimAiPartner p in Partners)
         {
             p.Leave();

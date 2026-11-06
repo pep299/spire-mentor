@@ -177,6 +177,19 @@ public static class SimMp
     public static int AiPartnersOverride =>
         int.TryParse(CmdlineValue("spire-mentor-ai-partners"), out int n) ? Math.Clamp(n, 0, 3) : 0;
 
+    /// <summary><c>--spire-mentor-ai-partner-join N</c>: add N AI partners
+    /// (1-3) to the lobby this instance hosts the game's way (fastmp's ENet
+    /// or Steam), as N presses of the lobby's "Add AI partner" do; human
+    /// clients join it as usual (plan, phase 4; the mixed lane).</summary>
+    public static int AiPartnerJoinOverride =>
+        int.TryParse(CmdlineValue("spire-mentor-ai-partner-join"), out int n) ? Math.Clamp(n, 0, 3) : 0;
+
+    /// <summary><c>--spire-mentor-ai-partner-continue</c>: press the
+    /// multiplayer menu's "Load" at the main menu; the saved run's AI
+    /// partners rejoin, and with autoplay the host embarks once all are back
+    /// (SimAiPartnerContinue; the save / continue lane).</summary>
+    public static bool AiPartnerContinue => HasCmdlineArg("spire-mentor-ai-partner-continue");
+
     /// <summary><c>--spire-mentor-ai-partner-character a,b</c>: each AI
     /// partner's character, in join order.</summary>
     public static string? AiPartnerCharacters => CmdlineValue("spire-mentor-ai-partner-character");
