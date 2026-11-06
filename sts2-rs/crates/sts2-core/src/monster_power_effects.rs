@@ -497,6 +497,19 @@ fn dampen_after_applied(
 fn dampen_after_removed(state: &mut CombatState, _old_owner: CreatureUid) -> EffectResult {
     // When Dampen is removed, re-upgrade any cards that were marked as
     // downgraded by Dampen during the AfterApplied phase.
+    //
+    // `CardCmd.Upgrade` does nothing once combat is ending (`CardCmd.cs`
+    // `Upgrade(IEnumerable<CardModel>, ...)`, both builds):
+    //
+    // [decompiled C# omitted — see the cited path]
+    //
+    // Killing the last enemy, the MagiKnight caster, removes Dampen while
+    // combat is ending, so its cards stay downgraded for the rest of the play:
+    // a Hand of Greed landing that kill pays the base 20 gold, not the
+    // upgraded 25 (loadout Necrobinder 1085).
+    if crate::combat_loop::combat_is_ending(state) {
+        return EffectResult::Resolved;
+    }
     let uids = all_player_card_uids(state);
     for uid in uids {
         if let Some(card) = state.cards.iter_mut().find(|c| c.uid == uid) {

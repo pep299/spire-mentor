@@ -1003,9 +1003,6 @@ fn apply_damage_with_final_impl(
             q.push(target);
         }
     }
-    if just_died && !defer_death {
-        kill_before_death(state, target);
-    }
     // Bead `sts2-rs-q6bix` (ConstrictPower.AfterDeath): when the creature
     // that APPLIED a Constrict dies, the Constrict drops off its target.
     // C# `MegaCrit.Sts2.Core.Models.Powers/ConstrictPower.cs:24-31`:
@@ -1028,9 +1025,6 @@ fn apply_damage_with_final_impl(
     } else {
         crate::Side::Player
     };
-    if just_died && !defer_death {
-        kill_after_death_powers(state, target, dead_side);
-    }
 
     // Bead `sts2-rs-c7ak`: record per-target hit into the in-flight
     // [`ActiveAttack`] frame (if any). `HandDrill` reads
@@ -1358,6 +1352,15 @@ fn finish_hit_tail(state: &mut CombatState, tail: &HitTail) {
     // (`enemy_death_effects::finish_kill`) follows.
     let mut death_power_fired: Option<crate::PowerKind> = None;
     if run_kill {
+        // The whole `Kill` follows this hit's AfterDamageGiven hooks
+        // (CreatureCmd.cs:388-409), its BeforeDeath and power teardown
+        // included — the same order the deferred multi-target path keeps
+        // (`with_deferred_enemy_deaths`). A dying Illusion's Debuffs are
+        // stripped only then, so a killing Osty hit on a SicEm-marked
+        // Parafright still summons (SicEmPower.AfterDamageGiven; loadout
+        // Necrobinder 1148: Osty 10 in C#, 7 in Rust).
+        kill_before_death(state, target);
+        kill_after_death_powers(state, target, dead_side);
         kill_relic_after_death(state, target, dead_side);
         death_power_fired = kill_dying_enemy_after_death(state, target, dead_side);
     }

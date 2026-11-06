@@ -1,10 +1,11 @@
 {
  "details": [
-  "Play Ultimate Strike",
-  "Nibbit HP 43→29 (−14)"
+  "You Block 16→0",
+  "Nibbit HP 29→26 (−3)",
+  "Lightning orb passive: 3 damage to a random enemy"
  ],
  "error": null,
- "label": "Play Ultimate Strike → Nibbit",
+ "label": "End turn",
  "step": {
   "action_label": "",
   "assets_base": "https://assets.test",
@@ -19,7 +20,7 @@
    "bg_seed": 1772253313,
    "floor": 5,
    "step_no": 0,
-   "turn": 1
+   "turn": 2
   },
   "pv": null,
   "scores": [],
@@ -126,9 +127,26 @@
      "target_type": "None",
      "type": "Attack",
      "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "blue",
+     "cost": 1,
+     "description": "Channel 1 Lightning.",
+     "description_rich": "[gold]Channel[/gold] 1 [gold]Lightning[/gold].",
+     "id": "ZAP",
+     "image": "https://assets.test/card_atlas/defect/zap.png",
+     "index": -1,
+     "name": "Zap",
+     "rarity": "Basic",
+     "stats": {},
+     "target_type": "None",
+     "type": "Skill",
+     "upgraded": false
     }
    ],
-   "discard_pile_count": 5,
+   "discard_pile_count": 6,
    "draw_pile": [
     {
      "base_cost": 1,
@@ -154,42 +172,6 @@
      "can_play": false,
      "color": "blue",
      "cost": 1,
-     "description": "Gain 5 Block.",
-     "description_rich": "Gain 5 [gold]Block[/gold].",
-     "id": "DEFEND_DEFECT",
-     "image": "https://assets.test/card_atlas/defect/defend_defect.png",
-     "index": -1,
-     "name": "Defend",
-     "rarity": "Basic",
-     "stats": {
-      "block": 5
-     },
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "blue",
-     "cost": 1,
-     "description": "Evoke your rightmost Orb twice.",
-     "description_rich": "[gold]Evoke[/gold] your rightmost Orb twice.",
-     "id": "DUALCAST",
-     "image": "https://assets.test/card_atlas/defect/dualcast.png",
-     "index": -1,
-     "name": "Dualcast",
-     "rarity": "Basic",
-     "stats": {},
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "blue",
-     "cost": 1,
      "description": "Deal 6 damage.",
      "description_rich": "Deal 6 damage.",
      "id": "STRIKE_DEFECT",
@@ -221,81 +203,26 @@
      },
      "target_type": "None",
      "type": "Attack",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "blue",
-     "cost": 1,
-     "description": "Deal 6 damage.",
-     "description_rich": "Deal 6 damage.",
-     "id": "STRIKE_DEFECT",
-     "image": "https://assets.test/card_atlas/defect/strike_defect.png",
-     "index": -1,
-     "name": "Strike",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 6
-     },
-     "target_type": "None",
-     "type": "Attack",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "blue",
-     "cost": 1,
-     "description": "Deal 6 damage.",
-     "description_rich": "Deal 6 damage.",
-     "id": "STRIKE_DEFECT",
-     "image": "https://assets.test/card_atlas/defect/strike_defect.png",
-     "index": -1,
-     "name": "Strike",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 6
-     },
-     "target_type": "None",
-     "type": "Attack",
-     "upgraded": false
-    },
-    {
-     "base_cost": 0,
-     "can_play": false,
-     "color": "blue",
-     "cost": 0,
-     "description": "Gain Energy.\nAdd a Void into your Discard Pile.",
-     "description_rich": "Gain Energy.\nAdd a [gold]Void[/gold] into your [gold]Discard Pile[/gold].",
-     "id": "TURBO",
-     "image": "https://assets.test/card_atlas/defect/turbo.png",
-     "index": -1,
-     "name": "TURBO",
-     "rarity": "Common",
-     "stats": {},
-     "target_type": "None",
-     "type": "Skill",
      "upgraded": false
     }
    ],
-   "draw_pile_count": 8,
+   "draw_pile_count": 3,
    "enemies": [
     {
      "block": 0,
-     "hp": 29,
+     "hp": 26,
      "image": "https://assets.test/monsters/nibbit.png",
      "index": 0,
      "intents": [
       {
-       "damage": 12,
-       "intent_image": "https://assets.test/intent_atlas/attack/intent_attack_3.png",
+       "damage": 6,
+       "intent_image": "https://assets.test/intent_atlas/attack/intent_attack_2.png",
        "type": "Attack"
       }
      ],
      "kind": "Nibbit",
      "max_hp": 43,
-     "move_state": "BUTT",
+     "move_state": "SLICE",
      "name": "Nibbit",
      "powers": [],
      "rig": "https://assets.test/monster_rigs/nibbit/nibbit",
@@ -305,7 +232,7 @@
      "uid": 2
     }
    ],
-   "energy": 0,
+   "energy": 3,
    "energy_image": "https://assets.test/sprite_fonts/defect_energy_icon.png",
    "exhaust_pile": [],
    "exhaust_pile_count": 0,
@@ -313,20 +240,99 @@
    "hand": [
     {
      "base_cost": 1,
-     "can_play": false,
+     "can_play": true,
      "color": "blue",
      "cost": 1,
-     "description": "Channel 1 Lightning.",
-     "description_rich": "[gold]Channel[/gold] 1 [gold]Lightning[/gold].",
-     "id": "ZAP",
-     "image": "https://assets.test/card_atlas/defect/zap.png",
+     "damage_preview": {
+      "0": 6
+     },
+     "description": "Deal 6 damage.",
+     "description_rich": "Deal 6 damage.",
+     "id": "STRIKE_DEFECT",
+     "image": "https://assets.test/card_atlas/defect/strike_defect.png",
      "index": 0,
-     "name": "Zap",
+     "name": "Strike",
+     "rarity": "Basic",
+     "stats": {
+      "damage": 6
+     },
+     "target_type": "AnyEnemy",
+     "type": "Attack",
+     "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": true,
+     "color": "blue",
+     "cost": 1,
+     "damage_preview": {
+      "0": 6
+     },
+     "description": "Deal 6 damage.",
+     "description_rich": "Deal 6 damage.",
+     "id": "STRIKE_DEFECT",
+     "image": "https://assets.test/card_atlas/defect/strike_defect.png",
+     "index": 1,
+     "name": "Strike",
+     "rarity": "Basic",
+     "stats": {
+      "damage": 6
+     },
+     "target_type": "AnyEnemy",
+     "type": "Attack",
+     "upgraded": false
+    },
+    {
+     "base_cost": 0,
+     "can_play": true,
+     "color": "blue",
+     "cost": 0,
+     "description": "Gain Energy.\nAdd a Void into your Discard Pile.",
+     "description_rich": "Gain Energy.\nAdd a [gold]Void[/gold] into your [gold]Discard Pile[/gold].",
+     "id": "TURBO",
+     "image": "https://assets.test/card_atlas/defect/turbo.png",
+     "index": 2,
+     "name": "TURBO",
+     "rarity": "Common",
+     "stats": {},
+     "target_type": "None",
+     "type": "Skill",
+     "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": true,
+     "color": "blue",
+     "cost": 1,
+     "description": "Evoke your rightmost Orb twice.",
+     "description_rich": "[gold]Evoke[/gold] your rightmost Orb twice.",
+     "id": "DUALCAST",
+     "image": "https://assets.test/card_atlas/defect/dualcast.png",
+     "index": 3,
+     "name": "Dualcast",
      "rarity": "Basic",
      "stats": {},
      "target_type": "None",
      "type": "Skill",
-     "unplayable_reason": "cost",
+     "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": true,
+     "color": "blue",
+     "cost": 1,
+     "description": "Gain 5 Block.",
+     "description_rich": "Gain 5 [gold]Block[/gold].",
+     "id": "DEFEND_DEFECT",
+     "image": "https://assets.test/card_atlas/defect/defend_defect.png",
+     "index": 4,
+     "name": "Defend",
+     "rarity": "Basic",
+     "stats": {
+      "block": 5
+     },
+     "target_type": "None",
+     "type": "Skill",
      "upgraded": false
     }
    ],
@@ -344,7 +350,7 @@
     }
    ],
    "player": {
-    "block": 16,
+    "block": 0,
     "deck": [
      {
       "color": "blue",
@@ -543,7 +549,7 @@
     "rig_scale": 0.125
    },
    "player_powers": [],
-   "round": 1
+   "round": 2
   }
  }
 }

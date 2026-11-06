@@ -3964,13 +3964,40 @@ pub(crate) fn resume_end_turn_after_turn_end_powers(
     end_turn_dispatch_from(state, 2)
 }
 
+/// Resume the end-turn chain parked after the player's `AfterSideTurnEnd`
+/// relic walk (see [`finish_phase_two_after_turn_end_powers`]).
+pub(crate) fn resume_end_turn_after_turn_end_relics(state: &mut CombatState) -> StepResult {
+    let tail = finish_phase_two_after_turn_end_relics(state);
+    if !matches!(tail, StepResult::Advanced) || state.coop.seat_run.is_some() {
+        return tail;
+    }
+    end_turn_dispatch_from(state, 2)
+}
+
 /// [`end_player_turn_phase_two_flush_tail`] after the player's own
 /// `after_turn_end` power walk.
 fn finish_phase_two_after_turn_end_powers(
     state: &mut CombatState,
     consuming_shadow_early: bool,
 ) -> StepResult {
+    let had_choice = state.pending_choice.is_some();
     after_turn_end_seated_with(state, !consuming_shadow_early);
+    // A Joss Paper turn-end draw whose reshuffle opened a Stratagem select:
+    // C# `JossPaper.AfterSideTurnEnd` awaits the draw inside
+    // `Hook.AfterSideTurnEnd` (JossPaper.cs:109-127, v0.111.0), so the late
+    // powers and the enemy turn wait for the pick. Rust ran the enemy turn
+    // first (loadout Necrobinder 1117 v0.111.0: CubexConstruct's hits before
+    // the pick, player.hp split).
+    if !had_choice && state.pending_choice.is_some() && state.coop.seat_run.is_none() {
+        state.pending_end_turn_resume = Some(crate::EndTurnResume::AfterTurnEndRelics);
+        return StepResult::PendingChoice;
+    }
+    finish_phase_two_after_turn_end_relics(state)
+}
+
+/// [`finish_phase_two_after_turn_end_powers`] after the seated player's
+/// `after_turn_end` relic walk.
+fn finish_phase_two_after_turn_end_relics(state: &mut CombatState) -> StepResult {
     crate::coop::each_teammate(state, after_turn_end_seated);
     // `AfterSideTurnEndLate` (Disintegration) after every `AfterSideTurnEnd`
     // listener, relics included; empty once a relic (Parrying Shield) won the
@@ -7559,14 +7586,34 @@ fn finish_enemy_side_capture(state: &mut CombatState, result: StepResult) -> Ste
 /// Answer the select an enemy side captured: rerun the side from its snapshot
 /// with every answer so far plus `selection`, then the rest of the end of
 /// turn (GH #1129).
+///
+/// `atomic` takes a whole multi-pick set at once (the replay drivers'
+/// [`crate::resolve_choice_atomic_apply`]): `legal_actions` lists one pick at
+/// a time, so the set is checked against the open choice instead. The inline
+/// resolver hands a set of two or more to the choice in one shot, as the
+/// atomic path does.
 pub(crate) fn replay_enemy_side(
     state: &mut CombatState,
     replay: crate::EnemySideReplay,
     selection: smallvec::SmallVec<[u8; 4]>,
+    atomic: bool,
 ) -> StepResult {
-    let legal = crate::legal_actions(state)
-        .into_iter()
-        .any(|a| matches!(&a, crate::Action::ResolveChoice { selection: s } if *s == selection));
+    let legal = if atomic {
+        state.pending_choice.as_ref().is_some_and(|pc| {
+            let n = selection.len();
+            n >= usize::from(pc.min_select)
+                && n <= usize::from(pc.max_select.max(1))
+                && selection.iter().all(|&i| usize::from(i) < pc.options.len())
+                && selection
+                    .iter()
+                    .enumerate()
+                    .all(|(k, i)| !selection[..k].contains(i))
+        })
+    } else {
+        crate::legal_actions(state)
+            .into_iter()
+            .any(|a| matches!(&a, crate::Action::ResolveChoice { selection: s } if *s == selection))
+    };
     if !legal {
         state.enemy_side_replay = Some(Box::new(replay));
         return StepResult::IllegalPlay;
@@ -8494,7 +8541,12 @@ fn play_card_resolved(state: &mut CombatState, hand_index: u8, target: Option<u8
     // card played under Hex correctly triggers SpiritOfAsh's block grant
     // (necro-player-misc C, seeds 3587/5473). Bead `sts2-rs-4wppb`.
     let card_is_ethereal = card_is_ethereal_at_play(state, &card);
-    hooks::dispatch_before_card_played_powers(state, resolved_cost, card_is_ethereal);
+    hooks::dispatch_before_card_played_powers_for_card(
+        state,
+        resolved_cost,
+        card_is_ethereal,
+        Some(card_uid),
+    );
     // v0.111.0: Juggling counts / clones in `BeforeCardPlayed` (decomp
     // JugglingPower.cs:36). No-op before v0.111.0.
     hooks::juggling_before_card_played_v0111(state, card_uid, card.card_type);
@@ -9036,6 +9088,9 @@ fn clear_when_played_costs(state: &mut CombatState, card_idx: usize) {
     state.cards[card_idx]
         .combat_vars
         .zero(crate::cards::VarKey::CostReductionUntilPlayed);
+    state.cards[card_idx]
+        .combat_vars
+        .zero(crate::cards::VarKey::CostAddedAfterLocalZero);
     // Bead `sts2-rs-mnjxg`: SneckoOil sets the randomized
     // cost via C# `EnergyCost.SetThisTurnOrUntilPlayed` — the SAME
     // `EndOfTurn | WhenPlayed` modifier as `SetToFreeThisTurn` above. So a
@@ -9534,10 +9589,11 @@ fn finish_card_play_tail(state: &mut CombatState, fin: CardPlayFinish) -> StepRe
         let before_hooks_live = replay_before_card_played_live(state);
         if before_hooks_live {
             dispatch_relic_before_card_played_replay(state, &played_ctx, resolved_cost);
-            crate::hooks::dispatch_before_card_played_powers(
+            crate::hooks::dispatch_before_card_played_powers_for_card(
                 state,
                 resolved_cost,
                 card_is_ethereal,
+                Some(card_uid),
             );
             // v0.111.0: Juggling's `BeforeCardPlayed` runs per play iteration
             // (decomp JugglingPower.cs:36). No-op before v0.111.0.
@@ -9643,10 +9699,11 @@ fn finish_card_play_tail(state: &mut CombatState, fin: CardPlayFinish) -> StepRe
             let before_hooks_live = replay_before_card_played_live(state);
             if before_hooks_live {
                 dispatch_relic_before_card_played_replay(state, &played_ctx, resolved_cost);
-                crate::hooks::dispatch_before_card_played_powers(
+                crate::hooks::dispatch_before_card_played_powers_for_card(
                     state,
                     resolved_cost,
                     card_is_ethereal,
+                    Some(card_uid),
                 );
                 // v0.111.0: Juggling's `BeforeCardPlayed` runs per play iteration
                 // (decomp JugglingPower.cs:36). No-op before v0.111.0.
@@ -11616,10 +11673,11 @@ fn resolve_auto_played_card_inner(
         },
         auto_energy_value,
     );
-    crate::hooks::dispatch_before_card_played_powers(
+    crate::hooks::dispatch_before_card_played_powers_for_card(
         state,
         auto_resolved_cost,
         auto_card_is_ethereal,
+        Some(top_uid),
     );
     // `ChainsOfBindingPower.BeforeCardPlayed` does not check `IsAutoPlay`:
     // a Bound auto-play locks out later Bound cards this turn, including the
@@ -12193,10 +12251,11 @@ fn finish_auto_played_card_tail(state: &mut CombatState, fin: AutoPlayFinish) ->
             let before_hooks_live = replay_before_card_played_live(state);
             if before_hooks_live {
                 dispatch_relic_before_card_played_replay(state, &played_ctx, auto_energy_value);
-                crate::hooks::dispatch_before_card_played_powers(
+                crate::hooks::dispatch_before_card_played_powers_for_card(
                     state,
                     auto_resolved_cost,
                     auto_card_is_ethereal,
+                    Some(top_uid),
                 );
                 // v0.111.0: Juggling's `BeforeCardPlayed` runs per play iteration
                 // (decomp JugglingPower.cs:36). No-op before v0.111.0.
@@ -12627,8 +12686,22 @@ fn clear_per_turn_card_vars(state: &mut CombatState) {
         if card.combat_vars.maybe_nonzero(VarKey::FreeThisTurn) {
             card.combat_vars.zero(VarKey::FreeThisTurn);
         }
+        if card
+            .combat_vars
+            .maybe_nonzero(VarKey::CostAddedAfterLocalZero)
+        {
+            card.combat_vars.zero(VarKey::CostAddedAfterLocalZero);
+        }
         if card.combat_vars.maybe_nonzero(VarKey::StarCostFreeThisTurn) {
             card.combat_vars.zero(VarKey::StarCostFreeThisTurn);
+        }
+        // Flatten's Osty-attack zero is a `SetThisTurn` modifier, so a roll
+        // recorded against this turn's attacks is moot once the turn ends.
+        if card
+            .combat_vars
+            .maybe_nonzero(VarKey::FlattenOstyAttacksAtRoll)
+        {
+            card.combat_vars.zero(VarKey::FlattenOstyAttacksAtRoll);
         }
         // C# `CardModel.EndOfTurnCleanup` (CardModel.cs:1613).
         if card.combat_vars.maybe_nonzero(VarKey::ExhaustOnNextPlay) {
@@ -16675,6 +16748,106 @@ mod tests {
             .find(|p| p.kind == crate::PowerKind::RetainHand)
             .map(|p| p.amount);
         assert_eq!(amt, Some(1), "RetainHand decremented 2 -> 1 at turn end");
+    }
+
+    /// C# `JossPaper.AfterSideTurnEnd` awaits its draw inside
+    /// `Hook.AfterSideTurnEnd`; a reshuffle into a Stratagem pick holds the
+    /// end-turn chain (the enemy turn) until the pick. Rust ran on with the
+    /// pick open (loadout Necrobinder 1117 v0.111.0).
+    #[test]
+    #[serial_test::serial(global_registry)]
+    fn joss_paper_turn_end_draw_pick_holds_the_end_turn() {
+        use std::num::NonZeroU32;
+        crate::relic_effects::ensure_installed();
+
+        let mut state = state_for_end_turn_phase_two(0);
+        state.relics.push(crate::Relic {
+            id: NonZeroU32::new(100).expect("nz"),
+            kind: crate::RelicKind::JossPaper,
+            counter: 4,
+            is_wax: false,
+            is_melted: false,
+        });
+        state.combat_log.joss_paper_ethereal_count = 1;
+        let pid = NonZeroU32::new(1).expect("nz");
+        state.powers.push(crate::Power {
+            id: pid,
+            kind: crate::PowerKind::Stratagem,
+            amount: 1,
+            counter: 0,
+            applier: None,
+            skip_next_tick: false,
+        });
+        state.player.powers.push(crate::PowerUid(pid));
+        for raw in 1..=3 {
+            let uid = CardUid::new(raw).expect("nz");
+            state.cards.push(crate::cards::Card {
+                uid,
+                card_id: crate::cards::CardId::StrikeIronclad,
+                cost: 1,
+                card_type: crate::cards::CardType::Attack,
+                ..crate::cards::Card::pod_defaults()
+            });
+            state.player.discard.push(uid);
+        }
+
+        let result = end_player_turn_phase_two(&mut state);
+
+        assert_eq!(result, StepResult::PendingChoice);
+        assert!(state.pending_choice.is_some());
+        assert!(state.pending_end_turn_resume.is_some(), "end turn parked");
+    }
+
+    /// C# `FlushPlayerHand` runs Bookmark's `AfterFlush` before
+    /// `EndOfTurnCleanup` (CombatManager.cs:1347-1349), so a retained card
+    /// still free this turn has local cost 0 and is not eligible: no pick, no
+    /// `CombatCardSelection` roll. Rust ran it after the cleanup and shaved
+    /// the freed card (loadout Necrobinder 1054: hand costs cs=0/3 rs=1/2).
+    #[test]
+    #[serial_test::serial(global_registry)]
+    fn bookmark_skips_a_retained_card_still_free_this_turn() {
+        use std::num::NonZeroU32;
+        crate::relic_effects::ensure_installed();
+
+        let mut state = state_for_end_turn_phase_two(0);
+        state.relics.push(crate::Relic {
+            id: NonZeroU32::new(100).expect("nz"),
+            kind: crate::RelicKind::Bookmark,
+            counter: 0,
+            is_wax: false,
+            is_melted: false,
+        });
+        let pid = NonZeroU32::new(1).expect("nz");
+        state.powers.push(crate::Power {
+            id: pid,
+            kind: crate::PowerKind::RetainHand,
+            amount: 1,
+            counter: 0,
+            applier: None,
+            skip_next_tick: false,
+        });
+        state.player.powers.push(crate::PowerUid(pid));
+        let uid = CardUid::new(1).expect("nz");
+        let mut card = crate::cards::Card {
+            uid,
+            card_id: crate::cards::CardId::Reap,
+            cost: 3,
+            card_type: crate::cards::CardType::Attack,
+            ..crate::cards::Card::pod_defaults()
+        };
+        card.set_combat_var(crate::cards::VarKey::FreeThisTurn, 1);
+        state.cards.push(card);
+        state.player.hand.push(uid);
+        let rolls = state.run_rng.combat_card_selection.counter();
+
+        let _ = end_player_turn_phase_two(&mut state);
+
+        assert_eq!(state.player.hand.as_slice(), &[uid]);
+        assert_eq!(
+            state.cards[0].combat_var(crate::cards::VarKey::CostReductionUntilPlayed),
+            0
+        );
+        assert_eq!(state.run_rng.combat_card_selection.counter(), rolls);
     }
 
     /// `ConsumingShadowPower.AfterTurnEnd` (`ConsumingShadowPower.cs`): at the

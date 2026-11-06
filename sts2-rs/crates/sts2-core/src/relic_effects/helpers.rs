@@ -485,6 +485,13 @@ pub(crate) fn unsettling_lamp_state(state: &CombatState) -> Option<i32> {
 /// auto-play) would still be doubled where C# compares uids and would not.
 /// That needs somewhere to store the uid — `Relic.counter` is taken by the
 /// state machine — and no corpus record exhibits it.
+///
+/// The debuff test is C#'s sign-aware `power.GetTypeForAmount(amount)`
+/// (`UnsettlingLamp.cs` both arms), not the sign-agnostic `classify`: a
+/// NEGATIVE Strength drain (Shared Fate, Malaise, Resonance) is a Debuff for
+/// an `AllowNegative` power, so the Lamp captures and doubles it (loadout
+/// Necrobinder 1101 v0.111.0: Shared Fate took a Mecha Knight 10 -> 6 in C#,
+/// 10 -> 8 in Rust). For positive amounts the two agree.
 pub(crate) fn unsettling_lamp_eligible(ctx: &crate::hooks::PowerAmountCtx) -> bool {
     let from_a_card = ctx.source_card.is_some();
     let applier_ok = matches!(ctx.applier, None | Some(crate::hooks::CreatureRef::Player));
@@ -492,7 +499,7 @@ pub(crate) fn unsettling_lamp_eligible(ctx: &crate::hooks::PowerAmountCtx) -> bo
     from_a_card
         && applier_ok
         && target_is_enemy
-        && crate::afflictions::classify(ctx.power_kind).is_debuff()
+        && crate::afflictions::is_debuff_for_amount(ctx.power_kind, ctx.amount)
 }
 
 /// `Metronome.on_orb_channeled` — increment the running orbs-channeled

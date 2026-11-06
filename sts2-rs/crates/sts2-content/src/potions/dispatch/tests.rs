@@ -2326,6 +2326,59 @@ fn shackling_potion_applies_seven_to_all_alive_enemies() {
     );
 }
 
+/// Loadout Necrobinder 1189 v0.111.0 act2: `TemporaryStrengthPower.BeforeApplied`
+/// drains the Strength BEFORE ShacklingPotionPower lands (PowerCmd.cs:132-135),
+/// and Sleight of Flesh reacts to that drain. When it kills the target (a
+/// Parafright Illusion, which keeps its buffs while reviving), C#'s
+/// `if (target.CanReceivePowers)` drops the ShacklingPotionPower itself: the
+/// corpse carries Strength -7 only. Rust applied the power first.
+#[test]
+fn shackling_potion_target_killed_by_its_strength_drain_gets_no_power() {
+    ensure_installed();
+    let mut state = fresh_state_with_player(80, 80);
+    let player = state.player.creature_uid.expect("player");
+    let illusion = push_enemy(&mut state, 2, 6);
+    let survivor = push_enemy(&mut state, 3, 50);
+    for (raw, uid, kind, amount) in [
+        (900, player, PowerKind::SleightOfFlesh, 9),
+        (901, illusion, PowerKind::Illusion, 1),
+    ] {
+        let pid = std::num::NonZeroU32::new(raw).expect("nz");
+        state.powers.push(sts2_core::Power::new(pid, kind, amount));
+        state
+            .creatures
+            .iter_mut()
+            .find(|c| c.id == uid.0)
+            .expect("creature")
+            .powers
+            .push(sts2_core::PowerUid(pid));
+    }
+    assert_eq!(
+        dispatch(&mut state, PotionKind::ShacklingPotion, None),
+        EffectResult::Resolved
+    );
+    let hp = |uid: sts2_core::CreatureUid| {
+        state
+            .creatures
+            .iter()
+            .find(|c| c.id == uid.0)
+            .expect("creature")
+            .current_hp
+    };
+    assert_eq!(hp(illusion), 0, "Sleight of Flesh 9 kills the 6-HP target");
+    assert_eq!(
+        power_amount_on(&state, illusion, PowerKind::ShacklingPotion),
+        0,
+        "the drain killed it before the power could land"
+    );
+    assert_eq!(hp(survivor), 50 - 9);
+    assert_eq!(
+        power_amount_on(&state, survivor, PowerKind::ShacklingPotion),
+        7
+    );
+    assert_eq!(power_amount_on(&state, survivor, PowerKind::Strength), -7);
+}
+
 /// CosmicConcoction: generates up to 3 distinct Colorless modifier
 /// cards into hand and flips each to upgraded.
 #[test]

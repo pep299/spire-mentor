@@ -1,10 +1,10 @@
 {
  "details": [
-  "You Block 10→0",
-  "Nibbit Block 0→5"
+  "Play Defend",
+  "You Block 0→5"
  ],
  "error": null,
- "label": "End turn",
+ "label": "Play Defend",
  "step": {
   "action_label": "",
   "assets_base": "https://assets.test",
@@ -33,8 +33,28 @@
    "bg_row": 4,
    "bg_seed": 1772253313,
    "decision": "combat_play",
-   "discard_pile": [],
-   "discard_pile_count": 0,
+   "discard_pile": [
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "red",
+     "cost": 1,
+     "description": "Gain 5 Block.",
+     "description_rich": "Gain 5 [gold]Block[/gold].",
+     "id": "DEFEND_IRONCLAD",
+     "image": "https://assets.test/card_atlas/ironclad/defend_ironclad.png",
+     "index": -1,
+     "name": "Defend",
+     "rarity": "Basic",
+     "stats": {
+      "block": 5
+     },
+     "target_type": "None",
+     "type": "Skill",
+     "upgraded": false
+    }
+   ],
+   "discard_pile_count": 1,
    "draw_pile": [
     {
      "base_cost": 1,
@@ -196,7 +216,7 @@
      "uid": 2
     }
    ],
-   "energy": 3,
+   "energy": 2,
    "energy_image": "https://assets.test/sprite_fonts/ironclad_energy_icon.png",
    "exhaust_pile": [
     {
@@ -304,31 +324,12 @@
      "target_type": "None",
      "type": "Skill",
      "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": true,
-     "color": "red",
-     "cost": 1,
-     "description": "Gain 5 Block.",
-     "description_rich": "Gain 5 [gold]Block[/gold].",
-     "id": "DEFEND_IRONCLAD",
-     "image": "https://assets.test/card_atlas/ironclad/defend_ironclad.png",
-     "index": 4,
-     "name": "Defend",
-     "rarity": "Basic",
-     "stats": {
-      "block": 5
-     },
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
     }
    ],
    "max_energy": 3,
    "options": [],
    "player": {
-    "block": 0,
+    "block": 5,
     "deck": [
      {
       "color": "red",

@@ -730,6 +730,73 @@ fn misery_artifact_negates_the_strength_copy_first_v0107() {
     assert_eq!(enemy_power(&state, other, PowerKind::Artifact), 0);
 }
 
+/// A monster's own Strength keeps the monster as its C# `Applier` even after
+/// a player drain takes it negative (`PowerCmd.Apply` sets `Applier` only on
+/// a fresh instance). Misery copies it with that applier, so Sleight of Flesh
+/// (`applier == Owner`) reacts only to the player's Debilitate copy (loadout
+/// Necrobinder 1210-v0.107.1: Rocket Strength 2 -> -7 under Dark Shackles;
+/// C# Crusher 37 -> 28, Rust took a second Sleight of Flesh hit).
+#[test]
+fn misery_monster_strength_copy_skips_sleight_of_flesh() {
+    for v in [V107, V111] {
+        let mut state = fresh(v, CharacterId::Necrobinder);
+        let other = add_enemy(&mut state, 50, 100);
+        let target = first_enemy(&state);
+        // The monster's own buff (Rocket CHARGE_UP), then a player drain.
+        sts2_core::card_effects::apply_power_to_creature(
+            &mut state,
+            target,
+            PowerKind::Strength,
+            2,
+        );
+        sts2_core::card_effects::apply_signed_attr_power(
+            &mut state,
+            target,
+            PowerKind::Strength,
+            -9,
+        );
+        assert_eq!(enemy_power(&state, target, PowerKind::Strength), -7);
+        add_enemy_power(&mut state, target, 800, PowerKind::Debilitate, 2);
+        add_player_power(&mut state, 801, PowerKind::SleightOfFlesh, 9);
+        let i = push_hand(&mut state, CardId::Misery, false);
+        let _ = sts2_core::combat_loop::play_card(&mut state, i, Some(0));
+        assert_eq!(enemy_power(&state, other, PowerKind::Strength), -7, "{v:?}");
+        assert_eq!(
+            enemy_power(&state, other, PowerKind::Debilitate),
+            2,
+            "{v:?}"
+        );
+        let hp = state
+            .creatures
+            .iter()
+            .find(|c| c.id == other.0)
+            .expect("other")
+            .current_hp;
+        assert_eq!(hp, 91, "{v:?}: one Sleight of Flesh hit (Debilitate)");
+    }
+}
+
+/// The mirror case: a Strength the PLAYER's drain created (no prior buff)
+/// is player-applied, so its Misery copy fires Sleight of Flesh as well.
+#[test]
+fn misery_player_drained_strength_copy_fires_sleight_of_flesh() {
+    let mut state = fresh(V107, CharacterId::Necrobinder);
+    let other = add_enemy(&mut state, 50, 100);
+    let target = first_enemy(&state);
+    sts2_core::card_effects::apply_signed_attr_power(&mut state, target, PowerKind::Strength, -9);
+    add_enemy_power(&mut state, target, 800, PowerKind::Debilitate, 2);
+    add_player_power(&mut state, 801, PowerKind::SleightOfFlesh, 9);
+    let i = push_hand(&mut state, CardId::Misery, false);
+    let _ = sts2_core::combat_loop::play_card(&mut state, i, Some(0));
+    let hp = state
+        .creatures
+        .iter()
+        .find(|c| c.id == other.0)
+        .expect("other")
+        .current_hp;
+    assert_eq!(hp, 82, "Strength and Debilitate copies each hit");
+}
+
 // ── Dowsing quest (run layer) ──────────────────────────────────────────────
 
 fn dowsing_run(version: GameVersion) -> sts2_core::runstate::RunState {
@@ -1592,4 +1659,148 @@ fn potion_generated_cards_fire_player_generation_listeners() {
         |v| regalite_block_after_potion(v, CharacterId::Necrobinder, PotionKind::PotOfGhouls);
     assert_eq!(ghouls(V107), (4, 2), "2 Souls x Regalite 2");
     assert_eq!(ghouls(V111), (4, 2), "Regalite 4, once per turn");
+}
+
+// ── Unsettling Lamp: signed drains and foreign appliers ────────────────────
+
+fn add_unsettling_lamp(state: &mut CombatState) {
+    state.relics.push(sts2_core::Relic {
+        id: NonZeroU32::new(1).expect("nz"),
+        kind: sts2_core::RelicKind::UnsettlingLamp,
+        counter: sts2_core::RelicKind::UnsettlingLamp.initial_counter(),
+        is_wax: false,
+        is_melted: false,
+    });
+}
+
+fn lamp_counter(state: &CombatState) -> i32 {
+    state
+        .relics
+        .iter()
+        .find(|r| r.kind == sts2_core::RelicKind::UnsettlingLamp)
+        .expect("lamp")
+        .counter
+}
+
+/// Loadout Necrobinder 1101 v0.111.0 act3: Shared Fate's enemy leg is
+/// `PowerCmd.Apply<StrengthPower>(target, -2, owner, this)`; a negative
+/// Strength reads as a Debuff (`GetTypeForAmount`, AllowNegative), so
+/// Unsettling Lamp captures it and doubles it to -4 (Mecha Knight 10 -> 6).
+/// The player's own -2 targets the owner's side and is left alone.
+#[test]
+fn shared_fate_enemy_drain_is_doubled_by_unsettling_lamp() {
+    for version in [V107, V111] {
+        let mut state = fresh(version, CharacterId::Necrobinder);
+        add_unsettling_lamp(&mut state);
+        let target = first_enemy(&state);
+        add_enemy_power(&mut state, target, 800, PowerKind::Strength, 10);
+        let i = push_hand(&mut state, CardId::SharedFate, false);
+        let _ = sts2_core::combat_loop::play_card(&mut state, i, Some(0));
+        assert_eq!(enemy_power(&state, target, PowerKind::Strength), 6);
+        let player_str: i32 = state
+            .player_power_uids()
+            .into_iter()
+            .filter_map(|u| state.powers.get_by_id(u.0))
+            .filter(|p| p.kind == PowerKind::Strength)
+            .map(|p| p.amount)
+            .sum();
+        assert_eq!(player_str, -2);
+        assert_ne!(
+            lamp_counter(&state),
+            sts2_core::RelicKind::UnsettlingLamp.initial_counter(),
+            "the drain spent the Lamp's one trigger"
+        );
+    }
+}
+
+/// Loadout Necrobinder 1096 v0.107.1 act2: Misery copies each debuff with its
+/// original `item.Applier`. BowlbugRock applies ImbalancedPower to itself
+/// (`BowlbugRock.cs:66`), so the copy onto its sibling is not the Lamp
+/// owner's apply: `UnsettlingLamp.BeforePowerAmountChanged` returns on
+/// `applier != Owner.Creature`, nothing doubles, and the Lamp stays armed.
+/// Rust treated the copy as player-applied: Imbalanced 2 and a spent Lamp.
+#[test]
+fn misery_copy_of_a_monster_own_debuff_is_not_doubled_by_unsettling_lamp() {
+    for version in [V107, V111] {
+        let mut state = fresh(version, CharacterId::Necrobinder);
+        add_unsettling_lamp(&mut state);
+        let rock = first_enemy(&state);
+        if let Some(c) = state.creatures.iter_mut().find(|c| c.id == rock.0) {
+            c.species = Some(MonsterKind::BowlbugRock);
+            c.monster_id = MonsterId("BowlbugRock");
+        }
+        add_enemy_power(&mut state, rock, 800, PowerKind::Imbalanced, 1);
+        let other = add_enemy(&mut state, 50, 100);
+        let i = push_hand(&mut state, CardId::Misery, false);
+        let _ = sts2_core::combat_loop::play_card(&mut state, i, Some(0));
+        assert_eq!(enemy_power(&state, other, PowerKind::Imbalanced), 1);
+        assert_eq!(
+            lamp_counter(&state),
+            sts2_core::RelicKind::UnsettlingLamp.initial_counter(),
+            "a monster-applied copy never captures the Lamp"
+        );
+    }
+}
+
+/// The contrast: a player-applied debuff copied by Misery IS the Lamp owner's
+/// apply, so it captures and doubles (Weak 2 -> 4 on the sibling).
+#[test]
+fn misery_copy_of_a_player_debuff_is_doubled_by_unsettling_lamp() {
+    let mut state = fresh(V107, CharacterId::Necrobinder);
+    add_unsettling_lamp(&mut state);
+    let target = first_enemy(&state);
+    add_enemy_power(&mut state, target, 800, PowerKind::Weak, 2);
+    let other = add_enemy(&mut state, 50, 100);
+    let i = push_hand(&mut state, CardId::Misery, false);
+    let _ = sts2_core::combat_loop::play_card(&mut state, i, Some(0));
+    assert_eq!(enemy_power(&state, other, PowerKind::Weak), 4);
+}
+
+// ── Temporary-Strength debuffs: the Strength leg runs before the power ─────
+
+/// Loadout Necrobinder 1189 v0.111.0 act2 (step 565): Dark Shackles 9 on a
+/// 5-HP Parafright with Strength 2, the player holding Sleight of Flesh 9.
+/// `TemporaryStrengthPower.BeforeApplied` drains Strength 2 -> -7 BEFORE
+/// DarkShacklesPower lands (PowerCmd.cs:132-135); Sleight of Flesh reacts to
+/// that drain and kills the Parafright, whose reviving IllusionPower then
+/// refuses powers (`ShouldAllowHitting`). C#: the corpse has Illusion,
+/// Minion... and Strength -7, no DarkShackles. Rust landed DarkShackles 9
+/// first.
+#[test]
+fn dark_shackles_target_killed_by_its_strength_drain_gets_no_power() {
+    for version in [V107, V111] {
+        let mut state = fresh(version, CharacterId::Necrobinder);
+        let target = first_enemy(&state);
+        if let Some(c) = state.creatures.iter_mut().find(|c| c.id == target.0) {
+            c.current_hp = 5;
+        }
+        add_enemy_power(&mut state, target, 800, PowerKind::Illusion, 1);
+        add_enemy_power(&mut state, target, 801, PowerKind::Strength, 2);
+        let _other = add_enemy(&mut state, 50, 100);
+        add_player_power(&mut state, 900, PowerKind::SleightOfFlesh, 9);
+        let i = push_hand(&mut state, CardId::DarkShackles, false);
+        let _ = sts2_core::combat_loop::play_card(&mut state, i, Some(0));
+        assert_eq!(hp_of(&state, target), 0, "Sleight of Flesh kills it");
+        assert_eq!(enemy_power(&state, target, PowerKind::Strength), -7);
+        assert_eq!(
+            enemy_power(&state, target, PowerKind::DarkShackles),
+            0,
+            "the drain killed it before DarkShackles could land"
+        );
+    }
+}
+
+/// The survivor case keeps the full package, and a SECOND Dark Shackles on
+/// the same target stacks (`ModifyAmount`), its Strength leg following via
+/// `AfterPowerAmountChanged`: DarkShackles 18, Strength -18.
+#[test]
+fn dark_shackles_stacks_and_drains_on_a_live_target() {
+    let mut state = fresh(V111, CharacterId::Necrobinder);
+    let target = first_enemy(&state);
+    for _ in 0..2 {
+        let i = push_hand(&mut state, CardId::DarkShackles, false);
+        let _ = sts2_core::combat_loop::play_card(&mut state, i, Some(0));
+    }
+    assert_eq!(enemy_power(&state, target, PowerKind::DarkShackles), 18);
+    assert_eq!(enemy_power(&state, target, PowerKind::Strength), -18);
 }

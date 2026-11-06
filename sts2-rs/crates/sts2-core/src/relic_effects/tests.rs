@@ -2956,6 +2956,34 @@ fn bone_flute_fires_when_dealer_is_osty() {
     assert_eq!(state.player.block, 2, "the latch is consumed");
 }
 
+/// C# `AttackCommand.Execute` runs `Hook.AfterAttack` after its hit loop even
+/// when no hit lands (a dead target breaks the loop, AttackCommand.cs:551-673),
+/// so each Osty command owes `BoneFlute.AfterAttack`'s +2: a replayed Unleash
+/// whose first play killed its target (loadout Necrobinder 1038-v0.111.0: C# 3
+/// procs, Rust 1), a Bone Shards into a lone reviving corpse (1192-v0.111.0).
+#[test]
+#[serial_test::serial(global_registry)]
+fn bone_flute_grants_for_an_osty_attack_that_hits_nothing() {
+    ensure_installed();
+    let mut state = fresh_state_with_player(70, 70);
+    give_player_relic(&mut state, RelicKind::BoneFlute);
+    let _ = state.summon_osty(1);
+    let corpse = state.spawn_enemy(crate::MonsterKind::Nibbit);
+    if let Some(c) = state.creatures.iter_mut().find(|c| c.id == corpse.0) {
+        c.current_hp = 0;
+    }
+
+    let dealt = crate::card_effects::deal_damage_from_osty_to_enemy(&mut state, corpse, 6);
+    assert_eq!(dealt, 0);
+    crate::hooks::grant_latched_skittish(&mut state);
+    assert_eq!(state.player.block, 2, "single-target command on a corpse");
+
+    let dealt = crate::card_effects::deal_damage_from_osty_to_all_alive_enemies(&mut state, 9);
+    assert_eq!(dealt, 0);
+    crate::hooks::grant_latched_skittish(&mut state);
+    assert_eq!(state.player.block, 4, "AoE command with no live target");
+}
+
 #[test]
 #[serial_test::serial(global_registry)]
 fn bone_flute_does_not_fire_when_dealer_is_not_osty() {

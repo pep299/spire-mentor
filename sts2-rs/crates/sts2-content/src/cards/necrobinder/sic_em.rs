@@ -124,4 +124,43 @@ mod tests {
             "upgraded SicEm applies 4"
         );
     }
+
+    /// Loadout Necrobinder 1148: an Osty hit that KILLS a SicEm-marked
+    /// Illusion (Parafright) still summons. C# runs `Hook.AfterDamageGiven`
+    /// before `Kill` (CreatureCmd.cs:388-409), so the dying Illusion's
+    /// SicEm Debuff is stripped (IllusionPower.ShouldPowerBeRemovedOnDeath)
+    /// only after SicEmPower.AfterDamageGiven has grown the Osty.
+    #[test]
+    fn lethal_osty_hit_on_sic_em_illusion_still_summons() {
+        let mut state = CombatState::default();
+        let enemy = state.spawn_enemy(sts2_core::MonsterKind::Nibbit);
+        sts2_core::card_effects::apply_power_to_creature(&mut state, enemy, PowerKind::Illusion, 1);
+        sts2_core::card_effects::apply_power_to_creature(
+            &mut state,
+            enemy,
+            PowerKind::SicEmPower,
+            3,
+        );
+        let c = state
+            .creatures
+            .iter_mut()
+            .find(|c| c.id == enemy.0)
+            .expect("enemy");
+        c.current_hp = 5;
+        let osty = state.summon_osty(4).expect("osty");
+        mint_into_play(&mut state, false);
+        sts2_core::card_effects::deal_damage_from_osty_to_enemy(&mut state, enemy, 12);
+        let osty_max = state
+            .creatures
+            .iter()
+            .find(|c| c.id == osty.0)
+            .expect("osty")
+            .max_hp;
+        assert_eq!(osty_max, 7, "the killing hit grows the Osty by SicEm's 3");
+        assert_eq!(
+            enemy_power(&state, enemy, PowerKind::SicEmPower),
+            None,
+            "the dead Illusion's SicEm debuff is still stripped afterwards"
+        );
+    }
 }

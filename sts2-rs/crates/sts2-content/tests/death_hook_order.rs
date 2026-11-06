@@ -424,6 +424,59 @@ fn speedster_kill_mid_draw_stops_before_the_reshuffle() {
     }
 }
 
+/// v0.111.0 CacophonyPower's 33rd-draw hit (CacophonyPower.cs:22-37) kills
+/// the last enemy on the first card of a draw 3 — C# `CardPileCmd.Draw` stops
+/// on `IsOverOrEnding` (v0.111.0 CardPileCmd.cs:1042) before reshuffling the
+/// discard, on the turn-start hand draw and on an effect draw alike. The batch
+/// draw dealt the hit after the whole draw and over-read the run's `shuffle`
+/// stream, so the next combat opened on another hand. Random-loadout
+/// Necrobinder v0.111.0 seeds 1288 (turn-start draw) and 1269 (an
+/// Eidolon-played Parse).
+#[test]
+fn cacophony_kill_mid_draw_stops_before_the_reshuffle() {
+    for hand_draw in [true, false] {
+        let mut state = fresh(GameVersion::V0_111_0);
+        state
+            .creatures
+            .push(enemy(2, 14, MonsterKind::Nibbit, "Nibbit"));
+        state
+            .enemy_uids
+            .push(CreatureUid(NonZeroU32::new(2).expect("nz")));
+        let p = state.player.creature_uid.expect("player");
+        sts2_core::card_effects::apply_power_to_creature(&mut state, p, PowerKind::Cacophony, 66);
+        for pw in &mut state.powers {
+            if pw.kind == PowerKind::Cacophony {
+                pw.counter = 32;
+            }
+        }
+        let top = new_card(&mut state, CardId::StrikeIronclad);
+        state.player.draw.push(top);
+        for _ in 0..3 {
+            let uid = new_card(&mut state, CardId::DefendIronclad);
+            state.player.discard.push(uid);
+        }
+
+        let _ = if hand_draw {
+            state.draw_into_hand(3)
+        } else {
+            state.draw_into_hand_card_effect(3)
+        };
+
+        let hp = state.creatures.iter().find(|c| c.id.get() == 2).expect("c");
+        assert_eq!(hp.current_hp, 0, "hand_draw={hand_draw}: Cacophony killed");
+        assert_eq!(
+            state.player.hand.as_slice(),
+            &[top],
+            "hand_draw={hand_draw}"
+        );
+        assert_eq!(
+            state.player.discard.len(),
+            3,
+            "hand_draw={hand_draw}: no reshuffle"
+        );
+    }
+}
+
 /// Centennial Puzzle draws three single cards (CentennialPuzzle.cs:47-50),
 /// awaiting each. The second one reshuffles the discard and Stratagem opens
 /// its select: the third draw waits for the pick instead of being drawn over

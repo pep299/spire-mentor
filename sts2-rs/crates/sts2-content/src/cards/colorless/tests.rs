@@ -5443,6 +5443,59 @@ fn play_enlightenment_cap_reverts_at_turn_start() {
     assert_eq!(state.cards[idx].cost, 3, "the cap expires at turn end");
 }
 
+/// An earlier `AddUntilPlayed(-1)` (a retained Reap) folds BEFORE
+/// Enlightenment's reduce-only Absolute(1) (`CardEnergyCost.cs:110-115`), so
+/// a 3-cost card at 2 reads `min(2, 1) = 1`, not `1 - 1 = 0`. Past turn end
+/// the plain cap drops and the until-played reduction shows again (2); on
+/// play both drop (3). Enlightenment+'s combat cap keeps 1 throughout.
+/// Loadout Necrobinder v0.107.1 1386: Reap C# 1, Rust 0.
+#[test]
+fn play_enlightenment_cap_absorbs_an_earlier_until_played_reduction() {
+    install_pool();
+    for upgraded in [false, true] {
+        let (mut state, _) = fresh_state(CardId::Enlightenment, 0, 0);
+        state.cards[0].upgraded = upgraded;
+        let mut idxs = Vec::new();
+        for _ in 0..2 {
+            let raw = u32::try_from(state.cards.len() + 1).expect("fits");
+            let uid = CardUid::new(raw).expect("nz");
+            let mut card = card_from_spec(&crate::cards::ironclad::strike_ironclad::spec());
+            card.uid = uid;
+            card.cost = 3;
+            card.add_cost_reduction_until_played(1);
+            state.cards.push(card);
+            state.player.hand.push(uid);
+            idxs.push(uid.0.get() as usize - 1);
+        }
+        let f = lookup(CardId::Enlightenment).expect("registered");
+        assert_eq!(f(&mut state, None), EffectResult::Resolved);
+        for &idx in &idxs {
+            assert_eq!(
+                sts2_core::hooks::local_card_cost(&state, &state.cards[idx]),
+                1,
+                "min(3 - 1, 1) (upgraded={upgraded})"
+            );
+        }
+        // Card 0 is played: every WhenPlayed modifier drops.
+        state.cards[idxs[0]].expire_snecko_roll();
+        state.cards[idxs[0]]
+            .combat_vars
+            .zero(sts2_core::cards::VarKey::CostReductionUntilPlayed);
+        assert_eq!(
+            sts2_core::hooks::local_card_cost(&state, &state.cards[idxs[0]]),
+            if upgraded { 1 } else { 3 },
+            "after the play (upgraded={upgraded})"
+        );
+        // Card 1 is held past turn end: only the EndOfTurn cap drops.
+        state.restore_snecko_costs_for_turn_start();
+        assert_eq!(
+            sts2_core::hooks::local_card_cost(&state, &state.cards[idxs[1]]),
+            if upgraded { 1 } else { 2 },
+            "past turn end (upgraded={upgraded})"
+        );
+    }
+}
+
 /// Plain Enlightenment then Enlightenment+: C# appends
 /// `SetThisTurnOrUntilPlayed(1, reduceOnly)` then `SetThisCombat(1,
 /// reduceOnly)` (Enlightenment.cs OnPlay); once the first expires (on play,

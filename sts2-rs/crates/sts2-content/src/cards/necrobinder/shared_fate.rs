@@ -36,7 +36,16 @@ pub(crate) fn play_shared_fate(
     // magnitude, applied as a more-negative delta).
     let enemy_loss = if current_card_upgraded(state) { 3 } else { 2 };
     let t = target.expect("SharedFate: Enemy-targeted");
-    apply_power_signed_to_creature(state, t, PowerKind::Strength, -enemy_loss);
+    // `PowerCmd.Apply` runs this drain through Unsettling Lamp like any card
+    // debuff (negative Strength reads as a Debuff), so the Lamp can capture and
+    // double it. Loadout Necrobinder 1101 v0.111.0.
+    let drain = sts2_core::card_effects::fold_player_card_signed_apply(
+        state,
+        t,
+        PowerKind::Strength,
+        -enemy_loss,
+    );
+    apply_power_signed_to_creature(state, t, PowerKind::Strength, drain);
 
     EffectResult::Resolved
 }

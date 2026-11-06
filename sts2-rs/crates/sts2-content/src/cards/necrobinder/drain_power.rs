@@ -43,6 +43,15 @@ pub(crate) fn play_drain_power(
         .combat_card_selection
         .shuffle(upgradable.as_mut_slice());
 
+    // C# `CardCmd.Upgrade` returns early while `CombatManager.IsEnding`
+    // (CardCmd.cs:267-270), AFTER `TakeRandom` already shuffled. So a killing
+    // blow on the last enemy still spends the reads but upgrades nothing, and
+    // a replay (Glam, `base_replay_count`) shuffles the same, still-unupgraded
+    // discard again (loadout Necrobinder v0.107.1 1316/1340: C# 2x(n-1)
+    // reads, Rust (n-1) + (n-1-count)).
+    if sts2_core::combat_loop::combat_is_ending(state) {
+        return EffectResult::Resolved;
+    }
     for uid in upgradable.into_iter().take(count) {
         card_effects::upgrade_card_uid(state, uid);
     }

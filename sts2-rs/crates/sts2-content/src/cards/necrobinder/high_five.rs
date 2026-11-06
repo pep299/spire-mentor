@@ -44,17 +44,20 @@ pub(crate) fn play_high_five(
     // OstyDamage.BaseValue: 11 base, +2 on upgrade. Vulnerable: 2 base, +1 on
     // upgrade. Both magnitudes are computed in the handler, so the upgrade bumps
     // are gated on current_card_upgraded.
-    let (dmg, vuln) = if current_card_upgraded(state) {
-        (13, 3)
-    } else {
-        (11, 2)
-    };
+    let dmg = if current_card_upgraded(state) { 13 } else { 11 };
 
     // C# `DamageCmd.Attack(dmg).FromOsty(Owner.Osty, this).TargetingAllOpponents(...)`
     // — the Osty is the dealer for the AoE hit (Osty-side modifiers apply;
     // player-dealer-gated effects do not fire). `deal_damage_from_osty_to_all_
     // alive_enemies` resolves the dealer as the pet creature (see `osty_dealer_ref`).
     deal_damage_from_osty_to_all_alive_enemies(state, dmg);
+
+    // `Vulnerable.BaseValue` is read only now, after the attack: a hit that
+    // kills the MagiKnight drops its Dampen (`DampenPower.AfterDeath` ->
+    // `AfterRemoved` re-upgrades this very card), so the debuff is the
+    // upgraded 3 (loadout Necrobinder 1284-v0.111.0: C# Vulnerable 3, Rust
+    // applied the downgraded 2). Same shape as Bone Shards' block.
+    let vuln = if current_card_upgraded(state) { 3 } else { 2 };
 
     // C# `PowerCmd.Apply<VulnerablePower>(CombatState.HittableEnemies, Vulnerable.
     // BaseValue, Owner.Creature, this)` — apply Vulnerable to every alive enemy.

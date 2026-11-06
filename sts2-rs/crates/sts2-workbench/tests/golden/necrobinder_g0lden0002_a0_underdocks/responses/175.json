@@ -1,82 +1,70 @@
 {
- "assumptions": {
-  "energy": 3,
-  "hand": 5,
-  "samples": 200
+ "config": {
+  "c_puct": 2.5,
+  "depth": 200,
+  "draw_widening_c": 2.0,
+  "hidden_info": "beliefdraw",
+  "seed": 1,
+  "sims": 48,
+  "threads": 1
  },
- "block": {
-  "per_turn": 9.5,
-  "scaling_cards": [
-   "Bodyguard"
-  ]
- },
- "composition": {
-  "by_rarity": {
-   "Basic": 10,
-   "Common": 4,
-   "Uncommon": 1
-  },
-  "by_type": {
-   "Attack": 7,
-   "Skill": 8
-  },
-  "dead_cards": 0,
-  "energy_curve": {
-   "1": 13,
-   "2": 1,
-   "3": 1
-  },
-  "unupgraded_basics": 9
- },
- "damage": {
-  "aoe_attacks": [],
-  "attack_count": 7,
-  "per_turn": 13.0,
-  "scaling_cards": [
-   "Unleash",
-   "Negative Pulse",
-   "Scourge"
-  ],
-  "single_target": 13.1,
-  "vs_group": 12.9
- },
- "deck_size": 15,
- "lenses": {
-  "boss": 40.7,
-  "hallway": 35.6,
-  "scaling": 43.5
- },
- "scores": {
-  "block": 37.9,
-  "damage": 27.7,
-  "velocity": 57.0,
-  "volume": 39.1
- },
- "velocity": {
-  "bottleneck": "energy",
-  "cards_per_turn": 3.6,
-  "dilution": 1.0,
-  "draw_limited_turns": 1.6,
-  "energy_limited_turns": 4.9,
-  "engine_cards": 2,
-  "extra_per_turn": 0.8,
-  "tags": {
-   "draw": 1,
-   "energy": 1
-  }
- },
- "warnings": [
+ "pv": null,
+ "scores": [
   {
-   "severity": "info",
-   "text": "No AOE — multi-enemy fights (Gremlins, hallways) will be slow."
+   "action": "UNLEASH.title",
+   "hp_n": 0,
+   "hp_sd": null,
+   "is_best": true,
+   "low_confidence": false,
+   "mean_final_hp": null,
+   "q": 1.2047,
+   "q_saturated": false,
+   "stable_idx": 3,
+   "target_index": null,
+   "visits": 8,
+   "win_prob": 1.0
   },
   {
-   "severity": "info",
-   "text": "Energy-limited — cards stranded in hand; more energy helps, more draw won't."
+   "action": "DEFEND_NECROBINDER.title",
+   "hp_n": 0,
+   "hp_sd": null,
+   "is_best": false,
+   "low_confidence": false,
+   "mean_final_hp": null,
+   "q": 1.2203,
+   "q_saturated": false,
+   "stable_idx": 0,
+   "target_index": null,
+   "visits": 8,
+   "win_prob": 1.0
   },
   {
-   "severity": "warn",
-   "text": "Deck clogged with basics/curses — prioritise removals."
+   "action": "STRIKE_NECROBINDER.title",
+   "hp_n": 0,
+   "hp_sd": null,
+   "is_best": false,
+   "low_confidence": false,
+   "mean_final_hp": null,
+   "q": 1.2003,
+   "q_saturated": false,
+   "stable_idx": 1,
+   "target_index": null,
+   "visits": 8,
+   "win_prob": 1.0
+  },
+  {
+   "action": "end turn",
+   "hp_n": 0,
+   "hp_sd": null,
+   "is_best": false,
+   "low_confidence": false,
+   "mean_final_hp": null,
+   "q": 1.1842,
+   "q_saturated": false,
+   "stable_idx": -1,
+   "target_index": null,
+   "visits": 8,
+   "win_prob": 1.0
   }
  ]
 }

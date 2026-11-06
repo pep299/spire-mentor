@@ -10,7 +10,15 @@ pub(crate) fn play_resonance(state: &mut CombatState, _t: Option<CreatureUid>) -
     apply_power_to_player(state, PowerKind::Strength, str_self);
     let uids: Vec<CreatureUid> = state.enemy_uids.iter().copied().collect();
     for uid in uids {
-        add_power_to_enemy_signed(state, uid, PowerKind::Strength, -1);
+        // A card-sourced drain: Unsettling Lamp sees (and doubles) it, see
+        // `fold_player_card_signed_apply`.
+        let drain = sts2_core::card_effects::fold_player_card_signed_apply(
+            state,
+            uid,
+            PowerKind::Strength,
+            -1,
+        );
+        add_power_to_enemy_signed(state, uid, PowerKind::Strength, drain);
     }
     EffectResult::Resolved
 }

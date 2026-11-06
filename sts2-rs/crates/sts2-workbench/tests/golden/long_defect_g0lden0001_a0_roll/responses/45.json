@@ -1,10 +1,9 @@
 {
  "details": [
-  "Play Strike",
-  "Nibbit HP 20→14 (−6)"
+  "Play TURBO"
  ],
  "error": null,
- "label": "Play Strike → Nibbit",
+ "label": "Play TURBO",
  "step": {
   "action_label": "",
   "assets_base": "https://assets.test",
@@ -200,9 +199,43 @@
      "target_type": "None",
      "type": "Attack",
      "upgraded": false
+    },
+    {
+     "base_cost": -1,
+     "can_play": false,
+     "color": "colorless",
+     "cost": 0,
+     "description": "Unplayable.\nEthereal.\nWhenever you draw this card, lose Energy.",
+     "description_rich": "[gold]Unplayable[/gold].\n[gold]Ethereal[/gold].\nWhenever you draw this card, lose Energy.",
+     "id": "VOID",
+     "image": "https://assets.test/card_atlas/status/void.png",
+     "index": -1,
+     "name": "Void",
+     "rarity": "Status",
+     "stats": {},
+     "target_type": "None",
+     "type": "Status",
+     "upgraded": false
+    },
+    {
+     "base_cost": 0,
+     "can_play": false,
+     "color": "blue",
+     "cost": 0,
+     "description": "Gain Energy.\nAdd a Void into your Discard Pile.",
+     "description_rich": "Gain Energy.\nAdd a [gold]Void[/gold] into your [gold]Discard Pile[/gold].",
+     "id": "TURBO",
+     "image": "https://assets.test/card_atlas/defect/turbo.png",
+     "index": -1,
+     "name": "TURBO",
+     "rarity": "Common",
+     "stats": {},
+     "target_type": "None",
+     "type": "Skill",
+     "upgraded": false
     }
    ],
-   "discard_pile_count": 9,
+   "discard_pile_count": 11,
    "draw_pile": [
     {
      "base_cost": 1,
@@ -288,45 +321,27 @@
      "uid": 2
     }
    ],
-   "energy": 0,
+   "energy": 2,
    "energy_image": "https://assets.test/sprite_fonts/defect_energy_icon.png",
    "exhaust_pile": [],
    "exhaust_pile_count": 0,
    "floor": 5,
    "hand": [
     {
-     "base_cost": 0,
-     "can_play": true,
-     "color": "blue",
-     "cost": 0,
-     "description": "Gain Energy.\nAdd a Void into your Discard Pile.",
-     "description_rich": "Gain Energy.\nAdd a [gold]Void[/gold] into your [gold]Discard Pile[/gold].",
-     "id": "TURBO",
-     "image": "https://assets.test/card_atlas/defect/turbo.png",
-     "index": 0,
-     "name": "TURBO",
-     "rarity": "Common",
-     "stats": {},
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    },
-    {
      "base_cost": 1,
-     "can_play": false,
+     "can_play": true,
      "color": "blue",
      "cost": 1,
      "description": "Evoke your rightmost Orb twice.",
      "description_rich": "[gold]Evoke[/gold] your rightmost Orb twice.",
      "id": "DUALCAST",
      "image": "https://assets.test/card_atlas/defect/dualcast.png",
-     "index": 1,
+     "index": 0,
      "name": "Dualcast",
      "rarity": "Basic",
      "stats": {},
      "target_type": "None",
      "type": "Skill",
-     "unplayable_reason": "cost",
      "upgraded": false
     }
    ],

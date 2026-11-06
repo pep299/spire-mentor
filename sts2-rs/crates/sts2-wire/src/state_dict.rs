@@ -4880,6 +4880,9 @@ pub const fn var_key_wire_name(k: VarKey) -> &'static str {
         VarKey::MomentumDamage => "momentum_damage",
         VarKey::BansheesCryEtherealCounted => "banshees_cry_ethereal_counted",
         VarKey::ExhaustOnNextPlay => "exhaust_on_next_play",
+        VarKey::CostDebtThisCombat => "cost_debt_this_combat",
+        VarKey::FlattenOstyAttacksAtRoll => "flatten_osty_attacks_at_roll",
+        VarKey::CostAddedAfterLocalZero => "cost_added_after_local_zero",
     }
 }
 
@@ -4919,6 +4922,9 @@ pub fn var_key_from_wire(name: &str) -> Option<VarKey> {
         VarKey::MomentumDamage,
         VarKey::BansheesCryEtherealCounted,
         VarKey::ExhaustOnNextPlay,
+        VarKey::CostDebtThisCombat,
+        VarKey::FlattenOstyAttacksAtRoll,
+        VarKey::CostAddedAfterLocalZero,
     ];
     ALL.iter().copied().find(|k| var_key_wire_name(*k) == name)
 }

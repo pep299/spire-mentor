@@ -3285,6 +3285,11 @@ pub enum EndTurnResume {
         /// ConsumingShadow already evoked ahead of the power walk.
         consuming_shadow_early: bool,
     },
+    /// Suspended after phase two's player `AfterSideTurnEnd` relic walk: a
+    /// Joss Paper draw's reshuffle opened a Stratagem select. The teammates'
+    /// turn end, the late powers, the end-of-turn checks and the rest of the
+    /// chain (the enemy turn) are owed.
+    AfterTurnEndRelics,
 }
 
 /// Continuation that re-enters a re-selection auto-play loop for its
@@ -6438,8 +6443,9 @@ impl CombatState {
         for uid in combat_pile_uids {
             if let Some(c) = self.cards.iter_mut().find(|c| c.uid == uid) {
                 if c.card_id == crate::cards::CardId::Melancholy {
-                    // C# `EnergyCost.AddThisCombat(-1)`, clamped at 0.
-                    c.cost = c.cost.saturating_sub(1).max(0);
+                    // C# `EnergyCost.AddThisCombat(-1)`, clamped only at the
+                    // final cost read.
+                    c.add_cost_this_combat(-1);
                 }
             }
         }
@@ -7987,6 +7993,14 @@ impl CombatState {
             // damage after the whole draw and over-read the `shuffle` stream
             // (loadout Silent v0.107.1 2004: Soul's draw 2 with 1 card left).
             || self.player_power_amount(PowerKind::Speedster) > 0
+            // v0.111.0 CacophonyPower's `AfterCardDrawn` hit (every 33rd card,
+            // CacophonyPower.cs:22-37) can down the last enemy mid-draw the
+            // same way; the batch path reshuffled the discard for the rest of
+            // the draw (loadout Necrobinder v0.111.0 1269: an Eidolon-played
+            // Parse over-read the shuffle stream by 17, so the next combat
+            // opened on another hand).
+            || (self.game_version >= GameVersion::V0_111_0
+                && self.powers.present_kinds().contains(PowerKind::Cacophony))
     }
 
     /// C#-faithful per-card draw loop, used when an `after_shuffle`
@@ -8639,6 +8653,37 @@ impl CombatState {
         shuffled
     }
 
+    /// `ChainsOfBindingPower.AfterCardDrawn` for one drawn card
+    /// (ChainsOfBindingPower.cs:37-47): afflict it with `Bound` while this
+    /// turn's Chains-applied `Bound` count is under the power's stacks
+    /// (`chains_stacks`, 0 = no Chains). `Bound.CanAfflict` refuses an
+    /// already-afflicted card and ignores its pile.
+    fn afflict_bound_from_chains(&mut self, uid: CardUid, chains_stacks: u32) {
+        if chains_stacks == 0
+            || self.combat_log.bound_cards_afflicted_by_chains_this_turn >= chains_stacks
+        {
+            return;
+        }
+        let Some(c) = self.cards.get_mut((uid.get() as usize).saturating_sub(1)) else {
+            return;
+        };
+        if c.affliction.is_none()
+            && crate::card_afflictions::CardAffliction::can_afflict_card_type(
+                crate::card_afflictions::CardAfflictionKind::Bound,
+                c.card_type,
+            )
+            && c.set_affliction(crate::card_afflictions::CardAffliction::new(
+                crate::card_afflictions::CardAfflictionKind::Bound,
+                1,
+            ))
+        {
+            self.combat_log.bound_cards_afflicted_by_chains_this_turn = self
+                .combat_log
+                .bound_cards_afflicted_by_chains_this_turn
+                .saturating_add(1);
+        }
+    }
+
     /// Walk the suffix of the player's hand newly populated by the most
     /// recent `draw_signaling` and invoke per-card on-draw effects.
     ///
@@ -8930,6 +8975,43 @@ impl CombatState {
         // does not re-fire — the per-turn counter is already past 1).
         let mut iteration_draws: i32 = 0;
 
+        // C# `Hook.AfterCardDrawn` walks the player's powers in list
+        // (application) order and AWAITS each listener: when Pagestorm was
+        // applied before Chains of Binding, `PagestormPower.AfterCardDrawn`
+        // runs its nested `CardPileCmd.Draw` (PagestormPower.cs:19-26) to
+        // completion -- every nested card taking its own Chains check --
+        // before `ChainsOfBindingPower.AfterCardDrawn` sees the Ethereal card
+        // that triggered it (ChainsOfBindingPower.cs:37-47). Its history count
+        // of this turn's `Bound`s then includes the nested ones, so at the cap
+        // the Ethereal card stays unafflicted and a nested card is Bound
+        // instead. Rust ran Chains first: it bound the Ethereal Defile, C#
+        // bound the Volley Pagestorm drew after it, and the next Bound play
+        // was vetoed by `ShouldPlay` in Rust only (loadout Necrobinder
+        // v0.107.1 1244). Applied the other way round, Chains does go first.
+        //
+        // "Applied first" is the power's arena id, not its position in
+        // `player_power_uids()`: that lists the mirror creature's powers and
+        // then the legacy list, so a monster-applied Chains of Binding (the
+        // Queen's) sorted after a Pagestorm the player played later (loadout
+        // Necrobinder v0.107.1 1019: C# Chains first, Rust walked Pagestorm
+        // first). New ids are `max + 1`, so among live powers id order is
+        // application order.
+        let pagestorm_before_chains = chains_stacks > 0 && pagestorm_amount > 0 && {
+            let kind_id = |kind: PowerKind| {
+                self.player_power_uids()
+                    .iter()
+                    .filter_map(|u| self.powers.get_by_id(u.0))
+                    .find(|p| p.kind == kind)
+                    .map(|p| p.id)
+            };
+            matches!(
+                (kind_id(PowerKind::Pagestorm), kind_id(PowerKind::ChainsOfBinding)),
+                (Some(p), Some(c)) if p < c
+            )
+        };
+        let mut chains_after_pagestorm: smallvec::SmallVec<[CardUid; 1]> =
+            smallvec::SmallVec::new();
+
         for uid in drawn {
             let idx = (uid.get() as usize).saturating_sub(1);
             let Some(card) = self.cards.get(idx) else {
@@ -8998,6 +9080,7 @@ impl CombatState {
             // C# ref: `ConfusedPower.cs::AfterCardDrawn` (v0.103.2).
             if confused && (canonical_cost >= 0 || is_x_cost_card) {
                 let rolled = self.run_rng.combat_energy_costs.next_int(0, 3) as i8;
+                let osty_attacks = self.combat_log.osty_attacks_this_turn;
                 if let Some(c) = self.cards.get_mut(idx) {
                     // Only apply the rolled cost for non-X-cost cards.
                     // X-cost cards just consume the RNG read (the modifier
@@ -9023,6 +9106,21 @@ impl CombatState {
                         // wrongly excluded from `legal_actions` — seed 1754).
                         // Clear the bank so the overwrite is authoritative.
                         c.set_combat_var(crate::cards::VarKey::StompCostReductionThisTurn, 0);
+                        // The same Absolute supersedes earlier `AddThisCombat`
+                        // reductions past 0 (Melancholy / Banshee's Cry debt):
+                        // C# folds them before the roll, so the roll alone
+                        // is the cost (loadout Necrobinder 1081: cs=2 rs=0).
+                        c.combat_vars.zero(crate::cards::VarKey::CostDebtThisCombat);
+                        // ... and a Flatten's `SetThisTurn(0)` from an earlier
+                        // Osty attack this turn; a later attack zeroes it again
+                        // (`hooks::card_cost_locally_zeroed`; loadout
+                        // Necrobinder 1347: Fetch draws a Flatten, cs=1 rs=0).
+                        if c.card_id == crate::cards::CardId::Flatten {
+                            c.set_combat_var(
+                                crate::cards::VarKey::FlattenOstyAttacksAtRoll,
+                                osty_attacks + 1,
+                            );
+                        }
                         // C# `SetThisCombat(roll)` is an ABSOLUTE local cost
                         // modifier — flag it so an in-combat upgrade clamps
                         // it per `CardEnergyCost.UpgradeBy` (sweep seeds
@@ -9071,26 +9169,14 @@ impl CombatState {
             // here, after its nested draws took theirs (`Bound.CanAfflict`
             // ignores the card's pile).
             let auto_played = early_auto_played.contains(&uid);
-            if chains_stacks > 0
-                && self.combat_log.bound_cards_afflicted_by_chains_this_turn < chains_stacks
-            {
-                if let Some(c) = self.cards.get_mut(idx) {
-                    if c.affliction.is_none()
-                        && crate::card_afflictions::CardAffliction::can_afflict_card_type(
-                            crate::card_afflictions::CardAfflictionKind::Bound,
-                            c.card_type,
-                        )
-                        && c.set_affliction(crate::card_afflictions::CardAffliction::new(
-                            crate::card_afflictions::CardAfflictionKind::Bound,
-                            1,
-                        ))
-                    {
-                        self.combat_log.bound_cards_afflicted_by_chains_this_turn = self
-                            .combat_log
-                            .bound_cards_afflicted_by_chains_this_turn
-                            .saturating_add(1);
-                    }
-                }
+            // A Pagestorm listening BEFORE Chains of Binding draws its card
+            // first, so that nested draw's cards take their `Bound`s before
+            // this one is checked against the cap (see
+            // `pagestorm_before_chains`).
+            if pagestorm_before_chains && is_ethereal {
+                chains_after_pagestorm.push(uid);
+            } else {
+                self.afflict_bound_from_chains(uid, chains_stacks);
             }
             // Bead `sts2-rs-q6bix` (F-S): AutomationPower.AfterCardDrawn.
             // C# `AutomationPower` keeps an internal `cardsLeft` counter
@@ -9266,6 +9352,9 @@ impl CombatState {
         }
         if pagestorm_draws > 0 {
             crate::cards::draw_via_state(self, pagestorm_draws);
+        }
+        for uid in chains_after_pagestorm {
+            self.afflict_bound_from_chains(uid, chains_stacks);
         }
         // Defect Iteration extra draws (deferred past the per-card `self.cards`
         // borrow). Routed through `draw_via_state` (the card-effect draw
@@ -9922,9 +10011,7 @@ impl CombatState {
         .collect();
         for uid in uids {
             if let Some(c) = self.cards.get_mut(uid.get() as usize - 1) {
-                if c.cost > 0 {
-                    c.cost = (c.cost - 2).max(0);
-                }
+                c.add_cost_this_combat(-2);
                 // Keeps the entered-combat catch-up from re-applying this play
                 // to a copy of this card (`banshees_cry_entered_combat`).
                 let key = crate::cards::VarKey::BansheesCryEtherealCounted;
@@ -10088,6 +10175,8 @@ impl CombatState {
         // never appends, so a v0.107.1 card is untouched.
         c.combat_vars
             .zero(crate::cards::VarKey::CostReductionUntilPlayed);
+        c.combat_vars
+            .zero(crate::cards::VarKey::CostAddedAfterLocalZero);
         let banked = c.combat_var(crate::cards::VarKey::WireCostExpiringOnPlay);
         if banked == 0 {
             return;
@@ -10115,6 +10204,7 @@ impl CombatState {
     /// `combat_energy_costs` stream in lockstep with C#. Bead `sts2-rs-snecko-suspend`.
     pub fn snecko_randomize_hand_costs(&mut self) {
         use crate::cards::VarKey;
+        let osty_attacks = self.combat_log.osty_attacks_this_turn;
         let hand_uids: smallvec::SmallVec<[crate::CardUid; 16]> =
             self.player.hand.iter().copied().collect();
         for uid in hand_uids {
@@ -10146,6 +10236,12 @@ impl CombatState {
                     card.set_combat_var(VarKey::StarCostFreeThisTurn, 1);
                 }
                 card.set_combat_var(VarKey::FreeThisTurn, 0);
+                // A Flatten zeroed by an earlier Osty attack this turn takes
+                // the roll too (the later Absolute wins); a later attack
+                // zeroes it again (`hooks::card_cost_locally_zeroed`).
+                if card.card_id == crate::cards::CardId::Flatten {
+                    card.set_combat_var(VarKey::FlattenOstyAttacksAtRoll, osty_attacks + 1);
+                }
                 // The roll is an ABSOLUTE local modifier — flag it so an in-combat
                 // upgrade clamps it per C# `CardEnergyCost.UpgradeBy`. Mark the
                 // roll live (a zero delta banks nothing) and record whether
@@ -10573,7 +10669,7 @@ fn apply_action(state: &mut CombatState, action: Action) -> StepResult {
             // because multiple collected sibling cards sit on the Play pile at
             // once and must NOT be swept by a mid-loop choice resolution.
             if let Some(replay) = state.enemy_side_replay.take() {
-                return crate::combat_loop::replay_enemy_side(state, *replay, selection);
+                return crate::combat_loop::replay_enemy_side(state, *replay, selection, false);
             }
             resolve_choice_action(state, &selection, /*flush_played=*/ true)
         }
@@ -10798,6 +10894,20 @@ fn drink_potion(
 /// matches [`apply`]'s top-level `Action::ResolveChoice` path (the normal
 /// `play_card` deferral flush).
 pub fn resolve_choice_atomic_apply(state: &mut CombatState, selection: &[u8]) -> StepResult {
+    // A select the enemy side captured (GH #1129) is answered by rerunning
+    // that side, as `apply(Action::ResolveChoice)` does. Resolving it here
+    // instead applied the pick to the captured state and dropped the rest of
+    // the enemy turn and the next player turn start: a Stratagem pick after
+    // Gremlin Horn's enemy-turn draw left the combat parked in `EnemyPhase`
+    // with every play illegal (loadout Necrobinder 1070).
+    if let Some(replay) = state.enemy_side_replay.take() {
+        return crate::combat_loop::replay_enemy_side(
+            state,
+            *replay,
+            selection.iter().copied().collect(),
+            true,
+        );
+    }
     let Some(pc) = state.pending_choice.take() else {
         return StepResult::Advanced;
     };
@@ -10857,6 +10967,9 @@ fn resume_suspended_end_turn(state: &mut CombatState) -> Option<StepResult> {
             state,
             consuming_shadow_early,
         )),
+        EndTurnResume::AfterTurnEndRelics => Some(
+            crate::combat_loop::resume_end_turn_after_turn_end_relics(state),
+        ),
     }
 }
 
@@ -12155,10 +12268,31 @@ fn resolve_transfigure_card_in_hand(state: &mut CombatState, pc: &PendingChoice,
     let Some(uid) = selected_card_uid(pc, selection) else {
         return;
     };
+    apply_transfigure(state, uid);
+}
+
+/// C# `Transfigure.OnPlay` on one chosen card: `EnergyCost.AddThisCombat(1)`
+/// unless X-cost or below-zero canonical, then `BaseReplayCount++`.
+///
+/// The +1 is a Relative local modifier appended after any live local zero
+/// (Discovery's free-this-turn, Flatten after an Osty attack), so C# reads
+/// `0 + 1` until that zero expires
+/// ([`crate::cards::VarKey::CostAddedAfterLocalZero`]); Rust read the zero
+/// alone (Necrobinder random-loadout: Transfigured Delay cs=1 rs=0). It also
+/// pays off a below-zero `AddThisCombat` debt first.
+pub fn apply_transfigure(state: &mut CombatState, uid: CardUid) {
     let idx = uid.0.get() as usize - 1;
+    let zeroed = state
+        .cards
+        .get(idx)
+        .is_some_and(|c| crate::hooks::card_cost_locally_zeroed(state, c));
     if let Some(card) = state.cards.get_mut(idx) {
         if !card.is_x_cost() && card.cost >= 0 {
-            card.cost = card.cost.saturating_add(1);
+            card.add_cost_this_combat(1);
+            if zeroed {
+                let key = crate::cards::VarKey::CostAddedAfterLocalZero;
+                card.set_combat_var(key, card.combat_var(key) + 1);
+            }
         }
         card.base_replay_count = card.base_replay_count.saturating_add(1);
     }
@@ -16352,6 +16486,140 @@ mod tests {
         }
     }
 
+    /// Confused's `SetThisCombat(roll)` is an Absolute local modifier appended
+    /// after a Melancholy's earlier `AddThisCombat(-1)` deaths, so the roll
+    /// alone is its cost. Rust kept subtracting the below-zero debt and showed
+    /// 0 for a roll of 2 (Necrobinder random-loadout 1081, v0.107.1).
+    #[test]
+    fn confused_roll_supersedes_a_melancholy_cost_debt() {
+        use std::num::NonZeroU32;
+
+        use smallvec::SmallVec;
+
+        let mut state = CombatState::default();
+        state.player.current_hp = 80;
+        let player_id = NonZeroU32::new(99).expect("nz");
+        state.creatures.push(Creature {
+            id: player_id,
+            current_hp: 80,
+            max_hp: 80,
+            block: 0,
+            powers: SmallVec::<[PowerUid; 8]>::new(),
+            species: None,
+            intent: None,
+            intent_history: IntentHistory::default(),
+            monster_id: MonsterId("Player"),
+            ai: None,
+        });
+        state.player.creature_uid = Some(CreatureUid(player_id));
+        let uid = CardUid::new(1).expect("nz");
+        state.cards.push(cards::Card {
+            uid,
+            card_id: cards::CardId::Melancholy,
+            cost: 3,
+            card_type: cards::CardType::Skill,
+            target_type: cards::TargetType::Self_,
+            ..cards::Card::pod_defaults()
+        });
+        state.player.draw.push(uid);
+        // Five deaths: cost 3 -> -2 (cost 0, debt 2).
+        for _ in 0..5 {
+            state.reduce_melancholy_cost_on_death();
+        }
+        assert_eq!(crate::hooks::local_card_cost(&state, &state.cards[0]), -2);
+
+        let pow_uid = PowerUid::new(1).expect("nz");
+        state.powers.push(Power {
+            id: pow_uid.0,
+            kind: powers::PowerKind::Confused,
+            amount: 1,
+            counter: 0,
+            applier: None,
+            skip_next_tick: false,
+        });
+        state.creatures[0].powers.push(pow_uid);
+
+        let moved = crate::cards::draw_via_state(&mut state, 1);
+        assert_eq!(moved, 1);
+        let roll = i32::from(state.cards[0].cost);
+        assert_eq!(
+            crate::hooks::effective_card_cost(&state, uid),
+            roll,
+            "the Confused roll owns the cost"
+        );
+    }
+
+    /// A Flatten drawn after an Osty attack this turn carries `SetThisTurn(0)`;
+    /// Confused's `SetThisCombat(roll)` is appended after it, so the roll is
+    /// the cost until a later attack zeroes it again. Rust's Flatten rider
+    /// kept it free (Necrobinder random-loadout 1347 v0.111.0: Fetch draws a
+    /// Flatten, cs=1 rs=0).
+    #[test]
+    fn confused_roll_overrides_an_earlier_flatten_zero() {
+        use std::num::NonZeroU32;
+
+        use smallvec::SmallVec;
+
+        let mut state = CombatState::default();
+        state.player.current_hp = 80;
+        let player_id = NonZeroU32::new(99).expect("nz");
+        state.creatures.push(Creature {
+            id: player_id,
+            current_hp: 80,
+            max_hp: 80,
+            block: 0,
+            powers: SmallVec::<[PowerUid; 8]>::new(),
+            species: None,
+            intent: None,
+            intent_history: IntentHistory::default(),
+            monster_id: MonsterId("Player"),
+            ai: None,
+        });
+        state.player.creature_uid = Some(CreatureUid(player_id));
+        let uid = CardUid::new(1).expect("nz");
+        state.cards.push(cards::Card {
+            uid,
+            card_id: cards::CardId::Flatten,
+            cost: 2,
+            card_type: cards::CardType::Attack,
+            target_type: cards::TargetType::Enemy,
+            ..cards::Card::pod_defaults()
+        });
+        state.player.draw.push(uid);
+        let pow_uid = PowerUid::new(1).expect("nz");
+        state.powers.push(Power {
+            id: pow_uid.0,
+            kind: powers::PowerKind::Confused,
+            amount: 1,
+            counter: 0,
+            applier: None,
+            skip_next_tick: false,
+        });
+        state.creatures[0].powers.push(pow_uid);
+        // A non-zero roll, so the zero and the roll are distinguishable.
+        loop {
+            let mut probe = state.run_rng.combat_energy_costs.clone();
+            if probe.next_int(0, 3) != 0 {
+                break;
+            }
+            let _ = state.run_rng.combat_energy_costs.next_int(0, 3);
+        }
+        state.combat_log.osty_attacks_this_turn = 1;
+
+        let moved = crate::cards::draw_via_state(&mut state, 1);
+        assert_eq!(moved, 1);
+        let roll = i32::from(state.cards[0].cost);
+        assert!(roll > 0);
+        assert_eq!(crate::hooks::effective_card_cost(&state, uid), roll);
+
+        state.combat_log.osty_attacks_this_turn = 2;
+        assert_eq!(
+            crate::hooks::effective_card_cost(&state, uid),
+            0,
+            "an attack after the roll zeroes Flatten again"
+        );
+    }
+
     /// Issue #175 (Silent combat parity, seed 1131): CorrosiveWave's
     /// `AfterCardDrawn` must apply a SEPARATE Poison per drawn card so the
     /// per-application SneckoSkull `+1` additive fires once per card.
@@ -18932,6 +19200,39 @@ mod tests {
         let mut probe = state.clone();
         probe.snecko_randomize_hand_costs();
         probe.cards[0].cost
+    }
+
+    /// Flatten's `SetThisTurn(0)` (Osty attacked) and a Snecko roll are both
+    /// Absolute local modifiers folded in insertion order, so a roll after
+    /// the attack sets the cost and an attack after the roll zeroes it again.
+    /// Rust's Flatten rider zeroed it regardless (Necrobinder random-loadout,
+    /// Snecko Oil: hand cost cs=2 rs=0).
+    #[test]
+    fn snecko_roll_overrides_an_earlier_flatten_zero() {
+        let mut state = snecko_hand_state(2);
+        state.cards[0].card_id = crate::cards::CardId::Flatten;
+        while next_snecko_roll(&state) == 0 {
+            let _ = state.run_rng.combat_energy_costs.next_int(0, 3);
+        }
+        let uid = state.player.hand[0];
+        state.combat_log.osty_attacks_this_turn = 1;
+        assert_eq!(crate::hooks::effective_card_cost(&state, uid), 0);
+
+        state.snecko_randomize_hand_costs();
+        let roll = i32::from(state.cards[0].cost);
+        assert!(roll > 0);
+        assert_eq!(
+            crate::hooks::effective_card_cost(&state, uid),
+            roll,
+            "the later roll beats the attack's zero"
+        );
+
+        state.combat_log.osty_attacks_this_turn = 2;
+        assert_eq!(
+            crate::hooks::effective_card_cost(&state, uid),
+            0,
+            "an attack after the roll zeroes it again"
+        );
     }
 
     /// GH #759: C# `SetThisTurnOrUntilPlayed` adds its Absolute modifier
@@ -23220,6 +23521,54 @@ mod tests {
         state.reduce_melancholy_cost_on_death();
         assert_eq!(cost(&state, 1), 0, "clamped at 0 on extra death");
         assert_eq!(cost(&state, 2), 0, "clamped at 0 on extra death");
+    }
+
+    /// C# keeps `AddThisCombat` reductions unclamped and clamps only the final
+    /// cost (`CardEnergyCost.GetWithModifiers`), so the fourth death takes a
+    /// 3-cost Melancholy to -1 and Borrowed Time's +1 leaves it at 0. Rust
+    /// clamped each death at 0 and showed 1 (Necrobinder random-loadout 1105,
+    /// v0.107.1 step 98).
+    #[test]
+    fn melancholy_discount_past_zero_absorbs_a_cost_surcharge() {
+        use crate::cards::{Card, CardId, CardType, TargetType};
+        use crate::{Power, PowerKind};
+        let uid = CardUid::new(1).expect("non-zero");
+        let mut state = CombatState::default();
+        state.cards.push(Card {
+            uid,
+            card_id: CardId::Melancholy,
+            cost: 3,
+            card_type: CardType::Skill,
+            target_type: TargetType::Self_,
+            ..Card::pod_defaults()
+        });
+        state.player.hand.push(uid);
+        for _ in 0..4 {
+            state.reduce_melancholy_cost_on_death();
+        }
+        assert_eq!(crate::hooks::local_card_cost(&state, &state.cards[0]), -1);
+        assert_eq!(crate::hooks::effective_card_cost(&state, uid), 0);
+
+        let pid = std::num::NonZeroU32::new(1).expect("non-zero");
+        state.powers.push(Power {
+            id: pid,
+            kind: PowerKind::BorrowedTime,
+            amount: 1,
+            counter: 0,
+            applier: None,
+            skip_next_tick: false,
+        });
+        state.player.powers.push(crate::PowerUid(pid));
+        assert_eq!(
+            crate::hooks::effective_card_cost(&state, uid),
+            0,
+            "a negative local cost skips Borrowed Time's +1"
+        );
+        // `Hook.ModifyEnergyCostInCombat` returns a negative cost untouched
+        // (Hook.cs:1720-1723), so even +2 leaves it free (loadout
+        // Necrobinder 1105: cs=0 rs=1).
+        state.powers.get_mut_by_id(pid).expect("power").amount = 2;
+        assert_eq!(crate::hooks::effective_card_cost(&state, uid), 0);
     }
 
     /// Mutant-coverage (2026-06-20 sweep): the test above uses a SYMMETRIC

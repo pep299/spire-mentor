@@ -1,14 +1,17 @@
 {
  "details": [
-  "Play TURBO"
+  "Play Dualcast",
+  "You Block 5→0",
+  "Nibbit HP 14→0  ☠ defeated",
+  "Gold 193→209"
  ],
  "error": null,
- "label": "Play TURBO",
+ "label": "Play Dualcast",
  "step": {
   "action_label": "",
   "assets_base": "https://assets.test",
   "chosen_action": null,
-  "decision": "combat_play",
+  "decision": "card_reward",
   "idx": 0,
   "meta": {
    "act": 1,
@@ -18,7 +21,7 @@
    "bg_seed": 1772253313,
    "floor": 5,
    "step_no": 0,
-   "turn": 2
+   "turn": null
   },
   "pv": null,
   "scores": [],
@@ -31,335 +34,81 @@
    "bg_col": 3,
    "bg_row": 4,
    "bg_seed": 1772253313,
-   "decision": "combat_play",
-   "discard_pile": [
+   "can_skip": true,
+   "cards": [
     {
-     "base_cost": -1,
-     "can_play": false,
-     "color": "colorless",
-     "cost": 0,
-     "description": "Unplayable.\nEthereal.",
-     "description_rich": "[gold]Unplayable[/gold].\n[gold]Ethereal[/gold].",
-     "id": "DAZED",
-     "image": "https://assets.test/card_atlas/status/dazed.png",
-     "index": -1,
-     "name": "Dazed",
-     "rarity": "Status",
-     "stats": {},
-     "target_type": "None",
-     "type": "Status",
-     "upgraded": false
-    },
-    {
-     "base_cost": 0,
-     "can_play": false,
-     "color": "blue",
-     "cost": 0,
-     "description": "Gain 6 Block.\nAdd a Dazed into your Discard Pile.",
-     "description_rich": "Gain 6 [gold]Block[/gold].\nAdd a [gold]Dazed[/gold] into your [gold]Discard Pile[/gold].",
-     "id": "BOOST_AWAY",
-     "image": "https://assets.test/card_atlas/defect/boost_away.png",
-     "index": -1,
-     "name": "Boost Away",
-     "rarity": "Common",
-     "stats": {
-      "block": 6
-     },
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
      "color": "blue",
      "cost": 1,
-     "description": "Gain 5 Block.",
-     "description_rich": "Gain 5 [gold]Block[/gold].",
-     "id": "DEFEND_DEFECT",
-     "image": "https://assets.test/card_atlas/defect/defend_defect.png",
-     "index": -1,
-     "name": "Defend",
-     "rarity": "Basic",
-     "stats": {
-      "block": 5
-     },
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "blue",
-     "cost": 1,
-     "description": "Gain 5 Block.",
-     "description_rich": "Gain 5 [gold]Block[/gold].",
-     "id": "DEFEND_DEFECT",
-     "image": "https://assets.test/card_atlas/defect/defend_defect.png",
-     "index": -1,
-     "name": "Defend",
-     "rarity": "Basic",
-     "stats": {
-      "block": 5
-     },
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "colorless",
-     "cost": 1,
-     "description": "Deal 14 damage.",
-     "description_rich": "Deal 14 damage.",
-     "id": "ULTIMATE_STRIKE",
-     "image": "https://assets.test/card_atlas/colorless/ultimate_strike.png",
-     "index": -1,
-     "name": "Ultimate Strike",
-     "rarity": "Uncommon",
-     "stats": {
-      "damage": 14
-     },
-     "target_type": "None",
-     "type": "Attack",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "blue",
-     "cost": 1,
-     "description": "Channel 1 Lightning.",
-     "description_rich": "[gold]Channel[/gold] 1 [gold]Lightning[/gold].",
-     "id": "ZAP",
-     "image": "https://assets.test/card_atlas/defect/zap.png",
-     "index": -1,
-     "name": "Zap",
-     "rarity": "Basic",
-     "stats": {},
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "blue",
-     "cost": 1,
-     "description": "Gain 5 Block.",
-     "description_rich": "Gain 5 [gold]Block[/gold].",
-     "id": "DEFEND_DEFECT",
-     "image": "https://assets.test/card_atlas/defect/defend_defect.png",
-     "index": -1,
-     "name": "Defend",
-     "rarity": "Basic",
-     "stats": {
-      "block": 5
-     },
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "blue",
-     "cost": 1,
-     "description": "Deal 6 damage.",
-     "description_rich": "Deal 6 damage.",
-     "id": "STRIKE_DEFECT",
-     "image": "https://assets.test/card_atlas/defect/strike_defect.png",
-     "index": -1,
-     "name": "Strike",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 6
-     },
-     "target_type": "None",
-     "type": "Attack",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "blue",
-     "cost": 1,
-     "description": "Deal 6 damage.",
-     "description_rich": "Deal 6 damage.",
-     "id": "STRIKE_DEFECT",
-     "image": "https://assets.test/card_atlas/defect/strike_defect.png",
-     "index": -1,
-     "name": "Strike",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 6
-     },
-     "target_type": "None",
-     "type": "Attack",
-     "upgraded": false
-    },
-    {
-     "base_cost": -1,
-     "can_play": false,
-     "color": "colorless",
-     "cost": 0,
-     "description": "Unplayable.\nEthereal.\nWhenever you draw this card, lose Energy.",
-     "description_rich": "[gold]Unplayable[/gold].\n[gold]Ethereal[/gold].\nWhenever you draw this card, lose Energy.",
-     "id": "VOID",
-     "image": "https://assets.test/card_atlas/status/void.png",
-     "index": -1,
-     "name": "Void",
-     "rarity": "Status",
-     "stats": {},
-     "target_type": "None",
-     "type": "Status",
-     "upgraded": false
-    },
-    {
-     "base_cost": 0,
-     "can_play": false,
-     "color": "blue",
-     "cost": 0,
-     "description": "Gain Energy.\nAdd a Void into your Discard Pile.",
-     "description_rich": "Gain Energy.\nAdd a [gold]Void[/gold] into your [gold]Discard Pile[/gold].",
-     "id": "TURBO",
-     "image": "https://assets.test/card_atlas/defect/turbo.png",
-     "index": -1,
-     "name": "TURBO",
-     "rarity": "Common",
-     "stats": {},
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    }
-   ],
-   "discard_pile_count": 11,
-   "draw_pile": [
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "blue",
-     "cost": 1,
-     "description": "Gain 5 Block.",
-     "description_rich": "Gain 5 [gold]Block[/gold].",
-     "id": "DEFEND_DEFECT",
-     "image": "https://assets.test/card_atlas/defect/defend_defect.png",
-     "index": -1,
-     "name": "Defend",
-     "rarity": "Basic",
-     "stats": {
-      "block": 5
-     },
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "blue",
-     "cost": 1,
-     "description": "Deal 6 damage.",
-     "description_rich": "Deal 6 damage.",
-     "id": "STRIKE_DEFECT",
-     "image": "https://assets.test/card_atlas/defect/strike_defect.png",
-     "index": -1,
-     "name": "Strike",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 6
-     },
-     "target_type": "None",
-     "type": "Attack",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "blue",
-     "cost": 1,
-     "description": "Deal 6 damage.",
-     "description_rich": "Deal 6 damage.",
-     "id": "STRIKE_DEFECT",
-     "image": "https://assets.test/card_atlas/defect/strike_defect.png",
-     "index": -1,
-     "name": "Strike",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 6
-     },
-     "target_type": "None",
-     "type": "Attack",
-     "upgraded": false
-    }
-   ],
-   "draw_pile_count": 3,
-   "enemies": [
-    {
-     "block": 0,
-     "hp": 14,
-     "image": "https://assets.test/monsters/nibbit.png",
+     "description": "Deal 6 damage to ALL enemies.\nDraw 1 card.",
+     "description_rich": "Deal 6 damage to ALL enemies.\nDraw 1 card.",
+     "id": "SWEEPING_BEAM",
+     "image": "https://assets.test/card_atlas/defect/sweeping_beam.png",
      "index": 0,
-     "intents": [
-      {
-       "damage": 6,
-       "intent_image": "https://assets.test/intent_atlas/attack/intent_attack_2.png",
-       "type": "Attack"
-      }
-     ],
-     "kind": "Nibbit",
-     "max_hp": 43,
-     "move_state": "SLICE",
-     "name": "Nibbit",
-     "powers": [],
-     "rig": "https://assets.test/monster_rigs/nibbit/nibbit",
-     "rig_bounds_h": 146.0,
-     "rig_bounds_w": 270.0,
-     "rig_scale": 0.28,
-     "uid": 2
+     "name": "Sweeping Beam",
+     "rarity": "Common",
+     "type": "Attack"
+    },
+    {
+     "color": "blue",
+     "cost": 1,
+     "description": "Deal 4 damage 3 times.\nAdd a Slimed into your Discard Pile.",
+     "description_rich": "Deal 4 damage 3 times.\nAdd a Slimed into your Discard Pile.",
+     "id": "GUNK_UP",
+     "image": "https://assets.test/card_atlas/defect/gunk_up.png",
+     "index": 1,
+     "name": "Gunk Up",
+     "rarity": "Common",
+     "type": "Attack"
+    },
+    {
+     "color": "blue",
+     "cost": 1,
+     "description": "Gain 3 Block.\nPut a card from your Discard Pile into your Hand.\nExhaust.",
+     "description_rich": "Gain 3 Block.\nPut a card from your Discard Pile into your Hand.\n[gold]Exhaust[/gold].",
+     "id": "HOLOGRAM",
+     "image": "https://assets.test/card_atlas/defect/hologram.png",
+     "index": 2,
+     "name": "Hologram",
+     "rarity": "Common",
+     "type": "Skill"
     }
    ],
-   "energy": 2,
-   "energy_image": "https://assets.test/sprite_fonts/defect_energy_icon.png",
-   "exhaust_pile": [],
-   "exhaust_pile_count": 0,
+   "decision": "card_reward",
    "floor": 5,
-   "hand": [
+   "options": [
     {
-     "base_cost": 1,
-     "can_play": true,
-     "color": "blue",
-     "cost": 1,
-     "description": "Evoke your rightmost Orb twice.",
-     "description_rich": "[gold]Evoke[/gold] your rightmost Orb twice.",
-     "id": "DUALCAST",
-     "image": "https://assets.test/card_atlas/defect/dualcast.png",
-     "index": 0,
-     "name": "Dualcast",
-     "rarity": "Basic",
-     "stats": {},
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    }
-   ],
-   "max_energy": 3,
-   "options": [],
-   "orb_slots": 3,
-   "orbs": [
+     "action": "select_card_reward",
+     "args": {
+      "card_index": 0
+     },
+     "enabled": true,
+     "label": "SWEEPING_BEAM.title"
+    },
     {
-     "evoke": 8,
-     "image": "https://assets.test/orb_atlas/lightning.png",
-     "index": 0,
-     "name": "LIGHTNING_ORB.title",
-     "passive": 3,
-     "type": "Lightning"
+     "action": "select_card_reward",
+     "args": {
+      "card_index": 1
+     },
+     "enabled": true,
+     "label": "GUNK_UP.title"
+    },
+    {
+     "action": "select_card_reward",
+     "args": {
+      "card_index": 2
+     },
+     "enabled": true,
+     "label": "HOLOGRAM.title"
+    },
+    {
+     "action": "skip_card_reward",
+     "args": {},
+     "enabled": true,
+     "label": "Skip"
     }
    ],
    "player": {
-    "block": 5,
+    "block": 0,
     "deck": [
      {
       "color": "blue",
@@ -531,9 +280,8 @@
       "upgraded": false
      }
     ],
-    "gold": 193,
+    "gold": 209,
     "hp": 67,
-    "image": "https://assets.test/character_sprites/defect.png",
     "max_hp": 75,
     "name": "Defect",
     "potion_slots": 3,
@@ -551,14 +299,8 @@
       "image": "https://assets.test/relic_atlas/lead_paperweight.png",
       "name": "Lead Paperweight"
      }
-    ],
-    "rig": "https://assets.test/character_rigs/defect/defect",
-    "rig_bounds_h": 260.0,
-    "rig_bounds_w": 250.0,
-    "rig_scale": 0.125
-   },
-   "player_powers": [],
-   "round": 2
+    ]
+   }
   }
  }
 }

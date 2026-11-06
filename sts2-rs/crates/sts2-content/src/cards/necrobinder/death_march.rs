@@ -133,6 +133,47 @@ mod tests {
         );
     }
 
+    /// C# `CardPileCmd.Draw` awaits `Hook.AfterCardDrawn` per card, so
+    /// Pagestorm's nested draw (`fromHandDraw = false`) runs INSIDE the
+    /// turn-start hand draw, right after the Ethereal card lands, and takes a
+    /// hand slot before the hand draw's next card. With the 10-card cap
+    /// cutting the hand draw short, C# records one hand draw fewer and one
+    /// card-effect draw more than a batch draw that takes all its hand draws
+    /// first (loadout Necrobinder 1190: DeathMarch hit for 28 instead of 32).
+    #[test]
+    fn pagestorm_draw_inside_capped_hand_draw_counts_toward_death_march() {
+        let mut state = CombatState::default();
+        state.player.current_hp = 80;
+        crate::cards::dispatch::install_default_registry();
+        apply_power_to_player(&mut state, PowerKind::Pagestorm, 1);
+        // 7 cards already in hand: room for 3 more of the 5-card hand draw.
+        for _ in 0..7 {
+            let uid = mint(&mut state, CardId::StrikeNecrobinder);
+            state.player.hand.push(uid);
+        }
+        let defy = mint(&mut state, CardId::Defy);
+        let pulled = mint(&mut state, CardId::DefendNecrobinder);
+        let next = mint(&mut state, CardId::StrikeNecrobinder);
+        state.player.draw.push(defy);
+        state.player.draw.push(pulled);
+        state.player.draw.push(next);
+        for _ in 0..2 {
+            let uid = mint(&mut state, CardId::StrikeNecrobinder);
+            state.player.draw.push(uid);
+        }
+
+        // Hand draw: Defy (hand draw) -> Pagestorm pulls `pulled` (card
+        // effect) -> `next` (hand draw) fills the hand to 10.
+        state.draw_into_hand(5);
+
+        assert_eq!(state.player.hand.len(), 10);
+        assert_eq!(&state.player.hand[7..], &[defy, pulled, next]);
+        assert_eq!(
+            state.combat_log.cards_drawn_by_effect_this_turn, 1,
+            "the Pagestorm draw is the turn's one card-effect draw"
+        );
+    }
+
     fn mint_into_play(state: &mut CombatState, upgraded: bool) -> sts2_core::CardUid {
         let mut card =
             crate::cards::spec_index::card_pod_from_id(CardId::DeathMarch, upgraded).expect("spec");

@@ -1,10 +1,10 @@
 {
  "details": [
-  "Play Defend",
-  "You Block 5→10"
+  "Play Strike",
+  "Nibbit HP 29→23 (−6)"
  ],
  "error": null,
- "label": "Play Defend",
+ "label": "Play Strike → Nibbit",
  "step": {
   "action_label": "",
   "assets_base": "https://assets.test",
@@ -147,9 +147,28 @@
      "target_type": "None",
      "type": "Skill",
      "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "red",
+     "cost": 1,
+     "description": "Deal 6 damage.",
+     "description_rich": "Deal 6 damage.",
+     "id": "STRIKE_IRONCLAD",
+     "image": "https://assets.test/card_atlas/ironclad/strike_ironclad.png",
+     "index": -1,
+     "name": "Strike",
+     "rarity": "Basic",
+     "stats": {
+      "damage": 6
+     },
+     "target_type": "None",
+     "type": "Attack",
+     "upgraded": false
     }
    ],
-   "discard_pile_count": 6,
+   "discard_pile_count": 7,
    "draw_pile": [
     {
      "base_cost": 2,
@@ -213,7 +232,7 @@
    "enemies": [
     {
      "block": 0,
-     "hp": 29,
+     "hp": 23,
      "image": "https://assets.test/monsters/nibbit.png",
      "index": 0,
      "intents": [
@@ -235,7 +254,7 @@
      "uid": 2
     }
    ],
-   "energy": 1,
+   "energy": 0,
    "energy_image": "https://assets.test/sprite_fonts/ironclad_energy_icon.png",
    "exhaust_pile": [
     {
@@ -262,28 +281,6 @@
    "floor": 5,
    "hand": [
     {
-     "base_cost": 1,
-     "can_play": true,
-     "color": "red",
-     "cost": 1,
-     "damage_preview": {
-      "0": 6
-     },
-     "description": "Deal 6 damage.",
-     "description_rich": "Deal 6 damage.",
-     "id": "STRIKE_IRONCLAD",
-     "image": "https://assets.test/card_atlas/ironclad/strike_ironclad.png",
-     "index": 0,
-     "name": "Strike",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 6
-     },
-     "target_type": "AnyEnemy",
-     "type": "Attack",
-     "upgraded": false
-    },
-    {
      "base_cost": 0,
      "can_play": true,
      "color": "red",
@@ -292,7 +289,7 @@
      "description_rich": "Lose 3 HP.\nGain Energy.",
      "id": "BLOODLETTING",
      "image": "https://assets.test/card_atlas/ironclad/bloodletting.png",
-     "index": 1,
+     "index": 0,
      "name": "Bloodletting",
      "rarity": "Common",
      "stats": {},
@@ -302,7 +299,7 @@
     },
     {
      "base_cost": 1,
-     "can_play": true,
+     "can_play": false,
      "color": "red",
      "cost": 1,
      "damage_preview": {
@@ -312,14 +309,15 @@
      "description_rich": "Deal 6 damage.",
      "id": "STRIKE_IRONCLAD",
      "image": "https://assets.test/card_atlas/ironclad/strike_ironclad.png",
-     "index": 2,
+     "index": 1,
      "name": "Strike",
      "rarity": "Basic",
      "stats": {
       "damage": 6
      },
-     "target_type": "AnyEnemy",
+     "target_type": "None",
      "type": "Attack",
+     "unplayable_reason": "cost",
      "upgraded": false
     }
    ],

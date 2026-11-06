@@ -11194,7 +11194,9 @@ fn dispatch_after_damage_given_body(
                     // this hit just killed still receives it: `AfterDamageGiven`
                     // runs before `Kill` (CreatureCmd.cs:390-409), so C# records
                     // the Doom `PowerReceivedEntry` that arms Death's Door
-                    // (Necrobinder full seed 2430).
+                    // (Necrobinder full seed 2430) — unless a `DieForYou` is in
+                    // the fight, which bars every corpse from receiving powers
+                    // (the apply helper's `corpses_can_receive_powers` gate).
                     let corpse = state
                         .creatures
                         .iter()
@@ -13671,9 +13673,23 @@ const MODIFY_CARD_COST_KINDS: crate::PowerKindSet = crate::PowerKindSet::from_ki
 /// then rejects the 3-cost play for lack of energy (GH bug report).
 #[must_use]
 pub fn card_cost_locally_zeroed(state: &CombatState, card: &crate::cards::Card) -> bool {
-    (card.card_id == crate::cards::CardId::Flatten && state.combat_log.osty_attacks_this_turn > 0)
+    flatten_zeroed(state, card)
         || card.combat_var(crate::cards::VarKey::FreeThisTurn) != 0
         || card.combat_var(crate::cards::VarKey::FreeUntilPlayed) != 0
+}
+
+/// FLATTEN's `SetThisTurn(0)` from an Osty attack this turn
+/// (`Flatten.cs` `AfterAttack` / `AfterCardEnteredCombat`). A live Snecko
+/// roll appended after those attacks overrides the zero until it expires,
+/// and an attack after the roll zeroes it again
+/// ([`crate::cards::VarKey::FlattenOstyAttacksAtRoll`]).
+fn flatten_zeroed(state: &CombatState, card: &crate::cards::Card) -> bool {
+    if card.card_id != crate::cards::CardId::Flatten {
+        return false;
+    }
+    let attacks = state.combat_log.osty_attacks_this_turn;
+    let at_roll = card.combat_var(crate::cards::VarKey::FlattenOstyAttacksAtRoll);
+    attacks > 0 && (at_roll == 0 || attacks > at_roll - 1)
 }
 
 /// A card's cost with only its LOCAL modifiers applied — C#
@@ -13687,9 +13703,10 @@ pub fn local_card_cost(state: &CombatState, card: &crate::cards::Card) -> i32 {
     if base < 0 {
         base
     } else if card_cost_locally_zeroed(state, card) {
-        0
+        card.combat_var(crate::cards::VarKey::CostAddedAfterLocalZero)
     } else {
         base - card.combat_var(crate::cards::VarKey::CostReductionUntilPlayed)
+            - card.combat_var(crate::cards::VarKey::CostDebtThisCombat)
     }
 }
 
@@ -13802,14 +13819,24 @@ pub fn effective_card_cost_inst_with_mask(
         return 0;
     }
     let base_cost = if card_cost_locally_zeroed(state, card) {
-        0
+        card.combat_var(crate::cards::VarKey::CostAddedAfterLocalZero)
     } else {
         // A `Relative` until-played reduction (`AddUntilPlayed(-1)`: Bookmark,
         // SlumberingEssence, v0.111.0 RocketPunch) is a local modifier, so it
         // lands before the global walk; the final `max(0)` below is C#'s
         // `Math.Max(0, num)` (CardEnergyCost.cs:83).
-        i32::from(card.cost) - card.combat_var(crate::cards::VarKey::CostReductionUntilPlayed)
+        i32::from(card.cost)
+            - card.combat_var(crate::cards::VarKey::CostReductionUntilPlayed)
+            - card.combat_var(crate::cards::VarKey::CostDebtThisCombat)
     };
+    // C# `Hook.ModifyEnergyCostInCombat` returns a negative `originalCost`
+    // untouched (Hook.cs:1720-1723, both builds), so a card whose local
+    // modifiers took it below 0 (Melancholy / Banshee's Cry debt) skips every
+    // global surcharge and clamps to 0: Borrowed Time's +2 leaves a -1
+    // Melancholy free (loadout Necrobinder 1105, cs=0 rs=1).
+    if base_cost < 0 && card.cost >= 0 {
+        return 0;
+    }
     // Perf 2026-07-04: the same presence-mask early-out
     // [`dispatch_modify_card_cost`] opens with, hoisted BEFORE the ctx
     // build — on the (dominant) mask-miss path this skips constructing the
@@ -14225,8 +14252,25 @@ pub fn dispatch_before_card_played_powers(
     resolved_cost: i32,
     card_is_ethereal: bool,
 ) {
+    dispatch_before_card_played_powers_for_card(state, resolved_cost, card_is_ethereal, None);
+}
+
+/// [`dispatch_before_card_played_powers`] for a known played card. C#
+/// `DanseMacabrePower.BeforeCardPlayed` reads `EnergyCost.GetResolved()`
+/// LIVE (CardEnergyCost.cs:155-162 re-runs the modifier chain), so when a
+/// Veilpiercer listener ahead of it in `Hook.BeforeCardPlayed` decrements to
+/// 0 and is removed, its cost-0 override is gone and DanseMacabre sees the
+/// card's real cost. With `card_uid` set (and a non-X card) the DanseMacabre
+/// arm re-resolves the cost after such a removal; `resolved_cost` stands
+/// otherwise.
+pub fn dispatch_before_card_played_powers_for_card(
+    state: &mut CombatState,
+    resolved_cost: i32,
+    card_is_ethereal: bool,
+    card_uid: Option<CardUid>,
+) {
     power_hook_dispatch(state, PowerHook::BeforeCardPlayedPowers, |state| {
-        dispatch_before_card_played_powers_body(state, resolved_cost, card_is_ethereal);
+        dispatch_before_card_played_powers_body(state, resolved_cost, card_is_ethereal, card_uid);
     });
 }
 
@@ -14236,6 +14280,7 @@ fn dispatch_before_card_played_powers_body(
     state: &mut CombatState,
     resolved_cost: i32,
     card_is_ethereal: bool,
+    card_uid: Option<CardUid>,
 ) {
     // present_kinds gate (perf-gates sweep 2026-07-04): every lane below
     // only reacts to kinds in [`BEFORE_CARD_PLAYED_POWERS_KINDS`]; when none
@@ -14309,30 +14354,68 @@ fn dispatch_before_card_played_powers_body(
     // independent of SpiritOfAsh sharing the same `total_block` accumulator —
     // same latch-and-emit-after-the-walk shape as `flash_sealed_throne`.
     let mut flash_danse_macabre = false;
+    // Veilpiercer (C# `VeilpiercerPower.BeforeCardPlayed`): each Ethereal card
+    // the owner plays consumes one charge (`PowerCmd.Decrement(this)`); the
+    // power is removed at 0 (`ShouldRemoveDueToAmount`), ending the cost-0
+    // effect wired in [`modify_card_cost`]. The cost reduction for THIS play
+    // was already applied during cost resolution (before this hook), so the
+    // energy paid is unaffected — matching the C# order
+    // (TryModifyEnergyCostInCombatLate at cost-calc time, Decrement here). The
+    // decrement runs IN listener order, though: a DanseMacabre listed after a
+    // Veilpiercer that this play removes re-reads the live cost (C#
+    // `GetResolved()` is not a snapshot) and sees the card's real cost —
+    // loadout Necrobinder 1309 (v0.107.1): an Ethereal REAP on the last
+    // Veilpiercer charge granted DanseMacabre block in C# (cs=6 rs=0). Bead
+    // `sts2-rs-4wppb`.
+    let mut veilpiercer_removed = false;
     for uid in player_power_uids.iter().copied() {
-        if let Some(power) = state.powers.get_by_id(uid.0) {
-            if power.amount <= 0 {
-                continue;
-            }
-            match power.kind {
-                PowerKind::DanseMacabre if resolved_cost >= 2 => {
+        let Some((kind, amount)) = state.powers.get_by_id(uid.0).map(|p| (p.kind, p.amount)) else {
+            continue;
+        };
+        if amount <= 0 {
+            continue;
+        }
+        match kind {
+            PowerKind::DanseMacabre => {
+                let cost = match card_uid {
+                    Some(cuid)
+                        if veilpiercer_removed
+                            && !state
+                                .cards
+                                .get(cuid.0.get() as usize - 1)
+                                .is_some_and(crate::cards::Card::is_x_cost) =>
+                    {
+                        effective_card_cost(state, cuid)
+                    }
+                    _ => resolved_cost,
+                };
+                if cost >= 2 {
                     flash_danse_macabre = true;
-                    total_block = total_block.saturating_add(power.amount);
+                    total_block = total_block.saturating_add(amount);
                 }
-                PowerKind::SpiritOfAsh if card_is_ethereal => {
-                    total_block = total_block.saturating_add(power.amount);
-                }
-                PowerKind::TheSealedThrone => {
-                    flash_sealed_throne = true;
-                    total_stars = total_stars.saturating_add(
-                        crate::powers::regent::the_sealed_throne_stars_on_before_play(
-                            power.amount,
-                            true,
-                        ),
-                    );
-                }
-                _ => {}
             }
+            PowerKind::SpiritOfAsh if card_is_ethereal => {
+                total_block = total_block.saturating_add(amount);
+            }
+            PowerKind::TheSealedThrone => {
+                flash_sealed_throne = true;
+                total_stars = total_stars.saturating_add(
+                    crate::powers::regent::the_sealed_throne_stars_on_before_play(amount, true),
+                );
+            }
+            PowerKind::Veilpiercer if card_is_ethereal => {
+                if amount <= 1 {
+                    state.powers.retain(|p| p.id != uid.0);
+                    state.player.powers.retain(|u| u.0 != uid.0);
+                    for c in &mut state.creatures {
+                        c.powers.retain(|u| u.0 != uid.0);
+                    }
+                    veilpiercer_removed = true;
+                } else if let Some(p) = state.powers.get_mut_by_id(uid.0) {
+                    p.amount -= 1;
+                }
+            }
+            _ => {}
         }
     }
     if flash_sealed_throne {
@@ -14351,43 +14434,6 @@ fn dispatch_before_card_played_powers_body(
         // (Rage/Afterimage/FeelNoPain/Shroud/Plating/SelfFormingClay/… all use
         // ValueProp.Unpowered in C#) rather than the prior MOVE simplification.
         crate::card_effects::gain_block_player_unpowered(state, total_block);
-    }
-
-    // Veilpiercer (C# `VeilpiercerPower.BeforeCardPlayed`): each Ethereal card
-    // the owner plays consumes one charge (`PowerCmd.Decrement(this)`); the
-    // power is removed at 0 (`ShouldRemoveDueToAmount`), ending the cost-0
-    // effect wired in [`modify_card_cost`]. The cost reduction for THIS play
-    // was already applied during cost resolution (before this hook), so the
-    // decrement only affects subsequent plays — matching the C# order
-    // (TryModifyEnergyCostInCombat at cost-calc time, Decrement here). Bead
-    // `sts2-rs-4wppb`.
-    if card_is_ethereal {
-        let veil_uids: SmallVec<[PowerUid; 2]> = player_power_uids
-            .iter()
-            .copied()
-            .filter(|uid| {
-                state
-                    .powers
-                    .iter()
-                    .any(|p| p.id == uid.0 && p.kind == PowerKind::Veilpiercer && p.amount > 0)
-            })
-            .collect();
-        for vuid in veil_uids {
-            let mut remove_pid = None;
-            if let Some(p) = state.powers.get_mut_by_id(vuid.0) {
-                p.amount = p.amount.saturating_sub(1);
-                if p.amount <= 0 {
-                    remove_pid = Some(vuid.0);
-                }
-            }
-            if let Some(pid) = remove_pid {
-                state.powers.retain(|p| p.id != pid);
-                state.player.powers.retain(|u| u.0 != pid);
-                for c in &mut state.creatures {
-                    c.powers.retain(|u| u.0 != pid);
-                }
-            }
-        }
     }
 
     // Strangle / SerpentForm / Afterimage per-card-played ticks use the
@@ -16489,6 +16535,71 @@ pub fn dispatch_after_card_played_other_creatures(state: &mut CombatState, ctx: 
         });
     }
 
+    // Galvanic (GlobeHead act-3 spawn-power): C# `GalvanicPower`
+    // (../sts2-wiki/decompiled/v0.103.2/MegaCrit.Sts2.Core.Models.Powers/GalvanicPower.cs).
+    // GalvanicPower has two behaviors: (1) at `BeforeCombatStart` (and on
+    // any later `AfterCardEnteredCombat`) it afflicts every player `Power`
+    // card with the `Galvanized` affliction (Amount=6); (2) at
+    // `AfterCardPlayed` (lines 50-57) it deals `base.Amount` (6) blockable
+    // self-damage to the player whenever the played card carries the
+    // `Galvanized` affliction:
+    //   `if (cardPlay.Card.Affliction is Galvanized)
+    //        CreatureCmd.Damage(context, cardPlay.Card.Owner.Creature,
+    //                           base.Amount, Unpowered | Move, …)`
+    // (no `Unblockable` flag, so the player's own block absorbs — Burn-class).
+    //
+    // Net-observable port (reference_card_affliction_powers_model_net_observable,
+    // the Tangled/Hex precedent): because *every* player Power card is
+    // Galvanized in C# (combat-start tagging + on-enter tagging), "the played
+    // card is Galvanized" is exactly equivalent to "the played card is a Power
+    // card, while a living GalvanicPower owner is in combat". We therefore gate
+    // the self-damage on `ctx.card_type == Power` + a living Galvanic owner,
+    // rather than threading the per-card `Galvanized` affliction (which would
+    // require a mutable `before_combat_start` tagging pass — a larger change).
+    // `dispatch_after_card_played` already fires AFTER the card body resolves,
+    // matching C#'s `AfterCardPlayed` timing. This is the directly-observable
+    // bug (DRUM_OF_BATTLE: player.hp 63 C# vs 69 Rust — the missing 6 self-damage).
+    //
+    // Galvanic only ever lives on a monster (GlobeHead applies it to self on
+    // spawn, see `MonsterKind::on_spawn_self_buffs`); iterating the whole arena
+    // is harmless. The damage is dealt for each living owner, matching C#'s
+    // per-power-instance `AfterCardPlayed` dispatch.
+    //
+    // Order: `Hook.AfterCardPlayed` walks each creature's powers in list order
+    // (`CombatState.IterateHookListeners`). GlobeHead fights alone
+    // (`GlobeHeadNormal`) and gets Galvanic on spawn, so Galvanic precedes
+    // every card-applied power on it: it runs before the Oblivion / Strangle /
+    // Slow lanes below. Oblivion first let Shroud's block soak the Galvanic
+    // hit (loadout Necrobinder 1122-v0.107.1: Neurosurge, C# block 3 -> 0,
+    // HP -3, then Shroud 0 -> 3; Rust 3 -> 6 -> 0, no HP lost).
+    // present_kinds lane gate (perf): no live Galvanic ⇒ nothing to collect.
+    if is_power && power_kind_live(state, PowerKind::Galvanic) {
+        let galvanic_owners = state
+            .powers
+            .iter()
+            .filter(|p| p.kind == PowerKind::Galvanic && p.amount > 0)
+            .filter(|p| {
+                state
+                    .creatures
+                    .iter()
+                    .any(|c| c.powers.iter().any(|pu| pu.0 == p.id) && c.current_hp > 0)
+            })
+            .map(|p| p.amount)
+            .collect::<SmallVec<[i32; 2]>>();
+        for amount in galvanic_owners {
+            // C# passes `cardSource = null`, so Rupture grants at once.
+            let prev = std::mem::replace(&mut state.combat_log.cardless_player_damage, true);
+            let _ = crate::combat_loop::apply_damage_to_player(
+                state,
+                CreatureRef::Player,
+                amount,
+                ValueProps::UNPOWERED.union(ValueProps::MOVE),
+                None,
+            );
+            state.combat_log.cardless_player_damage = prev;
+        }
+    }
+
     // ── React: VitalSpark (Infested Prism, enemy power) ────────────────
     // C# `VitalSparkPower.AfterCardPlayed` (v0.107.1, `VitalSparkPower.cs`):
     // `if (cardPlay.Card.Affliction is Tainted) { Flash(); await
@@ -16709,63 +16820,6 @@ pub fn dispatch_after_card_played_other_creatures(state: &mut CombatState, ctx: 
     // enemy lanes) — see bead `sts2-rs-after-card-played-power-order-w2i4c`. The
     // old standalone block here ran after the enemy lanes (Slow/Oblivion/
     // Strangle), the wrong side of C#'s allies-before-enemies listener order.
-
-    // Galvanic (GlobeHead act-3 spawn-power): C# `GalvanicPower`
-    // (../sts2-wiki/decompiled/v0.103.2/MegaCrit.Sts2.Core.Models.Powers/GalvanicPower.cs).
-    // GalvanicPower has two behaviors: (1) at `BeforeCombatStart` (and on
-    // any later `AfterCardEnteredCombat`) it afflicts every player `Power`
-    // card with the `Galvanized` affliction (Amount=6); (2) at
-    // `AfterCardPlayed` (lines 50-57) it deals `base.Amount` (6) blockable
-    // self-damage to the player whenever the played card carries the
-    // `Galvanized` affliction:
-    //   `if (cardPlay.Card.Affliction is Galvanized)
-    //        CreatureCmd.Damage(context, cardPlay.Card.Owner.Creature,
-    //                           base.Amount, Unpowered | Move, …)`
-    // (no `Unblockable` flag, so the player's own block absorbs — Burn-class).
-    //
-    // Net-observable port (reference_card_affliction_powers_model_net_observable,
-    // the Tangled/Hex precedent): because *every* player Power card is
-    // Galvanized in C# (combat-start tagging + on-enter tagging), "the played
-    // card is Galvanized" is exactly equivalent to "the played card is a Power
-    // card, while a living GalvanicPower owner is in combat". We therefore gate
-    // the self-damage on `ctx.card_type == Power` + a living Galvanic owner,
-    // rather than threading the per-card `Galvanized` affliction (which would
-    // require a mutable `before_combat_start` tagging pass — a larger change).
-    // `dispatch_after_card_played` already fires AFTER the card body resolves,
-    // matching C#'s `AfterCardPlayed` timing. This is the directly-observable
-    // bug (DRUM_OF_BATTLE: player.hp 63 C# vs 69 Rust — the missing 6 self-damage).
-    //
-    // Galvanic only ever lives on a monster (GlobeHead applies it to self on
-    // spawn, see `MonsterKind::on_spawn_self_buffs`); iterating the whole arena
-    // is harmless. The damage is dealt for each living owner, matching C#'s
-    // per-power-instance `AfterCardPlayed` dispatch.
-    // present_kinds lane gate (perf): no live Galvanic ⇒ nothing to collect.
-    if is_power && power_kind_live(state, PowerKind::Galvanic) {
-        let galvanic_owners = state
-            .powers
-            .iter()
-            .filter(|p| p.kind == PowerKind::Galvanic && p.amount > 0)
-            .filter(|p| {
-                state
-                    .creatures
-                    .iter()
-                    .any(|c| c.powers.iter().any(|pu| pu.0 == p.id) && c.current_hp > 0)
-            })
-            .map(|p| p.amount)
-            .collect::<SmallVec<[i32; 2]>>();
-        for amount in galvanic_owners {
-            // C# passes `cardSource = null`, so Rupture grants at once.
-            let prev = std::mem::replace(&mut state.combat_log.cardless_player_damage, true);
-            let _ = crate::combat_loop::apply_damage_to_player(
-                state,
-                CreatureRef::Player,
-                amount,
-                ValueProps::UNPOWERED.union(ValueProps::MOVE),
-                None,
-            );
-            state.combat_log.cardless_player_damage = prev;
-        }
-    }
 
     // ── React: CurlUp (enemy, LouseProgenitor) ─────────────────────────
     // C# `CurlUpPower.AfterCardPlayed`: when the card that triggered the curl
@@ -33512,7 +33566,7 @@ mod power_hook_liveness {
         },
         HookSource {
             hook: PowerHook::BeforeCardPlayedPowers,
-            wrapper: "dispatch_before_card_played_powers",
+            wrapper: "dispatch_before_card_played_powers_for_card",
             bodies: &[
                 "dispatch_before_card_played_powers_body",
                 "arm_storm_snapshot",
@@ -33825,7 +33879,7 @@ mod power_hook_liveness {
             }
             PowerHook::AfterEnergySpent => super::dispatch_after_energy_spent_body(s, 4),
             PowerHook::BeforeCardPlayedPowers => {
-                super::dispatch_before_card_played_powers_body(s, 2, p.card.is_some());
+                super::dispatch_before_card_played_powers_body(s, 2, p.card.is_some(), None);
             }
             PowerHook::AfterModifyingCardPlayCount => {
                 let ctx = CardCtx {

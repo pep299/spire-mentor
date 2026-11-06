@@ -1,56 +1,27 @@
 {
- "config": {
-  "c_puct": 2.5,
-  "depth": 200,
-  "draw_widening_c": 2.0,
-  "hidden_info": "beliefdraw",
-  "seed": 1,
-  "sims": 48,
-  "threads": 1
+ "final_turn_histogram": {
+  "4": 1
  },
- "pv": null,
- "scores": [
+ "n_losses": 2,
+ "n_runs": 2,
+ "pattern_tags": {},
+ "representative_losses": [
   {
-   "action": "STRIKE_NECROBINDER.title",
-   "hp_n": 0,
-   "hp_sd": null,
-   "is_best": true,
-   "low_confidence": false,
-   "mean_final_hp": null,
-   "q": 1.1724,
-   "q_saturated": false,
-   "stable_idx": 4,
-   "target_index": null,
-   "visits": 16,
-   "win_prob": 1.0
+   "enemy_min_pct": 2.381,
+   "final_turn": 4,
+   "stem": "20260101_000000_Necrobinder_G0LDEN0001",
+   "turn1_q": null
   },
   {
-   "action": "DEFEND_NECROBINDER.title",
-   "hp_n": 0,
-   "hp_sd": null,
-   "is_best": false,
-   "low_confidence": false,
-   "mean_final_hp": null,
-   "q": 1.1822,
-   "q_saturated": false,
-   "stable_idx": 0,
-   "target_index": null,
-   "visits": 16,
-   "win_prob": 1.0
-  },
-  {
-   "action": "end turn",
-   "hp_n": 0,
-   "hp_sd": null,
-   "is_best": false,
-   "low_confidence": false,
-   "mean_final_hp": null,
-   "q": 1.1632,
-   "q_saturated": false,
-   "stable_idx": -1,
-   "target_index": null,
-   "visits": 16,
-   "win_prob": 1.0
+   "enemy_min_pct": 2.381,
+   "final_turn": null,
+   "stem": "20260101_000000_Necrobinder_G0LDEN0001_2",
+   "turn1_q": null
   }
- ]
+ ],
+ "turn1_q": {
+  "max": null,
+  "mean": null,
+  "min": null
+ }
 }

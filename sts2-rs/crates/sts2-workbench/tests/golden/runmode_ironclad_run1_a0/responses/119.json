@@ -1,65 +1,138 @@
 {
  "debug": {
-  "action": "End turn",
+  "action": "Play Headbutt → Mawler",
   "combat_search": {
    "actions": [
+    {
+     "action": {
+      "action": "play",
+      "card_index": 2,
+      "target_index": 0
+     },
+     "bucket": "likely-loss",
+     "hp_n": 3,
+     "hp_sd": 0.0,
+     "is_best": false,
+     "losses": 3,
+     "low_confidence": false,
+     "mean_final_hp": 0.0,
+     "p_loss": 1.0,
+     "p_tie": 0.0,
+     "p_win": 0.0,
+     "q": -1.27,
+     "q_saturated": false,
+     "ties": 0,
+     "value": -1.0,
+     "value_sum": -3.81,
+     "visits": 3,
+     "wins": 0
+    },
+    {
+     "action": {
+      "action": "play",
+      "card_index": 0,
+      "target_index": null
+     },
+     "bucket": "likely-loss",
+     "hp_n": 3,
+     "hp_sd": 0.0,
+     "is_best": false,
+     "losses": 3,
+     "low_confidence": false,
+     "mean_final_hp": 0.0,
+     "p_loss": 1.0,
+     "p_tie": 0.0,
+     "p_win": 0.0,
+     "q": -1.3,
+     "q_saturated": false,
+     "ties": 0,
+     "value": -1.0,
+     "value_sum": -3.9,
+     "visits": 3,
+     "wins": 0
+    },
+    {
+     "action": {
+      "action": "play",
+      "card_index": 3,
+      "target_index": 0
+     },
+     "bucket": "likely-loss",
+     "hp_n": 3,
+     "hp_sd": 0.0,
+     "is_best": true,
+     "losses": 3,
+     "low_confidence": false,
+     "mean_final_hp": 0.0,
+     "p_loss": 1.0,
+     "p_tie": 0.0,
+     "p_win": 0.0,
+     "q": -1.2567,
+     "q_saturated": false,
+     "ties": 0,
+     "value": -1.0,
+     "value_sum": -3.77,
+     "visits": 3,
+     "wins": 0
+    },
     {
      "action": {
       "action": "end_turn"
      },
      "bucket": "likely-loss",
-     "hp_n": 0,
-     "hp_sd": null,
-     "is_best": true,
-     "losses": 0,
+     "hp_n": 3,
+     "hp_sd": 0.0,
+     "is_best": false,
+     "losses": 3,
      "low_confidence": false,
-     "mean_final_hp": null,
-     "p_loss": 0.0,
+     "mean_final_hp": 0.0,
+     "p_loss": 1.0,
      "p_tie": 0.0,
      "p_win": 0.0,
-     "q": 0.0,
+     "q": -1.3,
      "q_saturated": false,
      "ties": 0,
-     "value": 0.0,
-     "value_sum": 0.0,
-     "visits": 0,
+     "value": -1.0,
+     "value_sum": -3.9,
+     "visits": 3,
      "wins": 0
     }
    ],
    "recommended": {
-    "action": "end_turn"
+    "action": "play",
+    "card_index": 3,
+    "target_index": 0
    }
   },
   "is_combat": true,
   "phase": "combat",
   "result": "Advanced",
-  "summary": "combat MCTS → End turn"
+  "summary": "combat MCTS → Play Headbutt → Mawler"
  },
  "done": false,
  "error": null,
  "over": false,
  "search": {
-  "action": "End turn",
+  "action": "Play Headbutt → Mawler",
   "enemies": [
    {
     "block": 0,
-    "hp": 49,
+    "hp": 33,
     "index": 0,
     "intents": [
      {
-      "damage": 4,
-      "hits": 2,
+      "damage": 14,
       "type": "Attack"
      }
     ],
     "kind": "Mawler",
     "max_hp": 72,
-    "move_state": "CLAW",
+    "move_state": "RIP_AND_TEAR",
     "name": "Mawler",
     "powers": [
      {
-      "amount": 1,
-      "display_amount": 1,
+      "amount": 2,
+      "display_amount": 2,
       "id": "VULNERABLE",
       "name": "Vulnerable"
      }
@@ -69,22 +142,82 @@
   ],
   "scores": [
    {
-    "action": "end turn",
-    "hp_n": 0,
-    "hp_sd": null,
+    "action": "Headbutt",
+    "hp_n": 3,
+    "hp_sd": 0.0,
     "in_band": false,
     "is_best": true,
-    "losses": 0,
+    "losses": 3,
     "low_confidence": false,
-    "mean_final_hp": null,
+    "mean_final_hp": 0.0,
     "pick_rank": null,
     "pick_reason": null,
-    "q": 0.0,
+    "q": -1.2567,
+    "q_saturated": false,
+    "stable_idx": 3,
+    "target_index": 0,
+    "ties": 0,
+    "visits": 3,
+    "win_prob": 0.0,
+    "wins": 0
+   },
+   {
+    "action": "Strike",
+    "hp_n": 3,
+    "hp_sd": 0.0,
+    "in_band": false,
+    "is_best": false,
+    "losses": 3,
+    "low_confidence": false,
+    "mean_final_hp": 0.0,
+    "pick_rank": null,
+    "pick_reason": null,
+    "q": -1.27,
+    "q_saturated": false,
+    "stable_idx": 2,
+    "target_index": 0,
+    "ties": 0,
+    "visits": 3,
+    "win_prob": 0.0,
+    "wins": 0
+   },
+   {
+    "action": "Defend",
+    "hp_n": 3,
+    "hp_sd": 0.0,
+    "in_band": false,
+    "is_best": false,
+    "losses": 3,
+    "low_confidence": false,
+    "mean_final_hp": 0.0,
+    "pick_rank": null,
+    "pick_reason": null,
+    "q": -1.3,
+    "q_saturated": false,
+    "stable_idx": 0,
+    "target_index": null,
+    "ties": 0,
+    "visits": 3,
+    "win_prob": 0.0,
+    "wins": 0
+   },
+   {
+    "action": "end turn",
+    "hp_n": 3,
+    "hp_sd": 0.0,
+    "in_band": false,
+    "is_best": false,
+    "losses": 3,
+    "low_confidence": false,
+    "mean_final_hp": 0.0,
+    "pick_rank": null,
+    "pick_reason": null,
+    "q": -1.3,
     "q_saturated": false,
     "stable_idx": -1,
     "target_index": null,
     "ties": 0,
-    "visits": 0,
+    "visits": 3,
     "win_prob": 0.0,
     "wins": 0
    }
@@ -118,9 +251,48 @@
    "bg_row": 6,
    "bg_seed": 1,
    "decision": "combat_play",
-   "discard_pile": [],
-   "discard_pile_count": 0,
+   "discard_pile": [
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "red",
+     "cost": 1,
+     "description": "Deal 9 damage.\nPut a card from your Discard Pile on top of your Draw Pile.",
+     "description_rich": "Deal 9 damage.\nPut a card from your [gold]Discard Pile[/gold] on top of your [gold]Draw Pile[/gold].",
+     "id": "HEADBUTT",
+     "image": "https://assets.test/card_atlas/ironclad/headbutt.png",
+     "index": -1,
+     "name": "Headbutt",
+     "rarity": "Common",
+     "stats": {
+      "damage": 9
+     },
+     "target_type": "None",
+     "type": "Attack",
+     "upgraded": false
+    }
+   ],
+   "discard_pile_count": 1,
    "draw_pile": [
+    {
+     "base_cost": 2,
+     "can_play": false,
+     "color": "red",
+     "cost": 2,
+     "description": "Deal 8 damage.\nApply 2 Vulnerable.",
+     "description_rich": "Deal 8 damage.\nApply 2 [gold]Vulnerable[/gold].",
+     "id": "BASH",
+     "image": "https://assets.test/card_atlas/ironclad/bash.png",
+     "index": -1,
+     "name": "Bash",
+     "rarity": "Basic",
+     "stats": {
+      "damage": 8
+     },
+     "target_type": "None",
+     "type": "Attack",
+     "upgraded": false
+    },
     {
      "base_cost": 2,
      "can_play": false,
@@ -311,11 +483,11 @@
      "upgraded": false
     }
    ],
-   "draw_pile_count": 10,
+   "draw_pile_count": 11,
    "enemies": [
     {
      "block": 0,
-     "hp": 41,
+     "hp": 20,
      "image": "https://assets.test/monsters/mawler.png",
      "index": 0,
      "intents": [
@@ -329,7 +501,16 @@
      "max_hp": 72,
      "move_state": "RIP_AND_TEAR",
      "name": "Mawler",
-     "powers": [],
+     "powers": [
+      {
+       "amount": 2,
+       "display_amount": 2,
+       "id": "VULNERABLE",
+       "image": "https://assets.test/power_atlas/vulnerable_power.png",
+       "image_big": "https://assets.test/power_big/vulnerable_power.png",
+       "name": "Vulnerable"
+      }
+     ],
      "rig": "https://assets.test/monster_rigs/mawler/mawler",
      "rig_bounds_h": 327.0,
      "rig_bounds_w": 510.0,
@@ -337,44 +518,22 @@
      "uid": 2
     }
    ],
-   "energy": 3,
+   "energy": 0,
    "energy_image": "https://assets.test/sprite_fonts/ironclad_energy_icon.png",
    "exhaust_pile": [],
    "exhaust_pile_count": 0,
    "floor": 7,
    "hand": [
     {
-     "base_cost": 2,
-     "can_play": true,
-     "color": "red",
-     "cost": 2,
-     "damage_preview": {
-      "0": 8
-     },
-     "description": "Deal 8 damage.\nApply 2 Vulnerable.",
-     "description_rich": "Deal 8 damage.\nApply 2 [gold]Vulnerable[/gold].",
-     "id": "BASH",
-     "image": "https://assets.test/card_atlas/ironclad/bash.png",
-     "index": 0,
-     "name": "Bash",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 8
-     },
-     "target_type": "AnyEnemy",
-     "type": "Attack",
-     "upgraded": false
-    },
-    {
      "base_cost": 1,
-     "can_play": true,
+     "can_play": false,
      "color": "red",
      "cost": 1,
      "description": "Gain 5 Block.",
      "description_rich": "Gain 5 [gold]Block[/gold].",
      "id": "DEFEND_IRONCLAD",
      "image": "https://assets.test/card_atlas/ironclad/defend_ironclad.png",
-     "index": 1,
+     "index": 0,
      "name": "Defend",
      "rarity": "Basic",
      "stats": {
@@ -382,18 +541,19 @@
      },
      "target_type": "None",
      "type": "Skill",
+     "unplayable_reason": "cost",
      "upgraded": false
     },
     {
      "base_cost": 2,
-     "can_play": true,
+     "can_play": false,
      "color": "red",
      "cost": 2,
      "description": "Gain 12 Block.\nWhenever you are attacked this turn, deal 4 damage back.",
      "description_rich": "Gain 12 [gold]Block[/gold].\nWhenever you are attacked this turn, deal 4 damage back.",
      "id": "FLAME_BARRIER",
      "image": "https://assets.test/card_atlas/ironclad/flame_barrier.png",
-     "index": 2,
+     "index": 1,
      "name": "Flame Barrier",
      "rarity": "Uncommon",
      "stats": {
@@ -401,50 +561,30 @@
      },
      "target_type": "None",
      "type": "Skill",
+     "unplayable_reason": "cost",
      "upgraded": false
     },
     {
      "base_cost": 1,
-     "can_play": true,
-     "color": "red",
-     "cost": 1,
-     "damage_preview": {
-      "0": 6
-     },
-     "description": "Deal 6 damage.",
-     "description_rich": "Deal 6 damage.",
-     "id": "STRIKE_IRONCLAD",
-     "image": "https://assets.test/card_atlas/ironclad/strike_ironclad.png",
-     "index": 3,
-     "name": "Strike",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 6
-     },
-     "target_type": "AnyEnemy",
-     "type": "Attack",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": true,
+     "can_play": false,
      "color": "red",
      "cost": 1,
      "damage_preview": {
       "0": 9
      },
-     "description": "Deal 9 damage.\nPut a card from your Discard Pile on top of your Draw Pile.",
-     "description_rich": "Deal 9 damage.\nPut a card from your [gold]Discard Pile[/gold] on top of your [gold]Draw Pile[/gold].",
-     "id": "HEADBUTT",
-     "image": "https://assets.test/card_atlas/ironclad/headbutt.png",
-     "index": 4,
-     "name": "Headbutt",
-     "rarity": "Common",
+     "description": "Deal 6 damage.",
+     "description_rich": "Deal 6 damage.",
+     "id": "STRIKE_IRONCLAD",
+     "image": "https://assets.test/card_atlas/ironclad/strike_ironclad.png",
+     "index": 2,
+     "name": "Strike",
+     "rarity": "Basic",
      "stats": {
-      "damage": 9
+      "damage": 6
      },
-     "target_type": "AnyEnemy",
+     "target_type": "None",
      "type": "Attack",
+     "unplayable_reason": "cost",
      "upgraded": false
     }
    ],
@@ -453,29 +593,103 @@
     "actions": [
      {
       "action": {
+       "action": "play",
+       "card_index": 2,
+       "target_index": 0
+      },
+      "bucket": "likely-loss",
+      "hp_n": 3,
+      "hp_sd": 0.0,
+      "is_best": false,
+      "losses": 3,
+      "low_confidence": false,
+      "mean_final_hp": 0.0,
+      "p_loss": 1.0,
+      "p_tie": 0.0,
+      "p_win": 0.0,
+      "q": -1.27,
+      "q_saturated": false,
+      "ties": 0,
+      "value": -1.0,
+      "value_sum": -3.81,
+      "visits": 3,
+      "wins": 0
+     },
+     {
+      "action": {
+       "action": "play",
+       "card_index": 0,
+       "target_index": null
+      },
+      "bucket": "likely-loss",
+      "hp_n": 3,
+      "hp_sd": 0.0,
+      "is_best": false,
+      "losses": 3,
+      "low_confidence": false,
+      "mean_final_hp": 0.0,
+      "p_loss": 1.0,
+      "p_tie": 0.0,
+      "p_win": 0.0,
+      "q": -1.3,
+      "q_saturated": false,
+      "ties": 0,
+      "value": -1.0,
+      "value_sum": -3.9,
+      "visits": 3,
+      "wins": 0
+     },
+     {
+      "action": {
+       "action": "play",
+       "card_index": 3,
+       "target_index": 0
+      },
+      "bucket": "likely-loss",
+      "hp_n": 3,
+      "hp_sd": 0.0,
+      "is_best": true,
+      "losses": 3,
+      "low_confidence": false,
+      "mean_final_hp": 0.0,
+      "p_loss": 1.0,
+      "p_tie": 0.0,
+      "p_win": 0.0,
+      "q": -1.2567,
+      "q_saturated": false,
+      "ties": 0,
+      "value": -1.0,
+      "value_sum": -3.77,
+      "visits": 3,
+      "wins": 0
+     },
+     {
+      "action": {
        "action": "end_turn"
       },
       "bucket": "likely-loss",
-      "hp_n": 0,
-      "hp_sd": null,
-      "is_best": true,
-      "losses": 0,
+      "hp_n": 3,
+      "hp_sd": 0.0,
+      "is_best": false,
+      "losses": 3,
       "low_confidence": false,
-      "mean_final_hp": null,
-      "p_loss": 0.0,
+      "mean_final_hp": 0.0,
+      "p_loss": 1.0,
       "p_tie": 0.0,
       "p_win": 0.0,
-      "q": 0.0,
+      "q": -1.3,
       "q_saturated": false,
       "ties": 0,
-      "value": 0.0,
-      "value_sum": 0.0,
-      "visits": 0,
+      "value": -1.0,
+      "value_sum": -3.9,
+      "visits": 3,
       "wins": 0
      }
     ],
     "recommended": {
-     "action": "end_turn"
+     "action": "play",
+     "card_index": 3,
+     "target_index": 0
     }
    },
    "options": [],
@@ -708,6 +922,6 @@
    "round": 4
   }
  },
- "steps": 2,
+ "steps": 3,
  "victory": false
 }

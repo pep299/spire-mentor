@@ -12,7 +12,30 @@ pub(crate) fn play_fight_me(state: &mut CombatState, target: Option<CreatureUid>
     let _ = deal_damage_player_to_enemy(state, t, dmg);
     let player_str = if current_upgraded(state) { 4 } else { 3 };
     apply_power_to_player(state, PowerKind::Strength, player_str);
+    let strength_uid = |state: &CombatState| {
+        state.creatures.iter().find(|c| c.id == t.0).and_then(|c| {
+            c.powers.iter().copied().find(|u| {
+                state
+                    .powers
+                    .get_by_id(u.0)
+                    .is_some_and(|p| p.kind == PowerKind::Strength)
+            })
+        })
+    };
+    let had_strength = strength_uid(state).is_some();
     apply_power_to_enemy(state, t, PowerKind::Strength, 1);
+    // C# applies the enemy's Strength with `base.Owner.Creature` as applier
+    // (FightMe.cs:41). The applier-less surface stamps a fresh enemy
+    // Strength as the enemy's own buff, so restamp a fresh instance with the
+    // player; a stack keeps the instance's original applier, as in C#.
+    if !had_strength {
+        if let Some(uid) = strength_uid(state) {
+            let player = state.player.creature_uid;
+            if let Some(p) = state.powers.get_mut_by_id(uid.0) {
+                p.applier = player;
+            }
+        }
+    }
     EffectResult::Resolved
 }
 

@@ -1,0 +1,55 @@
+{
+ "base": {
+  "block": 34.9,
+  "damage": 33.0,
+  "velocity": 22.1,
+  "volume": 29.4
+ },
+ "candidates": [
+  {
+   "delta": {
+    "block": -1.8,
+    "damage": 0.1,
+    "velocity": -5.4,
+    "volume": -3.0
+   },
+   "index": 0,
+   "scores": {
+    "block": 33.1,
+    "damage": 33.1,
+    "velocity": 16.7,
+    "volume": 26.4
+   }
+  },
+  {
+   "delta": {
+    "block": -1.0,
+    "damage": -0.9,
+    "velocity": -2.5,
+    "volume": -1.7
+   },
+   "index": 1,
+   "scores": {
+    "block": 33.9,
+    "damage": 32.1,
+    "velocity": 19.6,
+    "volume": 27.7
+   }
+  },
+  {
+   "delta": {
+    "block": 5.2,
+    "damage": -1.6,
+    "velocity": 11.1,
+    "volume": 5.3
+   },
+   "index": 2,
+   "scores": {
+    "block": 40.1,
+    "damage": 31.4,
+    "velocity": 33.2,
+    "volume": 34.7
+   }
+  }
+ ]
+}

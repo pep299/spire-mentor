@@ -3400,6 +3400,40 @@ mod tests {
         );
     }
 
+    /// A HistoryCourse dupe auto-played under Hex is Ethereal when its play
+    /// finishes (`HexPower.AfterCardEnteredCombat` afflicts it Hexed, and
+    /// `CardPlayFinishedEntry.WasEthereal` reads the live keywords), so
+    /// Banshee's Cry in the draw pile drops by 2 (`BansheesCry.AfterCardPlayed`).
+    /// The auto-play tally read only the static keyword (loadout Necrobinder
+    /// 1067: a Hexed Sovereign Blade dupe, Banshee's Cry cs=7 rs=9).
+    #[test]
+    fn listener_history_course_hexed_dupe_discounts_banshees_cry() {
+        use sts2_core::cards::CardId;
+        crate::relics::dispatch::ensure_installed();
+        crate::cards::dispatch::install_default_registry();
+        let mut state = CombatState::default();
+        let _enemy = history_course_setup(&mut state, 2);
+        let player = state.player.creature_uid.expect("player");
+        sts2_core::card_effects::apply_power_to_creature(
+            &mut state,
+            player,
+            sts2_core::PowerKind::Hex,
+            2,
+        );
+        let mut banshee = crate::cards::spec_index::card_pod_from_id(CardId::BansheesCry, false)
+            .expect("banshee pod");
+        let buid = sts2_core::CardUid::new(u32::try_from(state.cards.len() + 1).expect("fits"))
+            .expect("nz");
+        banshee.uid = buid;
+        state.cards.push(banshee);
+        state.player.draw.push(buid);
+        state.combat_log.prev_round_last_attack_skill_played =
+            Some((CardId::StrikeIronclad, false, None));
+        let _ = sts2_core::relic_effects::dispatch_before_play_phase_start(&mut state);
+        assert_eq!(state.combat_log.ethereal_cards_played_this_combat, 1);
+        assert_eq!(sts2_core::hooks::effective_card_cost(&state, buid), 7);
+    }
+
     /// The HistoryCourse dupe records a `CardPlayFinished` in C#
     /// (`CardModel.cs:1523`), so it must advance the combat-wide
     /// `player_card_plays_this_combat` counter that `GoldAxe.CalculatedDamage`

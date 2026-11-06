@@ -333,7 +333,13 @@ pub fn deal_damage_from_osty_to_enemy(
         return 0;
     };
     let card = originating_card_id(state);
-    damage::apply_damage(state, dealer, target_uid, base, ValueProps::MOVE, card)
+    // One `AttackCommand` even when the target is already dead: C# still runs
+    // it (no hit) and its `AfterAttack` (BoneFlute) — a replayed Unleash /
+    // Snap whose first play killed the target (loadout Necrobinder
+    // 1038-v0.111.0, 1192-v0.107.1).
+    osty_attack_command(state, |state| {
+        damage::apply_damage(state, dealer, target_uid, base, ValueProps::MOVE, card)
+    })
 }
 
 /// Run `f` as ONE Osty `AttackCommand`: its hits leave
@@ -350,6 +356,16 @@ pub fn osty_attack_command<R>(state: &mut CombatState, f: impl FnOnce(&mut Comba
     if !outer {
         state.combat_log.osty_attacks_this_turn =
             state.combat_log.osty_attacks_this_turn.saturating_add(1);
+        // `Hook.AfterAttack` runs after the hit loop even when no hit landed
+        // (`AttackCommand.cs:551-673`: no live target breaks the loop), so the
+        // command owes `BoneFlute.AfterAttack`'s block either way. Bone Shards
+        // into a lone reviving TestSubject (Adaptable) hits nothing and still
+        // grants +2 (loadout Necrobinder 1192-v0.111.0). Hits latch it too
+        // (`bone_flute::on_after_damage_given_bone_flute`); it is a flag, so
+        // the command grants once.
+        if !state.is_over {
+            state.combat_log.bone_flute_latched = true;
+        }
     }
     r
 }
@@ -934,7 +950,7 @@ pub fn apply_power_to_creature(
     amount: i32,
 ) {
     apply_power_to_creature_inner(
-        state, target_uid, kind, amount, /*allow_dead=*/ false, false,
+        state, target_uid, kind, amount, /*allow_dead=*/ false, false, None,
     );
 }
 
@@ -950,7 +966,7 @@ pub fn apply_power_to_creature_cardless(
     amount: i32,
 ) {
     apply_power_to_creature_inner(
-        state, target_uid, kind, amount, /*allow_dead=*/ false, true,
+        state, target_uid, kind, amount, /*allow_dead=*/ false, true, None,
     );
 }
 
@@ -971,7 +987,7 @@ pub fn apply_power_to_creature_allow_dead(
     amount: i32,
 ) {
     apply_power_to_creature_inner(
-        state, target_uid, kind, amount, /*allow_dead=*/ true, false,
+        state, target_uid, kind, amount, /*allow_dead=*/ true, false, None,
     );
 }
 
@@ -1065,6 +1081,11 @@ pub fn apply_signed_power_to_creature_allow_dead(
     }
 }
 
+/// A temporary-Strength debuff's Strength leg, run by
+/// [`apply_power_to_creature_inner`] with the post-fold amount — see
+/// [`apply_temporary_strength_debuff`].
+type TemporaryStrengthLeg = fn(&mut CombatState, CreatureUid, i32);
+
 fn apply_power_to_creature_inner(
     state: &mut CombatState,
     target_uid: CreatureUid,
@@ -1072,6 +1093,7 @@ fn apply_power_to_creature_inner(
     amount: i32,
     allow_dead: bool,
     cardless: bool,
+    strength_leg: Option<TemporaryStrengthLeg>,
 ) {
     if amount <= 0 {
         return;
@@ -1085,9 +1107,12 @@ fn apply_power_to_creature_inner(
     if state.is_over {
         return;
     }
-    let Some(creature_idx) = crate::creature_pos(&state.creatures, target_uid.0).filter(|&i| {
-        state.creatures[i].current_hp > 0 || (allow_dead && corpses_can_receive_powers(state))
-    }) else {
+    let can_receive = |state: &CombatState| {
+        crate::creature_pos(&state.creatures, target_uid.0).filter(|&i| {
+            state.creatures[i].current_hp > 0 || (allow_dead && corpses_can_receive_powers(state))
+        })
+    };
+    let Some(mut creature_idx) = can_receive(state) else {
         return;
     };
 
@@ -1122,6 +1147,21 @@ fn apply_power_to_creature_inner(
     let amount = crate::coop::scale_enemy_power(state, target_uid, kind, amount);
     if amount <= 0 {
         return;
+    }
+
+    // A fresh temporary-Strength debuff runs `BeforeApplied` (its Strength
+    // leg) BEFORE it lands, and lands only `if (target.CanReceivePowers)`
+    // (PowerCmd.cs:132-135 v0.111.0) — the leg's reactors can kill the target.
+    // A stack instead goes through `ModifyAmount`, and the leg follows the
+    // change (`TemporaryStrengthPower.AfterPowerAmountChanged`), below.
+    if let Some(leg) = strength_leg {
+        if existing_power_uid_unioned(state, creature_idx, target_uid, kind).is_none() {
+            leg(state, target_uid, amount);
+            match can_receive(state) {
+                Some(i) => creature_idx = i,
+                None => return,
+            }
+        }
     }
 
     // Event log (C# `PowerReceivedEntry`). This entry point carries no
@@ -1214,6 +1254,9 @@ fn apply_power_to_creature_inner(
                 c.powers.retain(|u| u.0 != pid);
             }
         }
+        if let Some(leg) = strength_leg {
+            leg(state, target_uid, amount);
+        }
         return;
     }
 
@@ -1225,12 +1268,13 @@ fn apply_power_to_creature_inner(
         .max()
         .map_or(1, |m| m.saturating_add(1));
     let new_id = NonZeroU32::new(next_id_raw).expect("power id non-zero");
+    let applier = enemy_self_attribute_applier(state, target_uid, kind);
     state.powers.push(Power {
         id: new_id,
         kind,
         amount,
         counter: 0,
-        applier: None,
+        applier,
         // Bead `sts2-rs-st9tl`: defer the first decrement tick for
         // Vulnerable / Weak / Frail, but ONLY when the target is the
         // player. Mirrors C# `PowerCmd.Apply` (PowerCmd.cs:104-106):
@@ -1266,6 +1310,85 @@ fn apply_power_to_creature_inner(
     let _ = crate::monster_power_effects::dispatch_after_applied_for_power(
         state, target_uid, kind, None,
     );
+}
+
+/// The C# `Applier` a fresh Strength / Dexterity / Focus instance gets when
+/// it lands on an ENEMY through the applier-less positive surface
+/// ([`apply_power_to_creature`]): the enemy itself.
+///
+/// A positive attribute on an enemy is a monster buff — Rocket's
+/// `PowerCmd.Apply<StrengthPower>(base.Creature, 2, base.Creature, null)`,
+/// Crusher's Adapt, CrabRage (`base.Owner, ..., base.Owner`) — and C# keeps
+/// the creating applier for the instance's lifetime (`PowerCmd.Apply` sets
+/// `Applier` only on a fresh instance, PowerCmd.cs:113-119; a stack goes
+/// through `ModifyAmount`). The instance can later read as a Debuff once a
+/// player drain takes it negative, and Misery then copies it with that
+/// monster applier, so Sleight of Flesh (`applier == Owner`) does not react.
+/// Rust left it `None`, which Misery reads as player-applied: loadout
+/// Necrobinder 1210-v0.107.1, Misery on Rocket (Strength 2 -> -7 under Dark
+/// Shackles) fired Sleight of Flesh on the copied Strength too (C# 37 -> 28
+/// -> 22, Rust 37 -> 13). A player card that grants an enemy Strength (Fight
+/// Me) restamps its fresh instance.
+fn enemy_self_attribute_applier(
+    state: &CombatState,
+    target_uid: CreatureUid,
+    kind: PowerKind,
+) -> Option<CreatureUid> {
+    (matches!(
+        kind,
+        PowerKind::Strength | PowerKind::Dexterity | PowerKind::Focus
+    ) && state.enemy_uids.contains(&target_uid))
+    .then_some(target_uid)
+}
+
+/// C# `PowerCmd.Apply` of a temporary-Strength DEBUFF (a
+/// `TemporaryStrengthPower` with `IsPositive => false`: CrushUnder,
+/// DarkShackles, DyingStar, EnfeeblingTouch, ManglePower, PiercingWail,
+/// ShacklingPotion, ...) to `target_uid`, Strength leg included.
+///
+/// The leg is `Strength -amount` with the MODIFIED amount (after Unsettling
+/// Lamp's x2 / Artifact's 0; the Lamp's `HasDoubledTemporaryPowerSource`
+/// keeps the leg itself from doubling again). Order follows C#:
+/// * a fresh power: `BeforeApplied` drains the Strength first, then the power
+///   lands `if (target.CanReceivePowers)` (PowerCmd.cs:132-135 v0.111.0,
+///   TemporaryStrengthPower.cs:134-136). The drain fires Sleight of Flesh,
+///   which can kill the target first: a dying Parafright (reviving
+///   IllusionPower, `ShouldAllowHitting` false) ends with the Strength but
+///   without the power (loadout Necrobinder 1189 v0.111.0: Shackling Potion,
+///   then Dark Shackles);
+/// * a stack: `ModifyAmount`, then `AfterPowerAmountChanged` drains
+///   (TemporaryStrengthPower.cs:139-145).
+///
+/// The per-card ports applied the power and then drained what landed, which
+/// gets the amount right but not the order.
+pub fn apply_temporary_strength_debuff(
+    state: &mut CombatState,
+    target_uid: CreatureUid,
+    kind: PowerKind,
+    amount: i32,
+) {
+    debug_assert!(
+        crate::afflictions::is_temporary_power_debuff(kind),
+        "apply_temporary_strength_debuff is for TemporaryStrengthPower debuffs"
+    );
+    apply_power_to_creature_inner(
+        state,
+        target_uid,
+        kind,
+        amount,
+        false,
+        false,
+        Some(temporary_strength_leg),
+    );
+}
+
+/// `TemporaryStrengthPower`'s `PowerCmd.Apply<StrengthPower>(target,
+/// -amount, applier, cardSource, silent: true)`: a silent signed drain whose
+/// `AfterPowerAmountChanged` reactors (Sleight of Flesh) still fire.
+fn temporary_strength_leg(state: &mut CombatState, target_uid: CreatureUid, amount: i32) {
+    signed_power_apply_with_reactors(state, target_uid, PowerKind::Strength, -amount, |s| {
+        apply_signed_attr_power(s, target_uid, PowerKind::Strength, -amount);
+    });
 }
 
 /// Apply a **signed** delta to one of the `AllowNegative` attribute powers
@@ -1354,6 +1477,68 @@ pub fn apply_signed_attr_power(
         skip_next_tick: false,
     });
     state.creatures[creature_idx].powers.push(PowerUid(new_id));
+}
+
+/// The amount a player CARD's signed drain on `target_uid` actually applies —
+/// C#'s `PowerCmd.Apply` front half (`BeforePowerAmountChanged`, then
+/// `ModifyPowerAmountGiven`, PowerCmd.cs:120-125) for an apply the signed
+/// helpers would otherwise skip. Call it before the signed apply and pass the
+/// result on.
+///
+/// Shared Fate's enemy `Strength -2`, Malaise's `Strength -X` and Resonance's
+/// `Strength -1` are ordinary `PowerCmd.Apply<StrengthPower>(target, -N,
+/// owner, this)` calls, and a negative amount of an `AllowNegative` power
+/// reads as a Debuff (`PowerModel.GetTypeForAmount`). So Unsettling Lamp
+/// captures and doubles them like any card debuff (loadout Necrobinder 1101
+/// v0.111.0: Shared Fate took a Mecha Knight's Strength 10 -> 6 in C#, 10 -> 8
+/// in Rust, which never showed the drain to the Lamp).
+///
+/// Only for card-level drains: the signed helpers also carry
+/// `TemporaryStrengthPower.BeforeApplied`'s inner `Strength -N`, which must
+/// stay unfolded, because it already drains the landed (doubled) amount and
+/// the Lamp's `HasDoubledTemporaryPowerSource` skips it. Artifact
+/// (`ModifyPowerAmountReceived`) stays with the signed helper.
+pub fn fold_player_card_signed_apply(
+    state: &mut CombatState,
+    target_uid: CreatureUid,
+    kind: PowerKind,
+    amount: i32,
+) -> i32 {
+    if amount == 0 || state.is_over {
+        return amount;
+    }
+    // C# `PowerCmd.Apply` returns before any hook when the target cannot
+    // receive powers; the signed helpers skip dead targets the same way.
+    if !state
+        .creatures
+        .iter()
+        .any(|c| c.id == target_uid.0 && c.current_hp > 0)
+    {
+        return amount;
+    }
+    let applier = state.player.creature_uid;
+    fire_power_amount_observer_channels(
+        state,
+        applier,
+        target_uid,
+        kind,
+        amount,
+        PowerAmountObserverPhase::Before,
+        false,
+    );
+    if !relic_guarded_channel_live(state, GuardedChannel::ModifyPowerAmountGiven) {
+        return amount;
+    }
+    let ctx = hooks::PowerAmountCtx {
+        source_card: source_card(state, false),
+        ..hooks::PowerAmountCtx::new(
+            applier.map(|uid| creature_ref_for(state, uid)),
+            creature_ref_for(state, target_uid),
+            kind,
+            amount,
+        )
+    };
+    crate::relic_effects::dispatch_modify_power_amount_given(state, &ctx)
 }
 
 /// Run a content-side SIGNED power apply (`raw`, a player-applied drain such
@@ -1683,6 +1868,11 @@ fn apply_power_to_creature_with_applier_inner(
     if state.is_over {
         return;
     }
+    // A corpse receives the power only while no `DieForYou` is in the fight
+    // ([`corpses_can_receive_powers`]): with an Osty summoned, Reaper Form's
+    // killing-blow Doom never lands, so Shroud grants no block for it
+    // (loadout Necrobinder 1073/1078/1092/1114/1122/1035/1109).
+    let allow_dead = allow_dead && corpses_can_receive_powers(state);
     let Some(creature_idx) = state
         .creatures
         .iter()
@@ -3214,7 +3404,8 @@ pub fn stamp_entered_combat_cost_backfill(state: &mut CombatState, uid: CardUid)
 /// The engine has no clone flag, so the shave covers only the plays the card
 /// has not yet counted ([`crate::cards::VarKey::BansheesCryEtherealCounted`]):
 /// a fresh card counts none, and a copy of one already in combat carries the
-/// original's count. Floored at 0 like `CardEnergyCost`.
+/// original's count. Unclamped like every `AddThisCombat`
+/// ([`crate::cards::Card::add_cost_this_combat`]).
 fn banshees_cry_entered_combat(state: &mut CombatState, uid: CardUid) {
     let total =
         i32::try_from(state.combat_log.ethereal_cards_played_this_combat).unwrap_or(i32::MAX);
@@ -3225,7 +3416,7 @@ fn banshees_cry_entered_combat(state: &mut CombatState, uid: CardUid) {
     let missed = total - c.combat_var(key);
     if missed > 0 {
         let shave = missed.saturating_mul(2);
-        c.cost = i8::try_from((i32::from(c.cost) - shave).max(0)).unwrap_or(0);
+        c.add_cost_this_combat(-shave);
         c.set_combat_var(key, total);
     }
 }

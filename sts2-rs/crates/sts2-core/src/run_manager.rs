@@ -4598,6 +4598,18 @@ impl RunManager {
         // no enchantment yet, so `card_exhausts_inst` is the keyword check.
         let requires_exhaust =
             front.is_some_and(|e| e.enchantment == crate::cards::EnchantmentId::SoulsPower);
+        // A deck card keeps the v0.107.1 POD until it enters a combat, so read
+        // its keywords in this build: v0.111.0 drops Times Up's Exhaust and
+        // gives Eidolon one, and the C# selector lists exactly the live
+        // keyword set (loadout Necrobinder 1172 / 1149: an extra or missing
+        // option shifted the picked index onto another card).
+        let version = self.run_state.game_version;
+        let souls_power_keywords_ok = |c: &crate::cards::Card| {
+            let mut card = *c;
+            card.normalize_for_version(version);
+            crate::card_effects::card_exhausts_inst(&card)
+                && !crate::card_effects::card_unplayable_inst(&card)
+        };
         self.run_state
             .master_deck
             .iter()
@@ -4612,9 +4624,7 @@ impl RunManager {
                     && (c.cost >= 0 || (allow_x_cost && c.is_x_cost()))
                     // `Nimble.CanEnchant` → `CardModel.GainsBlock` (GH #1021).
                     && (!requires_block || c.gains_block_for(self.run_state.game_version))
-                    && (!requires_exhaust
-                        || (crate::card_effects::card_exhausts_inst(c)
-                            && !crate::card_effects::card_unplayable_inst(c)))
+                    && (!requires_exhaust || souls_power_keywords_ok(c))
                     && restriction
                         .is_none_or(|t| c.card_type == t || secondary == Some(c.card_type))
             })

@@ -411,6 +411,175 @@ fn echoing_slash_rewave_after_killing_the_dampen_caster_is_upgraded() {
     }
 }
 
+/// `BoneShards.cs:35-40` reads `DynamicVars.Block` for its `GainBlock` only
+/// AFTER the Osty attack, so an attack that kills the Dampen caster
+/// re-upgrades the card (`DampenPower.AfterDeath` -> `AfterRemoved`) and the
+/// block is the upgraded 12. Rust read both values before the attack: loadout
+/// Necrobinder 1159-v0.107.1 had C# 6 -> 18 block, Rust 15.
+#[test]
+fn bone_shards_block_after_killing_the_dampen_caster_is_upgraded() {
+    for v in BOTH {
+        let mut state = fresh(v, CharacterId::Necrobinder);
+        let caster = add_enemy(&mut state, 2, 5);
+        let _survivor = add_enemy(&mut state, 3, 100);
+        let _ = state.summon_osty(5).expect("osty summoned");
+        let shards = new_card(&mut state, CardId::BoneShards, true);
+        state.player.hand.push(shards);
+        sts2_core::monster_power_effects::install_dampen_power_handlers();
+        let player = state.player.creature_uid.expect("player");
+        sts2_core::card_effects::apply_power_to_creature(&mut state, player, PowerKind::Dampen, 1);
+        let pid = state
+            .powers
+            .iter()
+            .find(|p| p.kind == PowerKind::Dampen)
+            .map(|p| p.id)
+            .expect("Dampen applied");
+        state.powers.get_mut_by_id(pid).expect("Dampen").applier = Some(caster);
+        let _ = sts2_core::monster_power_effects::dispatch_after_applied_for_power(
+            &mut state,
+            player,
+            PowerKind::Dampen,
+            Some(caster),
+        );
+        assert!(!state.cards[shards.0.get() as usize - 1].upgraded, "{v:?}");
+        state.player.block = 0;
+
+        let _ = sts2_core::combat_loop::play_card(&mut state, 0, None);
+        assert_eq!(hp_of(&state, caster), 0, "{v:?}: the caster died");
+        assert_eq!(state.player.block, 12, "{v:?}: re-upgraded block");
+    }
+}
+
+/// `HighFive.cs:31-35` reads `DynamicVars.Vulnerable` for its
+/// `PowerCmd.Apply<VulnerablePower>` only AFTER the Osty attack, so a hit that
+/// kills the Dampen caster re-upgrades the card (`DampenPower.AfterDeath` ->
+/// `AfterRemoved`) and the survivors get the upgraded 3 Vulnerable. Rust read
+/// both values before the attack: loadout Necrobinder 1284-v0.111.0 had C#
+/// Vulnerable 3, Rust 2.
+#[test]
+fn high_five_vulnerable_after_killing_the_dampen_caster_is_upgraded() {
+    for v in BOTH {
+        let mut state = fresh(v, CharacterId::Necrobinder);
+        let caster = add_enemy(&mut state, 2, 5);
+        let survivor = add_enemy(&mut state, 3, 100);
+        let _ = state.summon_osty(5).expect("osty summoned");
+        let five = new_card(&mut state, CardId::HighFive, true);
+        state.player.hand.push(five);
+        sts2_core::monster_power_effects::install_dampen_power_handlers();
+        let player = state.player.creature_uid.expect("player");
+        sts2_core::card_effects::apply_power_to_creature(&mut state, player, PowerKind::Dampen, 1);
+        let pid = state
+            .powers
+            .iter()
+            .find(|p| p.kind == PowerKind::Dampen)
+            .map(|p| p.id)
+            .expect("Dampen applied");
+        state.powers.get_mut_by_id(pid).expect("Dampen").applier = Some(caster);
+        let _ = sts2_core::monster_power_effects::dispatch_after_applied_for_power(
+            &mut state,
+            player,
+            PowerKind::Dampen,
+            Some(caster),
+        );
+        assert!(!state.cards[five.0.get() as usize - 1].upgraded, "{v:?}");
+        state.player.energy = 3;
+
+        let _ = sts2_core::combat_loop::play_card(&mut state, 0, None);
+        assert_eq!(hp_of(&state, caster), 0, "{v:?}: the caster died");
+        let vuln: i32 = state
+            .creatures
+            .iter()
+            .find(|c| c.id == survivor.0)
+            .expect("survivor")
+            .powers
+            .iter()
+            .filter_map(|u| state.powers.get_by_id(u.0))
+            .filter(|p| p.kind == PowerKind::Vulnerable)
+            .map(|p| p.amount)
+            .sum();
+        assert_eq!(vuln, 3, "{v:?}: re-upgraded Vulnerable");
+    }
+}
+
+/// `CardCmd.Upgrade` returns early while `CombatManager.IsEnding`, so a kill
+/// of the LAST enemy (the Dampen caster) removes Dampen without re-upgrading
+/// anything. Hand of Greed reads its Gold var after the attack, still at the
+/// downgraded 20 (loadout Necrobinder 1085: C# +20 gold, Rust +25).
+#[test]
+fn hand_of_greed_killing_the_last_dampen_caster_pays_base_gold() {
+    for v in BOTH {
+        let mut state = fresh(v, CharacterId::Necrobinder);
+        let caster = add_enemy(&mut state, 2, 5);
+        let greed = new_card(&mut state, CardId::HandOfGreed, true);
+        state.player.hand.push(greed);
+        sts2_core::monster_power_effects::install_dampen_power_handlers();
+        let player = state.player.creature_uid.expect("player");
+        sts2_core::card_effects::apply_power_to_creature(&mut state, player, PowerKind::Dampen, 1);
+        let pid = state
+            .powers
+            .iter()
+            .find(|p| p.kind == PowerKind::Dampen)
+            .map(|p| p.id)
+            .expect("Dampen applied");
+        state.powers.get_mut_by_id(pid).expect("Dampen").applier = Some(caster);
+        let _ = sts2_core::monster_power_effects::dispatch_after_applied_for_power(
+            &mut state,
+            player,
+            PowerKind::Dampen,
+            Some(caster),
+        );
+        state.player.energy = 3;
+        let gold = state.gold;
+        let _ = sts2_core::combat_loop::play_card(&mut state, 0, Some(0));
+        assert_eq!(hp_of(&state, caster), 0, "{v:?}: the caster died");
+        assert_eq!(state.gold - gold, 20, "{v:?}: Dampen's restore is a no-op");
+    }
+}
+
+/// Drain Power's `TakeRandom` shuffles the discard's upgradable cards
+/// BEFORE `CardCmd.Upgrade`, which returns early while
+/// `CombatManager.IsEnding` (CardCmd.cs:267-270). A killing blow on the last
+/// enemy therefore spends `n - 1` CombatCardSelection reads but upgrades
+/// nothing, and (v0.107.1, whose play loop does not stop on an ending combat;
+/// v0.111.0 breaks, CardModel.cs:1898) its replay shuffles the same `n` cards
+/// again. Loadout Necrobinder v0.107.1 1340 (a replayed Drain Power, C# 6 reads, Rust 4)
+/// and 1316 (Glam, C# 20, Rust 17).
+#[test]
+fn drain_power_killing_blow_shuffles_but_upgrades_nothing() {
+    for v in BOTH {
+        let mut state = fresh(v, CharacterId::Necrobinder);
+        let enemy = add_enemy(&mut state, 2, 8);
+        let i = push_hand(&mut state, CardId::DrainPower, false);
+        let uid = state.player.hand[usize::from(i)];
+        state.cards[uid.0.get() as usize - 1].base_replay_count = 1;
+        let mut discard = Vec::new();
+        for id in [
+            CardId::Poke,
+            CardId::Entropy,
+            CardId::Omnislice,
+            CardId::Volley,
+        ] {
+            let d = new_card(&mut state, id, false);
+            state.player.discard.push(d);
+            discard.push(d);
+        }
+        let before = state.run_rng.combat_card_selection.counter();
+        let _ = sts2_core::combat_loop::play_card(&mut state, i, Some(0));
+        assert_eq!(hp_of(&state, enemy), 0, "{v:?}: the last enemy died");
+        assert_eq!(
+            state.run_rng.combat_card_selection.counter() - before,
+            if v == V107 { 6 } else { 3 },
+            "{v:?}: each play shuffles all 4 upgradable cards"
+        );
+        for d in discard {
+            assert!(
+                !state.cards[d.0.get() as usize - 1].upgraded,
+                "{v:?}: no upgrade while combat is ending"
+            );
+        }
+    }
+}
+
 // ── 8. Unceasing Top after a top-level auto-play empties the hand ──
 
 /// Hand = one Defend; draw = [Setup Strike, Defend]; Hellraiser + Unceasing

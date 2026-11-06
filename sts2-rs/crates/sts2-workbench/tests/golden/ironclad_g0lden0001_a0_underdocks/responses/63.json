@@ -1,3 +1,78 @@
 {
- "detail": "no recommendation here"
+ "assumptions": {
+  "energy": 3,
+  "hand": 5,
+  "samples": 200
+ },
+ "block": {
+  "per_turn": 10.2,
+  "scaling_cards": []
+ },
+ "composition": {
+  "by_rarity": {
+   "Basic": 10,
+   "Common": 2,
+   "Uncommon": 1
+  },
+  "by_type": {
+   "Attack": 7,
+   "Skill": 6
+  },
+  "dead_cards": 0,
+  "energy_curve": {
+   "0": 1,
+   "1": 11,
+   "2": 1
+  },
+  "unupgraded_basics": 10
+ },
+ "damage": {
+  "aoe_attacks": [],
+  "attack_count": 7,
+  "per_turn": 17.6,
+  "scaling_cards": [
+   "Bash"
+  ],
+  "single_target": 17.4,
+  "vs_group": 17.7
+ },
+ "deck_size": 13,
+ "lenses": {
+  "boss": 38.3,
+  "hallway": 37.2,
+  "scaling": 38.9
+ },
+ "scores": {
+  "block": 40.0,
+  "damage": 35.5,
+  "velocity": 39.5,
+  "volume": 38.3
+ },
+ "velocity": {
+  "bottleneck": "energy",
+  "cards_per_turn": 3.6,
+  "dilution": 1.0,
+  "draw_limited_turns": 1.7,
+  "energy_limited_turns": 4.3,
+  "engine_cards": 2,
+  "extra_per_turn": 0.5,
+  "tags": {
+   "energy": 1,
+   "exhaust_synergy": 1
+  }
+ },
+ "warnings": [
+  {
+   "severity": "info",
+   "text": "No AOE — multi-enemy fights (Gremlins, hallways) will be slow."
+  },
+  {
+   "severity": "info",
+   "text": "Energy-limited — cards stranded in hand; more energy helps, more draw won't."
+  },
+  {
+   "severity": "warn",
+   "text": "Deck clogged with basics/curses — prioritise removals."
+  }
+ ]
 }

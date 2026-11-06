@@ -1962,7 +1962,13 @@ fn listener_mystic_lighter(state: &CombatState, ctx: &ModifyDamageCtx) -> i32 {
     let Some(player_uid) = state.player.creature_uid else {
         return 0;
     };
-    if ctx.dealer != Some(player_uid) {
+    // C# gates only on `cardSource.Owner != base.Owner` (MysticLighter.cs:
+    // 22-29), never on the dealer, so the player's enchanted card attacking
+    // through the Osty (`FromOsty`) still gets +9 — a Vigorous Rattle hit for
+    // 7 + 8 + 9 = 24 in C# (loadout Necrobinder 1048). A card source on a
+    // player- or Osty-dealt hit is the player's card (MiniatureCannon's gate).
+    if ctx.dealer != Some(player_uid) && ctx.dealer.is_none_or(|d| state.player.pet_uid != Some(d))
+    {
         return 0;
     }
     // C# `MysticLighter.ModifyDamageAdditive` (v0.111.0
@@ -11894,6 +11900,47 @@ mod tests {
                 "plain copy must get +0 (enchanted_first={enchanted_first})"
             );
         }
+    }
+
+    /// Loadout Necrobinder 1048: an enchanted card's Osty attack (`FromOsty`,
+    /// dealer = the Osty) still gets +9 — C# keys on `cardSource.Owner`,
+    /// not the dealer (MysticLighter.cs:22-29). A foreign dealer gets none.
+    #[test]
+    fn listener_mystic_lighter_applies_to_osty_dealt_hits() {
+        use sts2_core::cards::{Card, CardId, CardType, EnchantmentId};
+        use sts2_core::hooks::ValueProps;
+        use sts2_core::relic_effects::{dispatch_modify_damage_additive, ModifyDamageCtx};
+        use sts2_core::CreatureUid;
+        crate::relics::dispatch::ensure_installed();
+        let mut state = CombatState::default();
+        equip_relic(&mut state, RelicKind::MysticLighter);
+        let mut card = Card {
+            card_id: CardId::Rattle,
+            card_type: CardType::Attack,
+            ..Card::pod_defaults()
+        };
+        card.set_enchantment(EnchantmentId::Vigorous, 8);
+        let card_uid = state.add_card_to_draw_pile(card);
+        let player_uid = state.player.creature_uid.expect("player uid");
+        let osty_uid = CreatureUid::new(77).expect("non-zero");
+        state.player.pet_uid = Some(osty_uid);
+        let ctx = ModifyDamageCtx {
+            dealer: Some(osty_uid),
+            target: player_uid,
+            base_damage: 7,
+            props: ValueProps::MOVE,
+            card: Some(CardId::Rattle),
+            card_uid: Some(card_uid),
+        };
+        assert_eq!(
+            dispatch_modify_damage_additive(&state, &ctx),
+            MYSTIC_LIGHTER_EXTRA_DAMAGE
+        );
+        let foreign = ModifyDamageCtx {
+            dealer: Some(CreatureUid::new(99).expect("non-zero")),
+            ..ctx
+        };
+        assert_eq!(dispatch_modify_damage_additive(&state, &foreign), 0);
     }
 
     #[test]

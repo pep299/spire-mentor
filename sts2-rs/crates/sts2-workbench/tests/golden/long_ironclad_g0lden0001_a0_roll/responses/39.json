@@ -1,7 +1,7 @@
 {
  "details": [
   "Play Defend",
-  "You Block 0→5"
+  "You Block 5→10"
  ],
  "error": null,
  "label": "Play Defend",
@@ -128,9 +128,28 @@
      "target_type": "None",
      "type": "Skill",
      "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "red",
+     "cost": 1,
+     "description": "Gain 5 Block.",
+     "description_rich": "Gain 5 [gold]Block[/gold].",
+     "id": "DEFEND_IRONCLAD",
+     "image": "https://assets.test/card_atlas/ironclad/defend_ironclad.png",
+     "index": -1,
+     "name": "Defend",
+     "rarity": "Basic",
+     "stats": {
+      "block": 5
+     },
+     "target_type": "None",
+     "type": "Skill",
+     "upgraded": false
     }
    ],
-   "discard_pile_count": 5,
+   "discard_pile_count": 6,
    "draw_pile": [
     {
      "base_cost": 2,
@@ -216,7 +235,7 @@
      "uid": 2
     }
    ],
-   "energy": 2,
+   "energy": 1,
    "energy_image": "https://assets.test/sprite_fonts/ironclad_energy_icon.png",
    "exhaust_pile": [
     {
@@ -286,25 +305,6 @@
      "can_play": true,
      "color": "red",
      "cost": 1,
-     "description": "Gain 5 Block.",
-     "description_rich": "Gain 5 [gold]Block[/gold].",
-     "id": "DEFEND_IRONCLAD",
-     "image": "https://assets.test/card_atlas/ironclad/defend_ironclad.png",
-     "index": 2,
-     "name": "Defend",
-     "rarity": "Basic",
-     "stats": {
-      "block": 5
-     },
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": true,
-     "color": "red",
-     "cost": 1,
      "damage_preview": {
       "0": 6
      },
@@ -312,7 +312,7 @@
      "description_rich": "Deal 6 damage.",
      "id": "STRIKE_IRONCLAD",
      "image": "https://assets.test/card_atlas/ironclad/strike_ironclad.png",
-     "index": 3,
+     "index": 2,
      "name": "Strike",
      "rarity": "Basic",
      "stats": {
@@ -326,7 +326,7 @@
    "max_energy": 3,
    "options": [],
    "player": {
-    "block": 5,
+    "block": 10,
     "deck": [
      {
       "color": "red",

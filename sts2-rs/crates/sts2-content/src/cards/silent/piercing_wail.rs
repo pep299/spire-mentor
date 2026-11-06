@@ -21,14 +21,15 @@ pub(crate) fn play_piercing_wail(state: &mut CombatState, _t: Option<CreatureUid
         if !alive {
             continue;
         }
-        let prev = power_amount_on_creature(state, uid, PowerKind::PiercingWail);
-        apply_power_to_enemy(state, uid, PowerKind::PiercingWail, loss);
-        let now = power_amount_on_creature(state, uid, PowerKind::PiercingWail);
-        if now > prev {
-            // TemporaryStrengthPower.BeforeApplied drains the modified (landed)
-            // amount (PowerCmd.cs:129-136), e.g. doubled by Unsettling Lamp.
-            apply_power_signed_to_creature(state, uid, PowerKind::Strength, -(now - prev));
-        }
+        // TemporaryStrengthPower.BeforeApplied drains the modified amount
+        // (PowerCmd.cs:129-136), e.g. doubled by Unsettling Lamp, before the
+        // power lands.
+        sts2_core::card_effects::apply_temporary_strength_debuff(
+            state,
+            uid,
+            PowerKind::PiercingWail,
+            loss,
+        );
     }
     EffectResult::Resolved
 }

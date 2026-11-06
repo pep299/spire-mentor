@@ -409,6 +409,33 @@ pub enum VarKey {
     /// discard. Cleared at end-of-turn cleanup. Appended so no existing
     /// discriminant moves.
     ExhaustOnNextPlay,
+    /// The part of the card's `AddThisCombat` reductions (Melancholy,
+    /// Banshee's Cry) that took its cost below 0. C# keeps those as Relative
+    /// local modifiers and clamps only the final cost
+    /// (`CardEnergyCost.GetWithModifiers`, `Math.Max(0, num)` after the
+    /// global hooks), so a 3-cost Melancholy after four deaths sits at -1
+    /// and a +1 surcharge (Borrowed Time) still leaves it at 0. `cost` stays
+    /// clamped at 0; this holds the rest and is subtracted from the local
+    /// base ([`Card::add_cost_this_combat`]). Appended so no existing
+    /// discriminant moves.
+    CostDebtThisCombat,
+    /// A Flatten's live Snecko roll: `1 +` the turn's Osty-attack count when
+    /// the roll landed (0 = no live roll). Flatten's `SetThisTurn(0)` on an
+    /// Osty attack and the roll's `SetThisTurnOrUntilPlayed` are both
+    /// Absolute local modifiers applied in insertion order
+    /// (`CardEnergyCost.GetWithModifiers`), so the roll beats a zero from an
+    /// earlier attack and loses to one from a later attack
+    /// ([`crate::hooks::card_cost_locally_zeroed`]). Cleared with the roll.
+    /// Appended so no existing discriminant moves.
+    FlattenOstyAttacksAtRoll,
+    /// Relative cost added while a local zero was live (free this turn, free
+    /// until played, Flatten after an Osty attack). C# folds local modifiers
+    /// in insertion order, so Transfigure's `AddThisCombat(1)` on a
+    /// Discovery-made free card reads `Absolute(0) + 1 = 1` until the zero
+    /// expires ([`crate::hooks::card_cost_locally_zeroed`] is the base it is
+    /// added to). Cleared with the free-this-turn / until-played riders.
+    /// Appended so no existing discriminant moves.
+    CostAddedAfterLocalZero,
 }
 
 /// [`VarKey::SneckoRollLive`]: the Snecko roll raised `CostAbsolutelySet`, so
@@ -1159,6 +1186,25 @@ impl Card {
         self.set_combat_var(VarKey::CostReductionUntilPlayed, banked + amount);
     }
 
+    /// C# `EnergyCost.AddThisCombat(delta)`: a Relative local modifier for the
+    /// rest of combat, unclamped until the final cost read. `cost` holds the
+    /// part at or above 0 and [`VarKey::CostDebtThisCombat`] the part below
+    /// it, so a later `+n` pays the debt off first. X-cost cards are skipped.
+    pub fn add_cost_this_combat(&mut self, delta: i32) {
+        if self.is_x_cost() {
+            return;
+        }
+        let debt = self.combat_var(VarKey::CostDebtThisCombat);
+        let raw = i32::from(self.cost) - debt + delta;
+        if raw >= 0 {
+            self.cost = i8::try_from(raw).unwrap_or(i8::MAX);
+            self.combat_vars.zero(VarKey::CostDebtThisCombat);
+        } else {
+            self.cost = 0;
+            self.set_combat_var(VarKey::CostDebtThisCombat, -raw);
+        }
+    }
+
     /// C# `CardModel.SetToFreeThisCombat` (TouchOfInsanity): energy cost 0 and
     /// star cost 0 for the rest of combat. `EnergyCost.SetThisCombat(0)` adds an
     /// *Absolute* local modifier ([`VarKey::CostAbsolutelySet`]) AFTER any live
@@ -1197,6 +1243,9 @@ impl Card {
     /// star half survives (it is a separate star cost).
     pub fn set_cost_this_combat(&mut self, cost: i8) {
         self.cost = cost;
+        // The later Absolute also supersedes the earlier Relative
+        // `AddThisCombat` reductions.
+        self.combat_vars.zero(VarKey::CostDebtThisCombat);
         self.set_combat_var(VarKey::CostAbsolutelySet, 1);
         self.set_combat_var(VarKey::SneckoCostDeltaThisTurn, 0);
         self.set_combat_var(VarKey::SneckoRollLive, 0);
@@ -1219,12 +1268,28 @@ impl Card {
     /// modifier), so [`Self::expire_snecko_roll`] reverts it on either edge.
     /// Reduce-only: a card already at or below `cost` is left alone. X-cost
     /// cards are skipped.
+    ///
+    /// An earlier `AddUntilPlayed(-n)` reduction
+    /// ([`VarKey::CostReductionUntilPlayed`]) folds BEFORE this Absolute
+    /// (local modifiers apply in insertion order, `CardEnergyCost.cs:110-115`;
+    /// reduce-only Absolute = `min(current, cost)`, `LocalCostModifier.cs:91`),
+    /// so both the reduce-only test and the result see the reduced cost: a
+    /// 3-cost Reap retained with a 1-reduction (2) reads `min(2, 1) = 1`, not
+    /// `1 - 1 = 0`. The collapsed model subtracts the reduction after `cost`,
+    /// so `cost` is set to `cost + reduction`; past turn end (the reduction is
+    /// `WhenPlayed` only) the cap's expiry restores the old `cost` and the
+    /// reduction applies again, as in C#. Loadout Necrobinder v0.107.1 1386.
     pub fn set_this_turn_or_until_played_reduce_only(&mut self, cost: i8) {
-        if self.is_x_cost() || self.cost <= cost {
+        if self.is_x_cost() {
             return;
         }
-        let delta = i32::from(cost) - i32::from(self.cost);
-        self.cost = cost;
+        let reduction = self.combat_var(VarKey::CostReductionUntilPlayed);
+        if i32::from(self.cost) - reduction <= i32::from(cost) {
+            return;
+        }
+        let new_cost = i32::from(cost) + reduction;
+        let delta = new_cost - i32::from(self.cost);
+        self.cost = i8::try_from(new_cost).unwrap_or(i8::MAX);
         let banked = self.combat_var(VarKey::SneckoCostDeltaThisTurn);
         self.set_combat_var(
             VarKey::SneckoCostDeltaThisTurn,
@@ -1262,9 +1327,18 @@ impl Card {
         let live = self.combat_var(VarKey::SneckoRollLive);
         let banked = self.combat_var(VarKey::SneckoCostDeltaThisTurn);
         if live == 0 && banked == 0 {
-            if self.cost > cost {
-                self.cost = cost;
+            // An earlier `AddUntilPlayed(-n)` reduction folds before the cap
+            // (see `set_this_turn_or_until_played_reduce_only`): C# shows
+            // `min(cost - n, cap)` until the card is played, then `min(cost,
+            // cap)`. Keep the cap in `cost` and shrink the bank to the part of
+            // the reduction still visible under it.
+            let reduction = self.combat_var(VarKey::CostReductionUntilPlayed);
+            let capped = self.cost.min(cost);
+            if reduction != 0 {
+                let shown = (i32::from(self.cost) - reduction).min(i32::from(cost));
+                self.set_combat_var(VarKey::CostReductionUntilPlayed, i32::from(capped) - shown);
             }
+            self.cost = capped;
             return;
         }
         let displayed = i32::from(self.cost.min(cost));
@@ -1292,6 +1366,7 @@ impl Card {
         self.cost = self.cost.saturating_sub(banked as i8);
         self.set_combat_var(VarKey::SneckoCostDeltaThisTurn, 0);
         self.set_combat_var(VarKey::SneckoRollLive, 0);
+        self.combat_vars.zero(VarKey::FlattenOstyAttacksAtRoll);
         if live != SNECKO_ROLL_FLAG_PREOWNED {
             self.set_combat_var(VarKey::CostAbsolutelySet, 0);
         }
