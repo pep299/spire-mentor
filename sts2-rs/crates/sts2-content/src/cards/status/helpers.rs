@@ -103,6 +103,22 @@ pub fn spawn_shiv(state: &mut CombatState, pile: PileKind) -> CardUid {
     spawn_card_into_pile(state, card_from_spec(&specs::shiv()), pile)
 }
 
+/// [`spawn_shiv`] with an EXPLICIT `added_by_player` (C# `creator`), for a
+/// player generation that leaves the Play pile empty (CunningPotion), where
+/// the play-pile heuristic would wrongly read `false`.
+pub fn spawn_shiv_with_origin(
+    state: &mut CombatState,
+    pile: PileKind,
+    added_by_player: bool,
+) -> CardUid {
+    sts2_core::card_effects::spawn_card_into_pile_with_origin(
+        state,
+        card_from_spec(&specs::shiv()),
+        pile,
+        added_by_player,
+    )
+}
+
 /// Spawn one [`CardId::Slimed`] into `pile`. Bead `sts2-rs-5om`.
 pub fn spawn_slimed(state: &mut CombatState, pile: PileKind) -> CardUid {
     spawn_card_into_pile(state, card_from_spec(&specs::slimed()), pile)

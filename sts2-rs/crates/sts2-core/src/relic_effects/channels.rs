@@ -5234,19 +5234,19 @@ mod plan_tests {
     #[test]
     fn replacing_a_handler_replaces_its_guard() {
         super::super::ensure_installed();
-        let bookmark = |guards: Vec<(RelicId, RelicGuard)>| {
+        let joss_paper = |guards: Vec<(RelicId, RelicGuard)>| {
             guards
                 .into_iter()
-                .find(|&(id, _)| id == RelicId::Bookmark)
+                .find(|&(id, _)| id == RelicId::JossPaper)
                 .map(|(_, guard)| guard)
         };
         assert_eq!(
-            bookmark(listener_guards_after_turn_end()),
-            Some(RelicGuard::Owned(RelicKind::Bookmark))
+            joss_paper(listener_guards_after_turn_end()),
+            Some(RelicGuard::Owned(RelicKind::JossPaper))
         );
-        register_after_turn_end(RelicId::Bookmark, counting_after_turn_end);
+        register_after_turn_end(RelicId::JossPaper, counting_after_turn_end);
         assert_eq!(
-            bookmark(listener_guards_after_turn_end()),
+            joss_paper(listener_guards_after_turn_end()),
             Some(RelicGuard::Always)
         );
         freeze_all_channels();

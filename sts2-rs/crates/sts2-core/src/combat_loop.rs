@@ -1616,6 +1616,14 @@ fn auto_play_collect_suspending(
         // and the popped card's pin is cleared.
         let top_uid = cards::pop_top_card(&mut state.player, &mut state.run_rng.shuffle);
         state.player.play.push(top_uid);
+        // C# `AutoPlayFromDrawPile` moves every card to Play before playing any,
+        // so a collected sibling whose own play has not started is not a
+        // started Attack/Skill play for Nostalgia's redirect count — the same
+        // batch-pending marker `collect_from_draw_top` sets (loadout
+        // Necrobinder 1011, Mayhem).
+        if let Some(c) = state.cards.get_mut(top_uid.0.get() as usize - 1) {
+            c.set_combat_var(crate::cards::VarKey::PendingBatchAutoPlay, 1);
+        }
         ap.collected.push(top_uid);
         ap.remaining -= 1;
     }
@@ -3646,6 +3654,13 @@ pub fn end_player_turn_phase_two(state: &mut CombatState) -> StepResult {
     // list and `BeforeFlushLate` early-returns, so we fall straight through
     // to the flush tail (no prompt).
     let wlp_amount = state.player.pending_retain_count;
+    // C# `CardSelectCmd.FromHand` returns an empty selection once the combat
+    // `IsOverOrEnding` (CardSelectCmd.cs:699), so a turn-end that killed the
+    // last enemy (e.g. a Burn/turn-end damage tick) opens no retain prompt.
+    if wlp_amount > 0 && combat_is_ending(state) {
+        state.player.pending_retain_count = 0;
+    }
+    let wlp_amount = state.player.pending_retain_count;
     if wlp_amount > 0 {
         // Eligible = hand cards not already retaining this turn (explicit
         // `retain_this_turn` flag OR keyword-`Retain` instance), in hand
@@ -3842,6 +3857,14 @@ fn end_player_turn_phase_two_flush_tail(state: &mut CombatState) -> StepResult {
     // Single-turn Sly (HandTrick) expires with the turn (C#
     // `CardModel.HasSingleTurnSly = false` at turn reset).
     state.player.sly_this_turn.clear();
+
+    // C# `FlushPlayerHand` awaits `Hook.AfterFlush` (Bookmark) after the
+    // discard and BEFORE `EndOfTurnCleanup` (CombatManager.cs:1347-1349), so
+    // this-turn cost riders are still live in its filter. Phase two only runs
+    // while combat is in progress (see the guard below Step 6).
+    if !combat_is_ending(state) {
+        crate::relic_effects::bookmark::after_flush_bookmark(state);
+    }
 
     // Step 6: end_of_turn_cleanup. Python iterates every pile (hand /
     // draw / discard / exhaust / play) and calls `card.end_of_turn_cleanup`
@@ -4072,6 +4095,25 @@ fn consuming_shadow_precedes_temporary_focus(state: &CombatState) -> bool {
 /// [`after_turn_end_seated`], with ConsumingShadow's evoke optional for the
 /// case where it already ran ahead of the power walk.
 fn after_turn_end_seated_with(state: &mut CombatState, evoke_consuming_shadow: bool) {
+    // `ConsumingShadowPower.AfterSideTurnEnd` (`ConsumingShadowPower.cs:18-28`,
+    // both builds): on the owner's side turn end, if the orb queue is
+    // non-empty, evoke the LAST orb once per power stack. It is a player
+    // POWER, and C# `IterateHookListeners` walks the player's Powers before
+    // that player's Relics (CombatState.cs:115-131), so the evokes land before
+    // Parrying Shield reads Block and picks its `CombatTargets` enemy (Defect
+    // random-loadout v0.111.0 seeds 1001/1021). Wired directly here (like the
+    // Plasma turn-start rider) rather than via the `after_turn_end` Effect
+    // channel, because an orb evoke is a multi-step state mutation
+    // (deal/heal/block/energy + slot removal) that the declarative `Effect`
+    // surface cannot express. Fires AFTER `passive_tick` (phase one) has
+    // already grown each Dark orb's stored evoke value. A Frost evoke's Block
+    // is the player's own power's Block, so Parrying Shield's snapshot takes
+    // it too. Bead `sts2-rs-defect-consuming-shadow`.
+    if evoke_consuming_shadow {
+        let block_before = state.player.block;
+        consuming_shadow_evoke(state);
+        state.combat_log.block_before_late_turn_end += state.player.block - block_before;
+    }
     // Bead `sts2-rs-j87`: parallel relic-effects bus drain.
     let live = relic_guarded_channel_live(state, GuardedChannel::AfterTurnEnd);
     let _ = dispatch_if_live(state, live, crate::EffectResult::NotImplemented, |state| {
@@ -4084,21 +4126,8 @@ fn after_turn_end_seated_with(state: &mut CombatState, evoke_consuming_shadow: b
     // next turn's first Skill is playable again. Wired directly here rather
     // than through the declarative `after_turn_end` Effect channel because
     // clearing per-card afflictions is not expressible as an `Effect`
-    // (same rationale as the ConsumingShadow orb evoke below).
+    // (same rationale as the ConsumingShadow orb evoke above).
     crate::monster_power_effects::smoggy_after_side_turn_end(state);
-
-    // `ConsumingShadowPower.AfterTurnEnd` (`ConsumingShadowPower.cs`): on the
-    // owner's (player's) side turn end, if the orb queue is non-empty, evoke
-    // the LAST orb once per power stack (`for i in 0..Amount: OrbCmd.EvokeLast`).
-    // Wired directly here (like the Plasma turn-start rider) rather than via
-    // the `after_turn_end` Effect channel, because an orb evoke is a multi-step state mutation (deal/heal/block/energy + slot
-    // removal) that the declarative `Effect` surface cannot express. Fires
-    // AFTER `passive_tick` (phase one) has already grown each Dark orb's stored
-    // evoke value, matching C#'s BeforeTurnEnd-passives-then-AfterTurnEnd-powers
-    // ordering. Bead `sts2-rs-defect-consuming-shadow`.
-    if evoke_consuming_shadow {
-        consuming_shadow_evoke(state);
-    }
 }
 
 /// One finished play of an ETHEREAL card: bump the combat-long tally
@@ -5852,6 +5881,8 @@ pub(crate) fn try_fairy_in_a_bottle_prevent_death(state: &mut CombatState) -> bo
     let Some(idx) = state.creatures.iter().position(|c| c.id == uid.0) else {
         return false;
     };
+    // The lethal hit's 0-HP `AfterCurrentHpChanged` ran before `ShouldDie`.
+    crate::relic_effects::helpers::red_skull_probe_at_death(state);
     let _ = state.player.remove_potion_at(slot);
     let max_hp = state.creatures[idx].max_hp;
     // `max(MaxHp * 0.3, 1)` from a <=0 base == `floor(0.3 * MaxHp)`, clamped.
@@ -6370,6 +6401,9 @@ pub fn apply_damage_to_player(
     }
 
     // Step 5: write HP loss to the player.
+    // C# records this hit's `DamageReceivedEntry` unless combat was already
+    // ending (see `emotion_chip::note_player_damage_entry`).
+    let damage_entry_recorded = !combat_is_ending(state);
     let hp_before_loss = state.player.current_hp;
     state.player.current_hp -= modified_hp_loss;
     if state.player.current_hp < 0 {
@@ -6506,6 +6540,11 @@ pub fn apply_damage_to_player(
         && (absorbed > 0 || state.player.block > 0)
         && modified_hp_loss == 0
         && osty_absorbed_hp_loss == 0;
+    crate::relic_effects::emotion_chip::note_player_damage_entry(
+        state,
+        damage_entry_recorded,
+        was_fully_blocked,
+    );
     hooks::dispatch_after_damage_given(
         state,
         &ctx,
@@ -6792,60 +6831,48 @@ pub(crate) fn roll_next_enemy_intents(state: &mut CombatState) {
     }
 }
 
-/// Tick every enemy-owned `BattlewornDummyTimeLimit` timer at enemy-side
-/// turn end. Mirrors C# `BattlewornDummyTimeLimitPower.AfterTurnEnd`
+/// Tick one enemy-owned `BattlewornDummyTimeLimit` timer at enemy-side turn
+/// end. Mirrors C# `BattlewornDummyTimeLimitPower.AfterSideTurnEnd`
 /// (`MegaCrit.Sts2.Core.Models.Powers/BattlewornDummyTimeLimitPower.cs`):
-/// fired on the owner's (enemy) turn end — while `Amount > 1` the power
-/// decrements; at `Amount == 1` the dummy's time is up, so it sets the
-/// encounter's `RanOutOfTime` flag and `CreatureCmd.Escape`s. The Rust
-/// escape mirror zeroes the creature's HP (corpse retained per
-/// `sts2-rs-c8why`) WITHOUT counting it as a kill or a gold-scaling flee;
-/// the combat then ends via the caller's `check_combat_end`, and the
-/// event→combat resume path reads [`CombatState::event_combat_timed_out`]
-/// back (in `exit_combat`) to suppress the victory reward. Bead
-/// `sts2-rs-ck9z6` (GH #166).
-fn tick_battleworn_dummy_time_limit(state: &mut CombatState) {
-    const TIMER_MASK: crate::PowerKindSet =
-        crate::PowerKindSet::from_kinds(&[crate::PowerKind::BattlewornDummyTimeLimit]);
-    if !state.powers.present_kinds().intersects(&TIMER_MASK) {
-        return;
-    }
-    // Collect each live enemy's timer power id first (immutable borrow),
-    // then apply the decrement / expiry pass (mutable) — avoids aliasing
-    // the creature arena and the power store at once.
-    let timers: smallvec::SmallVec<[(std::num::NonZeroU32, std::num::NonZeroU32); 2]> = state
+/// while `Amount > 1` the power decrements; at `Amount == 1` the dummy's time
+/// is up, so it sets the encounter's `RanOutOfTime` flag and
+/// `CreatureCmd.Escape`s. The Rust escape mirror zeroes the creature's HP
+/// (corpse retained per `sts2-rs-c8why`) WITHOUT counting it as a kill or a
+/// gold-scaling flee; the combat then ends via `enemy_turn_end`'s
+/// `check_combat_end`, and the event→combat resume path reads
+/// [`CombatState::event_combat_timed_out`] back (in `exit_combat`) to suppress
+/// the victory reward. Bead `sts2-rs-ck9z6` (GH #166).
+///
+/// Called from the `AfterSideTurnEnd` power walk
+/// ([`hooks::dispatch_after_turn_end`]) at the timer's own position in power
+/// order, so a later listener on the dummy (Demise, applied after combat
+/// start) runs after the escape and cannot kill it first (loadout Regent
+/// v0.107.1 1028). A dummy already dead is not a participant: no tick.
+pub(crate) fn tick_battleworn_dummy_timer(state: &mut CombatState, power_id: std::num::NonZeroU32) {
+    let Some(creature_id) = state
         .creatures
         .iter()
-        .filter(|c| c.current_hp > 0 && c.species.is_some())
-        .filter_map(|c| {
-            c.powers
-                .iter()
-                .find(|puid| {
-                    state
-                        .powers
-                        .get_by_id(puid.0)
-                        .is_some_and(|p| p.kind == crate::PowerKind::BattlewornDummyTimeLimit)
-                })
-                .map(|puid| (c.id, puid.0))
+        .find(|c| {
+            c.current_hp > 0 && c.species.is_some() && c.powers.iter().any(|u| u.0 == power_id)
         })
-        .collect();
-    for (creature_id, power_id) in timers {
-        let Some(power) = state.powers.get_mut_by_id(power_id) else {
-            continue;
-        };
-        if power.amount > 1 {
-            power.amount -= 1;
-            continue;
-        }
-        // Out of time: the dummy flees, no reward.
-        state.event_combat_timed_out = true;
-        if let Some(c) = state
-            .creatures
-            .iter_mut()
-            .find(|c| c.id == creature_id && c.current_hp > 0)
-        {
-            c.current_hp = 0;
-        }
+        .map(|c| c.id)
+    else {
+        return;
+    };
+    let Some(power) = state.powers.get_mut_by_id(power_id) else {
+        return;
+    };
+    if power.kind != crate::PowerKind::BattlewornDummyTimeLimit {
+        return;
+    }
+    if power.amount > 1 {
+        power.amount -= 1;
+        return;
+    }
+    // Out of time: the dummy flees, no reward.
+    state.event_combat_timed_out = true;
+    if let Some(c) = state.creatures.iter_mut().find(|c| c.id == creature_id) {
+        c.current_hp = 0;
     }
 }
 
@@ -6902,13 +6929,8 @@ pub fn enemy_turn_end(state: &mut CombatState) -> StepResult {
     hooks::dispatch_after_turn_end(state, &TurnSideCtx { side: Side::Enemy });
     hooks::dispatch_after_turn_end_late(state, &TurnSideCtx { side: Side::Enemy });
 
-    // Step 5b: tick BattlewornDummyTimeLimit (event→combat training-dummy
-    // timer). Fired here at enemy-side turn end, after the standard
-    // after_turn_end walk, mirroring C# `BattlewornDummyTimeLimitPower.
-    // AfterTurnEnd`. An expiry zeroes the dummy's HP, so the Step 6
-    // `check_combat_end` below resolves the (no-reward) win. Bead
-    // `sts2-rs-ck9z6` (GH #166).
-    tick_battleworn_dummy_time_limit(state);
+    // (BattlewornDummyTimeLimit ticks inside the walk above, in power
+    // order — see `tick_battleworn_dummy_timer`.)
 
     // Step 6: combat-end re-check after the after_turn_end(ENEMY) walk. Use
     // the FULL `check_combat_end` (not a bare `is_over` read): an
@@ -7473,6 +7495,13 @@ fn run_end_turn_step(state: &mut CombatState, phase: usize) -> StepResult {
         && (phase == ENEMY_SIDE_LAST || !matches!(result, StepResult::Advanced))
     {
         return finish_enemy_side_capture(state, result);
+    }
+    // A select a kill's `AfterDeath` parked during the end of turn opens once
+    // the next player turn has started (see [`crate::ParkedHookChoice`]).
+    // Here rather than only in `apply`, for the callers that run the chain
+    // phase by phase (MCTS's cached `EndTurn` prefix).
+    if phase == END_TURN_CHAIN.len() - 1 && crate::surface_parked_hook_choice(state) {
+        return StepResult::PendingChoice;
     }
     result
 }
@@ -8061,6 +8090,26 @@ pub fn dispatch_relic_before_card_played_replay(
 /// [`play_card_at_ally`] names one (`Action::PlayCardAtAlly`). `target` is
 /// an enemy slot and means nothing to such a card.
 pub fn play_card(state: &mut CombatState, hand_index: u8, target: Option<u8>) -> StepResult {
+    let result = play_card_unsurfaced(state, hand_index, target);
+    surface_after_play(state, result)
+}
+
+/// A select a kill's `AfterDeath` parked during the play opens once the whole
+/// play is done (C# `HookPlayerChoiceContext` enqueues it behind the running
+/// `PlayCardAction`; see [`crate::ParkedHookChoice`]). Wrapped here, not only
+/// in [`crate::apply`], because the run manager and search call the play
+/// entries directly.
+fn surface_after_play(state: &mut CombatState, result: StepResult) -> StepResult {
+    if matches!(result, StepResult::InvalidTarget | StepResult::IllegalPlay) {
+        return result;
+    }
+    if crate::surface_parked_hook_choice(state) {
+        return StepResult::PendingChoice;
+    }
+    result
+}
+
+fn play_card_unsurfaced(state: &mut CombatState, hand_index: u8, target: Option<u8>) -> StepResult {
     let any_ally = state
         .player
         .hand
@@ -8092,7 +8141,8 @@ pub fn play_card_at_ally(state: &mut CombatState, hand_index: u8, ally: u8) -> S
         return StepResult::InvalidTarget;
     }
     let seat = crate::coop::seat_of_ally(state, ally);
-    play_card_with_ally_seat(state, hand_index, Some(seat))
+    let result = play_card_with_ally_seat(state, hand_index, Some(seat));
+    surface_after_play(state, result)
 }
 
 /// Play an `AnyAlly` card with [`crate::coop::CoopState::card_target`] set to
@@ -8880,6 +8930,11 @@ pub(crate) fn spend_card_energy(
         state.cards[card_idx].energy_spent = paid;
         paid
     };
+    // A play paid here is not an Earring X auto-play (that stamps its own
+    // `EnergyValue` after this spend): drop any override a previous one left.
+    state.cards[card_idx]
+        .combat_vars
+        .zero(VarKey::AutoPlayEnergyValue);
 
     // C# `CardModel.SpendEnergy` fires `Hook.AfterEnergySpent` immediately
     // after the energy is deducted and BEFORE the card's `OnPlay`
@@ -9038,6 +9093,37 @@ pub(crate) fn finish_card_play(state: &mut CombatState, fin: CardPlayFinish) -> 
     result
 }
 
+/// C# `ShiningStrike.OnPlay` ends with `if (!Keywords.Contains(Exhaust) &&
+/// !ExhaustOnNextPlay) CardPileCmd.Add(this, Draw, Top)` (ShiningStrike.cs,
+/// both builds) — INSIDE `OnPlay`, so the card is already on the draw-pile top
+/// when `Enchantment.OnPlay` and `AfterCardPlayed` run, and each replay
+/// iteration moves it again from wherever it sits. A Corrupted self-hit's
+/// CentennialPuzzle draw then pulls it straight back to hand, and the
+/// result-pile step skips it (`OnPlayWrapper`: `Pile.Type == Play` false;
+/// loadout Regent v0.107.1 2015). Called by every play path right after the
+/// card's own `OnPlay`. A dupe keeps its `PileType.None` disposal, and a
+/// still-open choice defers to the result-pile routing (the card stays on
+/// Play until the choice closes).
+fn shining_strike_on_play_return(
+    state: &mut CombatState,
+    uid: crate::CardUid,
+    force_exhaust: bool,
+) {
+    let card = &state.cards[uid.0.get() as usize - 1];
+    if card.card_id != cards::CardId::ShiningStrike
+        || force_exhaust
+        || crate::card_effects::card_exhausts_inst(card)
+        || card.combat_var(VarKey::IsDupe) != 0
+        || state.pending_choice.is_some()
+    {
+        return;
+    }
+    if state.remove_card_from_piles(uid) {
+        state.player.draw.insert(0, uid);
+        cards::pin_top(&mut state.player, uid);
+    }
+}
+
 /// The half of one replay iteration (an `extra_plays` replay or the Echo Form
 /// copy) that runs after the card's `OnPlay` returns: `Enchantment.OnPlay`,
 /// the affliction drain, `History.CardPlayFinished` and `Hook.AfterCardPlayed`
@@ -9061,6 +9147,7 @@ fn replay_after_on_play(
     // so a replayed Adroit / Corrupted / Momentum card gains its block,
     // takes its self-damage and ramps once per play. Swift / Sown stay
     // first-play-only through their used bits.
+    shining_strike_on_play_return(state, card_uid, false);
     crate::enchantment_hooks::dispatch_on_card_played(state, card_uid);
     // C# `CardModel.OnPlayWrapper` runs the affliction `OnPlay` INSIDE the
     // per-iteration `for i < playCount2` loop (CardModel.cs:1513-1522), so a
@@ -9265,6 +9352,7 @@ fn finish_card_play_tail(state: &mut CombatState, fin: CardPlayFinish) -> StepRe
             // Swift / Sown flip their first-play `*_USED_BIT` inside this dispatch, as
             // C# sets `Status = EnchantmentStatus.Disabled` inside their own `OnPlay`
             // — so a Music Box clone made in the after-played buses is already spent.
+            shining_strike_on_play_return(state, card_uid, false);
             crate::enchantment_hooks::dispatch_on_card_played(state, card_uid);
 
             // Affliction `OnPlay` — the captured Weighted energy drain (bead
@@ -9713,10 +9801,14 @@ fn finish_card_play_tail(state: &mut CombatState, fin: CardPlayFinish) -> StepRe
             state.player.play.remove(pos);
             // C# `CardPilePosition.Top` for the Hand pile = index 0 (drawn/seen
             // first). Overflow-to-discard at HAND_LIMIT, like move_card_to_hand.
+            // A full hand sends it to Discard at the SAME position, Top =
+            // index 0 (CardPileCmd.Add: `targetPile = Discard`, then
+            // `AddInternal(card, Top => 0)`, CardPileCmd.cs:420-424/511-516;
+            // loadout Defect v0.107.1 2008).
             if state.player.hand.len() < crate::cards::HAND_LIMIT {
                 state.player.hand.insert(0, card_uid);
             } else {
-                state.player.discard.push(card_uid);
+                state.player.discard.insert(0, card_uid);
             }
         }
     } else if ((crate::card_effects::card_exhausts_inst(&card) && !played_card_is_dupe)
@@ -10921,10 +11013,14 @@ fn auto_play_tally_finished(
     let idx = card_type.index();
     state.player.cards_played_this_turn[idx] =
         state.player.cards_played_this_turn[idx].saturating_add(1);
+    // `CardPlayFinishedEntry.WasEthereal` reads the live `Keywords`
+    // (CardPlayFinishedEntry.cs:45) and is recorded for auto-plays too, so a
+    // Hexed / EtherealThisCombat auto-played card counts (PullFromBelow,
+    // BansheesCry), as on the hand-play path.
     if state
         .cards
         .get(card_idx)
-        .is_some_and(crate::card_effects::card_ethereal_inst)
+        .is_some_and(|c| card_is_ethereal_at_play(state, c))
     {
         note_ethereal_card_played(state);
     }
@@ -11270,8 +11366,18 @@ fn resolve_auto_played_card_inner(
     // rs=1). Stamp it here (no energy drain, mirroring C#).
     if state.cards[top_idx].is_x_cost() {
         // `skipXCapture`: the caller's `SpendResources` already captured X.
-        if !skip_x_capture {
+        if skip_x_capture {
+            // ... but the play's `EnergyValue` is `GetAmountToSpend()` = the
+            // energy LEFT after that spend (CardCmd.cs:126,
+            // CardEnergyCost.cs:134-139), not the X (Necrobinder v0.111.0
+            // 2002: an Earring-played Volley returned RightHandHand).
+            let left = state.player.energy.max(0);
+            state.cards[top_idx].set_combat_var(VarKey::AutoPlayEnergyValue, left + 1);
+        } else {
             state.cards[top_idx].energy_spent = state.player.energy.max(0);
+            state.cards[top_idx]
+                .combat_vars
+                .zero(VarKey::AutoPlayEnergyValue);
         }
     } else {
         // GH #741: a non-X auto-play is free (C# `EnergySpent = 0`) but its
@@ -11279,6 +11385,23 @@ fn resolve_auto_played_card_inner(
         // modifier-resolved cost (`CardCmd.AutoPlay`). Stamp that, so a value
         // left by an earlier manual play of this card is never read here.
         state.cards[top_idx].energy_spent = crate::hooks::effective_card_cost(state, top_uid);
+    }
+
+    // C# `CardCmd.AutoPlay` (CardCmd.cs:100-110, both builds) captures a
+    // `HasStarCostX` card's `LastStarsSpent = current Stars` right after the X
+    // energy, WITHOUT spending them, and before `Hook.BeforeCardAutoPlayed` /
+    // `OnPlayWrapper`'s `BeforeCardPlayed` — so a TheSealedThrone star gained
+    // in `BeforeCardPlayed` is not in the X (loadout Regent v0.107.1 2014: a
+    // Mayhem Stardust at 0 stars hit 0 times in C#, once in Rust). Stamp the
+    // capture (stars+1 sentinel) so `play_stardust` uses it as the hit count
+    // without spending (regent-legal-action Fix B, seed 2010). Under
+    // `skipXCapture` (Whispering Earring) the caller's `SpendResources`
+    // already spent the stars and `spend_card_stars` stamped
+    // `AutoPlayStarX = spent + 1`; leave that stamp alone (clearing it made
+    // `play_stardust` spend the empty pool: Regent v0.111.0 2020).
+    if top_card_id == cards::CardId::Stardust && !skip_x_capture {
+        let stamp = i32::from(state.player.stars).max(0) + 1;
+        state.cards[top_idx].set_combat_var(crate::cards::VarKey::AutoPlayStarX, stamp);
     }
 
     // UI play-log: this auto-play passed every early-return guard (unplayable,
@@ -11358,6 +11481,11 @@ fn resolve_auto_played_card_inner(
     // exhausts in C# but RS routed it to discard).
     let corruption_active_pre_dispatch =
         state.player_power_amount(crate::PowerKind::Corruption) > 0;
+    // The card's own Exhaust keyword, read at the same pre-`OnPlay` point:
+    // an `AfterCardPlayed` that upgrades it (Razor Tooth on Know Thy Place,
+    // whose upgrade drops Exhaust) must not re-route it (loadout Regent 1036).
+    let self_exhausts_pre_dispatch =
+        crate::card_effects::card_exhausts_inst(&state.cards[top_uid.0.get() as usize - 1]);
 
     // Bead `sts2-rs-jnf4a`: an AUTO-PLAYED card honors its `Weighted`
     // affliction (Doormaker GraspPower afflicts every player card; the
@@ -11404,6 +11532,18 @@ fn resolve_auto_played_card_inner(
     } else {
         crate::hooks::effective_card_cost(state, top_uid)
     };
+    // C# `CardCmd.AutoPlay` stamps `Resources.EnergyValue =
+    // EnergyCost.GetAmountToSpend()` (CardCmd.cs:126), which for an X-cost
+    // card is the player's CURRENT energy (CardEnergyCost.cs:134-139), not the
+    // captured X. Under WhisperingEarring `SpendResources()` has already
+    // drained it, so an Earring-played Whirlwind carries EnergyValue 0:
+    // IntimidatingHelmet does not grant, Feral sees a 0-cost Attack. Powers
+    // that read `GetResolved()` (DanseMacabre, ...) keep `auto_resolved_cost`.
+    let auto_energy_value = if state.cards[top_idx].is_x_cost() {
+        state.player.energy
+    } else {
+        auto_resolved_cost
+    };
     let auto_card_is_ethereal = card_is_ethereal_at_play(state, &state.cards[top_idx]);
     // FeralPower's redirect, decided before this auto-play's `OnPlay` (C#
     // `CardCmd.AutoPlay` re-enters `OnPlayWrapper`, CardCmd.cs:123-130). See
@@ -11412,7 +11552,7 @@ fn resolve_auto_played_card_inner(
     let auto_feral_returns_to_hand = feral_claims_result_location(
         state,
         top_card_type,
-        auto_resolved_cost,
+        auto_energy_value,
         state.game_version >= crate::GameVersion::V0_111_0
             && state.cards[top_idx].combat_var(VarKey::IsDupe) != 0,
     );
@@ -11427,7 +11567,11 @@ fn resolve_auto_played_card_inner(
     // ZEROES — clobbering the caller's still-pending snapshot before ITS
     // after-play grant fires. CATASTROPHE auto-plays 2 cards under Afterimage:
     // the two nested grants consumed the shared counter, so CATASTROPHE's own
-    // +1 block was lost (Silent fuzz seed 289 player.block cs=3 rs=2). Emulate
+    // +1 block was lost (Silent fuzz seed 289 player.block cs=3 rs=2).
+    // Calamity's armed flag (CalamityPower.cs `amountsForPlayedCards`) is the
+    // same shape: an Uproar under Calamity auto-plays a nested Attack whose
+    // after-play disarmed the flag, so Uproar itself conjured nothing (loadout
+    // Defect v0.107.1 1029 combat_card_generation cs=134 rs=132). Emulate
     // C#'s per-card keying via the call stack: snapshot the caller's transient
     // arm fields now (after the caller armed them, before THIS play re-arms),
     // and restore them at function exit so the caller's after-play grant reads
@@ -11449,6 +11593,7 @@ fn resolve_auto_played_card_inner(
                     | crate::PowerKind::Storm
                     | crate::PowerKind::Subroutine
                     | crate::PowerKind::Monologue
+                    | crate::PowerKind::Calamity
             )
         })
         .map(|p| (p.id, p.kind, p.counter, p.skip_next_tick))
@@ -11469,7 +11614,7 @@ fn resolve_auto_played_card_inner(
             card_tags: top_card_tags,
             energy_spent: 0,
         },
-        auto_resolved_cost,
+        auto_energy_value,
     );
     crate::hooks::dispatch_before_card_played_powers(
         state,
@@ -11519,26 +11664,6 @@ fn resolve_auto_played_card_inner(
         (extra + echo_extra).max(0)
     };
 
-    // C# `CardCmd.AutoPlay` (CardCmd.cs:106-131) captures a `HasStarCostX` card's
-    // `LastStarsSpent = current Stars` WITHOUT spending them (no SpendResources).
-    // Stamp the captured value (stars+1 sentinel) so `play_stardust` uses it as
-    // the hit count without calling `spend_stars` — an auto-played Stardust
-    // (Mayhem) hits `Stars` times but leaves the stars intact. regent-legal-action
-    // Fix B (seed 2010). Manual plays never set this var, so they still spend.
-    // Under `skipXCapture` (Whispering Earring) the stars were NOT captured
-    // here: the var stays unset and `play_stardust` spends the stars itself,
-    // exactly as on the manual path (C# `SpendResources` → `SpendStars` set
-    // `LastStarsSpent` and fired `AfterStarsSpent` before this auto-play).
-    if top_card_id == cards::CardId::Stardust {
-        // Under `skip_x_capture`, clear any X left from an earlier play so
-        // `play_stardust` spends (and re-stamps) instead of reusing it.
-        let stamp = if skip_x_capture {
-            0
-        } else {
-            i32::from(state.player.stars).max(0) + 1
-        };
-        state.cards[top_idx].set_combat_var(crate::cards::VarKey::AutoPlayStarX, stamp);
-    }
     if !skip_dispatch {
         let _ = crate::card_effects::dispatch_for_auto_played_card(
             state,
@@ -11594,6 +11719,7 @@ fn resolve_auto_played_card_inner(
             force_exhaust,
             skip_dispatch,
             corruption_active_pre_dispatch,
+            self_exhausts_pre_dispatch,
             auto_feral_returns_to_hand,
             auto_resolved_cost,
             auto_card_is_ethereal,
@@ -11617,6 +11743,7 @@ fn resolve_auto_played_card_inner(
         force_exhaust,
         skip_dispatch,
         corruption_active_pre_dispatch,
+        self_exhausts_pre_dispatch,
         auto_feral_returns_to_hand,
         auto_resolved_cost,
         auto_card_is_ethereal,
@@ -11651,6 +11778,9 @@ pub struct AutoPlayFinish {
     pub(crate) force_exhaust: bool,
     pub(crate) skip_dispatch: bool,
     pub(crate) corruption_active_pre_dispatch: bool,
+    /// The card's Exhaust keyword at auto-play start (C# fixes the result pile
+    /// before `OnPlay`, CardModel.cs OnPlayWrapper).
+    pub(crate) self_exhausts_pre_dispatch: bool,
     /// FeralPower's redirect decision, taken at auto-play start: the twin of
     /// `CardPlayFinish::feral_returns_to_hand`.
     pub(crate) auto_feral_returns_to_hand: bool,
@@ -11705,6 +11835,7 @@ impl Clone for AutoPlayFinish {
             force_exhaust: self.force_exhaust,
             skip_dispatch: self.skip_dispatch,
             corruption_active_pre_dispatch: self.corruption_active_pre_dispatch,
+            self_exhausts_pre_dispatch: self.self_exhausts_pre_dispatch,
             auto_feral_returns_to_hand: self.auto_feral_returns_to_hand,
             auto_resolved_cost: self.auto_resolved_cost,
             auto_card_is_ethereal: self.auto_card_is_ethereal,
@@ -11727,6 +11858,7 @@ impl PartialEq for AutoPlayFinish {
             && self.force_exhaust == other.force_exhaust
             && self.skip_dispatch == other.skip_dispatch
             && self.corruption_active_pre_dispatch == other.corruption_active_pre_dispatch
+            && self.self_exhausts_pre_dispatch == other.self_exhausts_pre_dispatch
             && self.auto_feral_returns_to_hand == other.auto_feral_returns_to_hand
             && self.auto_resolved_cost == other.auto_resolved_cost
             && self.auto_card_is_ethereal == other.auto_card_is_ethereal
@@ -11844,6 +11976,7 @@ fn finish_auto_played_card_tail(state: &mut CombatState, fin: AutoPlayFinish) ->
         force_exhaust,
         skip_dispatch,
         corruption_active_pre_dispatch,
+        self_exhausts_pre_dispatch,
         auto_feral_returns_to_hand,
         auto_resolved_cost,
         auto_card_is_ethereal,
@@ -11861,6 +11994,16 @@ fn finish_auto_played_card_tail(state: &mut CombatState, fin: AutoPlayFinish) ->
     let top_card_id = top_card.card_id;
     let top_card_type = top_card.card_type;
     let top_card_tags = top_card.tags;
+    // C# `Resources.EnergyValue` of the auto-play (relic `BeforeCardPlayed`:
+    // IntimidatingHelmet, on each replay): an X card's is the energy at
+    // auto-play start, which `resolve_auto_played_card_inner` left on the card
+    // (`play_energy_value`); any other card's is its resolved cost. Derived,
+    // not stored, so `AutoPlayFinish` keeps `CombatState` within budget.
+    let auto_energy_value = if top_card.is_x_cost() {
+        crate::cards::play_energy_value(top_card)
+    } else {
+        auto_resolved_cost
+    };
 
     // Fire after_card_played on both buses.
     let played_ctx = crate::relic_effects::CardEventCtx {
@@ -11888,6 +12031,7 @@ fn finish_auto_played_card_tail(state: &mut CombatState, fin: AutoPlayFinish) ->
             // skipped it: Uproar auto-playing a Sown Strike gained no energy (Defect
             // QX189: energy 1 vs C# 2).
             if !skip_dispatch {
+                shining_strike_on_play_return(state, top_uid, force_exhaust);
                 crate::enchantment_hooks::dispatch_on_card_played(state, top_uid);
             }
 
@@ -11979,6 +12123,7 @@ fn finish_auto_played_card_tail(state: &mut CombatState, fin: AutoPlayFinish) ->
             auto_replay_after_on_play(
                 state,
                 top_uid,
+                force_exhaust,
                 top_card_type,
                 top_idx,
                 &played_ctx,
@@ -12047,7 +12192,7 @@ fn finish_auto_played_card_tail(state: &mut CombatState, fin: AutoPlayFinish) ->
             // counter; the loop never re-armed it).
             let before_hooks_live = replay_before_card_played_live(state);
             if before_hooks_live {
-                dispatch_relic_before_card_played_replay(state, &played_ctx, auto_resolved_cost);
+                dispatch_relic_before_card_played_replay(state, &played_ctx, auto_energy_value);
                 crate::hooks::dispatch_before_card_played_powers(
                     state,
                     auto_resolved_cost,
@@ -12086,6 +12231,7 @@ fn finish_auto_played_card_tail(state: &mut CombatState, fin: AutoPlayFinish) ->
                     force_exhaust,
                     skip_dispatch,
                     corruption_active_pre_dispatch,
+                    self_exhausts_pre_dispatch,
                     auto_feral_returns_to_hand,
                     auto_resolved_cost,
                     auto_card_is_ethereal,
@@ -12105,6 +12251,7 @@ fn finish_auto_played_card_tail(state: &mut CombatState, fin: AutoPlayFinish) ->
             auto_replay_after_on_play(
                 state,
                 top_uid,
+                force_exhaust,
                 top_card_type,
                 top_idx,
                 &played_ctx,
@@ -12135,7 +12282,7 @@ fn finish_auto_played_card_tail(state: &mut CombatState, fin: AutoPlayFinish) ->
     // `finish_card_play`: decided at auto-play start
     // (`auto_feral_returns_to_hand`, see `feral_claims_result_location`).
     if state.player.play.contains(&top_uid) {
-        let self_exhausts = crate::card_effects::card_exhausts_inst(&state.cards[top_idx]);
+        let self_exhausts = self_exhausts_pre_dispatch;
         // CorruptionPower routes the owner's played Skills to Exhaust — the
         // auto-play mirror of the same branch in `play_card`, using the
         // pre-dispatch Corruption snapshot (C# pre-OnPlay result-pile).
@@ -12178,10 +12325,11 @@ fn finish_auto_played_card_tail(state: &mut CombatState, fin: AutoPlayFinish) ->
             crate::event_log::flash_player_power(state, crate::PowerKind::Feral);
             if let Some(pos) = state.player.play.iter().position(|&u| u == top_uid) {
                 state.player.play.remove(pos);
+                // Full hand: Discard Top (index 0), as on the hand-play path.
                 if state.player.hand.len() < crate::cards::HAND_LIMIT {
                     state.player.hand.insert(0, top_uid);
                 } else {
-                    state.player.discard.push(top_uid);
+                    state.player.discard.insert(0, top_uid);
                 }
             }
         } else if top_card_type == cards::CardType::Power || (is_dupe && !corruption_exhausts_skill)
@@ -12221,6 +12369,15 @@ fn finish_auto_played_card_tail(state: &mut CombatState, fin: AutoPlayFinish) ->
                 // ShiningStrike branch — pin top-of-draw. Bead `sts2-rs-09x5n`.
                 cards::pin_top(&mut state.player, top_uid);
             }
+        } else if top_card_id == cards::CardId::ParticleWall {
+            // C# `ParticleWall.GetResultPileTypeForCardPlay` (ParticleWall.cs:
+            // 31-39, both builds) turns a Discard result into Hand, and
+            // `OnPlayWrapper` asks it for auto-plays too — before the
+            // Nostalgia/Rebound modifiers, which act on Discard only. Mirrors
+            // the hand-play `is_particle_wall` branch: `move_card_to_hand`
+            // overflows to Discard at the hand limit (Regent loadout v0.107.1
+            // 1012, v0.111.0 1020).
+            state.move_card_to_hand(top_uid);
         } else {
             // Natural routing: discard — UNLESS NostalgiaPower redirects the
             // owner's first `Amount` Attacks/Skills played this turn to the TOP
@@ -12410,6 +12567,7 @@ fn park_auto_play_finish(state: &mut CombatState, fin: AutoPlayFinish, force_exh
 fn auto_replay_after_on_play(
     state: &mut CombatState,
     top_uid: crate::CardUid,
+    force_exhaust: bool,
     top_card_type: cards::CardType,
     top_idx: usize,
     played_ctx: &crate::relic_effects::CardEventCtx,
@@ -12418,6 +12576,7 @@ fn auto_replay_after_on_play(
     // GH #1021: each replay iteration runs the card's
     // `Enchantment.OnPlay` (CardModel.cs:1938-1946), as the initial
     // auto-play does above.
+    shining_strike_on_play_return(state, top_uid, force_exhaust);
     crate::enchantment_hooks::dispatch_on_card_played(state, top_uid);
     state.combat_log.player_card_plays_this_combat = state
         .combat_log
@@ -12905,6 +13064,64 @@ mod tests {
         );
     }
 
+    /// Calamity keys its armed play per CardModel (C# CalamityPower.cs
+    /// `amountsForPlayedCards`), so a parent Attack's arm survives the nested
+    /// Attack its `OnPlay` auto-plays (Uproar). Loadout Defect v0.107.1 1029:
+    /// the nested after-play disarmed the shared flag and Uproar conjured
+    /// nothing (combat_card_generation cs=134 rs=132).
+    #[test]
+    #[serial_test::serial(global_registry)]
+    fn nested_auto_play_preserves_parent_calamity_arm() {
+        use crate::{Power, PowerKind};
+
+        crate::card_effects::ensure_installed();
+
+        let mut state = state_with_cultists(1);
+        let _ = start_combat(&mut state);
+
+        let pid = std::num::NonZeroU32::new(7002).unwrap();
+        state.powers.push(Power {
+            id: pid,
+            kind: PowerKind::Calamity,
+            amount: 1,
+            // Simulate the parent Attack's BeforeCardPlayed arm.
+            counter: 1,
+            applier: None,
+            skip_next_tick: false,
+        });
+        state.player.powers.push(crate::PowerUid(pid));
+
+        let uid = crate::CardUid::new(1).expect("non-zero");
+        state.cards.clear();
+        state.cards.push(crate::cards::Card {
+            uid,
+            card_id: crate::cards::CardId::StrikeIronclad,
+            cost: 1,
+            card_type: crate::cards::CardType::Attack,
+            target_type: crate::cards::TargetType::Enemy,
+            upgraded: false,
+            base_damage: 6,
+            base_block: 0,
+            combat_vars: crate::cards::CombatVars::new(),
+            enchantments: crate::cards::CardEnchantments::new(),
+            tags: crate::cards::CardTags::NONE,
+            energy_spent: 0,
+            base_replay_count: 0,
+            keyword_override: None,
+            affliction: None,
+        });
+        state.player.play.clear();
+        state.player.play.push(uid);
+
+        resolve_auto_played_card(&mut state, uid, false);
+
+        assert_eq!(
+            state.powers.get_by_id(pid).expect("calamity").counter,
+            1,
+            "parent Calamity arm must survive the nested auto-play"
+        );
+    }
+
     /// Regent parity seed 265: an AUTO-played (non-exhaust) SHINING_STRIKE must
     /// return to the TOP of the draw pile, exactly like the hand-play path —
     /// C# `ShiningStrike.OnPlay`'s `CardPileCmd.Add(this, Draw, Top)` runs for
@@ -13053,6 +13270,66 @@ mod tests {
         );
     }
 
+    /// C# `ShiningStrike.OnPlay` puts the card on the draw-pile top INSIDE
+    /// `OnPlay`, before `Enchantment.OnPlay`: a Swift(1) ShiningStrike's own
+    /// Swift draw takes it straight back to hand, and the result-pile step
+    /// leaves it there (loadout Regent v0.107.1 2015, via Corrupted +
+    /// CentennialPuzzle). Rust moved it to draw-top only in the routing step,
+    /// after the draw, so Swift drew the card beneath it.
+    #[test]
+    #[serial_test::serial(global_registry)]
+    fn shining_strike_is_on_draw_top_before_its_enchantment_draws() {
+        crate::card_effects::ensure_installed();
+
+        let mut state = state_with_cultists(1);
+        let _ = start_combat(&mut state);
+        state.phase = CombatPhase::PlayerPlayPhase;
+        state.player.energy = 3;
+
+        let mk_card = |uid_n: u32, id: crate::cards::CardId| crate::cards::Card {
+            uid: crate::CardUid::new(uid_n).expect("non-zero"),
+            card_id: id,
+            cost: 1,
+            card_type: crate::cards::CardType::Attack,
+            target_type: crate::cards::TargetType::Enemy,
+            upgraded: false,
+            base_damage: 8,
+            base_block: 0,
+            combat_vars: crate::cards::CombatVars::new(),
+            enchantments: crate::cards::CardEnchantments::new(),
+            tags: crate::cards::CardTags::NONE,
+            energy_spent: 0,
+            base_replay_count: 0,
+            keyword_override: None,
+            affliction: None,
+        };
+        state.cards.clear();
+        let mut ss = mk_card(1, crate::cards::CardId::ShiningStrike);
+        ss.set_enchantment(crate::cards::EnchantmentId::Swift, 1);
+        state.cards.push(ss);
+        state
+            .cards
+            .push(mk_card(2, crate::cards::CardId::StrikeIronclad));
+        let ss_uid = crate::CardUid::new(1).expect("non-zero");
+        let strike_uid = crate::CardUid::new(2).expect("non-zero");
+        state.player.hand.clear();
+        state.player.hand.push(ss_uid);
+        state.player.draw.clear();
+        state.player.draw.push(strike_uid);
+        state.player.discard.clear();
+        state.player.play.clear();
+
+        let res = play_card(&mut state, 0, Some(0));
+        assert_eq!(res, StepResult::Advanced, "hand play resolves");
+        assert_eq!(
+            state.player.hand.as_slice(),
+            &[ss_uid],
+            "Swift drew the ShiningStrike itself back"
+        );
+        assert_eq!(state.player.draw.as_slice(), &[strike_uid]);
+        assert!(state.player.discard.is_empty() && state.player.play.is_empty());
+    }
+
     /// Bead `sts2-rs-1sew4` companion / `sts2-rs-09x5n`: an auto-played
     /// (non-exhaust) Attack under `NostalgiaPower` must redirect to the TOP
     /// of the draw pile, exactly like the hand-play path AND pin that
@@ -13118,6 +13395,60 @@ mod tests {
             Some(uid),
             "the Nostalgia auto-play redirect must pin Top(0)"
         );
+    }
+
+    /// C# `CardPileCmd.AutoPlayFromDrawPile` (Mayhem) moves every card to Play
+    /// before playing any, so the not-yet-started sibling must not count as a
+    /// started Attack play: under Nostalgia(1) the FIRST auto-played Strike is
+    /// still redirected to the draw top (loadout Necrobinder 1011).
+    #[test]
+    #[serial_test::serial(global_registry)]
+    fn mayhem_batch_sibling_does_not_suppress_nostalgia_redirect() {
+        crate::card_effects::ensure_installed();
+        let mut state = state_with_cultists(1);
+        let _ = start_combat(&mut state);
+        let pid = NonZeroU32::new(1).expect("non-zero");
+        state.powers.push(crate::Power {
+            id: pid,
+            kind: crate::PowerKind::Nostalgia,
+            amount: 1,
+            counter: 0,
+            applier: None,
+            skip_next_tick: false,
+        });
+        state.player.powers.push(crate::PowerUid(pid));
+        state.cards.clear();
+        state.player.draw.clear();
+        state.player.discard.clear();
+        state.player.hand.clear();
+        state.player.play.clear();
+        for n in 1..=2 {
+            let uid = crate::CardUid::new(n).expect("non-zero");
+            state.cards.push(crate::cards::Card {
+                uid,
+                card_id: crate::cards::CardId::StrikeIronclad,
+                cost: 1,
+                card_type: crate::cards::CardType::Attack,
+                target_type: crate::cards::TargetType::Enemy,
+                base_damage: 6,
+                ..crate::cards::Card::pod_defaults()
+            });
+            state.player.draw.push(uid);
+        }
+        let first = crate::CardUid::new(1).expect("non-zero");
+        let second = crate::CardUid::new(2).expect("non-zero");
+        let ap = crate::PendingAutoplay {
+            remaining: 2,
+            collected: SmallVec::new(),
+            force_exhaust: false,
+        };
+        assert!(auto_play_collect_suspending(&mut state, ap).is_none());
+        assert_eq!(
+            state.player.draw.first().copied(),
+            Some(first),
+            "the first Mayhem play is the turn's first Attack: Nostalgia redirects it"
+        );
+        assert!(state.player.discard.contains(&second));
     }
 
     /// Bead `sts2-rs-qu5wg` companion / `sts2-rs-09x5n`: the DEFERRED flush
@@ -18108,6 +18439,43 @@ mod tests {
         // The flee must NOT be counted as a gold-scaling escape.
         assert_eq!(state.escaped_creatures, 0);
         let _ = enemy_id;
+    }
+
+    /// The timer ticks at its own position in the `AfterSideTurnEnd` power
+    /// walk (C# `BattlewornDummyTimeLimitPower.AfterSideTurnEnd`, power
+    /// application order), so a Demise applied later that would kill the dummy
+    /// finds it already escaped: `RanOutOfTime`, no reward. Loadout Regent
+    /// v0.107.1 1028 — Rust ticked after the whole walk, the Demise kill came
+    /// first, and the event paid out its reward.
+    #[test]
+    fn battleworn_dummy_timer_escapes_before_a_later_lethal_demise() {
+        let mut state =
+            state_for_enemy_turn_exec(1, MonsterKind::BattleFriendV1, Intent::Defend { block: 0 });
+        state.creatures[0].current_hp = 5;
+        state.creatures[0].max_hp = 300;
+        let timer = NonZeroU32::new(9100).expect("nz");
+        let demise = NonZeroU32::new(9101).expect("nz");
+        for (id, kind, amount) in [
+            (timer, PowerKind::BattlewornDummyTimeLimit, 1),
+            (demise, PowerKind::Demise, 10),
+        ] {
+            state.powers.push(Power {
+                id,
+                kind,
+                amount,
+                counter: 0,
+                applier: None,
+                skip_next_tick: false,
+            });
+            state.creatures[0].powers.push(PowerUid(id));
+        }
+        state.phase = CombatPhase::EnemyTurnEnd;
+        assert_eq!(enemy_turn_end(&mut state), StepResult::CombatWon);
+        assert!(
+            state.event_combat_timed_out,
+            "the timer (applied first) escapes the dummy before Demise ticks"
+        );
+        assert_eq!(state.creatures[0].current_hp, 0);
     }
 
     /// Bead `sts2-rs-qk2du`: `Intent::Defend { block: 10 }` makes the acting

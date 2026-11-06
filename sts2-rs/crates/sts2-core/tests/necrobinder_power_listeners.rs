@@ -665,6 +665,48 @@ fn pagestorm_cascades_ethereal_draws() {
     assert_eq!(moved, 1, "draw_into_hand reports only its own direct draw");
 }
 
+/// C# `CardPileCmd.Draw` runs `Hook.AfterCardDrawn` per card, so
+/// `PagestormPower`'s nested `Draw` (fromHandDraw = false) lands BEFORE the
+/// outer hand draw's next card. With 8 cards in hand, a 2-card hand draw that
+/// opens on an Ethereal card fills the hand with the Pagestorm draw — the
+/// outer second draw then fails on the 10-card cap. One card was drawn by
+/// effect (DeathMarch's count); the batch path drew both hand cards first and
+/// the Pagestorm draw failed instead (loadout Necrobinder 1001/1012).
+#[test]
+fn pagestorm_draw_interleaves_before_the_next_hand_draw() {
+    let mut state = CombatState::default();
+    state.player.current_hp = 80;
+    push_player_power(&mut state, PowerKind::Pagestorm, 1);
+    for _ in 0..8 {
+        let uid = CardUid::new(state.cards.len() as u32 + 1).expect("nonzero");
+        state.cards.push(Card {
+            uid,
+            ..Card::pod_defaults()
+        });
+        state.player.hand.push(uid);
+    }
+    let eth = push_ethereal_into_draw(&mut state);
+    let mut plain = Vec::new();
+    for _ in 0..2 {
+        let uid = CardUid::new(state.cards.len() as u32 + 1).expect("nonzero");
+        state.cards.push(Card {
+            uid,
+            ..Card::pod_defaults()
+        });
+        state.player.draw.push(uid);
+        plain.push(uid);
+    }
+
+    let moved = state.draw_into_hand(2);
+    assert_eq!(moved, 1, "the outer second draw hits the hand cap");
+    assert_eq!(state.player.hand.len(), 10);
+    assert_eq!(&state.player.hand[8..], &[eth, plain[0]]);
+    assert_eq!(
+        state.combat_log.cards_drawn_by_effect_this_turn, 1,
+        "the Pagestorm draw (fromHandDraw = false) succeeded"
+    );
+}
+
 /// Without Pagestorm, drawing one Ethereal card draws exactly one — no rider.
 #[test]
 fn no_pagestorm_means_no_extra_draw() {
@@ -1022,6 +1064,48 @@ fn sleight_of_flesh_ignores_buffs_and_self_debuffs() {
     assert_eq!(
         state.player.current_hp, php0,
         "SleightOfFlesh deals no damage when the debuff target is the player"
+    );
+}
+
+/// C# `DoubleDamagePower.ModifyDamageMultiplicative` gates the dealer on
+/// `dealer == Owner || Owner.Pets.Contains(dealer)`: a card-sourced powered
+/// Osty hit doubles too, not just the player's own (loadout Necrobinder 1019).
+#[test]
+fn double_damage_doubles_the_owners_osty_hits() {
+    let mut state = CombatState::default();
+    state.player.current_hp = 60;
+    state.player.max_hp = 60;
+    let _ = state.init_player_creature();
+    let enemy = state.spawn_enemy(MonsterKind::Nibbit);
+    let pet = state.summon_osty(8).expect("Osty summoned");
+    let dd = push_player_power(&mut state, PowerKind::DoubleDamage, 1);
+    // A card mid-resolution stands in for C#'s non-null `cardSource`.
+    let cuid = CardUid::new(state.cards.len() as u32 + 1).expect("nonzero");
+    state.cards.push(Card {
+        uid: cuid,
+        ..Card::pod_defaults()
+    });
+    state.player.play.push(cuid);
+
+    let osty_hit = DamageCtx {
+        dealer: CreatureRef::Enemy(pet),
+        target: CreatureRef::Enemy(enemy),
+        props: ValueProps::MOVE,
+    };
+    assert_eq!(
+        hooks::modify_damage_multiplicative(&state, ListenerRef::Power(dd), &osty_hit),
+        DamageMul::DOUBLE,
+        "the owner's pet's powered card hit is doubled"
+    );
+    let enemy_hit = DamageCtx {
+        dealer: CreatureRef::Enemy(enemy),
+        target: CreatureRef::Player,
+        props: ValueProps::MOVE,
+    };
+    assert_eq!(
+        hooks::modify_damage_multiplicative(&state, ListenerRef::Power(dd), &enemy_hit),
+        DamageMul::ONE,
+        "a non-pet enemy's hit is not doubled"
     );
 }
 

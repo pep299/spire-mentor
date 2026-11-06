@@ -44,16 +44,30 @@ pub(crate) fn play_crush_under(state: &mut CombatState, _t: Option<CreatureUid>)
         // the whole power is negated — its `BeforeApplied` (which applies
         // the internal silent StrengthPower) never fires. Route the marker
         // through the Artifact-aware `apply_power_to_enemy`, and only fold
-        // the internal Strength when the debuff actually lands. Peek for the
-        // Artifact stack BEFORE applying (the apply consumes it) so a warded
+        // the internal Strength when the debuff actually lands. Measure the
+        // marker before and after applying (the apply consumes Artifact) so a warded
         // enemy keeps its Strength (parity fuzz Regent seed 353: Rust
         // applied CrushUnder + Strength past Artifact, leaving the enemy
         // with 2 extra powers and its Artifact untouched). Bead
         // `sts2-rs-crush-under-artifact`.
-        let warded = enemy_has_artifact(state, uid);
+        //
+        // TemporaryStrengthPower.BeforeApplied applies Strength by the
+        // MODIFIED amount (PowerCmd.cs:129-136 v0.111.0): doubled under
+        // Unsettling Lamp, 0 when Artifact negates the marker. Drain what
+        // landed on the marker, not the base (same as DarkShackles).
+        let before = crate::cards::colorless::helpers::power_amount_on_creature(
+            state,
+            uid,
+            PowerKind::CrushUnder,
+        );
         apply_power_to_enemy(state, uid, PowerKind::CrushUnder, strength_loss);
-        if !warded {
-            add_power_to_enemy_signed(state, uid, PowerKind::Strength, -strength_loss);
+        let landed = crate::cards::colorless::helpers::power_amount_on_creature(
+            state,
+            uid,
+            PowerKind::CrushUnder,
+        ) - before;
+        if landed > 0 {
+            add_power_to_enemy_signed(state, uid, PowerKind::Strength, -landed);
         }
     }
     EffectResult::Resolved

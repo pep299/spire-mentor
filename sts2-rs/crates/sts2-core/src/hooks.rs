@@ -630,6 +630,7 @@ impl PowerHook {
                 .union(ON_TURN_END_ENEMY_SIDE_KINDS)
                 .union(Set::from_kinds(&[
                     PowerKind::DarkEmbrace,
+                    PowerKind::BattlewornDummyTimeLimit,
                     PowerKind::PaleBlueDot,
                     PowerKind::Skittish,
                     PowerKind::Slumber,
@@ -2209,8 +2210,12 @@ fn clone_card_to_hand(
         // hand card keeps its affliction).
         let _ = template.clear_affliction();
     }
+    // Every caller is a player power (Juggling `AfterCardPlayed`/`BeforeCardPlayed`,
+    // Nightmare `BeforeHandDraw`), whose C# `AddGeneratedCardToCombat(.., Hand,
+    // base.Owner.Player)` is player-created whatever the Play pile holds — the
+    // Nightmare copies land at turn start with it empty.
     for _ in 0..count.max(0) {
-        crate::card_effects::spawn_card_into_hand(state, template);
+        crate::card_effects::spawn_card_into_hand_with_origin(state, template, true);
     }
 }
 
@@ -2299,6 +2304,16 @@ fn apply_dealhploss(
             } else {
                 0
             };
+            // EmotionChip's `DamageReceivedEntry` (WasFullyBlocked =
+            // `!Unblockable && (blocked > 0 || Block > 0) && unblocked == 0`).
+            let damage_entry_recorded = !crate::combat_loop::combat_is_ending(state);
+            let was_fully_blocked =
+                !unblockable && (absorbed > 0 || state.player.block > 0) && modified == 0;
+            crate::relic_effects::emotion_chip::note_player_damage_entry(
+                state,
+                damage_entry_recorded,
+                was_fully_blocked,
+            );
             state.player.current_hp -= modified;
             if state.player.current_hp < 0 {
                 state.player.current_hp = 0;
@@ -3908,9 +3923,13 @@ fn power_modify_damage_multiplicative(
             // require a card to be mid-resolution (the owner's play pile
             // is non-empty) — the same proxy Hang uses for
             // `cardSource != null`. Player-owned (from ShadowStep's
-            // turn-start conversion), so dealer == owner == player.
-            if owner == Some(ctx.dealer) && ctx.props.is_powered() && !state.player.play.is_empty()
-            {
+            // turn-start conversion). The dealer gate is `dealer == Owner ||
+            // Owner.Pets.Contains(dealer)`, so the player's Osty hits (Poke,
+            // Flatten, …) double too (loadout Necrobinder 1019).
+            let dealer_is_owner_or_pet = owner == Some(ctx.dealer)
+                || (owner == Some(CreatureRef::Player)
+                    && matches!(ctx.dealer, CreatureRef::Enemy(uid) if state.player.pet_uid == Some(uid)));
+            if dealer_is_owner_or_pet && ctx.props.is_powered() && !state.player.play.is_empty() {
                 DamageMul::DOUBLE
             } else {
                 DamageMul::ONE
@@ -5801,22 +5820,27 @@ pub fn modify_card_cost(
                 None
             }
         }
-        PowerKind::FreeAttack => {
-            if power.amount > 0 && card_type == CardType::Attack {
-                Some(CardCostMod::Override(0))
+        // C# `Free{Attack,Skill,Power}Power.TryModifyEnergyCostInCombatLate`
+        // (v0.107.1/v0.111.0 FreeAttackPower.cs:14-41) only zeroes a card whose
+        // `Pile?.Type` is Hand or Play: All for One's discard filter sees the
+        // printed cost (Defect random-loadout v0.111.0 seed 1022). A card in
+        // no Rust pile is mid-play (C# Play pile); a type-only query (no
+        // uid) keeps the free price.
+        PowerKind::FreeAttack | PowerKind::FreeSkill | PowerKind::FreePower => {
+            let wanted = if power.kind == PowerKind::FreeAttack {
+                CardType::Attack
+            } else if power.kind == PowerKind::FreeSkill {
+                CardType::Skill
             } else {
-                None
-            }
-        }
-        PowerKind::FreeSkill => {
-            if power.amount > 0 && card_type == CardType::Skill {
-                Some(CardCostMod::Override(0))
-            } else {
-                None
-            }
-        }
-        PowerKind::FreePower => {
-            if power.amount > 0 && card_type == CardType::Power {
+                CardType::Power
+            };
+            let in_hand_or_play = ctx.card_uid.is_none_or(|uid| {
+                matches!(
+                    crate::card_effects::find_card_pile(state, uid),
+                    None | Some(crate::card_effects::PileKind::Hand)
+                )
+            });
+            if power.amount > 0 && card_type == wanted && in_hand_or_play {
                 Some(CardCostMod::Override(0))
             } else {
                 None
@@ -13768,6 +13792,15 @@ pub fn effective_card_cost_inst_with_mask(
     if card.cost >= 0 && brilliant_scarf_makes_free(state, card_uid) {
         return 0;
     }
+    // An X-cost card has no modified cost at all: `GetWithModifiers` returns
+    // `_base` for `CostsX` before any local or global modifier
+    // (CardEnergyCost.cs:105-108), and the spend is `GetAmountToSpend()` = all
+    // the energy. A FreeThisTurn rider must not seat Tangled's +1 on it
+    // (loadout Defect v0.111.0 2028: an Entangled, free-this-turn X attack
+    // paid 1 and lost one hit).
+    if card.is_x_cost() {
+        return 0;
+    }
     let base_cost = if card_cost_locally_zeroed(state, card) {
         0
     } else {
@@ -14015,6 +14048,7 @@ const BEFORE_CARD_PLAYED_POWERS_KINDS: crate::PowerKindSet = crate::PowerKindSet
     PowerKind::SerpentForm,
     PowerKind::Oblivion,
     PowerKind::Afterimage,
+    PowerKind::Calamity,
     PowerKind::Monologue,
     PowerKind::Storm,
     PowerKind::Subroutine,
@@ -14095,6 +14129,54 @@ pub fn latch_vigor_at_play_start(state: &mut CombatState, card: CardUid) {
     }
     if latch_vigor_start_amount(state) {
         state.player.vigor_latch_card = Some(card);
+    }
+}
+
+/// End one player `AttackCommand` of `card` mid-play, running the
+/// command-scoped `AfterAttack` spends that Rust otherwise defers to the
+/// card's `after_card_played`: `VigorPower.AfterAttack` subtracts the latched
+/// start amount (`VigorPower.cs:80-87`) and `GigantificationPower.AfterAttack`
+/// decrements (`GigantificationPower.cs:68-75`), each only for the command it
+/// latched. For a card that issues SEVERAL separate `DamageCmd.Attack`
+/// commands in one play (v0.107.1 Mad Science + Violence, `MadScience.cs:216-225`),
+/// the buff boosts the first command only; the next command re-latches
+/// whatever is left. A no-op when nothing is latched on `card`.
+pub fn end_player_attack_command(state: &mut CombatState, card: CardUid) {
+    let card_i32 = i32::try_from(card.0.get()).unwrap_or(i32::MAX);
+    let vigor_here = state.player.vigor_latch_card == Some(card);
+    let mut remove = smallvec::SmallVec::<[u32; 2]>::new();
+    for uid in state.player_power_uids() {
+        let Some(p) = state.powers.get_mut_by_id(uid.0) else {
+            continue;
+        };
+        match p.kind {
+            PowerKind::Vigor if vigor_here && p.amount > 0 => {
+                let spent = if p.counter > 0 { p.counter } else { p.amount };
+                p.counter = 0;
+                p.amount = p.amount.saturating_sub(spent).max(0);
+                if p.amount == 0 {
+                    remove.push(uid.0.get());
+                }
+            }
+            PowerKind::Gigantification if p.amount > 0 && p.counter == card_i32 => {
+                p.counter = 0;
+                p.amount = p.amount.saturating_sub(1).max(0);
+                if p.amount == 0 {
+                    remove.push(uid.0.get());
+                }
+            }
+            _ => {}
+        }
+    }
+    for pid in remove {
+        state.powers.retain(|p| p.id.get() != pid);
+        state.player.powers.retain(|u| u.0.get() != pid);
+        for c in &mut state.creatures {
+            c.powers.retain(|u| u.0.get() != pid);
+        }
+    }
+    if vigor_here {
+        release_vigor_latch(state);
     }
 }
 
@@ -14345,8 +14427,10 @@ fn dispatch_before_card_played_powers_body(
         if foreign.contains(&p.id) {
             continue;
         }
-        if matches!(p.kind, PowerKind::SerpentForm | PowerKind::Afterimage)
-            && !player_power_uids.contains(&PowerUid(p.id))
+        if matches!(
+            p.kind,
+            PowerKind::SerpentForm | PowerKind::Afterimage | PowerKind::Calamity
+        ) && !player_power_uids.contains(&PowerUid(p.id))
         {
             continue;
         }
@@ -14389,6 +14473,14 @@ fn dispatch_before_card_played_powers_body(
             // directly. Silent sweep player.block AFTERIMAGE cluster: C# 3 vs
             // RS 4 when a 2nd Afterimage is played.
             PowerKind::Afterimage => p.counter = p.amount.max(1),
+            // Calamity records the card in `amountsForPlayedCards` at
+            // `BeforeCardPlayed` (CalamityPower.cs:23-34) and conjures only
+            // when `AfterCardPlayed` removes it again. `Hook.BeforeCardPlayed`
+            // is skipped once the combat `IsOverOrEnding` while the after hook
+            // is not, so a replay that runs after the last enemy died never
+            // conjures (Defect random-loadout v0.107.1 seed 1025). A bare
+            // armed flag: the conjure count reads the live `Amount`.
+            PowerKind::Calamity => p.counter = 1,
             _ => {}
         }
     }
@@ -14987,7 +15079,14 @@ fn dispatch_before_hand_draw_arms(state: &mut CombatState, only: u16) -> u16 {
                     .map(|i| state.combat_log.nightmare_snapshots.remove(i).1);
                 if let Some(template) = snapshot {
                     for _ in 0..count.max(0) {
-                        crate::card_effects::spawn_card_into_hand(state, template.create_clone());
+                        // C# `AddGeneratedCardToCombat(card2, Hand, base.Owner.Player)`
+                        // (NightmarePower.cs:49) at BeforeHandDraw: Play pile empty, so
+                        // the heuristic would drop the player-created flag.
+                        crate::card_effects::spawn_card_into_hand_with_origin(
+                            state,
+                            template.create_clone(),
+                            true,
+                        );
                     }
                 } else if let Some(card_uid) = card_uid {
                     clone_card_to_hand(state, card_uid, count, true);
@@ -15709,9 +15808,14 @@ pub fn dispatch_after_card_played_ordered_enemy_hits(state: &mut CombatState, ct
             // and before any enemy power (Aeonglass's WitheringPresence
             // adds a Wither) — so the Calamity card lands in hand first
             // (Necrobinder-3005-a0-act2#b3, GH #1054). Bead `sts2-rs-q6bix`.
-            PowerKind::Calamity if is_attack => {
-                let amount = state.powers.get_by_id(uid.0).map_or(0, |p| p.amount);
-                if amount > 0 {
+            PowerKind::Calamity => {
+                // Armed at `BeforeCardPlayed` (see
+                // `dispatch_before_card_played_powers`); disarm on every play.
+                let (armed, amount) = match state.powers.get_mut_by_id(uid.0) {
+                    Some(p) => (std::mem::replace(&mut p.counter, 0) > 0, p.amount),
+                    None => continue,
+                };
+                if armed && is_attack && amount > 0 {
                     if let Some(character) = state.player.character {
                         let uids = crate::card_effects::sample_character_cards_with_replacement(
                             state,
@@ -17781,7 +17885,10 @@ fn dispatch_after_turn_end_body(state: &mut CombatState, ctx: &TurnSideCtx) {
     // [`MODIFY_DAMAGE_ADDITIVE_KINDS`] on drift safety.
     let dark_embrace_live =
         ctx.side == Side::Player && power_kind_live(state, PowerKind::DarkEmbrace);
+    let dummy_timer_live =
+        ctx.side == Side::Enemy && power_kind_live(state, PowerKind::BattlewornDummyTimeLimit);
     if dark_embrace_live
+        || dummy_timer_live
         || state
             .powers
             .present_kinds()
@@ -17868,6 +17975,26 @@ fn dispatch_after_turn_end_body(state: &mut CombatState, ctx: &TurnSideCtx) {
                     // Through the C# `ShouldDraw` gate (`CardPileCmd.cs:753`).
                     let _ = state.draw_into_hand_card_effect(draw);
                     continue;
+                }
+            }
+            // ── BattlewornDummyTimeLimitPower.AfterSideTurnEnd (enemy side) ──
+            // C# BattlewornDummyTimeLimitPower.cs: decrement, or at 1 escape
+            // the dummy (no reward). A peer of the other power listeners, so it
+            // runs at its application-order position: the earlier listeners'
+            // batched effects land first, and a later one on the dummy (Demise)
+            // finds it already gone (loadout Regent v0.107.1 1028).
+            if dummy_timer_live {
+                if let ListenerRef::Power(u) = listener {
+                    if state
+                        .powers
+                        .get_by_id(u.0)
+                        .is_some_and(|p| p.kind == PowerKind::BattlewornDummyTimeLimit)
+                    {
+                        apply_effects(state, &effects);
+                        effects.clear();
+                        crate::combat_loop::tick_battleworn_dummy_timer(state, u.0);
+                        continue;
+                    }
                 }
             }
             if let Some(listener_effects) = after_turn_end(state, listener, ctx) {
@@ -20345,6 +20472,84 @@ mod tests {
             power.amount = 2;
         }
         assert_eq!(dispatch_modify_card_cost(&state, &attack_ctx), 3);
+    }
+
+    /// C# `GetWithModifiers` returns `_base` for an X-cost card before any
+    /// modifier (CardEnergyCost.cs:105-108): neither its FreeThisTurn rider
+    /// nor Tangled's surcharge gives it a cost, so the play spends all energy
+    /// as X (loadout Defect v0.111.0 2028: Rust charged 1 and lost a hit).
+    #[test]
+    fn x_cost_card_takes_no_free_rider_or_tangled_surcharge() {
+        use crate::cards::CardType;
+        use crate::{Power, PowerKind};
+
+        let mut state = CombatState::default();
+        let pid = NonZeroU32::new(1).unwrap();
+        state.powers.push(Power {
+            id: pid,
+            kind: PowerKind::Tangled,
+            amount: 1,
+            counter: 0,
+            applier: None,
+            skip_next_tick: false,
+        });
+        state.player.powers.push(PowerUid(pid));
+        let uid = CardUid::new(1).unwrap();
+        let mut card = crate::cards::Card {
+            uid,
+            card_id: crate::cards::CardId::Whirlwind,
+            cost: -1,
+            card_type: CardType::Attack,
+            target_type: crate::cards::TargetType::AllEnemies,
+            upgraded: false,
+            base_damage: 5,
+            base_block: 0,
+            combat_vars: crate::cards::CombatVars::new(),
+            enchantments: crate::cards::CardEnchantments::new(),
+            tags: crate::cards::CardTags::NONE,
+            energy_spent: 0,
+            base_replay_count: 0,
+            keyword_override: None,
+            affliction: None,
+        };
+        card.set_combat_var(crate::cards::VarKey::FreeThisTurn, 1);
+        state.cards.push(card);
+        assert_eq!(effective_card_cost(&state, uid), 0);
+    }
+
+    /// C# folds local cost modifiers in insertion order
+    /// (CardEnergyCost.cs:110-115): RocketPunch's `SetUntilPlayed(0)` then a
+    /// Confused `SetThisCombat(2)` costs 2, and a free-this-turn card keeps
+    /// its free STAR cost (loadout Defect v0.107.1 2008).
+    #[test]
+    fn set_cost_this_combat_supersedes_earlier_free_riders() {
+        use crate::cards::{CardType, VarKey};
+        let mut state = CombatState::default();
+        let uid = CardUid::new(1).unwrap();
+        let mut card = crate::cards::Card {
+            uid,
+            card_id: crate::cards::CardId::RocketPunch,
+            cost: 1,
+            card_type: CardType::Attack,
+            target_type: crate::cards::TargetType::Enemy,
+            upgraded: false,
+            base_damage: 13,
+            base_block: 0,
+            combat_vars: crate::cards::CombatVars::new(),
+            enchantments: crate::cards::CardEnchantments::new(),
+            tags: crate::cards::CardTags::NONE,
+            energy_spent: 0,
+            base_replay_count: 0,
+            keyword_override: None,
+            affliction: None,
+        };
+        card.set_combat_var(VarKey::FreeUntilPlayed, 1);
+        card.set_combat_var(VarKey::FreeThisTurn, 1);
+        card.add_cost_reduction_until_played(1);
+        card.set_cost_this_combat(2);
+        assert_eq!(card.combat_var(VarKey::StarCostFreeThisTurn), 1);
+        state.cards.push(card);
+        assert_eq!(effective_card_cost(&state, uid), 2);
     }
 
     /// Necrobinder `BorrowedTimePower.TryModifyEnergyCostInCombat`

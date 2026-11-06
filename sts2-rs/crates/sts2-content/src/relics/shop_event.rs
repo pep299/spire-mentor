@@ -36,8 +36,8 @@
 //! bead can locate the source listener in one grep.
 
 use sts2_core::card_effects::{
-    apply_power_to_creature, generate_free_attack_in_hand, set_card_var, spawn_card_into_hand,
-    EffectResult,
+    apply_power_to_creature, generate_free_attack_in_hand, set_card_var,
+    spawn_card_into_hand_with_origin, EffectResult,
 };
 use sts2_core::cards::{CardType, VarKey};
 use sts2_core::hooks::CardPlayCountCtx;
@@ -1919,7 +1919,10 @@ fn listener_burning_sticks(state: &mut CombatState, ctx: &CardEventCtx) -> Effec
     // Re-read the exhausted card POD (Relic mutation above may have
     // invalidated any prior borrow) and clone it into hand.
     let cloned = state.cards[idx];
-    spawn_card_into_hand(state, cloned);
+    // C# `AddGeneratedCardToCombat(card2, Hand, base.Owner)` (BurningSticks.cs:50):
+    // player-created even when the exhaust happens outside a card play (Play
+    // pile empty), so pass `added_by_player = true` explicitly.
+    spawn_card_into_hand_with_origin(state, cloned, true);
     EffectResult::Resolved
 }
 
@@ -2349,7 +2352,9 @@ fn listener_music_box_card_played(state: &mut CombatState, ctx: &CardEventCtx) -
     // C# `cardPlay.Card.CreateClone()` (MusicBox.cs:77): a new instance, so
     // no inherited play-history stamp (Ironclad-6161-a0-act2#b0).
     let cloned = state.cards[idx].create_clone();
-    let new_uid = spawn_card_into_hand(state, cloned);
+    // C# `AddGeneratedCardToCombat(card, Hand, base.Owner)` (MusicBox.cs:80):
+    // player-created regardless of Play-pile occupancy.
+    let new_uid = spawn_card_into_hand_with_origin(state, cloned, true);
     set_card_var(state, new_uid, VarKey::EtherealThisCombat, 1);
     EffectResult::Resolved
 }
@@ -3453,7 +3458,10 @@ fn listener_radiant_pearl(state: &mut CombatState, side: Side) -> EffectResult {
     card.base_damage = 0;
     card.base_block = 0;
     card.target_type = sts2_core::cards::TargetType::Self_;
-    let _ = sts2_core::card_effects::spawn_card_into_hand(state, card);
+    // C# `AddGeneratedCardsToCombat(list, Hand, base.Owner)` (RadiantPearl.cs:41)
+    // at turn start, Play pile empty: the play-pile heuristic would read
+    // `false` and skip Arsenal / PillarOfCreation / Smokestack.
+    let _ = sts2_core::card_effects::spawn_card_into_hand_with_origin(state, card, true);
     EffectResult::Resolved
 }
 
@@ -4286,7 +4294,10 @@ fn listener_ninja_scroll(state: &mut CombatState, side: Side) -> EffectResult {
         card.base_damage = 4;
         card.base_block = 0;
         card.target_type = sts2_core::cards::TargetType::Enemy;
-        let _ = sts2_core::card_effects::spawn_card_into_hand(state, card);
+        // C# `Shiv.CreateInHand(base.Owner, ..)` → `AddGeneratedCardsToCombat(..,
+        // creator ?? owner)` (NinjaScroll.cs:28, Shiv.cs:103) at turn start,
+        // Play pile empty — player-created, so pass `true` explicitly.
+        let _ = sts2_core::card_effects::spawn_card_into_hand_with_origin(state, card, true);
     }
     EffectResult::Resolved
 }

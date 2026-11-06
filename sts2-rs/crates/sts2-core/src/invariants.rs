@@ -206,6 +206,10 @@ pub fn check_combat_invariants(state: &CombatState, ctx: &str) -> Result<(), Str
             ("pending_play_phase_tail", state.pending_play_phase_tail),
             ("enemy_side_capture", state.enemy_side_capture.is_some()),
             ("enemy_side_replay", state.enemy_side_replay.is_some()),
+            (
+                "parked_hook_choices",
+                state.combat_log.parked_hook_choices.is_some(),
+            ),
         ];
         for (slot, set) in parked {
             ensure!(!set, "{slot} parked with no choice open ({ctx})");

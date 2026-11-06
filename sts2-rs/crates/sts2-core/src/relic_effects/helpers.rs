@@ -496,11 +496,10 @@ pub(crate) fn unsettling_lamp_eligible(ctx: &crate::hooks::PowerAmountCtx) -> bo
 }
 
 /// `Metronome.on_orb_channeled` — increment the running orbs-channeled
-/// count on `Relic.counter`; when it crosses `METRONOME_ORB_THRESHOLD`
-/// (=7), reset to 0 and fan out `METRONOME_DAMAGE` (=30) unpowered
-/// damage to every alive enemy. Mirrors Python
-/// `sts2-rl-agent@01c094d:sts2_env/relics/rare.py::Metronome`.
-/// Bead `sts2-rs-s5ia`.
+/// count on `Relic.counter`; when it reaches `METRONOME_ORB_THRESHOLD`
+/// (=7) fan out `METRONOME_DAMAGE` (=30) unpowered damage to every alive
+/// enemy — once per combat (C# `Metronome.cs` `OrbsChanneled == 7`, no
+/// reset until `AfterCombatEnd`). Bead `sts2-rs-s5ia`.
 ///
 /// The 30-damage / 7-orbs constants are inlined (sts2-content is
 /// dev-only for sts2-core); the content-side spec lives at
@@ -607,6 +606,32 @@ pub(crate) fn red_skull_relic_mut(state: &mut CombatState) -> Option<&mut crate:
 /// - low_hp and not applied  → STR +3, flag := 1
 /// - not low_hp and applied  → STR -3, flag := 0
 /// Other combinations are inert.
+/// Red Skull's `AfterCurrentHpChanged` at 0 HP on a lethal hit, before a
+/// death prevention (FairyInABottle, LizardTail) revives the player. C#
+/// `CreatureCmd.Damage` / `Kill` raise the hook after the HP loss and before
+/// `Hook.ShouldDie` (CreatureCmd.cs:382/501, v0.111.0 :404/534). At 0 HP the
+/// threshold is crossed, so `ModifyStrengthIfNecessary` sets
+/// `StrengthApplied`. Its `PowerCmd.Apply<StrengthPower>(+3)` lands only if the
+/// corpse can receive powers: `DieForYouPower.ShouldAllowHitting` refuses
+/// every dead creature while an Osty carries it
+/// ([`crate::card_effects::corpses_can_receive_powers`]). The revive's heal then
+/// finds the flag already set. When the +3 does land, the revive's own
+/// re-probe ([`red_skull_check_hp`], the revive HP is at most half) adds the
+/// same +3 a moment later, so only the refused case needs this probe: the flag
+/// is set and no Strength is gained. Rust skipped it, so the post-revive
+/// re-probe always added the +3 (loadout Necrobinder v0.107.1 2035: a Gambit
+/// kill, a Fairy revive, Osty alive; C# gained no Strength).
+pub(crate) fn red_skull_probe_at_death(state: &mut CombatState) {
+    if !player_owns_relic(state, crate::RelicKind::RedSkull)
+        || crate::card_effects::corpses_can_receive_powers(state)
+    {
+        return;
+    }
+    if let Some(r) = red_skull_relic_mut(state) {
+        r.counter = 1;
+    }
+}
+
 pub(crate) fn red_skull_check_hp(state: &mut CombatState) {
     let cur = state.player.current_hp;
     let max = state.player.max_hp;

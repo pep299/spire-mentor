@@ -2804,6 +2804,41 @@ pub struct PendingPotionHookResume {
     pub target: Option<u8>,
 }
 
+/// [`PendingDrawResume::outer_draw`]: the low 7 bits are the outer draw's
+/// remaining card count, the high bit whether it was a hand draw.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OuterDraw(u8);
+
+impl OuterDraw {
+    const HAND: u8 = 0x80;
+
+    /// Remaining outer cards (0 = none).
+    #[must_use]
+    pub fn remaining(self) -> i32 {
+        i32::from(self.0 & !Self::HAND)
+    }
+
+    #[must_use]
+    pub fn from_hand_draw(self) -> bool {
+        self.0 & Self::HAND != 0
+    }
+
+    /// Owe `n` more outer cards; the first owed draw sets the hand flag.
+    #[must_use]
+    pub fn plus(self, n: i32, from_hand_draw: bool) -> Self {
+        if n <= 0 {
+            return self;
+        }
+        let hand = if self.remaining() == 0 {
+            from_hand_draw
+        } else {
+            self.from_hand_draw()
+        };
+        let total = u8::try_from((self.remaining() + n).min(0x7f)).unwrap_or(0x7f);
+        Self(total | if hand { Self::HAND } else { 0 })
+    }
+}
+
 /// A hand-draw suspended mid-reshuffle by an `after_shuffle` player
 /// choice (Stratagem). Mirrors C# `CardPileCmd.Draw`'s per-card loop
 /// awaiting `Hook.AfterShuffle` (and thus the Stratagem grid-select)
@@ -2856,6 +2891,13 @@ pub struct PendingDrawResume {
     /// `CardPileCmd.Draw` (BurningPact.cs:29-32, both builds), so these cards
     /// are drawn once the resumed draw finishes. `0` = no deferred draw.
     pub then_draw: i32,
+    /// The rest of an OUTER draw whose per-card `AfterCardDrawn` rider
+    /// (Pagestorm's `Draw`) started this suspended draw: C# awaits the rider
+    /// before the outer `CardPileCmd.Draw` loop takes its next card, so the
+    /// outer draw's remaining cards are drawn once this draw finishes. Packed
+    /// into one byte (a wider field pushed `CombatState` past clippy's
+    /// 16 KiB two-state array budget): see [`OuterDraw`]. `0` = none.
+    pub outer_draw: OuterDraw,
     /// Set by Pillage's draw loop when its single draw suspended: C# stays
     /// inside the `do/while` (Pillage.cs:28-33, both builds), so once the
     /// resumed draw finishes the loop re-tests the drawn card and keeps
@@ -2885,6 +2927,154 @@ pub struct PendingDrawResume {
     /// on-draw Hellraiser auto-play that opened a select) still reports that
     /// card, though resolving the select may have drawn others meanwhile.
     pub last_drawn: Option<CardUid>,
+    /// Set by Scrape when its `Draw` suspended: C# filters the cards that
+    /// `CardPileCmd.Draw` returns and discards them only after the WHOLE
+    /// draw completes (Scrape.cs OnPlay, both builds), so the discard waits
+    /// for the resumed draw — [`crate::card_effects::scrape_discard_drawn`].
+    pub then_scrape_discard: ScrapeDiscardOwed,
+}
+
+/// A select opened inside a non-blocking hook walk (a kill's `AfterDeath`:
+/// Gremlin Horn's draw reshuffles into a Stratagem pick), parked until the
+/// flow around it finishes.
+///
+/// C# `Hook.AfterDeath` (Hook.cs:594-606, both builds) runs each listener
+/// under a `HookPlayerChoiceContext`. Its `SignalPlayerChoiceBegun`
+/// (HookPlayerChoiceContext.cs) enqueues a `GenericHookGameAction` on the
+/// player's queue, releases the hook walk, and parks the listener until that
+/// action executes. The queue runs it once the action in front of it is done:
+/// after the whole card play (its remaining hits, `AfterCardPlayed`, the move
+/// to its result pile), or, from the enemy turn, after the enemy turn and the
+/// next player turn's start. Only then does the screen open; the answer runs
+/// the rest of the listener (the pick to hand, the remaining draw).
+///
+/// Everything before the select (the energy, the reshuffle, the option list)
+/// already happened. [`surface_parked_hook_choice`] puts the three parts back
+/// when the flow is done.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParkedHookChoice {
+    pub choice: PendingChoice,
+    pub draw: Option<PendingDrawResume>,
+    pub after_shuffle_relics_deferred: Option<bool>,
+}
+
+/// Run `walk`, a non-blocking hook walk (see [`ParkedHookChoice`]), and park a
+/// reshuffle select it opened so the surrounding flow goes on.
+///
+/// Only the shape a draw's reshuffle leaves is parked: an
+/// [`ChoiceKind::AddFromDrawToHand`] choice whose only continuation is a plain
+/// suspended draw. Any other select (a Hellraiser auto-play's, say) keeps the
+/// blocking path.
+pub(crate) fn run_nonblocking_hook(state: &mut CombatState, walk: impl FnOnce(&mut CombatState)) {
+    let had_choice = state.pending_choice.is_some();
+    state.combat_log.nonblocking_hook_depth =
+        state.combat_log.nonblocking_hook_depth.saturating_add(1);
+    walk(state);
+    state.combat_log.nonblocking_hook_depth =
+        state.combat_log.nonblocking_hook_depth.saturating_sub(1);
+    if had_choice || !parkable_hook_choice(state) {
+        return;
+    }
+    let choice = state
+        .pending_choice
+        .take()
+        .expect("checked by parkable_hook_choice");
+    let parked = ParkedHookChoice {
+        choice,
+        draw: state.pending_draw_resume.take(),
+        after_shuffle_relics_deferred: state.combat_log.after_shuffle_relics_deferred.take(),
+    };
+    state
+        .combat_log
+        .parked_hook_choices
+        .get_or_insert_with(Box::default)
+        .push(parked);
+}
+
+/// Whether the open choice is a reshuffle select with nothing but a plain
+/// suspended draw waiting on it (see [`run_nonblocking_hook`]).
+pub(crate) fn parkable_hook_choice(state: &CombatState) -> bool {
+    let Some(pc) = state.pending_choice.as_ref() else {
+        return false;
+    };
+    if pc.kind != ChoiceKind::AddFromDrawToHand {
+        return false;
+    }
+    let plain_draw = state.pending_draw_resume.is_none_or(|p| {
+        p == PendingDrawResume {
+            remaining: p.remaining,
+            from_hand_draw: p.from_hand_draw,
+            last_drawn: p.last_drawn,
+            ..PendingDrawResume::default()
+        }
+    });
+    plain_draw
+        && state.pending_autoplay_resume.is_none()
+        && state.pending_collect_resume.is_none()
+        && state.pending_cluster_resume.is_none()
+        && state.pending_potion_hook_resume.is_none()
+        && state.pending_end_turn_resume.is_none()
+        && state.pending_enemy_exec_resume.is_none()
+        && !state.pending_turn_setup_resume
+        && !state.pending_play_phase_tail
+        && state.pending_hand_draw_resume.is_none()
+        && state.pending_relic_hand_draw_resume.is_none()
+}
+
+/// Surface the first [`ParkedHookChoice`] once the flow it waited behind is
+/// done (no choice open). A finished or ending combat drops them all: C#
+/// `ActionQueueSet.CombatEnded` cancels the queued hook action. Returns
+/// whether a choice was surfaced.
+pub(crate) fn surface_parked_hook_choice(state: &mut CombatState) -> bool {
+    if state.combat_log.parked_hook_choices.is_none() || state.pending_choice.is_some() {
+        return false;
+    }
+    if state.is_over || combat_loop::combat_is_ending(state) {
+        state.combat_log.parked_hook_choices = None;
+        return false;
+    }
+    let queue = state
+        .combat_log
+        .parked_hook_choices
+        .as_mut()
+        .expect("checked above");
+    let parked = queue.remove(0);
+    if queue.is_empty() {
+        state.combat_log.parked_hook_choices = None;
+    }
+    state.pending_choice = Some(parked.choice);
+    state.pending_draw_resume = parked.draw;
+    state.combat_log.after_shuffle_relics_deferred = parked.after_shuffle_relics_deferred;
+    true
+}
+
+/// The cards a suspended Scrape draw had returned so far, owed its
+/// non-free discard once the draw finishes. A draw returns at most a full
+/// hand, so ten slots hold every one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ScrapeDiscardOwed {
+    /// Whether a Scrape is waiting on this draw.
+    pub owed: bool,
+    /// The cards its draw returned before suspending, in draw order.
+    pub drawn: [Option<CardUid>; 10],
+}
+
+impl ScrapeDiscardOwed {
+    /// Owe the discard for `drawn` (plus anything already owed).
+    pub fn push_all(&mut self, drawn: &[CardUid]) {
+        self.owed = true;
+        for &uid in drawn {
+            if let Some(slot) = self.drawn.iter_mut().find(|s| s.is_none()) {
+                *slot = Some(uid);
+            }
+        }
+    }
+
+    /// The owed cards, in draw order.
+    #[must_use]
+    pub fn cards(&self) -> smallvec::SmallVec<[CardUid; 10]> {
+        self.drawn.iter().flatten().copied().collect()
+    }
 }
 
 /// In-flight state of a turn-start Mayhem `AutoPlayFromDrawPile` collect loop
@@ -3493,6 +3683,11 @@ pub struct TurnEvents {
     /// `killedCreatures` and calls `Kill` after the loop (CreatureCmd.cs:
     /// 351-409). `None` at rest. See `damage::with_deferred_enemy_deaths`.
     pub deferred_enemy_deaths: Option<smallvec::SmallVec<[crate::CreatureUid; 4]>>,
+    /// `Some` while a multi-target `CreatureCmd.Damage` is applying its hits:
+    /// each hit's after-hit hooks (`AfterBlockBroken`, `AfterDamageGiven`,
+    /// `AfterDamageReceived`) queue here and run once every target has lost
+    /// its HP (CreatureCmd.cs:394-430; v0.107.1 :359-408). `None` at rest.
+    pub deferred_hit_tails: Option<smallvec::SmallVec<[crate::damage::HitTail; 4]>>,
     /// Count of player cards afflicted with `Bound` by
     /// `ChainsOfBindingPower` since the start of the current player
     /// turn. C# `ChainsOfBindingPower.AfterCardDrawn` (v0.103.2,
@@ -3643,6 +3838,20 @@ pub struct TurnEvents {
     /// shuffle's `from_reshuffle` flag; `None` at rest. See
     /// [`CombatState::fire_after_shuffle`].
     pub after_shuffle_relics_deferred: Option<bool>,
+    /// Depth of the non-blocking hook walks running now: a kill's
+    /// `AfterDeath` (C# `Hook.AfterDeath`, Hook.cs:594-606, runs every
+    /// listener under a `HookPlayerChoiceContext`). A reshuffle select opened
+    /// inside one does not halt the surrounding flow, so the enemy side's
+    /// capture mode (GH #1129) must not drain it inline. `0` at rest.
+    pub nonblocking_hook_depth: u8,
+    /// Selects opened inside a non-blocking hook walk, waiting for the
+    /// surrounding flow (the card play, or the enemy turn and the next player
+    /// turn start) to finish before they surface. See [`ParkedHookChoice`].
+    /// `None` at rest unless an outer choice is still open; never an empty
+    /// queue. Boxed: an entry is large and almost never present, and
+    /// `CombatState` (cloned per search node) sits just under clippy's
+    /// large-stack-array limit.
+    pub parked_hook_choices: Option<Box<Vec<ParkedHookChoice>>>,
     /// C# `NightmarePower.SetSelectedCard` stores `card.CreateClone()` (with
     /// the affliction cleared) at select time (NightmarePower.cs:57-63, both
     /// builds); `BeforeHandDraw` clones that snapshot, not the live card. So a
@@ -7735,6 +7944,13 @@ impl CombatState {
     ///   the whole draw (turn-start draw: Soot at a different depth) or not
     ///   at all (card-effect draw: no Soot; act23 Necrobinder 1012/1019,
     ///   Defect 1012).
+    /// * Pagestorm / Iteration is active — their `AfterCardDrawn` runs a
+    ///   nested `CardPileCmd.Draw` per qualifying card INSIDE the outer draw
+    ///   loop (PagestormPower.cs, IterationPower.cs), so the extra cards land
+    ///   before the outer draw's next card. The batch path drew them after
+    ///   the whole draw: at the 10-card hand cap a different set of draws
+    ///   succeeded, and DeathMarch's count of effect draws differed
+    ///   (loadout Necrobinder 1001/1012).
     ///
     /// Read off the mirror+legacy power union via
     /// [`Self::player_power_amount`].
@@ -7762,6 +7978,15 @@ impl CombatState {
             || self.player_power_amount(PowerKind::Hellraiser) > 0
             || self.relics.owns(crate::RelicKind::BiiigHug)
             || self.relics.owns(crate::RelicKind::TheAbacus)
+            || self.player_power_amount(PowerKind::Pagestorm) > 0
+            || self.player_power_amount(PowerKind::Iteration) > 0
+            // SpeedsterPower's per-card `AfterCardDrawn` damage can down the
+            // last enemy MID-DRAW; C# `CardPileCmd.Draw` then stops (its
+            // per-iteration `IsOverOrEnding` check) before reshuffling the
+            // discard for the rest of the draw. The batch path dealt the
+            // damage after the whole draw and over-read the `shuffle` stream
+            // (loadout Silent v0.107.1 2004: Soul's draw 2 with 1 card left).
+            || self.player_power_amount(PowerKind::Speedster) > 0
     }
 
     /// C#-faithful per-card draw loop, used when an `after_shuffle`
@@ -7836,7 +8061,13 @@ impl CombatState {
                     self.fire_after_shuffle(true);
                     // In the enemy side's capture mode the grid resolves here,
                     // where C# awaits it (GH #1129).
-                    if self.pending_choice.is_some() && self.enemy_side_capture.is_some() {
+                    // Not inside a kill's `AfterDeath` walk, though: that
+                    // select does not block (see [`ParkedHookChoice`]).
+                    if self.pending_choice.is_some()
+                        && self.enemy_side_capture.is_some()
+                        && !(self.combat_log.nonblocking_hook_depth > 0
+                            && parkable_hook_choice(self))
+                    {
                         crate::combat_loop::resolve_inline_auto_play_choices(self);
                     }
                     if self.pending_choice.is_some() {
@@ -7905,13 +8136,26 @@ impl CombatState {
             // cascading the whole turn's draw order + hand size. The resume in
             // `apply(Action::ResolveChoice)` finishes the parked auto-play (card
             // → discard) BEFORE continuing this draw via `pending_draw_resume`.
-            if self.pending_choice.is_some() && self.pending_draw_resume.is_none() {
-                self.pending_draw_resume = Some(PendingDrawResume {
-                    remaining,
-                    from_hand_draw,
-                    last_drawn: self.last_drawn_card,
-                    ..PendingDrawResume::default()
-                });
+            if self.pending_choice.is_some() {
+                match self.pending_draw_resume.as_mut() {
+                    None => {
+                        self.pending_draw_resume = Some(PendingDrawResume {
+                            remaining,
+                            from_hand_draw,
+                            last_drawn: self.last_drawn_card,
+                            ..PendingDrawResume::default()
+                        });
+                    }
+                    // A rider's own draw (Pagestorm drawing on an Ethereal
+                    // card) suspended on a reshuffle's select and stored its
+                    // resume: this draw's remaining cards wait behind it, as
+                    // C#'s loop awaits the rider before its next card. Drawing
+                    // on here took them over the open select (loadout
+                    // Necrobinder v0.111.0 2028).
+                    Some(nested) => {
+                        nested.outer_draw = nested.outer_draw.plus(remaining, from_hand_draw);
+                    }
+                }
                 return moved;
             }
         }
@@ -8027,9 +8271,48 @@ impl CombatState {
 
     pub(crate) fn resume_suspended_draw(&mut self, pdr: PendingDrawResume) -> Option<StepResult> {
         self.last_drawn_card = pdr.last_drawn;
+        let hand_before = self.player.hand.len();
         let _ = self.draw_suspending(pdr.remaining, pdr.from_hand_draw);
+        // The cards the resumed draw returned, for a Scrape waiting on it.
+        let mut scrape = pdr.then_scrape_discard;
+        if scrape.owed {
+            let resumed: smallvec::SmallVec<[CardUid; 10]> = self
+                .player
+                .hand
+                .get(hand_before..)
+                .unwrap_or_default()
+                .iter()
+                .copied()
+                .collect();
+            scrape.push_all(&resumed);
+        }
+        let pdr = PendingDrawResume {
+            then_scrape_discard: scrape,
+            ..pdr
+        };
         if self.carry_into_resuspended_draw(&pdr) {
             return Some(StepResult::PendingChoice);
+        }
+        // The rider's draw is done: the outer draw it interrupted goes on.
+        let pdr = if pdr.outer_draw.remaining() > 0 {
+            let _ =
+                self.draw_suspending(pdr.outer_draw.remaining(), pdr.outer_draw.from_hand_draw());
+            let rest = PendingDrawResume {
+                outer_draw: OuterDraw::default(),
+                ..pdr
+            };
+            if self.carry_into_resuspended_draw(&rest) {
+                return Some(StepResult::PendingChoice);
+            }
+            rest
+        } else {
+            pdr
+        };
+        // Scrape's discard follows its own draw's completion (Scrape.cs
+        // OnPlay); it was the play that owned this draw, so it comes before
+        // any later code parked on the same draw.
+        if pdr.then_scrape_discard.owed {
+            crate::card_effects::scrape_discard_drawn(self, &pdr.then_scrape_discard.cards());
         }
         // The suspended draw is complete: run the awaited code that followed
         // it in C#. A step whose own draw suspends hands the later steps on.
@@ -8133,9 +8416,16 @@ impl CombatState {
         again.then_auto_play_skill_from_hand |= pdr.then_auto_play_skill_from_hand;
         again.then_discard_from_hand = again.then_discard_from_hand.max(pdr.then_discard_from_hand);
         again.then_draw += pdr.then_draw;
+        again.outer_draw = again
+            .outer_draw
+            .plus(pdr.outer_draw.remaining(), pdr.outer_draw.from_hand_draw());
         again.then_pillage_loop |= pdr.then_pillage_loop;
         again.then_lose_max_hp_from_card += pdr.then_lose_max_hp_from_card;
         again.then_gain_strength += pdr.then_gain_strength;
+        if pdr.then_scrape_discard.owed {
+            let cards = pdr.then_scrape_discard.cards();
+            again.then_scrape_discard.push_all(&cards);
+        }
         // The exhaust-walk tail is not merged: a re-suspension carries it only
         // when the draw that re-suspended is the one that still owes it.
         if again.then_relic_after_card_exhausted.is_none() {
@@ -8713,7 +9003,11 @@ impl CombatState {
                     // X-cost cards just consume the RNG read (the modifier
                     // would be ignored by C#'s GetWithModifiers anyway).
                     if !is_x_cost_card {
-                        c.cost = rolled;
+                        // `SetThisCombat(roll)` also supersedes the earlier
+                        // local riders (FreeThisTurn / FreeUntilPlayed /
+                        // until-played reductions) and Snecko banks — see
+                        // [`crate::cards::Card::set_cost_this_combat`].
+                        c.set_cost_this_combat(rolled);
                         // Bead `sts2-rs-xk9yo`: Confused's `AfterCardDrawn`
                         // sets an ABSOLUTE this-turn cost — it supersedes any
                         // additive this-turn modifier already banked on this
@@ -8918,7 +9212,11 @@ impl CombatState {
                     .iter()
                     .any(|c| c.id == enemy_uid.0 && c.current_hp > 0);
                 if alive {
-                    crate::card_effects::apply_power_to_enemy(
+                    // `PowerCmd.Apply<PoisonPower>(..., base.Owner, null)`:
+                    // no card source, so Unsettling Lamp (`cardSource ==
+                    // null` -> return) neither captures nor doubles it even
+                    // when the draw came from a resolving card (Prepared).
+                    crate::card_effects::apply_power_to_creature_cardless(
                         self,
                         enemy_uid,
                         PowerKind::Poison,
@@ -9036,6 +9334,28 @@ impl CombatState {
         // BottledPotential) too, so a Stratagem stack grid-selects here as
         // well (bead `sts2-rs-63mew`); the relic half waits for the pick.
         self.fire_after_shuffle(false);
+    }
+
+    /// C# `await CardPileCmd.Shuffle(...); await CardPileCmd.Draw(count, ...)`
+    /// (Reboot.cs, BottledPotential.cs OnUse). The shuffle's `AfterShuffle`
+    /// can open a Stratagem pick; C# awaits that pick before the draw starts,
+    /// so the WHOLE draw waits for it — the picked card reaches the hand
+    /// first. Drawing now would let one card in ahead of the pick before
+    /// [`Self::draw_suspending`] notices the open choice (Defect
+    /// random-loadout seed 1016: Reboot + Stratagem, hand order swapped).
+    pub fn shuffle_then_draw(&mut self, count: i32) {
+        let had_choice = self.pending_choice.is_some();
+        self.shuffle_draw_pile();
+        if !had_choice && self.pending_choice.is_some() && self.pending_draw_resume.is_none() {
+            self.pending_draw_resume = Some(PendingDrawResume {
+                remaining: count,
+                from_hand_draw: false,
+                last_drawn: self.last_drawn_card,
+                ..PendingDrawResume::default()
+            });
+            return;
+        }
+        let _ = crate::cards::draw_via_state(self, count);
     }
 
     /// Pop up to `count` cards from the top of the player's draw pile
@@ -10141,7 +10461,12 @@ fn rebank_wire_cost_after_edge(c: &mut crate::cards::Card, other: crate::cards::
 // safety property we want — collapsing look-alike arms to a wildcard
 // would silently swallow new variants.
 pub fn apply(state: &mut CombatState, action: Action) -> StepResult {
-    let result = apply_action(state, action);
+    let mut result = apply_action(state, action);
+    // A select a kill's `AfterDeath` parked mid-flow opens now that the
+    // action is done (see [`ParkedHookChoice`]).
+    if surface_parked_hook_choice(state) {
+        result = StepResult::PendingChoice;
+    }
     // A joint search's teammate who ends the fight hands the seat back, so a
     // finished state is always read from our seat.
     if state.is_over && state.coop.joint_acting.is_some() {
@@ -10476,7 +10801,11 @@ pub fn resolve_choice_atomic_apply(state: &mut CombatState, selection: &[u8]) ->
     let Some(pc) = state.pending_choice.take() else {
         return StepResult::Advanced;
     };
-    resolve_choice_atomic(state, pc, selection, /*flush_played=*/ true)
+    let result = resolve_choice_atomic(state, pc, selection, /*flush_played=*/ true);
+    if surface_parked_hook_choice(state) {
+        return StepResult::PendingChoice;
+    }
+    result
 }
 
 /// Resolve the currently-open [`CombatState::pending_choice`] with `selection`,
@@ -10673,14 +11002,17 @@ fn resume_owed_auto_plays(state: &mut CombatState, owed: OwedAutoPlays) -> bool 
         return true;
     }
     while let Some(mut frame) = frames.next() {
-        if state.is_over {
-            break;
-        }
         // GH #500: this frame's own auto-play LOOP first. C#
         // `Catastrophe.OnPlay` awaits every `CardCmd.AutoPlay` in its `for`
         // loop, so the loop drains completely before `OnPlay` returns, i.e.
         // before `OnPlayWrapper` fires `AfterCardPlayed` (`frame.finish`) and
         // before the enclosing batch moves on to `frame.remaining`.
+        //
+        // Once combat has ended under a nested select, every awaited
+        // `CardCmd.AutoPlay` returns at once (CardCmd.cs:54), but the loop
+        // still runs its remaining iterations — Catastrophe still
+        // `StableShuffle`s the draw pile off `Rng.Shuffle` each time
+        // (Catastrophe.cs:23-34) — so it runs here too.
         if let Some(cont) = frame.continuation.take() {
             (cont.resume_fn)(state, &cont);
             if let Some(next) = state.pending_autoplay_resume.as_mut() {
@@ -10691,10 +11023,13 @@ fn resume_owed_auto_plays(state: &mut CombatState, owed: OwedAutoPlays) -> bool 
                 carry(state, frames, continuation);
                 return true;
             }
-            if state.is_over {
-                break;
-            }
         }
+        // The frame's tail runs even once combat is over: `OnPlayWrapper`
+        // gates `AfterCardPlayed` on `CombatManager.IsInProgress` only, which
+        // stays true while the combat is ending (CardModel.cs, both builds),
+        // and routes the card to its result pile. A BeatDown whose auto-played
+        // Finisher killed the last enemy still ticks Tuning Fork (Silent
+        // loadout v0.111.0 seed 1030).
         if crate::combat_loop::finish_auto_played_card(state, frame.finish) {
             carry_owed_onto_parked_tail(
                 state,
@@ -10706,6 +11041,11 @@ fn resume_owed_auto_plays(state: &mut CombatState, owed: OwedAutoPlays) -> bool 
                 },
             );
             return true;
+        }
+        // The frame's collected siblings: once over, each `CardCmd.AutoPlay`
+        // returns at once (CardCmd.cs:54).
+        if state.is_over {
+            continue;
         }
         if crate::combat_loop::play_collected_auto_plays(
             state,
@@ -10721,10 +11061,10 @@ fn resume_owed_auto_plays(state: &mut CombatState, owed: OwedAutoPlays) -> bool 
     // iterations against the UPDATED pile, mirroring C# `await CardCmd.AutoPlay`
     // resuming the `OnPlay` loop. The loop re-parks itself on a further select.
     // Bead `sts2-rs-cata-suspend`.
+    // Runs even once combat is over, for the same reason as the frame loop
+    // above: the C# loop keeps iterating (and shuffling) past the end.
     if let Some(cont) = continuation {
-        if !state.is_over {
-            (cont.resume_fn)(state, &cont);
-        }
+        (cont.resume_fn)(state, &cont);
     }
     state.pending_autoplay_resume.is_some()
 }
@@ -12055,7 +12395,43 @@ fn resolve_add_from_draw_to_hand(state: &mut CombatState, pc: &PendingChoice, se
         if let Some(pos) = state.player.draw.iter().position(|&u| u == uid) {
             let card = state.player.draw.remove(pos);
             let _ = crate::cards::try_add_to_hand(&mut state.player, card);
+        } else {
+            move_pick_to_hand_from_any_pile(&mut state.player, uid);
         }
+    }
+}
+
+/// C# `CardPileCmd.Add(card, Hand)` for a pick that has left the draw pile
+/// since its select opened: a select a kill's `AfterDeath` parked (see
+/// [`ParkedHookChoice`]) answers only after the next turn's hand draw, which
+/// may have drawn the pick. `Add` takes the card from wherever it is and
+/// appends it to the hand, and tests a full hand BEFORE removing it
+/// (CardPileCmd.cs:420-424, `isFullHandAdd`), so a card already in a full
+/// hand goes to the discard pile.
+fn move_pick_to_hand_from_any_pile(player: &mut PlayerCombatState, uid: CardUid) {
+    let hand_full = crate::cards::is_hand_full(player);
+    let piles: [&mut SmallVec<[CardUid; 32]>; 2] = [&mut player.discard, &mut player.exhaust];
+    let mut found = false;
+    for pile in piles {
+        if let Some(pos) = pile.iter().position(|&u| u == uid) {
+            pile.remove(pos);
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        if let Some(pos) = player.hand.iter().position(|&u| u == uid) {
+            player.hand.remove(pos);
+            found = true;
+        }
+    }
+    if !found {
+        return;
+    }
+    if hand_full {
+        player.discard.push(uid);
+    } else {
+        player.hand.push(uid);
     }
 }
 
@@ -15334,6 +15710,39 @@ pub fn legal_actions(state: &CombatState) -> SmallVec<[Action; 16]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A resumed auto-play LOOP keeps running after combat ended under its
+    /// nested select: C# `Catastrophe.OnPlay` still `StableShuffle`s each
+    /// remaining iteration (Catastrophe.cs:23-34) while `CardCmd.AutoPlay`
+    /// no-ops (Silent loadout v0.111.0 seed 1030). The stand-in loop body
+    /// bumps energy so the test can see it ran.
+    #[test]
+    fn owed_loop_continuation_runs_after_combat_is_over() {
+        fn bump(state: &mut CombatState, _cont: &AutoPlayLoopCont) {
+            state.player.energy += 1;
+        }
+        let mut state = CombatState {
+            is_over: true,
+            ..Default::default()
+        };
+        let parked = resume_owed_auto_plays(
+            &mut state,
+            OwedAutoPlays {
+                remaining: SmallVec::new(),
+                force_exhaust: false,
+                parent_chain: SmallVec::new(),
+                continuation: Some(AutoPlayLoopCont {
+                    resume_fn: bump,
+                    iters: 1,
+                    uids: SmallVec::new(),
+                    force_exhaust: false,
+                    then: None,
+                }),
+            },
+        );
+        assert!(!parked);
+        assert_eq!(state.player.energy, 1, "the loop continuation ran");
+    }
 
     #[test]
     fn play_log_defaults_empty_and_off() {

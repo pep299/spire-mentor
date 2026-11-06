@@ -7402,12 +7402,14 @@ fn unsettling_lamp_ignores_non_debuff_powers() {
 }
 
 /// Bead `sts2-rs-s5ia` — Metronome via `dispatch_on_orb_channeled`.
-/// Asserts the counter increments on each channel call, trips at
-/// 7 (resets to 0 and deals 30 unpowered AoE), and re-arms at
-/// after_combat_end.
+/// C# `Metronome.AfterOrbChanneled` fires on `OrbsChanneled == 7`
+/// exactly and only resets at `AfterRoomEntered`/`AfterCombatEnd`, so it
+/// trips ONCE per combat (30 unpowered AoE) and re-arms at
+/// after_combat_end (Defect random-loadout v0.107.1 seeds 1011/1022: Rust
+/// re-fired at the 14th orb).
 #[test]
 #[serial_test::serial(global_registry)]
-fn metronome_trips_every_seven_orbs_and_resets() {
+fn metronome_trips_once_per_combat_at_seven_orbs() {
     use std::num::NonZeroU32;
     ensure_installed();
     // Defensive re-registration against parallel-test pollution.
@@ -7465,12 +7467,12 @@ fn metronome_trips_every_seven_orbs_and_resets() {
     );
     assert_eq!(enemy_current_hp(&state, enemy_b), 100);
 
-    // 7th channel: trips → counter resets to 0, 30 dmg to each enemy.
+    // 7th channel: trips → 30 dmg to each enemy; the count parks at 7.
     let _ = dispatch_on_orb_channeled(&mut state, &orb_ctx);
     assert_eq!(
         metronome_counter(&state),
-        0,
-        "7th orb trips the threshold and resets counter"
+        7,
+        "7th orb trips the threshold; no mid-combat reset"
     );
     assert_eq!(
         enemy_current_hp(&state, enemy_a),
@@ -7483,11 +7485,16 @@ fn metronome_trips_every_seven_orbs_and_resets() {
         "enemy_b takes 30 unpowered damage on trip (AoE)"
     );
 
-    // Build up to 6 again without tripping.
-    for _ in 0..6 {
+    // Seven more orbs this combat: no second trip.
+    for _ in 0..7 {
         let _ = dispatch_on_orb_channeled(&mut state, &orb_ctx);
     }
-    assert_eq!(metronome_counter(&state), 6);
+    assert_eq!(metronome_counter(&state), 7);
+    assert_eq!(
+        enemy_current_hp(&state, enemy_a),
+        70,
+        "Metronome fires once per combat, not every 7 orbs"
+    );
 
     // after_combat_end resets counter; next combat starts clean.
     let _ = dispatch_after_combat_end(&mut state);
@@ -8502,6 +8509,61 @@ fn emotion_chip_triggers_passive_on_prior_hp_loss() {
         .find(|r| r.kind == RelicKind::EmotionChip)
         .map_or(-1, |r| r.counter);
     assert_eq!(counter, 0, "counter must reset after firing");
+}
+
+fn emotion_chip_counter_after_hit(block: i32, buffer: bool, damage: i32) -> i32 {
+    ensure_installed();
+    let mut state = fresh_state_with_player(80, 80);
+    give_player_relic(&mut state, RelicKind::EmotionChip);
+    state.player.block = block;
+    if buffer {
+        state.powers.push(crate::Power {
+            id: NonZeroU32::new(9001).unwrap(),
+            kind: crate::PowerKind::Buffer,
+            amount: 1,
+            counter: 0,
+            applier: None,
+            skip_next_tick: false,
+        });
+        state
+            .player
+            .powers
+            .push(crate::PowerUid(NonZeroU32::new(9001).unwrap()));
+    }
+    let _ = crate::combat_loop::apply_damage_to_player(
+        &mut state,
+        crate::hooks::CreatureRef::Nobody,
+        damage,
+        crate::hooks::ValueProps::NONE,
+        None,
+    );
+    state
+        .relics
+        .iter()
+        .find(|r| r.kind == RelicKind::EmotionChip)
+        .map_or(-1, |r| r.counter)
+}
+
+/// C# `LostHpInPreviousTurn` keys on a `DamageReceivedEntry` that was not
+/// `WasFullyBlocked` (EmotionChip.cs:14): an unblocked hit Buffer zeroes still
+/// arms it, a hit block fully absorbs does not, and a killing blow does
+/// (loadout Defect v0.107.1 2033).
+#[test]
+#[serial_test::serial(global_registry)]
+fn emotion_chip_arms_on_a_not_fully_blocked_hit_not_on_hp_loss() {
+    assert!(
+        emotion_chip_counter_after_hit(0, true, 6) > 0,
+        "Buffer-zeroed hit at 0 block arms EmotionChip"
+    );
+    assert_eq!(
+        emotion_chip_counter_after_hit(10, false, 6),
+        0,
+        "a hit fully absorbed by block does not arm it"
+    );
+    assert!(
+        emotion_chip_counter_after_hit(0, false, 200) > 0,
+        "a killing blow still records its damage entry"
+    );
 }
 
 /// EmotionChip armed (HP lost last turn) with Gold-Plated Cables and the given
@@ -9672,7 +9734,7 @@ fn bookmark_reduces_one_retained_card_cost() {
         state.cards.iter_mut().find(|c| c.uid == uid).unwrap().cost = 2;
         state.player.hand.push(uid);
     }
-    let _ = dispatch_after_turn_end(&mut state, Side::Player);
+    after_flush_bookmark(&mut state);
     // Local cost (`GetWithModifiers(Local)`): printed cost minus the
     // until-played bank. (`effective_card_cost` indexes `cards` by uid, which
     // these sparse test uids do not satisfy.)
@@ -9703,8 +9765,85 @@ fn bookmark_reduces_one_retained_card_cost() {
     assert_eq!(local(&state, reduced), 2);
 }
 
+/// C# `Hook.AfterFlush` (Bookmark) runs before `EndOfTurnCleanup`
+/// (CombatManager.cs:1347-1349): a retained card that is free this turn still
+/// has local cost 0, so it is not eligible, and Bookmark does not roll. Rust
+/// ran it as an `AfterTurnEnd` relic after the cleanup had cleared
+/// FreeThisTurn (loadout Necrobinder v0.107.1 2032).
+#[test]
+#[serial_test::serial(global_registry)]
+fn bookmark_runs_before_the_turn_cleanup_clears_free_this_turn() {
+    ensure_installed();
+    let mut state = fresh_state_with_player(70, 70);
+    let _ = push_enemy(&mut state, 50, 40);
+    give_player_relic(&mut state, RelicKind::Bookmark);
+    let a = push_card(&mut state, 80, crate::cards::CardType::Attack);
+    {
+        let card = state.cards.iter_mut().find(|c| c.uid == a).unwrap();
+        card.cost = 2;
+        card.set_combat_var(crate::cards::VarKey::FreeThisTurn, 1);
+    }
+    state.player.hand.push(a);
+    state.player.retain_this_turn.push(a);
+    let rng_before = state.run_rng.combat_card_selection.clone();
+    state.phase = crate::CombatPhase::PlayerEndTurnPhaseOne;
+    let _ = crate::combat_loop::end_player_turn_phase_two(&mut state);
+    let card = state.cards.iter().find(|c| c.uid == a).unwrap();
+    assert!(state.player.hand.contains(&a), "retained");
+    assert_eq!(card.combat_var(crate::cards::VarKey::FreeThisTurn), 0);
+    assert_eq!(
+        card.combat_var(crate::cards::VarKey::CostReductionUntilPlayed),
+        0,
+        "the free card was not eligible"
+    );
+    assert_eq!(state.run_rng.combat_card_selection, rng_before, "no roll");
+}
+
+/// A lethal hit takes the Red Skull owner to 0 HP and FairyInABottle revives
+/// them at 30%. C# probes Red Skull at 0 HP first (its `+3` Strength apply is
+/// refused while DieForYou makes every corpse unhittable,
+/// DieForYouPower.cs:35, but `StrengthApplied` is set), so the revive adds
+/// nothing. Without DieForYou the +3 lands (loadout Necrobinder v0.107.1 2035).
+#[test]
+#[serial_test::serial(global_registry)]
+fn red_skull_fairy_revive_gains_no_strength_while_die_for_you_lives() {
+    for die_for_you in [true, false] {
+        ensure_installed();
+        let mut state = fresh_state_with_player(100, 0);
+        state.sync_creature_current_hp_from_player();
+        give_player_relic(&mut state, RelicKind::RedSkull);
+        state.player.potion_slots = 3;
+        assert!(state
+            .player
+            .add_potion_first_free_slot(crate::potions::PotionKind::FairyInABottle));
+        if die_for_you {
+            state.powers.push(crate::Power {
+                id: NonZeroU32::new(9002).unwrap(),
+                kind: crate::PowerKind::DieForYou,
+                amount: 1,
+                counter: 0,
+                applier: None,
+                skip_next_tick: false,
+            });
+        }
+        assert!(crate::combat_loop::try_fairy_in_a_bottle_prevent_death(
+            &mut state
+        ));
+        assert_eq!(state.player.current_hp, 30);
+        let strength = state.player_power_amount(crate::PowerKind::Strength);
+        let expected = if die_for_you { 0 } else { 3 };
+        assert_eq!(strength, expected, "die_for_you={die_for_you}");
+        let counter = state
+            .relics
+            .iter()
+            .find(|r| r.kind == RelicKind::RedSkull)
+            .map_or(-1, |r| r.counter);
+        assert_eq!(counter, 1, "StrengthApplied either way");
+    }
+}
+
 /// `Bookmark` is a no-op when no retained hand card costs energy
-/// (all 0-cost), and on the enemy side.
+/// (all 0-cost).
 #[test]
 #[serial_test::serial(global_registry)]
 fn bookmark_noop_without_costing_retained_card() {
@@ -9714,7 +9853,7 @@ fn bookmark_noop_without_costing_retained_card() {
     let z = push_card(&mut state, 80, crate::cards::CardType::Attack);
     state.cards.iter_mut().find(|c| c.uid == z).unwrap().cost = 0;
     state.player.hand.push(z);
-    let _ = dispatch_after_turn_end(&mut state, Side::Player);
+    after_flush_bookmark(&mut state);
     assert_eq!(
         state.cards.iter().find(|c| c.uid == z).unwrap().cost,
         0,
@@ -9902,5 +10041,51 @@ fn serpent_form_hit_draws_combat_targets_before_kusarigama() {
         hp(enemies[second as usize]),
         24,
         "2nd CombatTargets pick = Kusarigama's 6"
+    );
+}
+
+/// C# `LunarPastry.AfterSideTurnEnd` gains its star through
+/// `PlayerCmd.GainStars`, which fires `Hook.AfterStarsGained`: Black Hole
+/// deals its `Amount` to every enemy (loadout Regent 1020).
+#[test]
+fn lunar_pastry_star_triggers_black_hole() {
+    let mut state = CombatState::default();
+    state.player.current_hp = 50;
+    state.relics.push(crate::Relic {
+        id: std::num::NonZeroU32::new(1).expect("nz"),
+        kind: crate::RelicKind::LunarPastry,
+        counter: 0,
+        is_wax: false,
+        is_melted: false,
+    });
+    let pid = std::num::NonZeroU32::new(1).expect("nz");
+    state.powers.push(crate::Power {
+        id: pid,
+        kind: crate::PowerKind::BlackHole,
+        amount: 3,
+        counter: 0,
+        applier: None,
+        skip_next_tick: false,
+    });
+    state.player.powers.push(crate::PowerUid(pid));
+    let enemy = state.spawn_enemy(crate::MonsterKind::Nibbit);
+    let hp = |s: &CombatState| {
+        s.creatures
+            .iter()
+            .find(|c| c.id == enemy.0)
+            .map(|c| c.current_hp)
+            .expect("enemy")
+    };
+    let before = hp(&state);
+    assert_eq!(
+        on_after_turn_end_lunar_pastry(&mut state, Side::Player),
+        EffectResult::Resolved
+    );
+    assert_eq!(state.player.stars, 1);
+    assert_eq!(state.player.stars_gained_this_turn, 1);
+    assert_eq!(
+        hp(&state),
+        before - 3,
+        "Black Hole fires on the gained star"
     );
 }

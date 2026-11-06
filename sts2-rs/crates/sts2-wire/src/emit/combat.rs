@@ -625,7 +625,10 @@ fn emit_seat_history(
 
 /// A seat's channelled orbs (`$.player.orbs`, and a whole teammate seat's),
 /// with `focus` folded into their values as C#'s `PassiveVal` / `EvokeVal` do.
-fn orbs_to_value(belt: &sts2_core::OrbSlots, focus: i32) -> Value {
+/// `lightning_bonus` is the seat's Infused Core `ModifyOrbValue` +1 on
+/// Lightning orbs (InfusedCore.cs:50-60), added after the Focus clamp
+/// (`Hook.ModifyOrbValue` walks powers, then relics).
+fn orbs_to_value(belt: &sts2_core::OrbSlots, focus: i32, lightning_bonus: i32) -> Value {
     let mut orbs_list = Vec::new();
     let mut idx: i32 = 0;
     // Focus-scaled passive/evoke clamp at 0 (C# `FocusPower.ModifyOrbValue`
@@ -639,8 +642,8 @@ fn orbs_to_value(belt: &sts2_core::OrbSlots, focus: i32) -> Value {
             Orb::Lightning => (
                 "Lightning",
                 "LIGHTNING_ORB.title",
-                focus_scaled(3, focus),
-                focus_scaled(8, focus),
+                focus_scaled(3, focus) + lightning_bonus,
+                focus_scaled(8, focus) + lightning_bonus,
             ),
             Orb::Frost => (
                 "Frost",
@@ -919,7 +922,11 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
     // `Capacity == 0`; the import reads that as the same unsized belt.
     if state.player.orbs.capacity > 0 || state.player.orbs.sized {
         let focus = sts2_core::orbs::focus_bonus(state);
-        player.insert("orbs".to_owned(), orbs_to_value(&state.player.orbs, focus));
+        let lightning_bonus = sts2_core::orbs::lightning_orb_bonus(state);
+        player.insert(
+            "orbs".to_owned(),
+            orbs_to_value(&state.player.orbs, focus, lightning_bonus),
+        );
         set(
             &mut player,
             "orb_slots",
@@ -1226,7 +1233,8 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
                         .filter(|p| p.kind == PowerKind::Focus)
                         .map(|p| p.amount)
                         .sum();
-                    m.insert("orbs".to_owned(), orbs_to_value(&a.orbs, focus));
+                    // A teammate's own Infused Core is not modelled on the seat.
+                    m.insert("orbs".to_owned(), orbs_to_value(&a.orbs, focus, 0));
                     set(&mut m, "orb_slots", i32::from(a.orbs.capacity));
                 }
                 if state.coop.stash[i].combat_log.hp_lost_this_turn > 0 {

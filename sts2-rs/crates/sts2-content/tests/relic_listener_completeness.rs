@@ -40,6 +40,9 @@ const INLINE_HANDLED: &[RelicId] = &[
     // (`relic_effects::blood_vial::dispatch_after_player_turn_start_late`).
     RelicId::BloodVial,
     RelicId::FakeBloodVial,
+    // Bookmark's `AfterFlush` is called from the end-of-turn flush, before
+    // `EndOfTurnCleanup` (`relic_effects::bookmark::after_flush_bookmark`).
+    RelicId::Bookmark,
     RelicId::Bread,
     // BowlerHat's `ModifyGoldGained` x1.25 is folded into
     // `RunState::gain_gold` and `card_effects::gain_gold_in_combat`.

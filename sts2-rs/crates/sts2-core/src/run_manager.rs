@@ -3367,8 +3367,23 @@ impl RunManager {
                     Option<crate::runstate::RoomType>,
                 ),
             }
+            // A card removal waits until every card reward is taken: the C#
+            // harness offers the room's CardRewards in set order first and
+            // only then its queued CardRemovalRewards (RunSimulator.cs
+            // `OfferNextCardRemovalReward`). The real game lets the player
+            // claim in any order, so this is a convention; matching it keeps
+            // Forbidden Grimoire's removal after a later WhiteStar card
+            // reward (loadout Necrobinder 1017).
+            let card_reward_pending = opened
+                || !self.card_reward_options.is_empty()
+                || self
+                    .run_state
+                    .pending_rewards
+                    .iter()
+                    .any(|r| matches!(r, Reward::Card(_)));
             let queued = match &self.run_state.pending_rewards[i] {
                 Reward::Potion(reward) => Some(Resolve::Potion(reward.potion_kind, reward.direct)),
+                Reward::RemoveCard { .. } if card_reward_pending => None,
                 Reward::RemoveCard { count } => Some(Resolve::RemoveCard(*count)),
                 Reward::Card(reward) if self.card_reward_options.is_empty() && !opened => {
                     // Pre-resolved options (C# `OfferCustom` with an
@@ -8364,6 +8379,37 @@ mod tests {
             rm.run_state.pending_rewards.is_empty(),
             "the RemoveCard sentinel is consumed"
         );
+    }
+
+    /// The C# harness offers every CardReward before the room's queued
+    /// CardRemovalRewards (`OfferNextCardRemovalReward`), so a removal queued
+    /// between two card rewards (Forbidden Grimoire, then WhiteStar) waits
+    /// for both picks (loadout Necrobinder 1017).
+    #[test]
+    fn drain_pending_rewards_defers_card_removal_past_card_rewards() {
+        use crate::runstate::{CardReward, Reward};
+        let mut rm = RunManager::new(0, CharacterId::Ironclad)
+            .with_content_callbacks(drain_test_callbacks());
+        rm.run_state.master_deck = vec![crate::cards::Card::pod_defaults(); 3];
+        rm.run_state.pending_rewards = vec![
+            Reward::Card(CardReward::empty()),
+            Reward::RemoveCard { count: 1 },
+            Reward::Card(CardReward::empty()),
+        ];
+
+        assert!(rm.drain_pending_rewards(), "first card reward opens");
+        assert_eq!(rm.run_state.master_deck.len(), 3, "removal waits");
+        rm.card_reward_options.clear();
+        assert!(rm.drain_pending_rewards(), "second card reward opens");
+        assert_eq!(rm.run_state.master_deck.len(), 3, "removal still waits");
+        rm.card_reward_options.clear();
+        assert!(!rm.drain_pending_rewards());
+        assert_eq!(
+            rm.run_state.master_deck.len(),
+            2,
+            "removal after the last card reward"
+        );
+        assert!(rm.run_state.pending_rewards.is_empty());
     }
 
     #[test]

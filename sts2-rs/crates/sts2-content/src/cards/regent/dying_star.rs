@@ -28,14 +28,27 @@ pub(crate) fn play_dying_star(state: &mut CombatState, _t: Option<CreatureUid>) 
             //
             // C# `DyingStarPower.Type == Debuff`: an Artifact-warded enemy
             // consumes a stack and negates the WHOLE power, so its
-            // `BeforeApplied` silent StrengthPower never lands. Peek for the
-            // Artifact stack before the (consuming) marker apply, and only
-            // fold the internal Strength when the debuff lands — mirrors the
+            // `BeforeApplied` silent StrengthPower never lands. Only fold
+            // the internal Strength when the debuff lands — mirrors the
             // CrushUnder fix. Bead `sts2-rs-crush-under-artifact`.
-            let warded = enemy_has_artifact(state, uid);
+            //
+            // TemporaryStrengthPower.BeforeApplied applies Strength by the
+            // MODIFIED amount (PowerCmd.cs:129-136 v0.111.0): doubled under
+            // Unsettling Lamp, 0 when Artifact negates the marker. Drain what
+            // landed on the marker, not the base (same as DarkShackles).
+            let before = crate::cards::colorless::helpers::power_amount_on_creature(
+                state,
+                uid,
+                PowerKind::DyingStar,
+            );
             apply_power_to_enemy(state, uid, PowerKind::DyingStar, strength_loss);
-            if !warded {
-                add_power_to_enemy_signed(state, uid, PowerKind::Strength, -strength_loss);
+            let landed = crate::cards::colorless::helpers::power_amount_on_creature(
+                state,
+                uid,
+                PowerKind::DyingStar,
+            ) - before;
+            if landed > 0 {
+                add_power_to_enemy_signed(state, uid, PowerKind::Strength, -landed);
             }
         }
     }

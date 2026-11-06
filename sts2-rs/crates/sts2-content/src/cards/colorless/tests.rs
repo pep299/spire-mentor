@@ -1905,6 +1905,39 @@ fn play_mad_science_violence_hits_thrice() {
     assert_eq!(enemy_hp(&state, enemy), 100 - 36, "Violence = 3 x 12");
 }
 
+/// Violence under Vigor 5: v0.107.1 issues one `DamageCmd.Attack` per hit
+/// (`MadScience.cs:216-225`), so `VigorPower.AfterAttack` spends the Vigor
+/// after the FIRST hit (17 + 12 + 12); v0.111.0 issues one command with
+/// `WithHitCount(3)`, so every hit carries it (3 x 17). Silent loadout
+/// v0.107.1 seed 1038.
+#[test]
+fn play_mad_science_violence_vigor_per_command_v0107_vs_v0111() {
+    install_pool();
+    for (version, expected_dmg, vigor_left) in [
+        (sts2_core::GameVersion::V0_107_1, 17 + 12 + 12, 0),
+        (sts2_core::GameVersion::V0_111_0, 3 * 17, 5),
+    ] {
+        let (mut state, enemy) = fresh_state(CardId::MadScience, 12, 0);
+        state.game_version = version;
+        let player = push_player(&mut state);
+        set_mad_science_variant(
+            &mut state.cards[0],
+            CardType::Attack,
+            TinkerTimeRider::Violence,
+        );
+        apply_power_to_creature(&mut state, player, PowerKind::Vigor, 5);
+        let f = lookup(CardId::MadScience).expect("registered");
+        f(&mut state, Some(enemy));
+        assert_eq!(enemy_hp(&state, enemy), 100 - expected_dmg, "{version:?}");
+        // v0.111.0 spends the Vigor at the card's after_card_played.
+        assert_eq!(
+            creature_power(&state, player, PowerKind::Vigor),
+            vigor_left,
+            "{version:?}"
+        );
+    }
+}
+
 /// Attack + Sapping rider → 12 dmg then Weak 2 + Vulnerable 2 on target.
 #[test]
 fn play_mad_science_sapping_applies_weak_and_vulnerable() {
@@ -2776,6 +2809,7 @@ fn calamity_generates_one_attack_into_hand_on_attack_played() {
         card_type: Some(CardType::Attack),
         ..Default::default()
     };
+    sts2_core::hooks::dispatch_before_card_played_powers(&mut state, 1, false);
     sts2_core::hooks::dispatch_after_card_played(&mut state, &ctx);
     assert_eq!(
         state.player.hand.len(),
@@ -2787,6 +2821,37 @@ fn calamity_generates_one_attack_into_hand_on_attack_played() {
         gen_before + 1,
         "GetForCombat with-replacement amount=1 ⇒ exactly 1 combat_card_generation read"
     );
+}
+
+/// C# `CalamityPower` records the Attack at `BeforeCardPlayed` and conjures
+/// only if `AfterCardPlayed` can remove it (CalamityPower.cs:23-54).
+/// `Hook.BeforeCardPlayed` is skipped once the combat `IsOverOrEnding`, the
+/// after hook is not — so a play whose Before never fired (a replay after the
+/// last enemy died) conjures nothing (Defect random-loadout v0.107.1 seed 1025).
+#[test]
+fn calamity_conjures_nothing_when_before_card_played_was_skipped() {
+    use sts2_core::card_effects::apply_power_to_creature;
+    crate::cards::dispatch::ensure_installed();
+    let mut state = CombatState {
+        rng: sts2_core::dotnet_rng::Rng::new(0_i32),
+        ..Default::default()
+    };
+    add_player_creature(&mut state);
+    state.player.character = Some(sts2_core::CharacterId::Ironclad);
+    let puid = state.player.creature_uid.expect("player mirror");
+    apply_power_to_creature(&mut state, puid, sts2_core::powers::PowerKind::Calamity, 1);
+    let ctx = sts2_core::hooks::CardCtx {
+        card_type: Some(CardType::Attack),
+        ..Default::default()
+    };
+    // Armed play conjures once; the next play's Before is skipped.
+    sts2_core::hooks::dispatch_before_card_played_powers(&mut state, 1, false);
+    sts2_core::hooks::dispatch_after_card_played(&mut state, &ctx);
+    let hand_after_first = state.player.hand.len();
+    let gen = state.run_rng.combat_card_generation.counter();
+    sts2_core::hooks::dispatch_after_card_played(&mut state, &ctx);
+    assert_eq!(state.player.hand.len(), hand_after_first);
+    assert_eq!(state.run_rng.combat_card_generation.counter(), gen);
 }
 
 /// C# `Hook.AfterCardPlayed` walks `CombatState.IterateHookListeners`
@@ -2823,6 +2888,7 @@ fn calamity_card_lands_before_withering_presence_wither() {
         card_type: Some(CardType::Attack),
         ..Default::default()
     };
+    sts2_core::hooks::dispatch_before_card_played_powers(&mut state, 1, false);
     // The card-play pipeline order (`combat_loop::dispatch_after_card_played_buses`
     // minus the relic bus, which holds no relics here).
     sts2_core::hooks::dispatch_after_card_played_ordered_enemy_hits(&mut state, &ctx);

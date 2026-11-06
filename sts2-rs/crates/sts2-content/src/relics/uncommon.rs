@@ -30,14 +30,14 @@ use sts2_core::hooks::{self, BlockCtx, BlockGainedCtx, CreatureRef, ValueProps};
 use sts2_core::powers::PowerKind;
 use sts2_core::relic_effects::{
     register_after_card_played, register_after_player_turn_start, register_after_side_turn_start,
-    register_before_combat_start, register_before_side_turn_start, register_before_turn_end,
-    register_modify_damage_additive, register_modify_damage_multiplicative,
-    register_modify_vulnerable_multiplier, register_owned_after_card_entered_combat,
-    register_owned_after_combat_end, register_owned_after_potion_used,
-    register_owned_before_hand_draw, AfterCardEnteredCombatFn, AfterCardPlayedFn, AfterCombatEndFn,
-    AfterPlayerTurnStartFn, AfterPotionUsedFn, AfterSideTurnStartFn, BeforeCombatStartFn,
-    BeforeHandDrawFn, BeforeSideTurnStartFn, BeforeTurnEndFn, CardEventCtx, ModifyDamageAdditiveFn,
-    ModifyDamageCtx, ModifyDamageMultiplicativeFn, ModifyVulnerableMultiplierFn,
+    register_before_combat_start, register_before_side_turn_start, register_modify_damage_additive,
+    register_modify_damage_multiplicative, register_modify_vulnerable_multiplier,
+    register_owned_after_card_entered_combat, register_owned_after_combat_end,
+    register_owned_after_potion_used, register_owned_before_hand_draw, AfterCardEnteredCombatFn,
+    AfterCardPlayedFn, AfterCombatEndFn, AfterPlayerTurnStartFn, AfterPotionUsedFn,
+    AfterSideTurnStartFn, BeforeCombatStartFn, BeforeHandDrawFn, BeforeSideTurnStartFn,
+    CardEventCtx, ModifyDamageAdditiveFn, ModifyDamageCtx, ModifyDamageMultiplicativeFn,
+    ModifyVulnerableMultiplierFn,
 };
 use sts2_core::relics::RelicId;
 use sts2_core::run_effects::{
@@ -301,10 +301,10 @@ pub fn install_pool() {
         RelicId::GoldPlatedCables,
         listener_gold_plated_cables_after_side_turn_start as AfterSideTurnStartFn,
     );
-    register_before_turn_end(
-        RelicId::GoldPlatedCables,
-        listener_gold_plated_cables_before_turn_end as BeforeTurnEndFn,
-    );
+    // The turn-end arm is NOT a `BeforeTurnEnd` listener: C# grants it as
+    // `ModifyOrbPassiveTriggerCounts` inside `OrbQueue.BeforeTurnEnd`, i.e.
+    // after the BeforeTurnEnd hooks and the win check — `orbs::passive_tick`
+    // runs the front orb's extra trigger there (Regent loadout v0.107.1 1036).
     // ReptileTrinket — after the player uses a potion mid-combat, apply
     // a `ReptileTrinketPower(REPTILE_TRINKET_STRENGTH = 3)` (a
     // TemporaryStrengthPower) to the player: +3 Strength now, reverted
@@ -1306,32 +1306,6 @@ fn listener_gold_plated_cables_after_side_turn_start(
         return EffectResult::NotImplemented;
     };
     if !matches!(state.player.orbs.slots[idx], Orb::Plasma) {
-        return EffectResult::NotImplemented;
-    }
-    trigger_first_orb_passive(state);
-    EffectResult::Resolved
-}
-
-/// `GoldPlatedCables::before_turn_end` — on player-side turn end, if
-/// the front-most filled orb is NOT Plasma, re-fire its passive.
-/// Mirrors Python's `_trigger_first_passive_if(plasma=False)` arm —
-/// covers Lightning, Frost, Dark, and Glass via
-/// [`sts2_core::orbs::trigger_first_orb_passive`].
-fn listener_gold_plated_cables_before_turn_end(
-    state: &mut CombatState,
-    side: Side,
-) -> EffectResult {
-    use sts2_core::orbs::{trigger_first_orb_passive, Orb};
-    if side != Side::Player {
-        return EffectResult::NotImplemented;
-    }
-    if !state.relics.owns(RelicKind::GoldPlatedCables) {
-        return EffectResult::NotImplemented;
-    }
-    let Some(idx) = state.player.orbs.slots.iter().position(|o| !o.is_empty()) else {
-        return EffectResult::NotImplemented;
-    };
-    if matches!(state.player.orbs.slots[idx], Orb::Plasma) {
         return EffectResult::NotImplemented;
     }
     trigger_first_orb_passive(state);
@@ -3809,9 +3783,11 @@ mod tests {
         assert_eq!(state.player.energy, 0, "no Plasma → no energy");
     }
 
-    /// **GoldPlatedCables #3** — happy path: Lightning front orb on
-    /// player-side turn end deals an extra `3 + focus` to a random
-    /// enemy.
+    /// **GoldPlatedCables #3** — the front Lightning orb triggers TWICE in
+    /// the turn-end orb passives (C# `ModifyOrbPassiveTriggerCounts` inside
+    /// `OrbQueue.BeforeTurnEnd`), and nothing fires on the `BeforeTurnEnd`
+    /// hook bus, which runs before the win check (Regent loadout v0.107.1
+    /// seed 1036: the hook-bus zap read `combat_targets` too early).
     #[test]
     fn gold_plated_cables_lightning_damages_on_player_turn_end() {
         use sts2_core::orbs::Orb;
@@ -3821,27 +3797,46 @@ mod tests {
         gold_plated_cables_setup(&mut state, true);
         let enemy = create_test_enemy(&mut state, 50);
         sts2_core::orbs::channel_orb(&mut state, Orb::Lightning);
+        let hp = |state: &CombatState| {
+            state
+                .creatures
+                .iter()
+                .find(|c| c.id.get() == enemy)
+                .expect("enemy")
+                .current_hp
+        };
         let _ = dispatch_before_turn_end(&mut state, Side::Player);
-        let hp = state
-            .creatures
-            .iter()
-            .find(|c| c.id.get() == enemy)
-            .expect("enemy")
-            .current_hp;
-        assert_eq!(hp, 47, "Lightning re-fire deals 3 damage");
+        assert_eq!(hp(&state), 50, "no zap on the BeforeTurnEnd hook bus");
+        sts2_core::orbs::passive_tick(&mut state);
+        assert_eq!(hp(&state), 44, "front Lightning passive fires twice");
     }
 
-    /// **GoldPlatedCables #4** — Plasma at turn-end is a no-op (the
-    /// `plasma=False` arm filters it out).
+    /// **GoldPlatedCables #3b** — the extra trigger re-reads the orb, so a
+    /// front Dark orb accumulates twice; the second orb gets one trigger.
+    #[test]
+    fn gold_plated_cables_front_dark_accumulates_twice() {
+        use sts2_core::orbs::Orb;
+        crate::relics::dispatch::ensure_installed();
+        let mut state = CombatState::default();
+        state.player.character = Some(sts2_core::potions::CharacterId::Defect);
+        gold_plated_cables_setup(&mut state, true);
+        sts2_core::orbs::channel_orb(&mut state, Orb::Dark { stored: 6 });
+        sts2_core::orbs::channel_orb(&mut state, Orb::Dark { stored: 6 });
+        sts2_core::orbs::passive_tick(&mut state);
+        assert_eq!(state.player.orbs.slots[0], Orb::Dark { stored: 18 });
+        assert_eq!(state.player.orbs.slots[1], Orb::Dark { stored: 12 });
+    }
+
+    /// **GoldPlatedCables #4** — Plasma's turn-end trigger is inert, extra
+    /// trigger or not.
     #[test]
     fn gold_plated_cables_plasma_inert_at_turn_end_arm() {
         use sts2_core::orbs::Orb;
-        use sts2_core::relic_effects::dispatch_before_turn_end;
         crate::relics::dispatch::ensure_installed();
         let mut state = CombatState::default();
         gold_plated_cables_setup(&mut state, true);
         sts2_core::orbs::channel_orb(&mut state, Orb::Plasma);
-        let _ = dispatch_before_turn_end(&mut state, Side::Player);
+        sts2_core::orbs::passive_tick(&mut state);
         assert_eq!(
             state.player.energy, 0,
             "Plasma must NOT fire on the turn-end arm"

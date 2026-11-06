@@ -1038,10 +1038,14 @@ impl PyRunManager {
         deck: Option<Vec<String>>,
         relics: Option<Vec<String>>,
     ) -> PyResult<()> {
+        // Build each card for the run's game build, as every real deck add
+        // does (`build_card_for_version`): the unversioned factory minted
+        // v0.107.1 PODs, so a grafted v0.111.0 Outbreak stayed a Power in the
+        // master deck and WarPaint's Skill filter skipped it (loadout Silent
+        // v0.111.0 2028: one fewer `Rng.Niche` read, wrong Axebot HP).
+        let version = self.inner.run_state.game_version;
         let deck = deck
             .map(|names| {
-                let factory = sts2_core::lookup_card_factory()
-                    .ok_or_else(|| PyValueError::new_err("no card factory registered"))?;
                 names
                     .iter()
                     .map(|name| {
@@ -1049,9 +1053,12 @@ impl PyRunManager {
                             Some(base) => (base, true),
                             None => (name.as_str(), false),
                         };
-                        factory(card_id_from_str(base)?, upgraded).ok_or_else(|| {
-                            PyValueError::new_err(format!("no card spec for {name:?}"))
-                        })
+                        sts2_core::build_card_for_version(
+                            card_id_from_str(base)?,
+                            upgraded,
+                            version,
+                        )
+                        .ok_or_else(|| PyValueError::new_err(format!("no card spec for {name:?}")))
                     })
                     .collect::<PyResult<Vec<_>>>()
             })
@@ -2057,6 +2064,26 @@ mod reseed_tests {
             seed: 7,
             record_card_plays: false,
             record_combat_log: false,
+        }
+    }
+
+    /// `debug_set_loadout` builds each deck card for the run's build: Outbreak
+    /// is a Power on v0.107.1 and a Skill on v0.111.0 (Outbreak.cs:23), and
+    /// WarPaint's Skill filter keys on it (loadout Silent v0.111.0 2028).
+    #[test]
+    fn debug_set_loadout_builds_cards_for_the_run_game_version() {
+        sts2_content::cards::dispatch::ensure_installed();
+        sts2_content::relics::dispatch::ensure_installed();
+        for (version, ty) in [
+            (GameVersion::V0_107_1, sts2_core::cards::CardType::Power),
+            (GameVersion::V0_111_0, sts2_core::cards::CardType::Skill),
+        ] {
+            let mut rm = rm_on(version);
+            rm.debug_set_loadout(Some(vec!["OUTBREAK_CARD".to_owned()]), None)
+                .expect("loadout");
+            let deck = &rm.inner.run_state.master_deck;
+            assert_eq!(deck.len(), 1, "{version:?}");
+            assert_eq!(deck[0].card_type, ty, "{version:?}");
         }
     }
 

@@ -40,7 +40,10 @@ pub(crate) fn play_tesla_coil(
     // (Defect sweep seeds 132/192/280: monsters[].hp off by the per-orb
     // Strength delta). Fire it UNPOWERED at the card's target, mirroring the
     // turn-end passive (`orbs::passive_tick`).
-    let zap = orbs::focus_scaled(3, focus);
+    // `OrbCmd.Passive` runs the orb's own `PassiveVal`, so Infused Core's
+    // `ModifyOrbValue` +1 Lightning bonus applies (InfusedCore.cs:50-60;
+    // Defect random-loadout v0.111.0 seed 1035).
+    let zap = orbs::focus_scaled(3, focus) + orbs::lightning_orb_bonus(state);
     // v0.107.1: each Lightning orb's passive fires once, plus a second time
     // when TeslaCoil is upgraded (`if (IsUpgraded) OrbCmd.Passive(...)`).
     let hits_per_orb = if current_card_upgraded(state) { 2 } else { 1 };

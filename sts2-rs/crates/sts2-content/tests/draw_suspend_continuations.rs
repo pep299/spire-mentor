@@ -341,3 +341,59 @@ fn dark_embrace_turn_end_select_blocks_end_turn_v0111() {
 fn dark_embrace_turn_end_select_blocks_end_turn_v0107() {
     dark_embrace_turn_end_select_blocks_end_turn(V107);
 }
+
+// ── Reboot's draw waits for the Stratagem pick of its own shuffle ────────
+
+/// Reboot shuffles the hand into the draw pile, and the shuffle's
+/// `StratagemPower.AfterShuffle` opens a pick. C# `Reboot.OnPlay` awaits
+/// `CardPileCmd.Shuffle` (and the select in it) before `CardPileCmd.Draw`
+/// (v0.107.1 Reboot.cs:29-30), so nothing is drawn before the pick and the
+/// picked card leads the hand. Rust drew one card first (Defect
+/// random-loadout v0.107.1 seeds 1016/1038, v0.111.0 seed 1026).
+fn reboot_draw_waits_for_stratagem_pick(version: GameVersion) {
+    let (mut state, _enemy) = fresh(version);
+    state.player.character = Some(CharacterId::Defect);
+    add_player_power(&mut state, 50, PowerKind::Stratagem, 1);
+    for id in [
+        CardId::StrikeDefect,
+        CardId::DefendDefect,
+        CardId::Zap,
+        CardId::Dualcast,
+        CardId::BallLightning,
+        CardId::ColdSnap,
+    ] {
+        let _ = push_draw(&mut state, id);
+    }
+    let _ = push_hand(&mut state, CardId::StrikeDefect);
+    let r = push_hand(&mut state, CardId::Reboot);
+    let _ = sts2_core::combat_loop::play_card(&mut state, r, None);
+
+    let pc = state.pending_choice.as_ref().expect("Stratagem grid opens");
+    assert_eq!(pc.kind, sts2_core::ChoiceKind::AddFromDrawToHand);
+    assert!(
+        state.player.hand.is_empty(),
+        "nothing is drawn before the Stratagem pick: {:?}",
+        state.player.hand
+    );
+    let picked = pc.options[0].card_uid.expect("card option");
+
+    resolve(&mut state, 0);
+    assert!(state.pending_choice.is_none());
+    assert!(state.pending_draw_resume.is_none());
+    assert_eq!(state.player.hand.len(), 5, "the pick + Reboot's 4 draws");
+    assert_eq!(
+        state.player.hand[0], picked,
+        "the pick reaches the hand first"
+    );
+    assert_eq!(state.player.draw.len(), 2, "7 shuffled - pick - 4 drawn");
+}
+
+#[test]
+fn reboot_draw_waits_for_stratagem_pick_v0111() {
+    reboot_draw_waits_for_stratagem_pick(V111);
+}
+
+#[test]
+fn reboot_draw_waits_for_stratagem_pick_v0107() {
+    reboot_draw_waits_for_stratagem_pick(V107);
+}

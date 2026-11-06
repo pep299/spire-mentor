@@ -264,6 +264,16 @@ pub enum VarKey {
     /// by the auto-play resolver before the effect dispatch; read + cleared by
     /// `play_stardust`. regent-legal-action Fix B (seed 2010).
     AutoPlayStarX,
+    /// C# `Resources.EnergyValue` of an X-cost play when it differs from the
+    /// captured X in `energy_spent`, stored as `value + 1` (`0` = unset: the
+    /// play's `EnergyValue` is `energy_spent`). Only the Whispering Earring
+    /// path sets it: it pays the card with `SpendResources()` and then runs
+    /// `CardCmd.AutoPlay(skipXCapture: true)`, whose `EnergyValue =
+    /// EnergyCost.GetAmountToSpend()` (CardCmd.cs:126) is the player's energy
+    /// AFTER that spend (CardEnergyCost.cs:134-139), while the X stays the
+    /// spent amount. Read through [`play_energy_value`] by RightHandHand and
+    /// IvoryTile; cleared by every other play.
+    AutoPlayEnergyValue,
     /// How much of this card's cost came from an END-OF-TURN-expiring
     /// modifier that a *foreign* producer had already applied when the state
     /// was reconstructed — the amount
@@ -1176,6 +1186,15 @@ impl Card {
     /// drops them (`CardEnergyCost.cs:331-335`) the Absolute still yields
     /// `cost`, so their banks are dropped too or the next turn-start restore
     /// re-adds them (Ironclad-2031: Touch-of-Insanity'd Stomp C# 0, Rust 2).
+    ///
+    /// It also supersedes the earlier local riders the collapsed model keeps
+    /// beside `cost`: the `SetThisTurnOrUntilPlayed(0)` / `SetUntilPlayed(0)`
+    /// Absolutes ([`VarKey::FreeThisTurn`], [`VarKey::FreeUntilPlayed`]) and an
+    /// `AddUntilPlayed(-n)` reduction ([`VarKey::CostReductionUntilPlayed`]) —
+    /// all folded BEFORE this Absolute, so it owns the cost (loadout Defect
+    /// v0.107.1 2008: a RocketPunch made free until played, then drawn under
+    /// Confused, cost the Confused roll in C#, 0 in Rust). `SetToFreeThisTurn`'s
+    /// star half survives (it is a separate star cost).
     pub fn set_cost_this_combat(&mut self, cost: i8) {
         self.cost = cost;
         self.set_combat_var(VarKey::CostAbsolutelySet, 1);
@@ -1183,6 +1202,14 @@ impl Card {
         self.set_combat_var(VarKey::SneckoRollLive, 0);
         self.set_combat_var(VarKey::StompCostReductionThisTurn, 0);
         self.set_combat_var(VarKey::PinpointCostReductionThisTurn, 0);
+        if self.combat_vars.maybe_nonzero(VarKey::FreeThisTurn)
+            && self.combat_var(VarKey::FreeThisTurn) != 0
+        {
+            self.set_combat_var(VarKey::StarCostFreeThisTurn, 1);
+            self.combat_vars.zero(VarKey::FreeThisTurn);
+        }
+        self.combat_vars.zero(VarKey::FreeUntilPlayed);
+        self.combat_vars.zero(VarKey::CostReductionUntilPlayed);
     }
 
     /// C# `EnergyCost.SetThisTurnOrUntilPlayed(cost, reduceOnly: true)`
@@ -1607,8 +1634,20 @@ impl Card {
         // the `CardId`-keyed registries. Unlike the stat fields this
         // is an absolute set, not an additive delta — the upgraded
         // build already encodes the final keyword set.
-        if upgraded.keyword_override.is_some() {
-            self.keyword_override = upgraded.keyword_override;
+        //
+        // C# `UpgradeInternal` only runs the card's `OnUpgrade`, which
+        // adds/removes the keywords it names (Rainbow: `RemoveKeyword(
+        // Exhaust)`) on the LIVE set: a keyword gained in combat (Choices
+        // Paradox's Retain) survives the upgrade (loadout Defect v0.111.0
+        // 2015: a Bellows-upgraded Retain Rainbow lost its Retain). Apply
+        // the base -> upgraded keyword diff to the current set.
+        if let Some(up) = upgraded.keyword_override {
+            let registry = |c: &Card| crate::card_effects::registry_keyword_override(c.card_id);
+            let base_kw = base.keyword_override.unwrap_or_else(|| registry(base));
+            let current = self.keyword_override.unwrap_or(base_kw);
+            let removed = base_kw.0 & !up.0;
+            let added = up.0 & !base_kw.0;
+            self.keyword_override = Some(KeywordOverride((current.0 & !removed) | added));
         }
     }
 
@@ -1652,7 +1691,22 @@ impl Card {
     }
 
     fn revert_upgrade_delta(&mut self, base: &Card, upgraded: &Card) {
-        self.cost = self.cost.saturating_sub(upgraded.cost - base.cost);
+        if self.card_id == CardId::BansheesCry
+            && base.cost >= 0
+            && self.combat_var(VarKey::CostAbsolutelySet) == 0
+        {
+            // C# `ResetForDowngrade` restores `_base = Canonical` and keeps the
+            // `AddThisCombat(-2)` modifiers, so the cost re-resolves to
+            // `max(0, 9 - 2n)` (CardEnergyCost.cs GetWithModifiers). The
+            // collapsed `cost` already floored at 0; adding the +2 delta back
+            // to that floor over-charged (loadout Necrobinder 1006, Dampen).
+            let shaved = self
+                .combat_var(VarKey::BansheesCryEtherealCounted)
+                .saturating_mul(2);
+            self.cost = i8::try_from((i32::from(base.cost) - shaved).max(0)).unwrap_or(0);
+        } else {
+            self.cost = self.cost.saturating_sub(upgraded.cost - base.cost);
+        }
         self.base_damage = self
             .base_damage
             .saturating_sub(upgraded.base_damage - base.base_damage);
@@ -2604,6 +2658,17 @@ pub fn cards_observationally_equal(a: &Card, b: &Card) -> bool {
     let mut b2 = *b;
     b2.energy_spent = observational_energy_spent(b);
     a2 == b2
+}
+
+/// C# `CardPlay.Resources.EnergyValue` of this card's latest play:
+/// `energy_spent`, unless [`VarKey::AutoPlayEnergyValue`] overrides it (an
+/// X-cost card the Whispering Earring paid for and auto-played).
+#[must_use]
+pub fn play_energy_value(card: &Card) -> i32 {
+    match card.combat_var(VarKey::AutoPlayEnergyValue) {
+        0 => card.energy_spent,
+        stamped => stamped - 1,
+    }
 }
 
 /// `card.energy_spent` as the observational identity sees it: the stamped
@@ -6546,5 +6611,39 @@ mod tests {
             1,
             "other instance state survives"
         );
+    }
+
+    /// C# `ResetForDowngrade` restores the base cost (9) under Banshee's Cry's
+    /// `AddThisCombat(-2)` modifiers, so after 5 Ethereal plays a downgraded
+    /// copy resolves to `max(0, 9 - 10) = 0`, not the floored 0 plus the
+    /// reverted +2 (loadout Necrobinder 1006).
+    #[test]
+    fn banshees_cry_downgrade_keeps_its_ethereal_discounts() {
+        let factory = |id, up: bool| {
+            Some(Card {
+                card_id: id,
+                cost: if up { 7 } else { 9 },
+                ..Card::pod_defaults()
+            })
+        };
+        let mut card = Card {
+            card_id: CardId::BansheesCry,
+            cost: 0,
+            upgraded: true,
+            ..Card::pod_defaults()
+        };
+        card.set_combat_var(VarKey::BansheesCryEtherealCounted, 5);
+        assert!(card.downgrade_with(factory));
+        assert_eq!(card.cost, 0);
+
+        let mut card = Card {
+            card_id: CardId::BansheesCry,
+            cost: 0,
+            upgraded: true,
+            ..Card::pod_defaults()
+        };
+        card.set_combat_var(VarKey::BansheesCryEtherealCounted, 4);
+        assert!(card.downgrade_with(factory));
+        assert_eq!(card.cost, 1, "max(0, 9 - 8)");
     }
 }

@@ -539,6 +539,38 @@ fn feral_slot_goes_to_the_outer_card_of_a_nested_auto_play() {
     assert!(!state.player.hand.contains(&ftl), "FTL not returned");
 }
 
+/// Feral returns the card to (Hand, Top); with a full hand `CardPileCmd.Add`
+/// sends it to Discard at that same Top position (index 0,
+/// CardPileCmd.cs:420-424/511-516), not the bottom (loadout Defect v0.107.1
+/// 2008). Flash of Steel draws the tenth card first.
+#[test]
+fn feral_return_to_a_full_hand_lands_on_discard_top() {
+    for version in [GameVersion::V0_107_1, GameVersion::V0_111_0] {
+        let (mut state, _) = fresh(version);
+        let p = player_uid(&state);
+        give(&mut state, p, PowerKind::Feral, 1);
+        let flash = add_zero_cost_to_hand(&mut state, CardId::FlashOfSteel);
+        for _ in 0..9 {
+            let _ = add_to_hand(&mut state, CardId::DefendIronclad);
+        }
+        let drawn = add_to_hand(&mut state, CardId::DefendIronclad);
+        let old = add_to_hand(&mut state, CardId::DefendIronclad);
+        state.player.hand.retain(|u| *u != drawn && *u != old);
+        state.player.draw.push(drawn);
+        state.player.discard.push(old);
+        assert_eq!(state.player.hand.len(), 10);
+
+        let _ = sts2_core::combat_loop::play_card(&mut state, 0, Some(0));
+
+        assert_eq!(state.player.hand.len(), 10, "{version:?}: hand full");
+        assert_eq!(
+            state.player.discard.as_slice(),
+            &[flash, old],
+            "{version:?}: Feral's Top overflow goes to discard[0]"
+        );
+    }
+}
+
 /// `FeralPower.cs:60-66`: once Feral is on, `zeroCostAttacksPlayed` only moves
 /// when Feral actually redirects a play. A 0-cost Attack played over budget
 /// does not spend anything, so a second Feral stack (Amount 2) leaves one more

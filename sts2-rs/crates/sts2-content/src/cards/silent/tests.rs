@@ -1199,6 +1199,64 @@ fn well_laid_plans_no_eligible_card_no_prompt() {
     assert!(state.player.retain_this_turn.is_empty());
 }
 
+/// C# `CardSelectCmd.FromHand` returns empty once the combat
+/// `IsOverOrEnding` (CardSelectCmd.cs:699), so a turn end whose last enemy is
+/// already down opens no Well-Laid Plans retain select and does not park the
+/// flush (Silent loadout v0.107.1 seed 1025: Rust suspended on a select that
+/// `request_card_choice` refused to open).
+#[test]
+fn well_laid_plans_no_prompt_once_combat_is_ending() {
+    use sts2_core::combat_loop::{end_player_turn_phase_one, end_player_turn_phase_two};
+    use sts2_core::{CardUid, CombatPhase, StepResult};
+    install_pool();
+    let (mut state, euid) = fresh_state(CardId::WellLaidPlans, 0, 0);
+    state.player.current_hp = 70;
+    state.player.max_hp = 70;
+    let _ = state.init_player_creature();
+    let f = lookup(CardId::WellLaidPlans).expect("registered");
+    assert_eq!(f(&mut state, None), EffectResult::Resolved);
+
+    state.player.play.clear();
+    let card_uid = CardUid(NonZeroU32::new(2).expect("nz"));
+    state.cards.push(Card {
+        uid: card_uid,
+        card_id: CardId::StrikeSilent,
+        cost: 1,
+        card_type: CardType::Attack,
+        target_type: TargetType::Enemy,
+        ..Card::pod_defaults()
+    });
+    state.player.hand.push(card_uid);
+    // The last enemy sits at 2 HP; the turn-end Lightning passive (3) downs
+    // it after the end-turn win check, so combat is ending at the WLP step.
+    if let Some(c) = state.creatures.iter_mut().find(|c| c.id == euid.0) {
+        c.current_hp = 2;
+    }
+    state.player.orbs = sts2_core::orbs::OrbSlots::with_default_capacity();
+    sts2_core::orbs::channel_orb(&mut state, sts2_core::orbs::Orb::lightning());
+
+    state.phase = CombatPhase::PlayerPlayPhase;
+    end_player_turn_phase_one(&mut state);
+    let r2 = end_player_turn_phase_two(&mut state);
+    assert_ne!(
+        r2,
+        StepResult::PendingChoice,
+        "no retain select once ending"
+    );
+    assert_eq!(
+        state
+            .creatures
+            .iter()
+            .find(|c| c.id == euid.0)
+            .map(|c| c.current_hp),
+        Some(0),
+        "the orb zap downed the enemy"
+    );
+    assert!(state.pending_choice.is_none());
+    assert!(!state.pending_wlp_retain_resume, "flush not parked");
+    assert_eq!(state.player.pending_retain_count, 0);
+}
+
 /// Direct plumbing test: a card explicitly flagged in
 /// `retain_this_turn` survives the end-of-turn flush even with no
 /// retain-granting power. Locks the side-table contract used by
@@ -1900,6 +1958,52 @@ fn upgrade_260y4_footwork_and_corrosive_wave_scale() {
     cw.cards[0].upgraded = true;
     let _ = lookup(CardId::CorrosiveWave).expect("registered")(&mut cw, None);
     assert_player_power(&cw, PowerKind::CorrosiveWave, 3);
+}
+
+/// `CorrosiveWavePower.AfterCardDrawn` applies Poison with `cardSource: null`
+/// (CorrosiveWavePower.cs:41), so Unsettling Lamp never doubles it — even when
+/// the draw comes from a resolving card (Prepared). Silent loadout v0.111.0
+/// seed 1015: Rust sourced the Poison to the resolving card (8 vs C# 4).
+#[test]
+fn corrosive_wave_poison_is_cardless_under_unsettling_lamp() {
+    install_pool();
+    crate::relics::dispatch::ensure_installed();
+    let (mut state, euid) = fresh_state(CardId::Prepared, 0, 0);
+    state.game_version = sts2_core::GameVersion::V0_111_0;
+    let _ = state.init_player_creature();
+    let p = state.player.creature_uid.expect("player creature");
+    sts2_core::card_effects::apply_power_to_creature(&mut state, p, PowerKind::CorrosiveWave, 4);
+    state.relics.push(sts2_core::Relic {
+        id: NonZeroU32::new(1).expect("non-zero"),
+        kind: sts2_core::RelicKind::UnsettlingLamp,
+        counter: sts2_core::RelicKind::UnsettlingLamp.initial_counter(),
+        is_wax: false,
+        is_melted: false,
+    });
+    // Prepared (uid 1) is resolving on the Play pile; one card to draw.
+    let draw_uid = sts2_core::CardUid(NonZeroU32::new(2).expect("nz"));
+    state.cards.push(Card {
+        uid: draw_uid,
+        card_id: CardId::StrikeSilent,
+        cost: 1,
+        card_type: CardType::Attack,
+        target_type: TargetType::Enemy,
+        ..Card::pod_defaults()
+    });
+    state.player.draw.push(draw_uid);
+    assert_eq!(state.draw_into_hand_card_effect(1), 1);
+    let poison = state
+        .creatures
+        .iter()
+        .find(|c| c.id == euid.0)
+        .and_then(|c| {
+            c.powers
+                .iter()
+                .filter_map(|u| state.powers.get_by_id(u.0))
+                .find(|pw| pw.kind == PowerKind::Poison)
+                .map(|pw| pw.amount)
+        });
+    assert_eq!(poison, Some(4), "Lamp does not double a cardless apply");
 }
 
 #[test]

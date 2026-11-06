@@ -375,27 +375,31 @@ pub fn deal_damage_from_osty_to_all_alive_enemies(state: &mut CombatState, base:
                 .any(|c| c.id == uid.0 && c.current_hp > 0)
         })
         .collect();
-    // One command across every target (`TargetingAllOpponents`).
+    // One command across every target (`TargetingAllOpponents`), whose hit is
+    // one multi-target `CreatureCmd.Damage(validTargets)` (AttackCommand.cs:654):
+    // every target's HP loss lands before any after-hit hook or kill.
     osty_attack_command(state, |state| {
-        let mut total = 0_i32;
-        for target_uid in targets {
-            let alive = state
-                .creatures
-                .iter()
-                .any(|c| c.id == target_uid.0 && c.current_hp > 0);
-            if !alive {
-                continue;
+        damage::with_deferred_enemy_deaths(state, |state| {
+            let mut total = 0_i32;
+            for target_uid in targets {
+                let alive = state
+                    .creatures
+                    .iter()
+                    .any(|c| c.id == target_uid.0 && c.current_hp > 0);
+                if !alive {
+                    continue;
+                }
+                total = total.saturating_add(damage::apply_damage(
+                    state,
+                    dealer,
+                    target_uid,
+                    base,
+                    ValueProps::MOVE,
+                    card,
+                ));
             }
-            total = total.saturating_add(damage::apply_damage(
-                state,
-                dealer,
-                target_uid,
-                base,
-                ValueProps::MOVE,
-                card,
-            ));
-        }
-        total
+            total
+        })
     })
 }
 
@@ -978,7 +982,7 @@ pub fn apply_power_to_creature_allow_dead(
 /// (`DieForYouPower.cs:35`). So while an Osty carries it, alive or dead, no
 /// corpse receives powers: MonarchsGaze's killing-blow StrengthDown never
 /// lands (Regent full tier seed 5371, Bound Phylactery; GH #1054 item 5).
-fn corpses_can_receive_powers(state: &CombatState) -> bool {
+pub(crate) fn corpses_can_receive_powers(state: &CombatState) -> bool {
     !state.powers.iter().any(|p| p.kind == PowerKind::DieForYou)
 }
 
@@ -2179,6 +2183,37 @@ pub fn request_discard_from_hand(state: &mut CombatState, count: usize) {
 /// the discards.
 pub fn discard_hand_cards_with_hooks(state: &mut CombatState, uids: &[CardUid]) -> i32 {
     discard_and_draw_with_hooks(state, uids, 0)
+}
+
+/// Scrape's tail (Scrape.cs OnPlay): discard the cards its `CardPileCmd.Draw`
+/// returned that are not free. v0.107.1 reads
+/// `EnergyCost.GetWithModifiers(Local) != 0 || CostsX` (Scrape.cs:30), so a
+/// RocketPunch made free until played by a status draw is 0 and stays in hand
+/// (Defect full seed 3042). v0.111.0 reads `GetWithModifiers(All)`
+/// (Scrape.cs:32): the global modifiers count too, and a negative base (an
+/// unplayable Infection / curse, cost -1) returns -1 before any clamp
+/// (CardEnergyCost.cs:101-104), so it is discarded (Defect QX197).
+/// `CardCmd.Discard` fires `AfterCardDiscarded` per card and auto-plays a
+/// discarded Sly card, hence the hooked discard.
+pub fn scrape_discard_drawn(state: &mut CombatState, drawn: &[CardUid]) {
+    let v0111 = state.game_version >= crate::GameVersion::V0_111_0;
+    let to_discard: smallvec::SmallVec<[CardUid; 10]> = drawn
+        .iter()
+        .copied()
+        .filter(|&uid| {
+            let Some(card) = state.cards.get(uid.0.get() as usize - 1) else {
+                return false;
+            };
+            if v0111 {
+                card.is_x_cost()
+                    || card.cost < 0
+                    || hooks::effective_card_cost_inst(state, card, uid) != 0
+            } else {
+                card.is_x_cost() || hooks::local_card_cost(state, card) != 0
+            }
+        })
+        .collect();
+    let _ = discard_and_draw_with_hooks(state, &to_discard, 0);
 }
 
 /// Full C# `CardCmd.DiscardAndDraw` (`MegaCrit.Sts2.Core.Commands/CardCmd.cs:172-205`):
@@ -6848,6 +6883,61 @@ mod tests {
         assert_eq!(state.creatures[2].current_hp, 15);
         // Dead enemy unchanged.
         assert_eq!(state.creatures[3].current_hp, 0);
+    }
+
+    /// C# `CreatureCmd.Damage` over several targets applies every target's HP
+    /// loss before any after-hit hook (CreatureCmd.cs:394-430; v0.107.1
+    /// :359-408). So the Outbreak that the first target's Envenom Poison sets
+    /// off lands after the second target already took the AoE: the second
+    /// target dies to Outbreak, not to the AoE, which kills nothing (Echoing
+    /// Slash does not repeat). Silent loadout v0.107.1 seeds 1000, 1037.
+    #[test]
+    fn aoe_after_hit_hooks_wait_for_every_targets_hp_loss() {
+        let mut state = CombatState {
+            rng: crate::dotnet_rng::Rng::new(0_i32),
+            ..Default::default()
+        };
+        state.player.current_hp = 80;
+        state.player.max_hp = 80;
+        let _player_uid = state.init_player_creature();
+        for (slot, hp) in [(1_u32, 40_i32), (2_u32, 15_i32)] {
+            let id = NonZeroU32::new(slot + 10).expect("non-zero");
+            state.creatures.push(Creature {
+                id,
+                current_hp: hp,
+                max_hp: 40,
+                block: 0,
+                powers: SmallVec::new(),
+                species: Some(MonsterKind::Nibbit),
+                intent: None,
+                intent_history: IntentHistory::default(),
+                monster_id: MonsterId("Nibbit"),
+                ai: None,
+            });
+            state.enemy_uids.push(CreatureUid(id));
+        }
+        // Envenom(1), and Outbreak(11) one Poison short of firing.
+        for (pid, kind, amount, counter) in [
+            (1_u32, PowerKind::Envenom, 1, 0),
+            (2_u32, PowerKind::Outbreak, 11, 2),
+        ] {
+            let pid = NonZeroU32::new(pid).expect("nz");
+            state.powers.push(crate::Power {
+                id: pid,
+                kind,
+                amount,
+                counter,
+                applier: None,
+                skip_next_tick: false,
+            });
+            state.player.powers.push(crate::PowerUid(pid));
+        }
+        let (total, kills) =
+            deal_damage_to_all_alive_enemies_counting_kills(&mut state, 5, ValueProps::MOVE, None);
+        assert_eq!(total, 10, "both targets take the full AoE before Outbreak");
+        assert_eq!(kills, 0, "the second target dies to Outbreak, not the AoE");
+        assert_eq!(state.creatures[1].current_hp, 24, "40 - 5 - 11");
+        assert_eq!(state.creatures[2].current_hp, 0, "15 - 5 - 11");
     }
 
     /// Osty-as-dealer attack path (`FromOsty`): a summoned Osty deals

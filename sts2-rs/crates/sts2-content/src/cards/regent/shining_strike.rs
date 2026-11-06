@@ -6,16 +6,11 @@ use super::prelude::*;
 /// `DamageCmd.Attack` → `PlayerCmd.GainStars(2)` → if not Exhaust,
 /// `CardPileCmd.Add(this, PileType.Draw, Top)`.
 ///
-/// The reinsert is deferred to the play-finish epilogue
-/// (`combat_loop::play_card`, the ShiningStrike branch) rather than run
-/// here: doing it inline removed the card from the Play pile MID-resolve,
-/// which crashed `current_damage` (empty Play pile) the moment the card was
-/// replayed (OneTwoPunch / EchoForm / extra plays) — the replay loop
-/// re-dispatches the handler while the card is expected to still be on the
-/// Play pile. C# reads the card's own `DamageVar` and adds-to-draw once the
-/// `OnPlayWrapper` finishes, so deferring the move to the single
-/// move-out-of-Play step keeps the card resolvable across replays and lands
-/// the same net pile state. Bead `sts2-rs-a649q`.
+/// The reinsert is not done here but by the engine right after this handler
+/// returns, on every play iteration (`combat_loop::shining_strike_on_play_return`,
+/// before `Enchantment.OnPlay`): the engine knows whether the play is a
+/// dupe or force-exhausted (Havoc's `ExhaustOnNextPlay`), which this handler
+/// cannot see. Bead `sts2-rs-a649q`.
 pub(crate) fn play_shining_strike(
     state: &mut CombatState,
     target: Option<CreatureUid>,

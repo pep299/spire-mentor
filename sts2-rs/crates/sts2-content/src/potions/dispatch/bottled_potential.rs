@@ -19,7 +19,6 @@ pub(crate) fn drink_bottled_potential(
     let hand_uids: smallvec::SmallVec<[sts2_core::CardUid; 16]> =
         state.player.hand.drain(..).collect();
     state.player.draw.extend(hand_uids);
-    state.shuffle_draw_pile();
-    let _ = sts2_core::cards::draw_via_state(state, 5);
+    state.shuffle_then_draw(5);
     EffectResult::Resolved
 }

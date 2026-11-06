@@ -755,6 +755,47 @@ fn monarchs_gaze_strength_down_negated_by_enemy_artifact() {
     assert_eq!(enemy_has_power(&state, b, PowerKind::Strength), Some(-1));
 }
 
+/// C# `CreatureCmd.Damage` runs `Hook.AfterDamageGiven` BEFORE
+/// `Hook.AfterDamageReceived` (CreatureCmd.cs:388-395): MonarchsGaze's
+/// StrengthDown lands first, then the Ceremonial Beast's
+/// `PlowPower.AfterDamageReceived` strips the TemporaryStrength family
+/// (StrengthDown included), Strength and Plow — the beast ends with no
+/// powers (loadout Regent v0.107.1 2014; Rust ran received first and left
+/// `[STRENGTH -1, MONARCHS_GAZE_STRENGTH_DOWN 1]`).
+#[test]
+fn plow_break_strips_the_monarchs_gaze_strength_down_of_the_same_hit() {
+    install_pool();
+    let (mut state, e) = fresh_state_with_enemy(160);
+    {
+        let beast = state
+            .creatures
+            .iter_mut()
+            .find(|c| c.id == e.0)
+            .expect("beast");
+        beast.species = Some(MonsterKind::CeremonialBeast);
+        beast.monster_id = MonsterId("CeremonialBeast");
+        let mut ai = crate::monsters::act1_overgrowth::create_ceremonial_beast_ai();
+        ai.set_owner(e);
+        beast.ai = Some(ai);
+    }
+    apply_power_to_enemy(&mut state, e, PowerKind::Plow, 150);
+    apply_power_to_enemy(&mut state, e, PowerKind::Strength, 4);
+    apply_power_to_player(&mut state, PowerKind::MonarchsGaze, 1);
+    let _ = push_play_card(&mut state, CardId::ShiningStrike, 20, 0);
+    let _ = dispatch(&mut state, CardId::ShiningStrike, Some(e));
+    let beast = state.creatures.iter().find(|c| c.id == e.0).expect("beast");
+    assert_eq!(beast.current_hp, 140);
+    assert!(
+        beast.powers.is_empty(),
+        "Plow's break stripped everything, StrengthDown included: {:?}",
+        beast
+            .powers
+            .iter()
+            .filter_map(|p| state.powers.get_by_id(p.0).map(|p| (p.kind, p.amount)))
+            .collect::<Vec<_>>()
+    );
+}
+
 /// GatherLight: block + 1 Star.
 #[test]
 fn gather_light_grants_block_and_one_star() {
@@ -1918,6 +1959,70 @@ fn stardust_x_is_captured_before_the_sealed_throne_star() {
     assert_eq!(state.player.stars, 1, "the Throne star survives the spend");
 }
 
+/// An AUTO-played Stardust captures `LastStarsSpent = Stars` in
+/// `CardCmd.AutoPlay`, before `OnPlayWrapper`'s `BeforeCardPlayed` — so the
+/// star TheSealedThrone grants for the Stardust itself is not in its X. Havoc
+/// (whose own play the Throne pays 1 star for) auto-plays Stardust: 1 star at
+/// capture → 1 hit. Rust stamped after the before-play hooks and hit twice
+/// (loadout Regent v0.107.1 2014: a Mayhem Stardust at 0 stars, C# 0 hits).
+#[test]
+fn auto_played_stardust_x_is_captured_before_the_sealed_throne_star() {
+    install_pool();
+    crate::cards::dispatch::ensure_installed();
+    let (mut state, _enemy) = fresh_state_with_enemy(200);
+    let _ = state.init_player_creature();
+    state.phase = sts2_core::CombatPhase::PlayerPlayPhase;
+    state.player.energy = 3;
+    state.player.stars = 0;
+    apply_power_to_player(&mut state, PowerKind::TheSealedThrone, 1);
+    let _havoc = push_hand_skill(&mut state, CardId::Havoc);
+    let mut stardust =
+        crate::cards::spec_index::card_pod_from_id(CardId::Stardust, false).expect("spec");
+    let raw = u32::try_from(state.cards.len() + 1).expect("fits");
+    stardust.uid = sts2_core::CardUid::new(raw).expect("nz");
+    let base = stardust.base_damage;
+    state.player.draw.push(stardust.uid);
+    state.cards.push(stardust);
+    let hp0 = state.creatures[0].current_hp;
+    let step = sts2_core::combat_loop::play_card(&mut state, 0, None);
+    assert_eq!(step, sts2_core::StepResult::Advanced);
+    assert_eq!(
+        hp0 - state.creatures[0].current_hp,
+        base,
+        "1 hit: the X is the Havoc-paid star"
+    );
+    assert_eq!(
+        state.player.stars, 2,
+        "neither Throne star is spent by the auto-play"
+    );
+}
+
+/// `CardPlayFinishedEntry.WasEthereal` reads the live `Keywords`
+/// (CardPlayFinishedEntry.cs:45) and auto-plays record the entry too, so a
+/// Hexed auto-played Strike counts toward the combat ethereal tally
+/// (PullFromBelow, BansheesCry): Havoc + its Strike = 2. The auto-play tally
+/// read the static keyword only (loadout Necrobinder v0.107.1 2021, 2029).
+#[test]
+fn hexed_auto_played_card_counts_as_an_ethereal_play() {
+    install_pool();
+    crate::cards::dispatch::ensure_installed();
+    let (mut state, _enemy) = fresh_state_with_enemy(200);
+    let _ = state.init_player_creature();
+    state.phase = sts2_core::CombatPhase::PlayerPlayPhase;
+    state.player.energy = 3;
+    apply_power_to_player(&mut state, PowerKind::Hex, 1);
+    let _havoc = push_hand_skill(&mut state, CardId::Havoc);
+    let mut strike =
+        crate::cards::spec_index::card_pod_from_id(CardId::StrikeIronclad, false).expect("spec");
+    let raw = u32::try_from(state.cards.len() + 1).expect("fits");
+    strike.uid = sts2_core::CardUid::new(raw).expect("nz");
+    state.player.draw.push(strike.uid);
+    state.cards.push(strike);
+    let step = sts2_core::combat_loop::play_card(&mut state, 0, None);
+    assert_eq!(step, sts2_core::StepResult::Advanced);
+    assert_eq!(state.combat_log.ethereal_cards_played_this_combat, 2);
+}
+
 /// A Duplication replay resolves Stardust's X again from `LastStarsSpent`,
 /// which stays on the card: 3 stars hit 3 times, twice. Rust cleared the X
 /// after the first play, so the replay spent the 0 stars left and missed
@@ -2782,6 +2887,46 @@ fn dying_star_debuff_negated_by_enemy_artifact() {
     assert_eq!(enemy_has_power(&state, a, PowerKind::Strength), None);
     assert_eq!(enemy_has_power(&state, b, PowerKind::DyingStar), Some(9));
     assert_eq!(enemy_has_power(&state, b, PowerKind::Strength), Some(-9));
+}
+
+/// Unsettling Lamp doubles the `TemporaryStrengthPower` marker, and
+/// `BeforeApplied` drains Strength by that MODIFIED amount
+/// (PowerCmd.cs:129-136, TemporaryStrengthPower.cs:134-136 v0.111.0) — the
+/// Lamp skips the inner Strength itself (UnsettlingLamp.cs:169). DyingStar
+/// and CrushUnder both drained the base (Silent loadout v0.111.0 seed 1007:
+/// DYING_STAR 22 / STRENGTH -22 in C#, -11 in Rust).
+#[test]
+fn temp_strength_down_cards_drain_the_lamp_doubled_amount() {
+    for (card, marker, base) in [
+        (CardId::DyingStar, PowerKind::DyingStar, 9),
+        (CardId::CrushUnder, PowerKind::CrushUnder, 1),
+    ] {
+        install_pool();
+        sts2_core::card_effects::install_default_registry();
+        crate::relics::dispatch::ensure_installed();
+        let (mut state, a, _b) = fresh_state_with_two_enemies(50, 50);
+        crate::cards::dispatch::install_default_registry();
+        state.game_version = sts2_core::GameVersion::V0_111_0;
+        state.relics.push(sts2_core::Relic {
+            id: std::num::NonZeroU32::new(1).expect("non-zero"),
+            kind: sts2_core::RelicKind::UnsettlingLamp,
+            counter: sts2_core::RelicKind::UnsettlingLamp.initial_counter(),
+            is_wax: false,
+            is_melted: false,
+        });
+        let _ = push_play_card(&mut state, card, 6, 0);
+        let _ = dispatch(&mut state, card, None);
+        assert_eq!(
+            enemy_has_power(&state, a, marker),
+            Some(2 * base),
+            "{card:?}"
+        );
+        assert_eq!(
+            enemy_has_power(&state, a, PowerKind::Strength),
+            Some(-2 * base),
+            "{card:?}: drains the landed (doubled) amount"
+        );
+    }
 }
 
 /// `ForegoneConclusion`: 2 `ForegoneConclusion` on player.

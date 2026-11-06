@@ -706,8 +706,8 @@ pub const MANGO_MAX_HP: i32 = 14;
 pub const MEAT_ON_THE_BONE_HP_THRESHOLD_PCT: i32 = 50;
 pub const MEAT_ON_THE_BONE_HEAL: i32 = 12;
 
-/// `Metronome::ORB_THRESHOLD` / `DAMAGE` — every 7 orbs deal 30 `AoE`
-/// (`rare.py::Metronome`).
+/// `Metronome::ORB_THRESHOLD` / `DAMAGE` — the 7th orb channeled in a
+/// combat deals 30 `AoE`, once per combat (C# `Metronome.cs`).
 pub const METRONOME_ORB_THRESHOLD: i32 = 7;
 pub const METRONOME_DAMAGE: i32 = 30;
 

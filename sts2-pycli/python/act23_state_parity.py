@@ -1121,7 +1121,13 @@ def run_one_invincible(
             # 25 max HP and Rust at 1 (Defect:1002, Regent:1007 at v0.107.1).
             # The map step before the event already pinned, so the event and
             # anything it leads to still start from INVINCIBLE_HP.
-            if invincible and cs_snap.phase not in ("combat", "event"):
+            #
+            # Nor inside a fight that is showing a select (``card_select``
+            # phase): a select a kill's ``Hook.AfterDeath`` opened does not
+            # block (HookPlayerChoiceContext), so it can surface mid-combat,
+            # after the next player turn started, where a pin rewrites HP
+            # the fight is still checking (Regent v107 1028).
+            if invincible and cs_snap.phase not in ("combat", "event") and r.combat_state() is None:
                 _pin(g, r, INVINCIBLE_HP)
 
             # Pick a choice; on a both-reject (benign illegal move) drop it and
@@ -1145,6 +1151,8 @@ def run_one_invincible(
                 if cs_err or rs_err:
                     rs_msg = (nxt_rs.get("error") or nxt_rs.get("message")) if rs_err else None
                     cs_msg = nxt_cs.get("message") if cs_err else None
+                    if cs_err and verbose and nxt_cs.get("stack_trace"):
+                        res.trace.append(f"C# stack_trace:\n{nxt_cs['stack_trace']}")
                     res.divergence = Divergence(
                         step,
                         cs_snap.phase,

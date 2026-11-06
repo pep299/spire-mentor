@@ -15,8 +15,9 @@ pub(crate) fn on_after_turn_end_lunar_pastry(state: &mut CombatState, side: Side
     if !player_owns_relic(state, crate::RelicKind::LunarPastry) {
         return EffectResult::NotImplemented;
     }
-    state.player.stars = state.player.stars.saturating_add(1);
-    state.player.stars_gained_this_turn = state.player.stars_gained_this_turn.saturating_add(1);
+    // `PlayerCmd.GainStars` fires `Hook.AfterStarsGained`: Black Hole's burst
+    // (loadout Regent 1020).
+    state.gain_stars(1);
     EffectResult::Resolved
 }
 
