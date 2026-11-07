@@ -1135,3 +1135,26 @@ def test_skip_select_declines_the_optional_sea_glass_grid() -> None:
     assert g.rm.pending_card_grants == 0
     assert view.get("decision") != "card_select"
     assert repr(g.rm.master_deck()) == deck_before
+
+
+def test_set_player_grafts_a_loadout_without_on_obtain_hooks() -> None:
+    g = _new()
+    view = g.set_player(
+        deck=["BASH+1", "ANGER"],
+        relics=["BURNING_BLOOD", "WHETSTONE"],
+        potions=["FIRE_POTION"],
+    )
+    player = view["player"]
+    deck = sorted((c["id"].removeprefix("CARD."), bool(c.get("upgraded"))) for c in player["deck"])
+    assert deck == [("ANGER", False), ("BASH", True)]
+    # Whetstone's on-obtain upgrade would have upgraded Anger.
+    assert len(player["relics"]) == 2
+    assert len(player["potions"]) == 1
+
+
+def test_set_player_rejects_a_bad_id_without_a_partial_loadout() -> None:
+    g = _new()
+    before = g.get_state()["player"]["deck"]
+    with pytest.raises(ValueError, match="unknown relic"):
+        g.set_player(deck=["ANGER"], relics=["NOT_A_RELIC"])
+    assert g.get_state()["player"]["deck"] == before

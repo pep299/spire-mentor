@@ -28,15 +28,15 @@ pub(crate) fn play_dying_star(state: &mut CombatState, _t: Option<CreatureUid>) 
             //
             // C# `DyingStarPower.Type == Debuff`: an Artifact-warded enemy
             // consumes a stack and negates the WHOLE power, so its
-            // `BeforeApplied` silent StrengthPower never lands. Peek for the
-            // Artifact stack before the (consuming) marker apply, and only
-            // fold the internal Strength when the debuff lands — mirrors the
-            // CrushUnder fix. Bead `sts2-rs-crush-under-artifact`.
-            let warded = enemy_has_artifact(state, uid);
-            apply_power_to_enemy(state, uid, PowerKind::DyingStar, strength_loss);
-            if !warded {
-                add_power_to_enemy_signed(state, uid, PowerKind::Strength, -strength_loss);
-            }
+            // `BeforeApplied` silent StrengthPower never lands. Bead
+            // `sts2-rs-crush-under-artifact`. Otherwise it drains the MODIFIED
+            // amount (Unsettling Lamp x2) before the power lands.
+            sts2_core::card_effects::apply_temporary_strength_debuff(
+                state,
+                uid,
+                PowerKind::DyingStar,
+                strength_loss,
+            );
         }
     }
     EffectResult::Resolved

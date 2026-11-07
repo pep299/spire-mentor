@@ -30,14 +30,13 @@ use sts2_core::hooks::{self, BlockCtx, BlockGainedCtx, CreatureRef, ValueProps};
 use sts2_core::powers::PowerKind;
 use sts2_core::relic_effects::{
     register_after_card_played, register_after_player_turn_start, register_after_side_turn_start,
-    register_before_combat_start, register_before_side_turn_start, register_before_turn_end,
-    register_modify_damage_additive, register_modify_damage_multiplicative,
+    register_before_combat_start, register_before_side_turn_start, register_modify_damage_additive,
+    register_modify_damage_multiplicative, register_modify_vulnerable_multiplier,
     register_owned_after_card_entered_combat, register_owned_after_combat_end,
-    register_owned_after_potion_used, register_owned_before_hand_draw,
-    register_owned_modify_vulnerable_multiplier, AfterCardEnteredCombatFn, AfterCardPlayedFn,
-    AfterCombatEndFn, AfterPlayerTurnStartFn, AfterPotionUsedFn, AfterSideTurnStartFn,
-    BeforeCombatStartFn, BeforeHandDrawFn, BeforeSideTurnStartFn, BeforeTurnEndFn, CardEventCtx,
-    ModifyDamageAdditiveFn, ModifyDamageCtx, ModifyDamageMultiplicativeFn,
+    register_owned_after_potion_used, register_owned_before_hand_draw, AfterCardEnteredCombatFn,
+    AfterCardPlayedFn, AfterCombatEndFn, AfterPlayerTurnStartFn, AfterPotionUsedFn,
+    AfterSideTurnStartFn, BeforeCombatStartFn, BeforeHandDrawFn, BeforeSideTurnStartFn,
+    CardEventCtx, ModifyDamageAdditiveFn, ModifyDamageCtx, ModifyDamageMultiplicativeFn,
     ModifyVulnerableMultiplierFn,
 };
 use sts2_core::relics::RelicId;
@@ -302,10 +301,10 @@ pub fn install_pool() {
         RelicId::GoldPlatedCables,
         listener_gold_plated_cables_after_side_turn_start as AfterSideTurnStartFn,
     );
-    register_before_turn_end(
-        RelicId::GoldPlatedCables,
-        listener_gold_plated_cables_before_turn_end as BeforeTurnEndFn,
-    );
+    // The turn-end arm is NOT a `BeforeTurnEnd` listener: C# grants it as
+    // `ModifyOrbPassiveTriggerCounts` inside `OrbQueue.BeforeTurnEnd`, i.e.
+    // after the BeforeTurnEnd hooks and the win check — `orbs::passive_tick`
+    // runs the front orb's extra trigger there (Regent loadout v0.107.1 1036).
     // ReptileTrinket — after the player uses a potion mid-combat, apply
     // a `ReptileTrinketPower(REPTILE_TRINKET_STRENGTH = 3)` (a
     // TemporaryStrengthPower) to the player: +3 Strength now, reverted
@@ -324,9 +323,11 @@ pub fn install_pool() {
     // from `VulnerablePower.ModifyDamageMultiplicative`, so the bonus only
     // lands when the target is actually Vulnerable (1.5 → 1.75). Combat-side
     // `on_trigger_paper_phrog` stays a `resolved_marker`. Bead `sts2-rs-0om8p`.
-    register_owned_modify_vulnerable_multiplier(
+    // Plain (`Always`) registration, not `register_owned_*`: C# reads the
+    // relic through `GetRelic`, which a melted Phrog still answers, and the
+    // owned guard would skip it.
+    register_modify_vulnerable_multiplier(
         RelicId::PaperPhrog,
-        RelicKind::PaperPhrog,
         listener_paper_phrog_vulnerable_multiplier as ModifyVulnerableMultiplierFn,
     );
 }
@@ -340,8 +341,13 @@ pub fn install_pool() {
 /// dealer must be the player (the owner) for the bonus to apply — a
 /// powered player attack against a Vulnerable enemy goes 1.5× → 1.75×.
 /// Returns `0` (no contribution) when any gate fails. Bead `sts2-rs-0om8p`.
+///
+/// C# `VulnerablePower.cs:40` fetches it with `GetRelic<PaperPhrog>()`
+/// (`Player.cs:534-537`, `Relics.FirstOrDefault`), which does not skip a
+/// melted relic: Toy Box's melt only drops it from `IterateHookListeners`
+/// (`CombatState.cs:134`). So the gate is "holds one, melted or not".
 fn listener_paper_phrog_vulnerable_multiplier(state: &CombatState, ctx: &hooks::DamageCtx) -> i32 {
-    if !state.relics.owns(RelicKind::PaperPhrog) {
+    if !state.relics.iter().any(|r| r.kind == RelicKind::PaperPhrog) {
         return 0;
     }
     if !ctx.props.is_powered() {
@@ -1233,10 +1239,7 @@ fn listener_stone_cracker(state: &mut CombatState) -> EffectResult {
         let ia = a.0.get() as usize - 1;
         let ib = b.0.get() as usize - 1;
         let (ca, cb) = (&state.cards[ia], &state.cards[ib]);
-        ca.card_id
-            .to_python_name()
-            .cmp(cb.card_id.to_python_name())
-            .then_with(|| u8::from(ca.upgraded).cmp(&u8::from(cb.upgraded)))
+        sts2_core::cards::card_model_compare(ca, cb)
     };
     state
         .run_rng
@@ -1279,32 +1282,6 @@ fn listener_gold_plated_cables_after_side_turn_start(
         return EffectResult::NotImplemented;
     };
     if !matches!(state.player.orbs.slots[idx], Orb::Plasma) {
-        return EffectResult::NotImplemented;
-    }
-    trigger_first_orb_passive(state);
-    EffectResult::Resolved
-}
-
-/// `GoldPlatedCables::before_turn_end` — on player-side turn end, if
-/// the front-most filled orb is NOT Plasma, re-fire its passive.
-/// Mirrors Python's `_trigger_first_passive_if(plasma=False)` arm —
-/// covers Lightning, Frost, Dark, and Glass via
-/// [`sts2_core::orbs::trigger_first_orb_passive`].
-fn listener_gold_plated_cables_before_turn_end(
-    state: &mut CombatState,
-    side: Side,
-) -> EffectResult {
-    use sts2_core::orbs::{trigger_first_orb_passive, Orb};
-    if side != Side::Player {
-        return EffectResult::NotImplemented;
-    }
-    if !state.relics.owns(RelicKind::GoldPlatedCables) {
-        return EffectResult::NotImplemented;
-    }
-    let Some(idx) = state.player.orbs.slots.iter().position(|o| !o.is_empty()) else {
-        return EffectResult::NotImplemented;
-    };
-    if matches!(state.player.orbs.slots[idx], Orb::Plasma) {
         return EffectResult::NotImplemented;
     }
     trigger_first_orb_passive(state);
@@ -3233,6 +3210,35 @@ mod tests {
         );
     }
 
+    /// **PaperPhrog melted** — C# `VulnerablePower.cs:40` reads the relic
+    /// with `dealer.Player?.GetRelic<PaperPhrog>()`, and `GetRelic`
+    /// (`Player.cs:534-537`) does not skip a melted relic (Toy Box's wax
+    /// melt only drops it from `IterateHookListeners`), so a melted Phrog
+    /// still gives 1.75× (Ironclad-6127 act3#b3 @1106).
+    #[test]
+    fn listener_paper_phrog_applies_while_melted() {
+        use std::num::NonZeroU32;
+        use sts2_core::hooks::{self, DamageCtx};
+        crate::relics::dispatch::ensure_installed();
+        let mut state = CombatState::default();
+        let enemy = paper_phrog_vuln_enemy(&mut state);
+        state.relics.push(sts2_core::Relic {
+            id: NonZeroU32::new(1).expect("non-zero"),
+            kind: RelicKind::PaperPhrog,
+            counter: 0,
+            is_wax: true,
+            is_melted: true,
+        });
+        state.relics.ensure_plan();
+        let ctx = DamageCtx {
+            card_source: None,
+            dealer: CreatureRef::Player,
+            target: enemy,
+            props: ValueProps::MOVE,
+        };
+        assert_eq!(hooks::modify_damage(&state, 6, &ctx), 10);
+    }
+
     /// **PaperPhrog #2** — no bonus on a non-Vulnerable target (the hook
     /// only fires inside the Vulnerable multiplier path).
     #[test]
@@ -3771,9 +3777,11 @@ mod tests {
         assert_eq!(state.player.energy, 0, "no Plasma → no energy");
     }
 
-    /// **GoldPlatedCables #3** — happy path: Lightning front orb on
-    /// player-side turn end deals an extra `3 + focus` to a random
-    /// enemy.
+    /// **GoldPlatedCables #3** — the front Lightning orb triggers TWICE in
+    /// the turn-end orb passives (C# `ModifyOrbPassiveTriggerCounts` inside
+    /// `OrbQueue.BeforeTurnEnd`), and nothing fires on the `BeforeTurnEnd`
+    /// hook bus, which runs before the win check (Regent loadout v0.107.1
+    /// seed 1036: the hook-bus zap read `combat_targets` too early).
     #[test]
     fn gold_plated_cables_lightning_damages_on_player_turn_end() {
         use sts2_core::orbs::Orb;
@@ -3783,27 +3791,46 @@ mod tests {
         gold_plated_cables_setup(&mut state, true);
         let enemy = create_test_enemy(&mut state, 50);
         sts2_core::orbs::channel_orb(&mut state, Orb::Lightning);
+        let hp = |state: &CombatState| {
+            state
+                .creatures
+                .iter()
+                .find(|c| c.id.get() == enemy)
+                .expect("enemy")
+                .current_hp
+        };
         let _ = dispatch_before_turn_end(&mut state, Side::Player);
-        let hp = state
-            .creatures
-            .iter()
-            .find(|c| c.id.get() == enemy)
-            .expect("enemy")
-            .current_hp;
-        assert_eq!(hp, 47, "Lightning re-fire deals 3 damage");
+        assert_eq!(hp(&state), 50, "no zap on the BeforeTurnEnd hook bus");
+        sts2_core::orbs::passive_tick(&mut state);
+        assert_eq!(hp(&state), 44, "front Lightning passive fires twice");
     }
 
-    /// **GoldPlatedCables #4** — Plasma at turn-end is a no-op (the
-    /// `plasma=False` arm filters it out).
+    /// **GoldPlatedCables #3b** — the extra trigger re-reads the orb, so a
+    /// front Dark orb accumulates twice; the second orb gets one trigger.
+    #[test]
+    fn gold_plated_cables_front_dark_accumulates_twice() {
+        use sts2_core::orbs::Orb;
+        crate::relics::dispatch::ensure_installed();
+        let mut state = CombatState::default();
+        state.player.character = Some(sts2_core::potions::CharacterId::Defect);
+        gold_plated_cables_setup(&mut state, true);
+        sts2_core::orbs::channel_orb(&mut state, Orb::Dark { stored: 6 });
+        sts2_core::orbs::channel_orb(&mut state, Orb::Dark { stored: 6 });
+        sts2_core::orbs::passive_tick(&mut state);
+        assert_eq!(state.player.orbs.slots[0], Orb::Dark { stored: 18 });
+        assert_eq!(state.player.orbs.slots[1], Orb::Dark { stored: 12 });
+    }
+
+    /// **GoldPlatedCables #4** — Plasma's turn-end trigger is inert, extra
+    /// trigger or not.
     #[test]
     fn gold_plated_cables_plasma_inert_at_turn_end_arm() {
         use sts2_core::orbs::Orb;
-        use sts2_core::relic_effects::dispatch_before_turn_end;
         crate::relics::dispatch::ensure_installed();
         let mut state = CombatState::default();
         gold_plated_cables_setup(&mut state, true);
         sts2_core::orbs::channel_orb(&mut state, Orb::Plasma);
-        let _ = dispatch_before_turn_end(&mut state, Side::Player);
+        sts2_core::orbs::passive_tick(&mut state);
         assert_eq!(
             state.player.energy, 0,
             "Plasma must NOT fire on the turn-end arm"
@@ -3870,6 +3897,24 @@ mod tests {
 
     /// Test helper: spawn an alive enemy with the given hp + return
     /// its raw uid. Same Creature-construction idiom as `mercury_setup`.
+    /// C# `LetterOpener.BeforeCombatStart` (LetterOpener.cs:89-94) zeroes the
+    /// skill counter a run carries in from the previous combat
+    /// (random-loadout v0.111.0 seed 1110).
+    #[test]
+    fn letter_opener_counter_resets_before_combat_start() {
+        crate::relics::dispatch::ensure_installed();
+        let mut state = CombatState::default();
+        state.relics.push(sts2_core::Relic {
+            id: std::num::NonZeroU32::new(1).expect("non-zero"),
+            kind: RelicKind::LetterOpener,
+            counter: 2,
+            is_wax: false,
+            is_melted: false,
+        });
+        let _ = sts2_core::relic_effects::dispatch_before_combat_start(&mut state);
+        assert_eq!(state.relics[0].counter, 0);
+    }
+
     #[cfg(test)]
     fn create_test_enemy(state: &mut CombatState, hp: i32) -> u32 {
         use smallvec::SmallVec;

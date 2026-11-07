@@ -36,8 +36,8 @@
 //! bead can locate the source listener in one grep.
 
 use sts2_core::card_effects::{
-    apply_power_to_creature, generate_free_attack_in_hand, set_card_var, spawn_card_into_hand,
-    EffectResult,
+    apply_power_to_creature, generate_free_attack_in_hand, set_card_var,
+    spawn_card_into_hand_with_origin, EffectResult,
 };
 use sts2_core::cards::{CardType, VarKey};
 use sts2_core::hooks::CardPlayCountCtx;
@@ -1703,7 +1703,33 @@ fn listener_toasty_mittens(state: &mut CombatState) -> EffectResult {
     // relic gained entering act 2, so the desync first surfaced at the first
     // act-2 combat. Bead `sts2-rs-70anj.1`.
     let skip_innate = state.round_no() == 1;
-    state.exhaust_top_from_draw_skipping_innate(skip_innate);
+    // `await CardPileCmd.ShuffleIfNecessary` (ToastyMittens.cs:35): a
+    // Stratagem pick its `AfterShuffle` opens resolves before the exhaust and
+    // the Strength, so park both on that pick. The `before_hand_draw` walk
+    // suspends behind it and resumes at the next relic.
+    let had_choice = state.pending_choice.is_some();
+    state.shuffle_before_draw_exhaust();
+    if !had_choice {
+        if let Some(pc) = state.pending_choice.as_mut() {
+            if pc.kind == sts2_core::ChoiceKind::AddFromDrawToHand && pc.post_effect.is_none() {
+                pc.post_effect = Some(sts2_core::PostChoiceEffect::ExhaustDrawCardGainStrength {
+                    skip_innate,
+                    strength: TOASTY_MITTENS_STRENGTH,
+                });
+                return EffectResult::Resolved;
+            }
+        }
+    }
+    let draw_was_suspended = state.pending_draw_resume.is_some();
+    state.exhaust_first_draw_card(skip_innate);
+    // `await CardCmd.Exhaust` (ToastyMittens.cs:48) includes a Dark Embrace
+    // draw that reshuffled into a Stratagem pick: the Strength waits for it.
+    if !draw_was_suspended && state.pending_choice.is_some() {
+        if let Some(pdr) = state.pending_draw_resume.as_mut() {
+            pdr.then_gain_strength += TOASTY_MITTENS_STRENGTH;
+            return EffectResult::Resolved;
+        }
+    }
     if let Some(player_uid) = state.player.creature_uid {
         apply_power_to_creature(
             state,
@@ -1893,7 +1919,10 @@ fn listener_burning_sticks(state: &mut CombatState, ctx: &CardEventCtx) -> Effec
     // Re-read the exhausted card POD (Relic mutation above may have
     // invalidated any prior borrow) and clone it into hand.
     let cloned = state.cards[idx];
-    spawn_card_into_hand(state, cloned);
+    // C# `AddGeneratedCardToCombat(card2, Hand, base.Owner)` (BurningSticks.cs:50):
+    // player-created even when the exhaust happens outside a card play (Play
+    // pile empty), so pass `added_by_player = true` explicitly.
+    spawn_card_into_hand_with_origin(state, cloned, true);
     EffectResult::Resolved
 }
 
@@ -1933,7 +1962,13 @@ fn listener_mystic_lighter(state: &CombatState, ctx: &ModifyDamageCtx) -> i32 {
     let Some(player_uid) = state.player.creature_uid else {
         return 0;
     };
-    if ctx.dealer != Some(player_uid) {
+    // C# gates only on `cardSource.Owner != base.Owner` (MysticLighter.cs:
+    // 22-29), never on the dealer, so the player's enchanted card attacking
+    // through the Osty (`FromOsty`) still gets +9 — a Vigorous Rattle hit for
+    // 7 + 8 + 9 = 24 in C# (loadout Necrobinder 1048). A card source on a
+    // player- or Osty-dealt hit is the player's card (MiniatureCannon's gate).
+    if ctx.dealer != Some(player_uid) && ctx.dealer.is_none_or(|d| state.player.pet_uid != Some(d))
+    {
         return 0;
     }
     // C# `MysticLighter.ModifyDamageAdditive` (v0.111.0
@@ -2320,8 +2355,12 @@ fn listener_music_box_card_played(state: &mut CombatState, ctx: &CardEventCtx) -
     };
     relic.counter |= 0b01;
     state.combat_log.music_box_card_being_played = None;
-    let cloned = state.cards[idx];
-    let new_uid = spawn_card_into_hand(state, cloned);
+    // C# `cardPlay.Card.CreateClone()` (MusicBox.cs:77): a new instance, so
+    // no inherited play-history stamp (Ironclad-6161-a0-act2#b0).
+    let cloned = state.cards[idx].create_clone();
+    // C# `AddGeneratedCardToCombat(card, Hand, base.Owner)` (MusicBox.cs:80):
+    // player-created regardless of Play-pile occupancy.
+    let new_uid = spawn_card_into_hand_with_origin(state, cloned, true);
     set_card_var(state, new_uid, VarKey::EtherealThisCombat, 1);
     EffectResult::Resolved
 }
@@ -2939,9 +2978,8 @@ fn listener_scroll_boxes(rs: &mut RunState) -> EffectResult {
 fn push_deck_card(rs: &mut RunState, card_id: sts2_core::cards::CardId) {
     let mut card = sts2_core::cards::Card::pod_defaults();
     card.card_id = card_id;
-    if let Some(spec) = crate::names::deck_card_spec_pool()
-        .into_iter()
-        .find(|s| s.id == card_id)
+    if let Some(spec) =
+        crate::names::find_deck_card_spec(&crate::names::deck_card_spec_pool(), card_id)
     {
         card.card_type = spec.card_type;
         card.cost = spec.cost;
@@ -2980,8 +3018,8 @@ fn enchantable_candidate_card_ids(
     rs.master_deck
         .iter()
         .filter_map(|card| {
-            let spec = pool.iter().find(|s| s.id == card.card_id)?;
-            crate::enchantments::can_enchant_card(spec, card, ench, rs.game_version)
+            let spec = crate::names::find_deck_card_spec(&pool, card.card_id)?;
+            crate::enchantments::can_enchant_card(&spec, card, ench, rs.game_version)
                 .then_some(card.card_id)
         })
         .collect()
@@ -3003,10 +3041,10 @@ fn enchant_eligible_deck_cards(
         if applied >= max_count {
             break;
         }
-        let Some(spec) = pool.iter().find(|s| s.id == card.card_id) else {
+        let Some(spec) = crate::names::find_deck_card_spec(&pool, card.card_id) else {
             continue;
         };
-        if !crate::enchantments::can_enchant_card(spec, card, ench, version) {
+        if !crate::enchantments::can_enchant_card(&spec, card, ench, version) {
             continue;
         }
         let _ = crate::enchantments::apply_static_enchantment(card, ench, amount);
@@ -3311,8 +3349,8 @@ fn beautiful_bracelet_v0111(rs: &mut RunState) {
         .iter()
         .enumerate()
         .filter_map(|(i, card)| {
-            let spec = pool.iter().find(|s| s.id == card.card_id)?;
-            crate::enchantments::can_enchant_card(spec, card, ench, rs.game_version).then_some(i)
+            let spec = crate::names::find_deck_card_spec(&pool, card.card_id)?;
+            crate::enchantments::can_enchant_card(&spec, card, ench, rs.game_version).then_some(i)
         })
         .collect();
     rs.rng.niche.shuffle(&mut eligible);
@@ -3426,7 +3464,10 @@ fn listener_radiant_pearl(state: &mut CombatState, side: Side) -> EffectResult {
     card.base_damage = 0;
     card.base_block = 0;
     card.target_type = sts2_core::cards::TargetType::Self_;
-    let _ = sts2_core::card_effects::spawn_card_into_hand(state, card);
+    // C# `AddGeneratedCardsToCombat(list, Hand, base.Owner)` (RadiantPearl.cs:41)
+    // at turn start, Play pile empty: the play-pile heuristic would read
+    // `false` and skip Arsenal / PillarOfCreation / Smokestack.
+    let _ = sts2_core::card_effects::spawn_card_into_hand_with_origin(state, card, true);
     EffectResult::Resolved
 }
 
@@ -4164,7 +4205,7 @@ fn listener_wing_charm_card_reward(
     let eligible: Vec<usize> = cards
         .iter()
         .enumerate()
-        .filter(|(_, c)| swift_can_enchant(c))
+        .filter(|(_, c)| reward_option_can_enchant(c))
         .map(|(i, _)| i)
         .collect();
     if eligible.is_empty() {
@@ -4175,13 +4216,14 @@ fn listener_wing_charm_card_reward(
     EffectResult::Resolved
 }
 
-/// C# `ModelDb.Enchantment<Swift>().CanEnchant(card)` on a reward slate
-/// card: Swift adds no rule of its own (`Swift.cs`), so this is the base
+/// C# `ModelDb.Enchantment<Swift>().CanEnchant(card)` (and, identically,
+/// `Glam`'s) on a reward slate card: neither Swift nor Glam adds a rule of
+/// its own (`Swift.cs`, `Glam.cs`), so this is the base
 /// `EnchantmentModel.CanEnchant` (`EnchantmentModel.cs:273-294`) — no
 /// Status / Curse / Quest type, and, no enchantment being stackable, no card
 /// that already carries one. Its Unplayable clause only bites for a card
 /// already in the Deck pile, which a reward option is not.
-fn swift_can_enchant(card: &sts2_core::cards::Card) -> bool {
+fn reward_option_can_enchant(card: &sts2_core::cards::Card) -> bool {
     use sts2_core::cards::CardType;
     card.enchantments.is_empty()
         && !matches!(card.card_type, CardType::Status | CardType::Curse)
@@ -4258,7 +4300,10 @@ fn listener_ninja_scroll(state: &mut CombatState, side: Side) -> EffectResult {
         card.base_damage = 4;
         card.base_block = 0;
         card.target_type = sts2_core::cards::TargetType::Enemy;
-        let _ = sts2_core::card_effects::spawn_card_into_hand(state, card);
+        // C# `Shiv.CreateInHand(base.Owner, ..)` → `AddGeneratedCardsToCombat(..,
+        // creator ?? owner)` (NinjaScroll.cs:28, Shiv.cs:103) at turn start,
+        // Play pile empty — player-created, so pass `true` explicitly.
+        let _ = sts2_core::card_effects::spawn_card_into_hand_with_origin(state, card, true);
     }
     EffectResult::Resolved
 }
@@ -4713,7 +4758,8 @@ fn listener_nutritious_soup(rs: &mut RunState) -> EffectResult {
 /// 1605-1621 at pin `01c094d`). Same channel + idiom as FresnelLens
 /// (`Nimble`) and the rare-tier eggs (rarity-specific upgrades).
 /// Listener iterates `cards: &mut Vec<Card>` and calls
-/// `add_enchantment(Glam, 1)` per option. Bead `sts2-rs-5xg1w`.
+/// `add_enchantment(Glam, 1)` per option `glam.CanEnchant` accepts
+/// (`Glitter.cs:18-35`). Bead `sts2-rs-5xg1w`.
 fn listener_glitter_card_reward(
     rs: &mut RunState,
     cards: &mut Vec<sts2_core::cards::Card>,
@@ -4725,7 +4771,10 @@ fn listener_glitter_card_reward(
     if cards.is_empty() {
         return EffectResult::NotImplemented;
     }
-    for card in cards {
+    // `if (glam.CanEnchant(card))` (Glitter.cs:28): an option WingCharm (or
+    // any earlier listener) already enchanted, or a Status / Curse / Quest
+    // card, is skipped.
+    for card in cards.iter_mut().filter(|c| reward_option_can_enchant(c)) {
         card.add_enchantment(EnchantmentId::Glam, 1);
     }
     EffectResult::Resolved
@@ -4739,25 +4788,28 @@ fn listener_glitter_card_reward(
 /// RunState.Rng.CombatPotionGeneration)` + a `PotionCmd.TryToProcure`
 /// loop into the new slots. The roll uses the `combat_potion_generation`
 /// stream to match C#'s `Rng.CombatPotionGeneration` so the cursor stays
-/// faithful. Closes the previously-deferred fill leg (bead
-/// `sts2-rs-cvbxs`): the run-side procure primitives
-/// (`create_random_potions_out_of_combat` + `add_potion_to_belt`) now
-/// exist.
+/// faithful. Each potion is procured into slot `originalSlotCount + i`
+/// (`add_potion_to_belt_at_slot`), so pre-existing empty slots stay
+/// empty.
 fn listener_alchemical_coffer(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::AlchemicalCoffer) {
         return EffectResult::NotImplemented;
     }
+    let original_slot_count = rs.potion_belt_cap();
     rs.gain_potion_slots(ALCHEMICAL_COFFER_POTION_SLOTS);
     let kinds = crate::potions::all::create_random_potions_out_of_combat(
         &mut rs.rng.combat_potion_generation,
         rs.character_id,
         ALCHEMICAL_COFFER_POTION_SLOTS as usize,
     );
-    for kind in kinds {
-        // Direct `PotionCmd.TryToProcure` loop, NOT a reward screen: C#
-        // drops on TooFull with no discard-to-claim offer, so count the
-        // overflow but never queue a swap (GH #252).
-        if !rs.add_potion_to_belt(kind) {
+    for (i, kind) in kinds.into_iter().enumerate() {
+        // Direct `PotionCmd.TryToProcure(potion, owner, originalSlotCount
+        // + i)` loop, NOT a reward screen: each potion goes into its OWN
+        // new slot (earlier empty slots stay empty), and C# drops on
+        // TooFull with no discard-to-claim offer, so count the overflow
+        // but never queue a swap (GH #252).
+        let slot = u8::try_from(original_slot_count + i).unwrap_or(u8::MAX);
+        if !rs.add_potion_to_belt_at_slot(kind, slot) {
             rs.potions_overflow_dropped += 1;
         }
     }
@@ -5994,6 +6046,19 @@ mod tests {
             RelicId::AlchemicalCoffer.to_python_name(),
             "ALCHEMICAL_COFFER"
         );
+    }
+
+    /// C# `AlchemicalCoffer.AfterObtained` procures into slot
+    /// `originalSlotCount + i`, so an empty old slot stays empty (fuzz
+    /// v0.107.1 seed 1123).
+    #[test]
+    fn alchemical_coffer_fills_only_the_new_slots() {
+        let mut rs = RunState::new();
+        assert!(rs.add_potion_to_belt(sts2_core::potions::PotionKind::FirePotion));
+        rs.last_obtained_relic = Some(RelicId::AlchemicalCoffer);
+        assert_eq!(listener_alchemical_coffer(&mut rs), EffectResult::Resolved);
+        assert_eq!(rs.potions.len(), 5);
+        assert_eq!(rs.potion_slot_indices, vec![0, 3, 4, 5, 6]);
     }
 
     /// `CursedPearl` — pins `GOLD = 333` (and the Greed-curse
@@ -9691,6 +9756,123 @@ mod tests {
         assert_eq!(rs.rng.niche.counter(), niche_before + 5);
     }
 
+    /// v0.111.0 `BeautifulBracelet.AfterObtained` (BeautifulBracelet.cs:31-44)
+    /// shuffles EVERY `swift.CanEnchant` deck card on `Rng.Niche`. Abundance
+    /// (v0.111-only, Skill, from the Dowsing quest) passes the base
+    /// `EnchantmentModel.CanEnchant` (EnchantmentModel.cs:273-294), so 6
+    /// Strikes + Abundance is 7 eligible cards = 6 Niche draws. The deck-pool
+    /// lookup used to miss Abundance (V0111_ONLY_SPECS sit outside it) and
+    /// drew 5 (act23 Ironclad 8199/8135, Niche one draw behind).
+    #[test]
+    fn beautiful_bracelet_v0111_counts_v0111_only_deck_cards() {
+        use sts2_core::cards::CardId;
+        use sts2_core::runstate::RunState;
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.game_version = sts2_core::GameVersion::V0_111_0;
+        rs.interactive_card_transform = true;
+        for _ in 0..6 {
+            push_deck_card(&mut rs, CardId::StrikeIronclad);
+        }
+        push_deck_card(&mut rs, CardId::Abundance);
+        assert_eq!(
+            rs.master_deck[6].card_type,
+            sts2_core::cards::CardType::Skill,
+            "push_deck_card must resolve the v0.111-only spec"
+        );
+        let niche_before = rs.rng.niche.counter();
+        rs.relics.push(RelicId::BeautifulBracelet);
+        rs.last_obtained_relic = Some(RelicId::BeautifulBracelet);
+        let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
+        assert_eq!(rs.rng.niche.counter(), niche_before + 6);
+    }
+
+    fn three_strike_slate() -> Vec<sts2_core::cards::Card> {
+        (0..3)
+            .map(|_| {
+                crate::cards::spec_index::card_pod_from_id(
+                    sts2_core::cards::CardId::StrikeIronclad,
+                    false,
+                )
+                .expect("strike pod")
+            })
+            .collect()
+    }
+
+    /// C# `Hook.TryModifyCardRewardOptions` (Hook.cs:1598-1620) walks
+    /// `RunState.IterateHookListeners` — the player's relics in OBTAIN order
+    /// (RunState.cs:148), not `RelicId` order. Glitter obtained before
+    /// WingCharm Glams every option first (Glitter.cs:18-35), so WingCharm's
+    /// `swift.CanEnchant` filter is empty and it returns before
+    /// `Rng.Niche.NextItem` (WingCharm.cs:24-43): no Niche draw, no Swift
+    /// (act23 Ironclad 8180 act3#b3 step 729).
+    #[test]
+    fn card_reward_hooks_run_in_obtain_order_glitter_then_wing_charm() {
+        use sts2_core::cards::EnchantmentId;
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.relics.push(RelicId::Glitter);
+        rs.relics.push(RelicId::WingCharm);
+        let niche_before = rs.rng.niche.counter();
+        let cards = rs.offer_card_reward(three_strike_slate());
+        assert_eq!(
+            rs.rng.niche.counter(),
+            niche_before,
+            "WingCharm found nothing"
+        );
+        for c in &cards {
+            assert_eq!(c.enchantment(EnchantmentId::Glam), 1);
+            assert_eq!(c.enchantment(EnchantmentId::Swift), 0);
+        }
+    }
+
+    /// The other order: WingCharm Swifts one option (one Niche draw), and
+    /// Glitter then skips it — `glam.CanEnchant` refuses a card that already
+    /// carries a (non-stackable) enchantment (EnchantmentModel.cs:289-292).
+    #[test]
+    fn card_reward_hooks_run_in_obtain_order_wing_charm_then_glitter() {
+        use sts2_core::cards::EnchantmentId;
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.relics.push(RelicId::WingCharm);
+        rs.relics.push(RelicId::Glitter);
+        let niche_before = rs.rng.niche.counter();
+        let cards = rs.offer_card_reward(three_strike_slate());
+        assert_eq!(rs.rng.niche.counter(), niche_before + 1);
+        let swift: Vec<_> = cards
+            .iter()
+            .filter(|c| c.enchantment(EnchantmentId::Swift) > 0)
+            .collect();
+        assert_eq!(swift.len(), 1);
+        assert_eq!(
+            swift[0].enchantment(EnchantmentId::Glam),
+            0,
+            "Glitter skips it"
+        );
+        let glam = cards
+            .iter()
+            .filter(|c| c.enchantment(EnchantmentId::Glam) == 1)
+            .count();
+        assert_eq!(glam, 2);
+    }
+
+    /// Glitter's `glam.CanEnchant` gate (Glitter.cs:28): no Glam on a Curse
+    /// or Status option.
+    #[test]
+    fn glitter_skips_cards_glam_cannot_enchant() {
+        use sts2_core::cards::{CardId, EnchantmentId};
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.relics.push(RelicId::Glitter);
+        let slate = vec![
+            crate::cards::spec_index::card_pod_from_id(CardId::StrikeIronclad, false).unwrap(),
+            crate::cards::spec_index::card_pod_from_id(CardId::Wound, false).unwrap(),
+        ];
+        let cards = rs.offer_card_reward(slate);
+        assert_eq!(cards[0].enchantment(EnchantmentId::Glam), 1);
+        assert_eq!(cards[1].enchantment(EnchantmentId::Glam), 0);
+    }
+
     /// Bead `sts2-rs-70anj.4`: RoyalStamp enchants exactly 1 card
     /// (Attack or Skill, per `can_enchant_card`) with
     /// `RoyallyApproved(1)`.
@@ -9915,6 +10097,67 @@ mod tests {
             .count();
         assert_eq!(soot_count, 1, "the reshuffle added one Soot");
         assert_eq!(state.player.hand.len(), 2);
+    }
+
+    /// C# `Hook.AfterShuffle` walks `IterateCombatHookListeners`: the
+    /// player's powers before their relics. So `StratagemPower.AfterShuffle`
+    /// (StratagemPower.cs:17-28) moves its pick to hand, awaiting the select,
+    /// BEFORE `BiiigHug.AfterShuffle` (BiiigHug.cs:30-39) inserts Soot at a
+    /// random depth of the draw pile, now one card shorter. Rust ran Biiig Hug
+    /// first, so the Soot's random slot was rolled over a pile still holding
+    /// the pick (act23 Ironclad 6116 act 2, step 985).
+    #[test]
+    fn stratagem_select_resolves_before_biiig_hug_soot() {
+        use sts2_core::cards::{Card, CardId};
+        use sts2_core::{CardUid, Power, PowerKind, PowerUid};
+        crate::cards::dispatch::ensure_installed();
+        crate::relics::dispatch::ensure_installed();
+        let mut state = sts2_core::CombatState::default();
+        equip_relic(&mut state, RelicKind::BiiigHug);
+        let pid = std::num::NonZeroU32::new(50).expect("nz");
+        state.powers.push(Power::new(pid, PowerKind::Stratagem, 1));
+        state.player.powers.push(PowerUid(pid));
+        for i in 1..=4u32 {
+            let uid = CardUid::new(i).expect("non-zero");
+            state.cards.push(Card {
+                uid,
+                card_id: CardId::StrikeIronclad,
+                ..Card::pod_defaults()
+            });
+            state.player.discard.push(uid);
+        }
+        let soot_in = |s: &sts2_core::CombatState, pile: &[CardUid]| {
+            pile.iter()
+                .filter(|u| s.cards[u.0.get() as usize - 1].card_id == CardId::Soot)
+                .count()
+        };
+        let _ = sts2_core::cards::draw_via_state(&mut state, 2);
+        assert!(state.pending_choice.is_some(), "Stratagem grid opens");
+        assert_eq!(
+            soot_in(&state, &state.player.draw),
+            0,
+            "Biiig Hug waits for the Stratagem pick"
+        );
+        assert_eq!(state.player.draw.len(), 4);
+
+        let counter_before = state.run_rng.shuffle.counter();
+        let _ = sts2_core::apply(
+            &mut state,
+            sts2_core::Action::ResolveChoice {
+                selection: smallvec::smallvec![0],
+            },
+        );
+        assert!(state.pending_choice.is_none());
+        assert!(state.run_rng.shuffle.counter() > counter_before);
+        let all: Vec<CardUid> = state
+            .player
+            .draw
+            .iter()
+            .chain(state.player.hand.iter())
+            .copied()
+            .collect();
+        assert_eq!(soot_in(&state, &all), 1, "one Soot, added after the pick");
+        assert_eq!(state.player.hand.len(), 3, "the pick + the 2 drawn");
     }
 
     /// The Soot POD comes from the pinned status spec, so it carries the
@@ -11021,6 +11264,145 @@ mod tests {
         assert_eq!(strength, TOASTY_MITTENS_STRENGTH);
     }
 
+    /// v0.107.1 `ToastyMittens.BeforeHandDraw` awaits `ShuffleIfNecessary`
+    /// (ToastyMittens.cs:35), and with it a Stratagem pick the reshuffle
+    /// opens, BEFORE it exhausts the top draw card and gains Strength. Rust
+    /// exhausted and granted the Strength under the open pick, so the
+    /// exhausted card was not the one C# exhausts (act23 random-loadout
+    /// Ironclad v0.107.1 seed 1131).
+    #[test]
+    fn listener_toasty_mittens_waits_for_its_shuffle_stratagem_pick() {
+        use sts2_core::cards::{Card, CardId};
+        use sts2_core::relic_effects::dispatch_before_hand_draw_from;
+        use sts2_core::{CardUid, Power, PowerKind, PowerUid};
+        crate::cards::dispatch::ensure_installed();
+        crate::relics::dispatch::ensure_installed();
+        let mut state = CombatState::default();
+        state.player.current_hp = 80;
+        state.round = 2;
+        equip_relic(&mut state, RelicKind::ToastyMittens);
+        if state.player.creature_uid.is_none() {
+            let _ = state.init_player_creature();
+        }
+        let pid = std::num::NonZeroU32::new(50).expect("nz");
+        state.powers.push(Power::new(pid, PowerKind::Stratagem, 1));
+        state.player.powers.push(PowerUid(pid));
+        for i in 1..=4u32 {
+            let uid = CardUid::new(i).expect("non-zero");
+            state.cards.push(Card {
+                uid,
+                card_id: CardId::StrikeIronclad,
+                ..Card::pod_defaults()
+            });
+            state.player.discard.push(uid);
+        }
+
+        let next = dispatch_before_hand_draw_from(&mut state, 0);
+        assert!(next.is_some(), "the walk suspends on the Stratagem pick");
+        assert!(state.pending_choice.is_some());
+        assert!(state.player.exhaust.is_empty(), "no exhaust under the pick");
+        assert_eq!(player_strength(&state), 0, "no Strength under the pick");
+        assert_eq!(state.player.draw.len(), 4);
+
+        let pick = state.pending_choice.as_ref().expect("pick").options[0]
+            .card_uid
+            .expect("uid");
+        let _ = sts2_core::apply(
+            &mut state,
+            sts2_core::Action::ResolveChoice {
+                selection: smallvec::smallvec![0],
+            },
+        );
+        assert_eq!(state.player.hand.as_slice(), &[pick], "the pick in hand");
+        assert_eq!(state.player.exhaust.len(), 1, "then the exhaust");
+        assert_eq!(state.player.draw.len(), 2);
+        assert_eq!(player_strength(&state), TOASTY_MITTENS_STRENGTH);
+    }
+
+    /// Toasty Mittens exhausts the last draw card; Dark Embrace's draw then
+    /// reshuffles and opens the Stratagem pick. C# awaits the pick inside that
+    /// draw, the draw inside the exhaust hook walk (powers, then relics), and
+    /// the exhaust inside Mittens: the pick lands first, then Dark Embrace's
+    /// card, then Joss Paper's, and only then the Strength. Rust ran Joss
+    /// Paper's draw and the Strength under the open pick (random-loadout
+    /// v0.107.1 seed 1016: hand [DEFEND, pick, ...] vs C# [pick, DEFEND, ...]).
+    #[test]
+    fn mittens_dark_embrace_reshuffle_pick_lands_before_the_draw() {
+        use sts2_core::cards::{Card, CardId};
+        use sts2_core::relic_effects::dispatch_before_hand_draw_from;
+        use sts2_core::{CardUid, Power, PowerKind, PowerUid};
+        crate::cards::dispatch::ensure_installed();
+        crate::relics::dispatch::ensure_installed();
+        let mut state = CombatState::default();
+        state.player.current_hp = 80;
+        state.round = 2;
+        equip_relic(&mut state, RelicKind::ToastyMittens);
+        state.relics.push(sts2_core::Relic {
+            id: std::num::NonZeroU32::new(2).expect("nz"),
+            kind: RelicKind::JossPaper,
+            counter: 4,
+            is_wax: false,
+            is_melted: false,
+        });
+        if state.player.creature_uid.is_none() {
+            let _ = state.init_player_creature();
+        }
+        let pid = std::num::NonZeroU32::new(50).expect("nz");
+        state.powers.push(Power::new(pid, PowerKind::Stratagem, 1));
+        state.player.powers.push(PowerUid(pid));
+        crate::cards::ironclad::helpers::apply_power_to_player(
+            &mut state,
+            PowerKind::DarkEmbrace,
+            1,
+        );
+        let ids = [
+            CardId::TrueGrit,
+            CardId::StrikeIronclad,
+            CardId::DefendIronclad,
+            CardId::Bash,
+        ];
+        for (i, id) in ids.iter().enumerate() {
+            let uid = CardUid::new(u32::try_from(i + 1).expect("u32")).expect("non-zero");
+            state.cards.push(Card {
+                uid,
+                card_id: *id,
+                ..Card::pod_defaults()
+            });
+            if i == 0 {
+                state.player.draw.push(uid);
+            } else {
+                state.player.discard.push(uid);
+            }
+        }
+
+        let next = dispatch_before_hand_draw_from(&mut state, 0);
+        assert!(next.is_some(), "the walk suspends on the Stratagem pick");
+        assert!(state.pending_choice.is_some());
+        assert!(state.player.hand.is_empty(), "nothing drawn under the pick");
+        assert_eq!(player_strength(&state), 0, "no Strength under the pick");
+        assert_eq!(
+            state
+                .relics
+                .iter()
+                .find(|r| r.kind == RelicKind::JossPaper)
+                .map(|r| r.counter),
+            Some(4),
+            "Joss Paper waits for Dark Embrace's draw"
+        );
+        let pc = state.pending_choice.as_ref().expect("pick");
+        let pick = pc.options[2].card_uid.expect("uid");
+        let _ = sts2_core::apply(
+            &mut state,
+            sts2_core::Action::ResolveChoice {
+                selection: smallvec::smallvec![2],
+            },
+        );
+        // The pick, then Dark Embrace's draw, then Joss Paper's.
+        assert_eq!(state.player.hand.len(), 3, "hand {:?}", state.player.hand);
+        assert_eq!(state.player.hand[0], pick, "the pick lands first");
+        assert_eq!(player_strength(&state), TOASTY_MITTENS_STRENGTH);
+    }
+
     fn player_strength(state: &CombatState) -> i32 {
         use sts2_core::powers::PowerKind;
         let player_uid = state.player.creature_uid.expect("player uid");
@@ -11518,6 +11900,47 @@ mod tests {
                 "plain copy must get +0 (enchanted_first={enchanted_first})"
             );
         }
+    }
+
+    /// Loadout Necrobinder 1048: an enchanted card's Osty attack (`FromOsty`,
+    /// dealer = the Osty) still gets +9 — C# keys on `cardSource.Owner`,
+    /// not the dealer (MysticLighter.cs:22-29). A foreign dealer gets none.
+    #[test]
+    fn listener_mystic_lighter_applies_to_osty_dealt_hits() {
+        use sts2_core::cards::{Card, CardId, CardType, EnchantmentId};
+        use sts2_core::hooks::ValueProps;
+        use sts2_core::relic_effects::{dispatch_modify_damage_additive, ModifyDamageCtx};
+        use sts2_core::CreatureUid;
+        crate::relics::dispatch::ensure_installed();
+        let mut state = CombatState::default();
+        equip_relic(&mut state, RelicKind::MysticLighter);
+        let mut card = Card {
+            card_id: CardId::Rattle,
+            card_type: CardType::Attack,
+            ..Card::pod_defaults()
+        };
+        card.set_enchantment(EnchantmentId::Vigorous, 8);
+        let card_uid = state.add_card_to_draw_pile(card);
+        let player_uid = state.player.creature_uid.expect("player uid");
+        let osty_uid = CreatureUid::new(77).expect("non-zero");
+        state.player.pet_uid = Some(osty_uid);
+        let ctx = ModifyDamageCtx {
+            dealer: Some(osty_uid),
+            target: player_uid,
+            base_damage: 7,
+            props: ValueProps::MOVE,
+            card: Some(CardId::Rattle),
+            card_uid: Some(card_uid),
+        };
+        assert_eq!(
+            dispatch_modify_damage_additive(&state, &ctx),
+            MYSTIC_LIGHTER_EXTRA_DAMAGE
+        );
+        let foreign = ModifyDamageCtx {
+            dealer: Some(CreatureUid::new(99).expect("non-zero")),
+            ..ctx
+        };
+        assert_eq!(dispatch_modify_damage_additive(&state, &foreign), 0);
     }
 
     #[test]
@@ -14342,6 +14765,39 @@ mod tests {
             state.player.hand.len(),
             hand_now,
             "latched MusicBox must not clone a second Attack"
+        );
+    }
+
+    /// C# `MusicBox.AfterCardPlayed` (MusicBox.cs:73-84) adds a
+    /// `CreateClone()` — a NEW instance, absent from
+    /// `History.CardPlaysFinished`. ThrummingHatchet / Bolas return only a card
+    /// whose OWN play is in that history (ThrummingHatchet.cs:35-40,
+    /// Bolas.cs:41-46), so the clone must not inherit the played card's
+    /// `ReturnIfPlayedRound` stamp (Ironclad-6161-a0-act2#b0 @591: the
+    /// exhausted Ethereal clone came back to hand next turn).
+    #[test]
+    fn music_box_clone_does_not_inherit_return_if_played_stamp() {
+        use sts2_core::cards::{CardType, VarKey};
+        use sts2_core::relic_effects::dispatch_after_card_played;
+        crate::relics::dispatch::ensure_installed();
+        let mut state = CombatState::default();
+        equip_relic(&mut state, RelicKind::MusicBox);
+
+        let ctx = music_box_play_card(&mut state, CardType::Attack);
+        let played = ctx.card_uid.unwrap();
+        state.cards[played.0.get() as usize - 1].set_combat_var(VarKey::ReturnIfPlayedRound, 2);
+        let _ = dispatch_after_card_played(&mut state, &ctx);
+        let clone_uid = *state.player.hand.last().unwrap();
+        assert_ne!(clone_uid, played);
+        assert_eq!(
+            state.cards[clone_uid.0.get() as usize - 1].combat_var(VarKey::ReturnIfPlayedRound),
+            0,
+            "the clone has never been played, so it carries no return stamp"
+        );
+        assert_eq!(
+            state.cards[played.0.get() as usize - 1].combat_var(VarKey::ReturnIfPlayedRound),
+            2,
+            "the played original keeps its stamp"
         );
     }
 

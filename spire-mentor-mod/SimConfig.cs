@@ -187,6 +187,14 @@ public sealed class SimConfig
     public bool Overlay { get; init; } = true;
 
     /// <summary>
+    /// Show "With AI partners" in the multiplayer host menu (SimAiPartnerMenu;
+    /// docs/plans/2026-11-05-ai-coop-partners.md). Off by default while the
+    /// feature is experimental (no save / continue, no human teammate next
+    /// to the AI yet); `--spire-mentor-ai-partners N` shows it too.
+    /// </summary>
+    public bool AiPartnersMenu { get; init; } = false;
+
+    /// <summary>
     /// Mod-side stall limit, in seconds, replacing the game's hard-coded
     /// 30-second AutoSlay watchdog fuse (AutoSlayConfig.watchdogTimeout is
     /// static readonly — not patchable). A keep-alive loop feeds the game's
@@ -326,6 +334,7 @@ public sealed class SimConfig
                 ClientRunConfig = ReadBool(root, "client_run_config", defaults.ClientRunConfig),
                 DebugPlayerHp = ReadInt(root, "debug_player_hp", defaults.DebugPlayerHp),
                 Overlay = ReadBool(root, "overlay", defaults.Overlay),
+                AiPartnersMenu = ReadBool(root, "ai_partners_menu", defaults.AiPartnersMenu),
                 StallTimeoutSeconds = ReadInt(
                     root, "stall_timeout_seconds", defaults.StallTimeoutSeconds),
                 ThinkFps = ReadInt(root, "think_fps", defaults.ThinkFps),

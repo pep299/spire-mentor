@@ -1358,17 +1358,20 @@ mod tests {
     /// was a Python-pin fabrication — C# `Pendulum.cs` fires on the
     /// player-turn-start channel, NOT per shuffle. Seed 3 cards, dispatch
     /// three player-turn starts: no draw on turns 1-2, exactly 1 on turn 3.
+    /// v0.107.1 registers it on the relic `AfterPlayerTurnStart` walk, not on
+    /// `AfterSideTurnStart` (which is skipped once a turn-start kill ends the
+    /// combat, while C# still ticks `TurnsSeen`).
     #[test]
     fn pendulum_draws_every_third_player_turn_start() {
         use std::num::NonZeroU32;
         use sts2_core::cards::{Card, CardId, CardType, TargetType};
-        use sts2_core::relic_effects::dispatch_after_side_turn_start;
-        use sts2_core::{CardUid, CombatState, Relic, RelicKind, Side};
+        use sts2_core::relic_effects::dispatch_after_player_turn_start;
+        use sts2_core::{CardUid, CombatState, Relic, RelicKind};
 
         crate::relics::dispatch::ensure_installed();
         assert!(
-            sts2_core::relic_effects::lookup_after_side_turn_start(RelicId::Pendulum).is_some(),
-            "Pendulum listener must register on after_side_turn_start channel"
+            sts2_core::relic_effects::lookup_after_side_turn_start(RelicId::Pendulum).is_none(),
+            "v0.107.1 Pendulum must not tick on after_side_turn_start"
         );
 
         let mut state = CombatState::default();
@@ -1403,12 +1406,12 @@ mod tests {
         });
 
         // Turns 1 and 2: no draw.
-        let _ = dispatch_after_side_turn_start(&mut state, Side::Player);
+        let _ = dispatch_after_player_turn_start(&mut state);
         assert_eq!(state.player.hand.len(), 0, "no draw on turn 1");
-        let _ = dispatch_after_side_turn_start(&mut state, Side::Player);
+        let _ = dispatch_after_player_turn_start(&mut state);
         assert_eq!(state.player.hand.len(), 0, "no draw on turn 2");
         // Turn 3: draw exactly 1.
-        let _ = dispatch_after_side_turn_start(&mut state, Side::Player);
+        let _ = dispatch_after_player_turn_start(&mut state);
         assert_eq!(
             state.player.hand.len(),
             1,
@@ -1426,7 +1429,9 @@ mod tests {
     fn pendulum_turn_start_owner_gated_and_enemy_side_noop() {
         use std::num::NonZeroU32;
         use sts2_core::cards::{Card, CardId, CardType, TargetType};
-        use sts2_core::relic_effects::dispatch_after_side_turn_start;
+        use sts2_core::relic_effects::{
+            dispatch_after_player_turn_start, dispatch_after_side_turn_start,
+        };
         use sts2_core::{CardUid, CombatState, Relic, RelicKind, Side};
 
         crate::relics::dispatch::ensure_installed();
@@ -1451,7 +1456,7 @@ mod tests {
         });
         state.player.draw.push(uid);
         for _ in 0..3 {
-            let _ = dispatch_after_side_turn_start(&mut state, Side::Player);
+            let _ = dispatch_after_player_turn_start(&mut state);
         }
         assert_eq!(
             state.player.hand.len(),
@@ -1467,13 +1472,15 @@ mod tests {
             is_wax: false,
             is_melted: false,
         });
-        for _ in 0..3 {
-            let _ = dispatch_after_side_turn_start(&mut state, Side::Enemy);
+        for side in [Side::Enemy, Side::Player] {
+            for _ in 0..3 {
+                let _ = dispatch_after_side_turn_start(&mut state, side);
+            }
         }
         assert_eq!(
             state.player.hand.len(),
             0,
-            "enemy-side turn starts never advance Pendulum"
+            "side turn starts never advance Pendulum"
         );
     }
 

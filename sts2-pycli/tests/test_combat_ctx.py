@@ -593,7 +593,7 @@ def test_relic_counters_are_the_displayed_numbers() -> None:
         ("PEN_NIB", None): 0,  # the wire omits a zero counter; C# shows 0
         ("NUNCHAKU", 23): 3,
         ("HAPPY_FLOWER", 7): 1,
-        ("PENDULUM", 9): 0,
+        ("PENDULUM", 2): 2,  # the engine stores TurnsSeen % 3, like C#
         ("POLLINOUS_CORE", 4): 0,  # reset by the turn-4 hand draw
         ("SHURIKEN", 5): 2,
         ("SWORD_OF_STONE", 5): 0,  # 5 elites left = 0 defeated
@@ -624,6 +624,7 @@ def test_relic_counters_lie_in_the_displayed_range() -> None:
     fight = {**FIGHT, "relics": relics, "encounter": "THE_KIN_BOSS", "room_type": "boss",
              "hp_before": 80, "deck": [*FIGHT["deck"], "SHRUG_IT_OFF", "TRUE_GRIT"]}  # fmt: skip
     out_of_range: set[str] = set()
+    pendulum_counters: set[int] = set()
     n = 0
     for seed in (7, 8):
         cs = rollout_starts.build_fight(fight, seed).combat_state()
@@ -639,6 +640,8 @@ def test_relic_counters_lie_in_the_displayed_range() -> None:
                     out_of_range.add(r["id"])
                 if r["id"] == "POCKETWATCH" and r.get("counter", 0) > 0xFF:
                     out_of_range.add(r["id"])
+                if r["id"] == "PENDULUM":
+                    pendulum_counters.add(r.get("counter", 0))
             for r in honest_snapshot(bv, "boss")["relics"]:
                 if "counter" in r:
                     hi = DISPLAY_MAX[r["id"]]
@@ -648,7 +651,11 @@ def test_relic_counters_lie_in_the_displayed_range() -> None:
             pick = plays if plays and rng.random() < 0.85 else acts
             cs.apply(pick[rng.randrange(len(pick))])
     assert n > 0
-    assert {"POCKETWATCH", "HAPPY_FLOWER", "PENDULUM"} <= out_of_range
+    assert {"POCKETWATCH", "HAPPY_FLOWER"} <= out_of_range
+    # Pendulum's engine counter IS C#'s TurnsSeen (wrapped at 3 on every tick,
+    # both builds), so its raw counter must stay in range and cycle through it.
+    assert "PENDULUM" not in out_of_range
+    assert pendulum_counters == {0, 1, 2}
 
 
 def test_card_type_agrees_with_rl2_features() -> None:

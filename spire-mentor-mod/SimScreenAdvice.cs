@@ -1517,6 +1517,13 @@ internal static class SimScreenAdvice
         {
             return null;
         }
+        // The reward we opened is up: from here on, coming back unclaimed
+        // means it was declined (see ShownCardRewards).
+        if (_openedCardReward != null)
+        {
+            ShownCardRewards.Add(_openedCardReward);
+            _openedCardReward = null;
+        }
 
         var cards = new List<Dictionary<string, object?>>();
         var labels = new List<string>();
@@ -1846,6 +1853,17 @@ internal static class SimScreenAdvice
     /// </summary>
     private static readonly HashSet<object> SkippedCardRewards = new(ReferenceEqualityComparer.Instance);
 
+    /// <summary>
+    /// Card rewards we opened whose screen then actually came up. One still
+    /// on the loot screen afterwards was declined, whoever declined it: the
+    /// player skipping it by hand leaves no trace in SkippedCardRewards, and
+    /// autobattle (Autobattle.cs) -- which claims the loot itself but hands
+    /// the card pick to the player -- would otherwise open it straight back,
+    /// forever. A click the game dropped never shows the screen, so it is
+    /// still retried. Same identity rules as SkippedCardRewards.
+    /// </summary>
+    private static readonly HashSet<object> ShownCardRewards = new(ReferenceEqualityComparer.Instance);
+
     /// <summary>The card reward whose screen we most recently opened, so a
     /// skip on that screen can be attributed back to it.</summary>
     private static object? _openedCardReward;
@@ -1861,7 +1879,7 @@ internal static class SimScreenAdvice
         return UiHelper.FindAll<NRewardButton>(screen)
             .Where(b => GodotObject.IsInstanceValid(b) && b.IsEnabled)
             .Where(b => b.Reward is not PotionReward pr || (me != null && SimPotionRules.CanProcure(me, pr.Potion)))
-            .Where(b => b.Reward == null || !SkippedCardRewards.Contains(b.Reward))
+            .Where(b => b.Reward == null || !(SkippedCardRewards.Contains(b.Reward) || ShownCardRewards.Contains(b.Reward)))
             .ToList();
     }
 

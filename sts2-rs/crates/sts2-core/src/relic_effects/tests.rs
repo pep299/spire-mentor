@@ -2956,6 +2956,34 @@ fn bone_flute_fires_when_dealer_is_osty() {
     assert_eq!(state.player.block, 2, "the latch is consumed");
 }
 
+/// C# `AttackCommand.Execute` runs `Hook.AfterAttack` after its hit loop even
+/// when no hit lands (a dead target breaks the loop, AttackCommand.cs:551-673),
+/// so each Osty command owes `BoneFlute.AfterAttack`'s +2: a replayed Unleash
+/// whose first play killed its target (loadout Necrobinder 1038-v0.111.0: C# 3
+/// procs, Rust 1), a Bone Shards into a lone reviving corpse (1192-v0.111.0).
+#[test]
+#[serial_test::serial(global_registry)]
+fn bone_flute_grants_for_an_osty_attack_that_hits_nothing() {
+    ensure_installed();
+    let mut state = fresh_state_with_player(70, 70);
+    give_player_relic(&mut state, RelicKind::BoneFlute);
+    let _ = state.summon_osty(1);
+    let corpse = state.spawn_enemy(crate::MonsterKind::Nibbit);
+    if let Some(c) = state.creatures.iter_mut().find(|c| c.id == corpse.0) {
+        c.current_hp = 0;
+    }
+
+    let dealt = crate::card_effects::deal_damage_from_osty_to_enemy(&mut state, corpse, 6);
+    assert_eq!(dealt, 0);
+    crate::hooks::grant_latched_skittish(&mut state);
+    assert_eq!(state.player.block, 2, "single-target command on a corpse");
+
+    let dealt = crate::card_effects::deal_damage_from_osty_to_all_alive_enemies(&mut state, 9);
+    assert_eq!(dealt, 0);
+    crate::hooks::grant_latched_skittish(&mut state);
+    assert_eq!(state.player.block, 4, "AoE command with no live target");
+}
+
 #[test]
 #[serial_test::serial(global_registry)]
 fn bone_flute_does_not_fire_when_dealer_is_not_osty() {
@@ -4800,6 +4828,38 @@ fn br_ctx(target: CreatureUid) -> ModifyHpLostCtx {
         target,
         dealer: None,
         props: crate::hooks::ValueProps::NONE,
+    }
+}
+
+/// C# `Hook.ModifyHpLost` (`Hook.cs:1870-1905`, same in v0.107.1) folds
+/// `ModifyHpLostAfterOsty` over `IterateHookListeners`, i.e. in the order the
+/// relics were obtained. Tungsten Rod's `-1` and Beating Remnant's cap do not
+/// commute: with 11 already lost this turn, a 12 hit loses `min(11, 9) = 9`
+/// when Rod came first and `min(12, 9) - 1 = 8` when Remnant came first
+/// (Ironclad:6084 @924, Ironclad:6156 @626 had Rod first and lost 9).
+#[test]
+#[serial_test::serial(global_registry)]
+fn modify_hp_lost_folds_in_relic_obtain_order() {
+    ensure_installed();
+    for (first, second, expect) in [
+        (RelicKind::TungstenRod, RelicKind::BeatingRemnant, 9),
+        (RelicKind::BeatingRemnant, RelicKind::TungstenRod, 8),
+    ] {
+        for planned in [false, true] {
+            let mut state = fresh_state_with_player(100, 100);
+            give_player_relic(&mut state, first);
+            give_player_relic(&mut state, second);
+            set_beating_remnant_counter(&mut state, 11);
+            if planned {
+                state.relics.ensure_plan();
+            }
+            let player_uid = state.player.creature_uid.unwrap();
+            assert_eq!(
+                dispatch_modify_hp_lost(&state, &br_ctx(player_uid), 12),
+                expect,
+                "{first:?} before {second:?}, planned={planned}"
+            );
+        }
     }
 }
 
@@ -6822,6 +6882,78 @@ fn unsettling_lamp_ignores_a_potions_debuff_and_keeps_its_trigger() {
     );
 }
 
+/// C# `ReaperFormPower.AfterDamageGiven` (`ReaperFormPower.cs:57-64`, same
+/// in v0.107.1) applies its Doom with `cardSource: null`, and
+/// `UnsettlingLamp.BeforePowerAmountChanged` returns on a null card, so the
+/// Doom a card's hit triggers is neither captured nor doubled
+/// (Ironclad-6030 act2#b0 @764: Anger with Reaper Form 1 gave Doom 6 in C#,
+/// Rust captured it and gave 12).
+#[test]
+#[serial_test::serial(global_registry)]
+fn unsettling_lamp_ignores_reaper_form_doom_during_a_card() {
+    use std::num::NonZeroU32;
+    ensure_installed();
+    register_before_power_amount_changed(
+        RelicId::UnsettlingLamp,
+        on_before_power_amount_changed_unsettling_lamp as BeforePowerAmountChangedFn,
+    );
+    register_modify_power_amount_given(
+        RelicId::UnsettlingLamp,
+        on_modify_power_amount_given_unsettling_lamp as ModifyPowerAmountGivenFn,
+    );
+    let mut state = CombatState::default();
+    let player_uid = CreatureUid::new(1).unwrap();
+    let enemy_uid = CreatureUid::new(2).unwrap();
+    for (uid, hp) in [(player_uid, 80_i32), (enemy_uid, 50)] {
+        state.creatures.push(crate::Creature {
+            id: uid.0,
+            current_hp: hp,
+            max_hp: hp,
+            block: 0,
+            powers: smallvec::SmallVec::new(),
+            species: None,
+            intent: None,
+            intent_history: crate::IntentHistory::default(),
+            monster_id: crate::MonsterId(""),
+            ai: None,
+        });
+    }
+    state.player.creature_uid = Some(player_uid);
+    state.enemy_uids.push(enemy_uid);
+    state.relics.push(crate::Relic {
+        id: NonZeroU32::new(1).unwrap(),
+        kind: crate::RelicKind::UnsettlingLamp,
+        counter: UNSETTLING_LAMP_ARMED,
+        is_wax: false,
+        is_melted: false,
+    });
+    crate::card_effects::apply_power_to_creature(
+        &mut state,
+        player_uid,
+        crate::PowerKind::ReaperForm,
+        1,
+    );
+    let _resolving = push_resolving_card(&mut state);
+    let _ = crate::damage::apply_damage(
+        &mut state,
+        crate::hooks::CreatureRef::Player,
+        enemy_uid,
+        6,
+        crate::hooks::ValueProps::MOVE,
+        None,
+    );
+    assert_eq!(
+        enemy_power_amount(&state, enemy_uid, crate::PowerKind::Doom),
+        6,
+        "Reaper Form's cardless Doom is not doubled"
+    );
+    assert_eq!(
+        unsettling_lamp_state(&state),
+        Some(UNSETTLING_LAMP_ARMED),
+        "and does not spend the lamp's trigger"
+    );
+}
+
 /// Put a card on the play pile so power applications read as card-driven.
 ///
 /// GH #365: UnsettlingLamp is gated on C#'s `cardSource` argument, which Rust
@@ -7100,11 +7232,82 @@ fn unsettling_lamp_doubles_first_card_debuffs_then_finishes() {
     );
 }
 
+/// v0.107.1 `PowerCmd.Apply` fires `BeforePowerAmountChanged` BEFORE
+/// Artifact's `ModifyPowerAmountReceived` negation, and the v0.107.1 lamp has
+/// no Artifact gate — so an Artifact-eaten debuff from a card still CAPTURES
+/// the trigger, and that card's later debuffs are doubled. Rust consumed
+/// Artifact ahead of the Before channel, so the lamp never saw the eaten
+/// debuff (random-loadout fuzz v0.107.1 seed 1178: enemy HP 178 vs 176).
+#[test]
+#[serial_test::serial(global_registry)]
+fn unsettling_lamp_captures_an_artifact_eaten_debuff_v0107() {
+    use std::num::NonZeroU32;
+    ensure_installed();
+    register_before_power_amount_changed(
+        RelicId::UnsettlingLamp,
+        on_before_power_amount_changed_unsettling_lamp as BeforePowerAmountChangedFn,
+    );
+    register_modify_power_amount_given(
+        RelicId::UnsettlingLamp,
+        on_modify_power_amount_given_unsettling_lamp as ModifyPowerAmountGivenFn,
+    );
+    let mut state = CombatState {
+        game_version: crate::GameVersion::V0_107_1,
+        ..CombatState::default()
+    };
+    let player_uid = CreatureUid::new(1).unwrap();
+    let enemy = CreatureUid::new(2).unwrap();
+    for (uid, hp) in [(player_uid, 80_i32), (enemy, 50)] {
+        state.creatures.push(crate::Creature {
+            id: uid.0,
+            current_hp: hp,
+            max_hp: hp,
+            block: 0,
+            powers: smallvec::SmallVec::new(),
+            species: None,
+            intent: None,
+            intent_history: crate::IntentHistory::default(),
+            monster_id: crate::MonsterId(""),
+            ai: None,
+        });
+    }
+    state.player.creature_uid = Some(player_uid);
+    state.relics.push(crate::Relic {
+        id: NonZeroU32::new(1).unwrap(),
+        kind: crate::RelicKind::UnsettlingLamp,
+        counter: UNSETTLING_LAMP_ARMED,
+        is_wax: false,
+        is_melted: false,
+    });
+    crate::card_effects::apply_power_to_creature(&mut state, enemy, crate::PowerKind::Artifact, 1);
+    let _resolving = push_resolving_card(&mut state);
+    crate::card_effects::apply_power_to_enemy(&mut state, enemy, crate::PowerKind::Vulnerable, 2);
+    assert_eq!(
+        enemy_power_amount(&state, enemy, crate::PowerKind::Vulnerable),
+        0,
+        "Artifact still eats the debuff"
+    );
+    assert_eq!(
+        enemy_power_amount(&state, enemy, crate::PowerKind::Artifact),
+        0,
+        "and is consumed"
+    );
+    assert_eq!(
+        unsettling_lamp_state(&state),
+        Some(UNSETTLING_LAMP_CAPTURED),
+        "but the lamp captured it first"
+    );
+    crate::card_effects::apply_power_to_enemy(&mut state, enemy, crate::PowerKind::Weak, 1);
+    assert_eq!(
+        enemy_power_amount(&state, enemy, crate::PowerKind::Weak),
+        2,
+        "the same card's next debuff is doubled"
+    );
+}
+
 /// v0.111.0 `UnsettlingLamp.BeforePowerAmountChanged` skips a target with
-/// Artifact (decomp UnsettlingLamp.cs:102). The Rust apply pipeline already
-/// consumes Artifact before the observer channel fires, so an Artifact-eaten
-/// debuff never reaches the lamp in either build: the next debuff is the one
-/// captured and doubled. Pinned under v0.111.0, where it is the C# rule.
+/// Artifact (decomp UnsettlingLamp.cs:102), so an Artifact-eaten debuff is
+/// not captured there: the next debuff is the one captured and doubled.
 #[test]
 #[serial_test::serial(global_registry)]
 fn unsettling_lamp_doubles_first_card_debuffs_then_finishes_v0111() {
@@ -7232,12 +7435,14 @@ fn unsettling_lamp_ignores_non_debuff_powers() {
 }
 
 /// Bead `sts2-rs-s5ia` — Metronome via `dispatch_on_orb_channeled`.
-/// Asserts the counter increments on each channel call, trips at
-/// 7 (resets to 0 and deals 30 unpowered AoE), and re-arms at
-/// after_combat_end.
+/// C# `Metronome.AfterOrbChanneled` fires on `OrbsChanneled == 7`
+/// exactly and only resets at `AfterRoomEntered`/`AfterCombatEnd`, so it
+/// trips ONCE per combat (30 unpowered AoE) and re-arms at
+/// after_combat_end (Defect random-loadout v0.107.1 seeds 1011/1022: Rust
+/// re-fired at the 14th orb).
 #[test]
 #[serial_test::serial(global_registry)]
-fn metronome_trips_every_seven_orbs_and_resets() {
+fn metronome_trips_once_per_combat_at_seven_orbs() {
     use std::num::NonZeroU32;
     ensure_installed();
     // Defensive re-registration against parallel-test pollution.
@@ -7295,12 +7500,12 @@ fn metronome_trips_every_seven_orbs_and_resets() {
     );
     assert_eq!(enemy_current_hp(&state, enemy_b), 100);
 
-    // 7th channel: trips → counter resets to 0, 30 dmg to each enemy.
+    // 7th channel: trips → 30 dmg to each enemy; the count parks at 7.
     let _ = dispatch_on_orb_channeled(&mut state, &orb_ctx);
     assert_eq!(
         metronome_counter(&state),
-        0,
-        "7th orb trips the threshold and resets counter"
+        7,
+        "7th orb trips the threshold; no mid-combat reset"
     );
     assert_eq!(
         enemy_current_hp(&state, enemy_a),
@@ -7313,11 +7518,16 @@ fn metronome_trips_every_seven_orbs_and_resets() {
         "enemy_b takes 30 unpowered damage on trip (AoE)"
     );
 
-    // Build up to 6 again without tripping.
-    for _ in 0..6 {
+    // Seven more orbs this combat: no second trip.
+    for _ in 0..7 {
         let _ = dispatch_on_orb_channeled(&mut state, &orb_ctx);
     }
-    assert_eq!(metronome_counter(&state), 6);
+    assert_eq!(metronome_counter(&state), 7);
+    assert_eq!(
+        enemy_current_hp(&state, enemy_a),
+        70,
+        "Metronome fires once per combat, not every 7 orbs"
+    );
 
     // after_combat_end resets counter; next combat starts clean.
     let _ = dispatch_after_combat_end(&mut state);
@@ -8332,6 +8542,61 @@ fn emotion_chip_triggers_passive_on_prior_hp_loss() {
         .find(|r| r.kind == RelicKind::EmotionChip)
         .map_or(-1, |r| r.counter);
     assert_eq!(counter, 0, "counter must reset after firing");
+}
+
+fn emotion_chip_counter_after_hit(block: i32, buffer: bool, damage: i32) -> i32 {
+    ensure_installed();
+    let mut state = fresh_state_with_player(80, 80);
+    give_player_relic(&mut state, RelicKind::EmotionChip);
+    state.player.block = block;
+    if buffer {
+        state.powers.push(crate::Power {
+            id: NonZeroU32::new(9001).unwrap(),
+            kind: crate::PowerKind::Buffer,
+            amount: 1,
+            counter: 0,
+            applier: None,
+            skip_next_tick: false,
+        });
+        state
+            .player
+            .powers
+            .push(crate::PowerUid(NonZeroU32::new(9001).unwrap()));
+    }
+    let _ = crate::combat_loop::apply_damage_to_player(
+        &mut state,
+        crate::hooks::CreatureRef::Nobody,
+        damage,
+        crate::hooks::ValueProps::NONE,
+        None,
+    );
+    state
+        .relics
+        .iter()
+        .find(|r| r.kind == RelicKind::EmotionChip)
+        .map_or(-1, |r| r.counter)
+}
+
+/// C# `LostHpInPreviousTurn` keys on a `DamageReceivedEntry` that was not
+/// `WasFullyBlocked` (EmotionChip.cs:14): an unblocked hit Buffer zeroes still
+/// arms it, a hit block fully absorbs does not, and a killing blow does
+/// (loadout Defect v0.107.1 2033).
+#[test]
+#[serial_test::serial(global_registry)]
+fn emotion_chip_arms_on_a_not_fully_blocked_hit_not_on_hp_loss() {
+    assert!(
+        emotion_chip_counter_after_hit(0, true, 6) > 0,
+        "Buffer-zeroed hit at 0 block arms EmotionChip"
+    );
+    assert_eq!(
+        emotion_chip_counter_after_hit(10, false, 6),
+        0,
+        "a hit fully absorbed by block does not arm it"
+    );
+    assert!(
+        emotion_chip_counter_after_hit(0, false, 200) > 0,
+        "a killing blow still records its damage entry"
+    );
 }
 
 /// EmotionChip armed (HP lost last turn) with Gold-Plated Cables and the given
@@ -9503,7 +9768,7 @@ fn bookmark_reduces_one_retained_card_cost() {
         state.cards.iter_mut().find(|c| c.uid == uid).unwrap().cost = 2;
         state.player.hand.push(uid);
     }
-    let _ = dispatch_after_turn_end(&mut state, Side::Player);
+    after_flush_bookmark(&mut state);
     // Local cost (`GetWithModifiers(Local)`): printed cost minus the
     // until-played bank. (`effective_card_cost` indexes `cards` by uid, which
     // these sparse test uids do not satisfy.)
@@ -9534,8 +9799,85 @@ fn bookmark_reduces_one_retained_card_cost() {
     assert_eq!(local(&state, reduced), 2);
 }
 
+/// C# `Hook.AfterFlush` (Bookmark) runs before `EndOfTurnCleanup`
+/// (CombatManager.cs:1347-1349): a retained card that is free this turn still
+/// has local cost 0, so it is not eligible, and Bookmark does not roll. Rust
+/// ran it as an `AfterTurnEnd` relic after the cleanup had cleared
+/// FreeThisTurn (loadout Necrobinder v0.107.1 2032).
+#[test]
+#[serial_test::serial(global_registry)]
+fn bookmark_runs_before_the_turn_cleanup_clears_free_this_turn() {
+    ensure_installed();
+    let mut state = fresh_state_with_player(70, 70);
+    let _ = push_enemy(&mut state, 50, 40);
+    give_player_relic(&mut state, RelicKind::Bookmark);
+    let a = push_card(&mut state, 80, crate::cards::CardType::Attack);
+    {
+        let card = state.cards.iter_mut().find(|c| c.uid == a).unwrap();
+        card.cost = 2;
+        card.set_combat_var(crate::cards::VarKey::FreeThisTurn, 1);
+    }
+    state.player.hand.push(a);
+    state.player.retain_this_turn.push(a);
+    let rng_before = state.run_rng.combat_card_selection.clone();
+    state.phase = crate::CombatPhase::PlayerEndTurnPhaseOne;
+    let _ = crate::combat_loop::end_player_turn_phase_two(&mut state);
+    let card = state.cards.iter().find(|c| c.uid == a).unwrap();
+    assert!(state.player.hand.contains(&a), "retained");
+    assert_eq!(card.combat_var(crate::cards::VarKey::FreeThisTurn), 0);
+    assert_eq!(
+        card.combat_var(crate::cards::VarKey::CostReductionUntilPlayed),
+        0,
+        "the free card was not eligible"
+    );
+    assert_eq!(state.run_rng.combat_card_selection, rng_before, "no roll");
+}
+
+/// A lethal hit takes the Red Skull owner to 0 HP and FairyInABottle revives
+/// them at 30%. C# probes Red Skull at 0 HP first (its `+3` Strength apply is
+/// refused while DieForYou makes every corpse unhittable,
+/// DieForYouPower.cs:35, but `StrengthApplied` is set), so the revive adds
+/// nothing. Without DieForYou the +3 lands (loadout Necrobinder v0.107.1 2035).
+#[test]
+#[serial_test::serial(global_registry)]
+fn red_skull_fairy_revive_gains_no_strength_while_die_for_you_lives() {
+    for die_for_you in [true, false] {
+        ensure_installed();
+        let mut state = fresh_state_with_player(100, 0);
+        state.sync_creature_current_hp_from_player();
+        give_player_relic(&mut state, RelicKind::RedSkull);
+        state.player.potion_slots = 3;
+        assert!(state
+            .player
+            .add_potion_first_free_slot(crate::potions::PotionKind::FairyInABottle));
+        if die_for_you {
+            state.powers.push(crate::Power {
+                id: NonZeroU32::new(9002).unwrap(),
+                kind: crate::PowerKind::DieForYou,
+                amount: 1,
+                counter: 0,
+                applier: None,
+                skip_next_tick: false,
+            });
+        }
+        assert!(crate::combat_loop::try_fairy_in_a_bottle_prevent_death(
+            &mut state
+        ));
+        assert_eq!(state.player.current_hp, 30);
+        let strength = state.player_power_amount(crate::PowerKind::Strength);
+        let expected = if die_for_you { 0 } else { 3 };
+        assert_eq!(strength, expected, "die_for_you={die_for_you}");
+        let counter = state
+            .relics
+            .iter()
+            .find(|r| r.kind == RelicKind::RedSkull)
+            .map_or(-1, |r| r.counter);
+        assert_eq!(counter, 1, "StrengthApplied either way");
+    }
+}
+
 /// `Bookmark` is a no-op when no retained hand card costs energy
-/// (all 0-cost), and on the enemy side.
+/// (all 0-cost).
 #[test]
 #[serial_test::serial(global_registry)]
 fn bookmark_noop_without_costing_retained_card() {
@@ -9545,7 +9887,7 @@ fn bookmark_noop_without_costing_retained_card() {
     let z = push_card(&mut state, 80, crate::cards::CardType::Attack);
     state.cards.iter_mut().find(|c| c.uid == z).unwrap().cost = 0;
     state.player.hand.push(z);
-    let _ = dispatch_after_turn_end(&mut state, Side::Player);
+    after_flush_bookmark(&mut state);
     assert_eq!(
         state.cards.iter().find(|c| c.uid == z).unwrap().cost,
         0,
@@ -9733,5 +10075,51 @@ fn serpent_form_hit_draws_combat_targets_before_kusarigama() {
         hp(enemies[second as usize]),
         24,
         "2nd CombatTargets pick = Kusarigama's 6"
+    );
+}
+
+/// C# `LunarPastry.AfterSideTurnEnd` gains its star through
+/// `PlayerCmd.GainStars`, which fires `Hook.AfterStarsGained`: Black Hole
+/// deals its `Amount` to every enemy (loadout Regent 1020).
+#[test]
+fn lunar_pastry_star_triggers_black_hole() {
+    let mut state = CombatState::default();
+    state.player.current_hp = 50;
+    state.relics.push(crate::Relic {
+        id: std::num::NonZeroU32::new(1).expect("nz"),
+        kind: crate::RelicKind::LunarPastry,
+        counter: 0,
+        is_wax: false,
+        is_melted: false,
+    });
+    let pid = std::num::NonZeroU32::new(1).expect("nz");
+    state.powers.push(crate::Power {
+        id: pid,
+        kind: crate::PowerKind::BlackHole,
+        amount: 3,
+        counter: 0,
+        applier: None,
+        skip_next_tick: false,
+    });
+    state.player.powers.push(crate::PowerUid(pid));
+    let enemy = state.spawn_enemy(crate::MonsterKind::Nibbit);
+    let hp = |s: &CombatState| {
+        s.creatures
+            .iter()
+            .find(|c| c.id == enemy.0)
+            .map(|c| c.current_hp)
+            .expect("enemy")
+    };
+    let before = hp(&state);
+    assert_eq!(
+        on_after_turn_end_lunar_pastry(&mut state, Side::Player),
+        EffectResult::Resolved
+    );
+    assert_eq!(state.player.stars, 1);
+    assert_eq!(state.player.stars_gained_this_turn, 1);
+    assert_eq!(
+        hp(&state),
+        before - 3,
+        "Black Hole fires on the gained star"
     );
 }

@@ -16,7 +16,8 @@ use super::prelude::*;
 /// resolver as Stratagem — whose option 0 is still that leftmost card for
 /// inline auto-resolution. Bead `sts2-rs-d8i4` (6ynt.8-wish).
 pub(crate) fn play_wish(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
-    use crate::cards::spec_index::{card_csharp_entry, card_rarity_rank_csharp_in};
+    use crate::cards::spec_index::card_rarity_rank_csharp_in;
+    use sts2_core::cards::card_model_entry;
     let mut candidates: Vec<sts2_core::CardUid> = state.player.draw.iter().copied().collect();
     match candidates.as_slice() {
         [] => {}
@@ -29,10 +30,11 @@ pub(crate) fn play_wish(state: &mut CombatState, _t: Option<CreatureUid>) -> Eff
                 let ca = &state.cards[a.0.get() as usize - 1];
                 let cb = &state.cards[b.0.get() as usize - 1];
                 // C# `orderby c.Rarity, c.Id` — `Id` ordinal-compared by its
-                // PascalCase `Entry` (see `play_seeker_strike`).
+                // slugified `Entry` (`ModelDb.GetEntry` = `Slugify(type.Name)`,
+                // `ModelId.CompareTo`; see `play_seeker_strike`).
                 card_rarity_rank_csharp_in(ca.card_id, state.game_version)
                     .cmp(&card_rarity_rank_csharp_in(cb.card_id, state.game_version))
-                    .then_with(|| card_csharp_entry(ca.card_id).cmp(&card_csharp_entry(cb.card_id)))
+                    .then_with(|| card_model_entry(ca.card_id).cmp(card_model_entry(cb.card_id)))
             });
             let options: Vec<sts2_core::ChoiceOption> = candidates
                 .iter()

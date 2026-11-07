@@ -108,7 +108,6 @@ internal static class SimAdvisorProcess
                 return;
             }
 
-            string? modDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
             // --port in EVERY branch: the advisor otherwise defaults to 9002
             // and silently diverges from a non-default SpireMentor.conf port
             // or a fallback port (BridgeServer.StartWithFallback).
@@ -148,69 +147,10 @@ internal static class SimAdvisorProcess
             {
                 advisorArgs += $" --control-allow-origin {browserOrigin}";
             }
-            ProcessStartInfo psi;
-            string command = SpireMentorModConfig.AdvisorCommand;
-            if (!string.IsNullOrWhiteSpace(command))
+            ProcessStartInfo? psi = ResolveLaunch(advisorArgs, logDir: null);
+            if (psi == null)
             {
-                // Settings-page override. Our args append after the command's
-                // own, and argparse takes the last occurrence -- so the port
-                // always follows SpireMentor.conf, the single source of truth
-                // for which port both sides use.
-                psi = new ProcessStartInfo
-                {
-                    FileName = "cmd.exe",
-                    Arguments = $"/c {command} {advisorArgs}",
-                };
-            }
-            else
-            {
-                string exe = modDir != null
-                    ? Path.Combine(modDir, "SimAdvisor", "SimAdvisor.exe")
-                    : "";
-                string script = modDir != null ? Path.Combine(modDir, "SimAdvisor.cmd") : "";
-                bool haveScript = File.Exists(script);
-                bool haveExe = File.Exists(exe);
-                if (haveScript && haveExe)
-                {
-                    // Say which one wins. Silence here reads as "my fix did not
-                    // work": the loser is a whole separate copy of the advisor.
-                    Logger.Log(
-                        $"[SimAdvisorProcess] Both launchers exist; using the dev {script} and " +
-                        $"IGNORING the packaged {exe}. Delete the SimAdvisor directory to run the " +
-                        "packaged advisor, or the .cmd to stop it winning.");
-                }
-                if (haveScript)
-                {
-                    // Dev path: the deploy-generated .cmd forwards %* to the
-                    // advisor, so our args ride through.
-                    psi = new ProcessStartInfo
-                    {
-                        FileName = "cmd.exe",
-                        Arguments = $"/c \"{script}\" {advisorArgs}",
-                    };
-                }
-                else if (haveExe)
-                {
-                    // Packaged advisor (GH #380): direct launch, no cmd.exe.
-                    // Explicit --log-dir keeps JSONL logs out of the install
-                    // dir even if the exe's own frozen default ever drifts.
-                    psi = new ProcessStartInfo
-                    {
-                        FileName = exe,
-                        Arguments = advisorArgs +
-                            $" --log-dir \"{Path.Combine(AppDataDir(), "logs", "realgame_advisor")}\"",
-                        WorkingDirectory = Path.GetDirectoryName(exe),
-                    };
-                }
-                else
-                {
-                    Logger.Log(
-                        "[SimAdvisorProcess] No advisor command configured, no SimAdvisor.cmd and no " +
-                        "SimAdvisor\\SimAdvisor.exe next to the DLL (re-run the SpireMentor deploy or " +
-                        "reinstall the mod zip, or set the command on the settings page). " +
-                        "Advisor must be started manually.");
-                    return;
-                }
+                return;
             }
             TextWriter? logWriter = null;
             WindowsChildProcess? child = null;
@@ -274,6 +214,85 @@ internal static class SimAdvisorProcess
                 _process = null;
             }
         }
+    }
+
+    /// <summary>
+    /// Which advisor to launch, with <paramref name="advisorArgs"/> appended:
+    /// the settings-page command, else the deploy-generated SimAdvisor.cmd
+    /// (dev), else the packaged SimAdvisor\SimAdvisor.exe. Null (logged) when
+    /// there is none. <paramref name="logDir"/> overrides the JSONL log
+    /// directory on every path (an AI partner's advisor: its own, so two
+    /// advisors started in the same second never append to one file);
+    /// null keeps each path's historical default.
+    /// </summary>
+    internal static ProcessStartInfo? ResolveLaunch(string advisorArgs, string? logDir)
+    {
+        string? modDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+        string explicitLogDir = logDir != null ? $" --log-dir \"{logDir}\"" : "";
+        string command = SpireMentorModConfig.AdvisorCommand;
+        if (!string.IsNullOrWhiteSpace(command))
+        {
+            // Settings-page override. Our args append after the command's
+            // own, and argparse takes the last occurrence -- so the port
+            // always follows SpireMentor.conf, the single source of truth
+            // for which port both sides use.
+            return new ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                Arguments = logDir != null
+                    ? $"/s /c \"{command} {advisorArgs}{explicitLogDir}\""
+                    : $"/c {command} {advisorArgs}",
+            };
+        }
+        string exe = modDir != null
+            ? Path.Combine(modDir, "SimAdvisor", "SimAdvisor.exe")
+            : "";
+        string script = modDir != null ? Path.Combine(modDir, "SimAdvisor.cmd") : "";
+        bool haveScript = File.Exists(script);
+        bool haveExe = File.Exists(exe);
+        if (haveScript && haveExe)
+        {
+            // Say which one wins. Silence here reads as "my fix did not
+            // work": the loser is a whole separate copy of the advisor.
+            Logger.Log(
+                $"[SimAdvisorProcess] Both launchers exist; using the dev {script} and " +
+                $"IGNORING the packaged {exe}. Delete the SimAdvisor directory to run the " +
+                "packaged advisor, or the .cmd to stop it winning.");
+        }
+        if (haveScript)
+        {
+            // Dev path: the deploy-generated .cmd forwards %* to the
+            // advisor, so our args ride through.
+            return new ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                // Two quoted strings (the script, the log dir): cmd /c would strip
+                // the first and last quote of the line; /s and outer quotes keep
+                // both. Without a log dir, the line the human's launch always used.
+                Arguments = logDir != null
+                    ? $"/s /c \"\"{script}\" {advisorArgs}{explicitLogDir}\""
+                    : $"/c \"{script}\" {advisorArgs}",
+            };
+        }
+        if (haveExe)
+        {
+            // Packaged advisor (GH #380): direct launch, no cmd.exe.
+            // Explicit --log-dir keeps JSONL logs out of the install
+            // dir even if the exe's own frozen default ever drifts.
+            return new ProcessStartInfo
+            {
+                FileName = exe,
+                Arguments = advisorArgs +
+                    (logDir != null ? explicitLogDir : $" --log-dir \"{Path.Combine(AppDataDir(), "logs", "realgame_advisor")}\""),
+                WorkingDirectory = Path.GetDirectoryName(exe),
+            };
+        }
+        Logger.Log(
+            "[SimAdvisorProcess] No advisor command configured, no SimAdvisor.cmd and no " +
+            "SimAdvisor\\SimAdvisor.exe next to the DLL (re-run the SpireMentor deploy or " +
+            "reinstall the mod zip, or set the command on the settings page). " +
+            "Advisor must be started manually.");
+        return null;
     }
 
     private static async Task MonitorAsync(WindowsChildProcess child, TextWriter logWriter, StopFlag stopFlag)
@@ -415,7 +434,7 @@ internal static class SimAdvisorProcess
     /// and reads across both files -- which only works while the old bytes
     /// still exist.
     /// </remarks>
-    private static void RotateOversizedLog(string logPath)
+    internal static void RotateOversizedLog(string logPath)
     {
         try
         {
@@ -484,7 +503,7 @@ internal static class SimAdvisorProcess
         }
     }
 
-    private static void TryWrite(TextWriter writer, string line)
+    internal static void TryWrite(TextWriter writer, string line)
     {
         try
         {

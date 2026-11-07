@@ -5088,6 +5088,7 @@ pub const fn var_key_wire_name(k: VarKey) -> &'static str {
         VarKey::WitherFakeUpgradeLevel => "wither_fake_upgrade_level",
         VarKey::PendingBatchAutoPlay => "pending_batch_auto_play",
         VarKey::AutoPlayStarX => "auto_play_star_x",
+        VarKey::AutoPlayEnergyValue => "auto_play_energy_value",
         VarKey::WireTransientCostThisTurn => "wire_transient_cost_this_turn",
         VarKey::WireCostExpiringOnPlay => "wire_cost_expiring_on_play",
         VarKey::WireCostStable => "wire_cost_stable",
@@ -5099,6 +5100,10 @@ pub const fn var_key_wire_name(k: VarKey) -> &'static str {
         VarKey::StarCostFreeThisTurn => "star_cost_free_this_turn",
         VarKey::MomentumDamage => "momentum_damage",
         VarKey::BansheesCryEtherealCounted => "banshees_cry_ethereal_counted",
+        VarKey::ExhaustOnNextPlay => "exhaust_on_next_play",
+        VarKey::CostDebtThisCombat => "cost_debt_this_combat",
+        VarKey::FlattenOstyAttacksAtRoll => "flatten_osty_attacks_at_roll",
+        VarKey::CostAddedAfterLocalZero => "cost_added_after_local_zero",
     }
 }
 
@@ -5128,6 +5133,7 @@ pub fn var_key_from_wire(name: &str) -> Option<VarKey> {
         VarKey::WitherFakeUpgradeLevel,
         VarKey::PendingBatchAutoPlay,
         VarKey::AutoPlayStarX,
+        VarKey::AutoPlayEnergyValue,
         VarKey::WireTransientCostThisTurn,
         VarKey::WireCostExpiringOnPlay,
         VarKey::WireCostStable,
@@ -5139,6 +5145,10 @@ pub fn var_key_from_wire(name: &str) -> Option<VarKey> {
         VarKey::StarCostFreeThisTurn,
         VarKey::MomentumDamage,
         VarKey::BansheesCryEtherealCounted,
+        VarKey::ExhaustOnNextPlay,
+        VarKey::CostDebtThisCombat,
+        VarKey::FlattenOstyAttacksAtRoll,
+        VarKey::CostAddedAfterLocalZero,
     ];
     ALL.iter().copied().find(|k| var_key_wire_name(*k) == name)
 }

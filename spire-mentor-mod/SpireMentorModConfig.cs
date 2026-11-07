@@ -124,8 +124,31 @@ public sealed class SpireMentorModConfig : SimpleModConfig
     /// with a small ✓ (default off: silence on good play).</summary>
     public static bool CoachShowGoodTurns { get; set; } = false;
 
+    // AI partners (co-op, experimental; docs/plans/2026-11-05-ai-coop-partners.md).
+    // Read live by SimAiPartnerBrain, so a change applies from the next decision.
+
+    /// <summary>The AI partner starts its turn only once every human player
+    /// has played a card (or ended their turn).</summary>
+    public static bool AiPartnerWaitForFirstPlay { get; set; } = false;
+
+    /// <summary>The AI partner starts its turn only once every human player
+    /// has ended theirs. Wins over <see cref="AiPartnerWaitForFirstPlay"/>.</summary>
+    public static bool AiPartnerWaitForEndTurn { get; set; } = false;
+
+    /// <summary>How long the AI partner holds a move its advisor says a
+    /// teammate's setup play would improve (Vulnerable on its target, block
+    /// on it): <c>wait_for_ally</c>. 0 = never hold.</summary>
+    [ConfigSlider(0.0, 10.0, 0.5, Format = "{0:0.0} s")]
+    public static double AiPartnerAllyWaitSeconds { get; set; } = 2.5;
+
     /// <summary>Toolbar strip expanded/collapsed (SimToolbar pill).</summary>
     public static bool ToolbarExpanded { get; set; } = true;
+
+    /// <summary>Where the player dragged the action log ("x,y", viewport
+    /// pixels); blank = under the advice column, following it
+    /// (LogPanelPlacement). Not on the settings page: dragging sets it,
+    /// right-clicking the log's header clears it.</summary>
+    public static string LogPanelPosition { get; set; } = "";
 
     /// <summary>Workbench page the toolbar's button opens. Blank = the
     /// bundled workbench the advisor hosts, else the dev one on :8077 (see
@@ -156,6 +179,10 @@ public sealed class SpireMentorModConfig : SimpleModConfig
     /// (toolbar pill, mid-run settings panel) -- BaseLib itself only saves on
     /// submenu close and on quit.</summary>
     public static void SaveSoon() => _instance?.SaveDebounced();
+
+    /// <summary>The AI-partner rows only show where the feature is on
+    /// (SimAiPartnerMenu's opt-in).</summary>
+    private static bool AiPartnersShown => SimConfig.Instance.AiPartnersMenu || SimMp.AiPartnersOverride > 0;
 
     /// <summary>
     /// Construct + register with BaseLib, and keep an open settings page in
@@ -207,6 +234,17 @@ public sealed class SpireMentorModConfig : SimpleModConfig
         AddRow(optionContainer, "Show win chance bar", nameof(ShowWinBar), CreateRawTickboxControl);
         AddRow(optionContainer, "Reduce combat effects", nameof(ReduceEffects), CreateRawTickboxControl);
 
+        if (AiPartnersShown)
+        {
+            optionContainer.AddChild(CreateSectionHeader("Co-op AI partners (experimental)"));
+            AddNote(optionContainer,
+                "An AI teammate plays its own seat during the same turn as you. By default it\n" +
+                "starts as soon as its board is ready; these make it let you go first.");
+            AddRow(optionContainer, "AI partner waits for your first play", nameof(AiPartnerWaitForFirstPlay), CreateRawTickboxControl);
+            AddRow(optionContainer, "AI partner waits until you end your turn", nameof(AiPartnerWaitForEndTurn), CreateRawTickboxControl);
+            AddRow(optionContainer, "AI partner holds for your setup play", nameof(AiPartnerAllyWaitSeconds), CreateRawSliderControl);
+        }
+
         optionContainer.AddChild(CreateSectionHeader("Advisor backend"));
         AddRow(optionContainer, "Auto-launch Python advisor", nameof(AdvisorAutoLaunch), CreateRawTickboxControl);
         AddRow(optionContainer, "Advisor command (blank = default)", nameof(AdvisorCommand), CreateRawLineEditControl);
@@ -220,8 +258,9 @@ public sealed class SpireMentorModConfig : SimpleModConfig
             "F5   Coach style: peek at the AI's next pick\n" +
             "F6   let the AI take just this one decision\n" +
             "F7   let the AI keep playing until you stop it\n" +
+            "Shift+F7   autobattle: the AI fights, you make the run's decisions\n" +
             "F4   show / hide the HUD          Ctrl+L action log\n" +
-            "F9 / F10   game speed down / up   F1   help\n" +
+            "F9 / F10   game speed down / up (1x-4x)   F1   help\n" +
             "Ctrl+H   hide / show all the mod's panels\n" +
             "Ctrl+Shift+B   report a bug (asks for a note, sends only on Send)");
 
@@ -262,6 +301,12 @@ public sealed class SpireMentorModConfig : SimpleModConfig
             cfg.AddLiveRow(container, "Show map markers + route", nameof(ShowMapMarkers), cfg.CreateRawTickboxControl);
             cfg.AddLiveRow(container, "Show win chance bar", nameof(ShowWinBar), cfg.CreateRawTickboxControl);
             cfg.AddLiveRow(container, "Reduce combat effects", nameof(ReduceEffects), cfg.CreateRawTickboxControl);
+            if (AiPartnersShown)
+            {
+                cfg.AddLiveRow(container, "AI partner waits for your first play", nameof(AiPartnerWaitForFirstPlay), cfg.CreateRawTickboxControl);
+                cfg.AddLiveRow(container, "AI partner waits until you end your turn", nameof(AiPartnerWaitForEndTurn), cfg.CreateRawTickboxControl);
+                cfg.AddLiveRow(container, "AI partner holds for your setup play", nameof(AiPartnerAllyWaitSeconds), cfg.CreateRawSliderControl);
+            }
             cfg.AddLiveRow(advanced, "Auto-launch Python advisor", nameof(AdvisorAutoLaunch), cfg.CreateRawTickboxControl);
             cfg.AddLiveRow(advanced, "Advisor command (blank = default)", nameof(AdvisorCommand), cfg.CreateRawLineEditControl);
             cfg.AddLiveRow(advanced, "Workbench URL (blank = default)", nameof(WorkbenchUrl), cfg.CreateRawLineEditControl);

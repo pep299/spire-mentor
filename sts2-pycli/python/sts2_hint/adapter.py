@@ -1413,9 +1413,9 @@ def _translate_ally(ally: dict[str, Any], index: int) -> dict[str, Any]:
         if isinstance(ally.get(key), list):
             out[key] = _soft_translate_list(ally[key], _translate_card, f"{path}.{key}")
     if isinstance(ally.get("relics"), list):
-        out["relics"] = [
-            _translate_relic(r, f"{path}.relics[{i}]") for i, r in enumerate(ally["relics"])
-        ]
+        # Soft-dropped like our own ($.player.relics): a teammate's relic the
+        # engine lacks (Neow's Sacrifice) must not fail the whole board.
+        out["relics"] = _soft_translate_list(ally["relics"], _translate_relic, f"{path}.relics")
     if isinstance(ally.get("stars"), int):
         out["stars"] = ally["stars"]
     if ally.get("hp_lost_this_turn") is True:

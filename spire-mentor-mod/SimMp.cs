@@ -171,6 +171,48 @@ public static class SimMp
     public static int CoopPlayers =>
         int.TryParse(CmdlineValue("spire-mentor-coop-players"), out int n) ? Math.Clamp(n, 2, 4) : 2;
 
+    /// <summary><c>--spire-mentor-ai-partners N</c>: host a co-op lobby with
+    /// N AI partners (1-3) from the main menu, as the host menu's "With AI
+    /// partners" button does (SimAiPartnerSession; the unattended lane).</summary>
+    public static int AiPartnersOverride =>
+        int.TryParse(CmdlineValue("spire-mentor-ai-partners"), out int n) ? Math.Clamp(n, 0, 3) : 0;
+
+    /// <summary><c>--spire-mentor-ai-partner-join N</c>: add N AI partners
+    /// (1-3) to the lobby this instance hosts the game's way (fastmp's ENet
+    /// or Steam), as N presses of the lobby's "Add AI partner" do; human
+    /// clients join it as usual (plan, phase 4; the mixed lane).</summary>
+    public static int AiPartnerJoinOverride =>
+        int.TryParse(CmdlineValue("spire-mentor-ai-partner-join"), out int n) ? Math.Clamp(n, 0, 3) : 0;
+
+    /// <summary><c>--spire-mentor-ai-partner-continue</c>: press the
+    /// multiplayer menu's "Load" at the main menu; the saved run's AI
+    /// partners rejoin, and with autoplay the host embarks once all are back
+    /// (SimAiPartnerContinue; the save / continue lane).</summary>
+    public static bool AiPartnerContinue => HasCmdlineArg("spire-mentor-ai-partner-continue");
+
+    /// <summary><c>--spire-mentor-ai-partner-character a,b</c>: each AI
+    /// partner's character, in join order.</summary>
+    public static string? AiPartnerCharacters => CmdlineValue("spire-mentor-ai-partner-character");
+
+    /// <summary><c>--spire-mentor-ai-partner-shot PATH</c>: the lane saves a
+    /// screenshot of the host menu (with the AI-partners entry) here.</summary>
+    public static string? AiPartnerShotPath => CmdlineValue("spire-mentor-ai-partner-shot");
+
+    /// <summary><c>--spire-mentor-ai-partner-sims N</c>: each AI partner
+    /// advisor's MCTS budget (bosses 4x). Default 1000: up to three of them
+    /// share the machine with the human's own advisor.</summary>
+    public static int AiPartnerSims =>
+        int.TryParse(CmdlineValue("spire-mentor-ai-partner-sims"), out int n) ? Math.Clamp(n, 50, 20000) : 1000;
+
+    /// <summary><c>--spire-mentor-ai-partner-pace first-play|end-turn|now</c>:
+    /// the lane's override of the settings' "AI partner waits for ..." (never
+    /// saved); null = the settings.</summary>
+    public static string? AiPartnerPaceOverride => CmdlineValue("spire-mentor-ai-partner-pace");
+
+    /// <summary><c>--spire-mentor-ai-partner-no-advisor</c>: the partners play
+    /// the first-legal fallback (the phase-1 behaviour; a quick lane).</summary>
+    public static bool AiPartnerNoAdvisor => HasCmdlineArg("spire-mentor-ai-partner-no-advisor");
+
     /// <summary>The game's own <c>--fastmp</c> dev launch (host / join a
     /// local co-op lobby without Steam).</summary>
     public static bool FastMpLaunch => HasCmdlineArg("fastmp");

@@ -30,9 +30,14 @@ pub(crate) fn play_hidden_gem(state: &mut CombatState, _t: Option<CreatureUid>) 
     // `GetEnchantedReplayCount() < 1`; omitting it lets already-enchanted
     // cards into the pool, changing pool size → `next_int_exclusive` RNG
     // desync. Bead `sts2-rs-7pg9x` (OWL_MAGISTRATE_NORMAL_Q).
+    // `GetEnchantedReplayCount()` is `Enchantment?.EnchantPlayCount(
+    // BaseReplayCount)` (CardModel.cs:1130), so an unused Glam or a Spiral
+    // already counts one replay and is skipped (random-loadout Ironclad
+    // v0.107.1 seed 1183).
     let enchanted_replay_filter = |uid: &CardUid| -> bool {
-        let idx = uid.0.get() as usize - 1;
-        state.cards[idx].base_replay_count == 0
+        let card = &state.cards[uid.0.get() as usize - 1];
+        card.base_replay_count.max(0) + sts2_core::enchantment_hooks::enchant_play_count_bonus(card)
+            < 1
     };
     let primary: SmallVec<[CardUid; 16]> = state
         .player

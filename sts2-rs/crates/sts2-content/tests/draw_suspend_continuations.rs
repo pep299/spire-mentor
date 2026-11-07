@@ -233,3 +233,167 @@ fn pillage_loops_across_stratagem_suspend_v0111() {
 fn pillage_loops_across_stratagem_suspend_v0107() {
     pillage_loops_across_stratagem_suspend(V107);
 }
+
+// ── Brightest Flame loses max HP after its suspended draw ────────────────
+
+fn player_max_hp(state: &CombatState) -> i32 {
+    let uid = state.player.creature_uid.expect("player mirror");
+    state
+        .creatures
+        .iter()
+        .find(|c| c.id == uid.0)
+        .expect("player creature")
+        .max_hp
+}
+
+/// Brightest Flame into an empty draw pile: its `Draw(2)` reshuffles and
+/// opens Stratagem's grid. C# `BrightestFlame.OnPlay` (BrightestFlame.cs:27-32,
+/// both builds) gains energy, then awaits the draw (and the select inside it),
+/// and only then loses max HP. So at the select the energy is in and the max
+/// HP is untouched; after the pick the draw finishes and the max HP drops
+/// (act23 Ironclad v0.111.0 seed 8109, step 1047).
+fn brightest_flame_after_suspended_draw(version: GameVersion, loss: i32) {
+    let (mut state, _) = fresh(version);
+    add_player_power(&mut state, 50, PowerKind::Stratagem, 1);
+    for id in [CardId::StrikeIronclad, CardId::DefendIronclad, CardId::Bash] {
+        let uid = new_card(&mut state, id);
+        state.player.discard.push(uid);
+    }
+    let bf = push_hand(&mut state, CardId::BrightestFlame);
+    let max_before = player_max_hp(&state);
+    let energy_before = state.player.energy;
+    let _ = sts2_core::combat_loop::play_card(&mut state, bf, None);
+
+    let pc = state.pending_choice.as_ref().expect("Stratagem grid opens");
+    assert_eq!(pc.kind, sts2_core::ChoiceKind::AddFromDrawToHand);
+    assert_eq!(
+        state.player.energy,
+        energy_before + 2,
+        "energy precedes the draw"
+    );
+    assert_eq!(
+        player_max_hp(&state),
+        max_before,
+        "max HP is lost only after the awaited draw"
+    );
+
+    resolve(&mut state, 0);
+    assert!(state.pending_choice.is_none());
+    assert!(state.pending_draw_resume.is_none());
+    assert_eq!(state.player.hand.len(), 3, "the pick + Brightest Flame's 2");
+    assert_eq!(player_max_hp(&state), max_before - loss);
+}
+
+#[test]
+fn brightest_flame_loses_max_hp_after_suspended_draw_v0111() {
+    brightest_flame_after_suspended_draw(V111, 2);
+}
+
+#[test]
+fn brightest_flame_loses_max_hp_after_suspended_draw_v0107() {
+    brightest_flame_after_suspended_draw(V107, 1);
+}
+
+// ── Dark Embrace's turn-end draw blocks the end of turn ──────────────────
+
+/// Dark Embrace with one ethereal exhaust banked draws at the player's turn
+/// end into an empty draw pile; the reshuffle opens Stratagem's grid. C#
+/// `DarkEmbracePower.AfterSideTurnEnd` awaits `CardPileCmd.Draw` (and the
+/// select inside it) within `Hook.AfterSideTurnEnd`, before the side
+/// switches, so the enemy turn waits for the pick (act23 Ironclad v0.111.0
+/// seed 6103 act 3, step 1055). Rust ran the enemy turn and the next player
+/// turn-start with the select still open.
+fn dark_embrace_turn_end_select_blocks_end_turn(version: GameVersion) {
+    let (mut state, _) = fresh(version);
+    state.round = 1;
+    add_player_power(&mut state, 50, PowerKind::Stratagem, 1);
+    add_player_power(&mut state, 51, PowerKind::DarkEmbrace, 1);
+    let de = NonZeroU32::new(51).expect("nz");
+    state
+        .powers
+        .get_mut_by_id(de)
+        .expect("dark embrace")
+        .counter = 1;
+    for id in [CardId::StrikeIronclad, CardId::DefendIronclad, CardId::Bash] {
+        let uid = new_card(&mut state, id);
+        state.player.discard.push(uid);
+    }
+    let r = sts2_core::apply(&mut state, sts2_core::Action::EndTurn);
+    assert_eq!(r, sts2_core::StepResult::PendingChoice);
+    let pc = state.pending_choice.as_ref().expect("Stratagem grid opens");
+    assert_eq!(pc.kind, sts2_core::ChoiceKind::AddFromDrawToHand);
+    assert_eq!(state.round, 1, "the enemy turn waits for the pick");
+    assert!(state.pending_end_turn_resume.is_some());
+
+    resolve(&mut state, 0);
+    assert!(state.pending_choice.is_none());
+    assert!(state.pending_end_turn_resume.is_none());
+    assert_eq!(state.round, 2, "the turn ended once the pick resolved");
+    assert_eq!(state.phase, CombatPhase::PlayerPlayPhase);
+}
+
+#[test]
+fn dark_embrace_turn_end_select_blocks_end_turn_v0111() {
+    dark_embrace_turn_end_select_blocks_end_turn(V111);
+}
+
+#[test]
+fn dark_embrace_turn_end_select_blocks_end_turn_v0107() {
+    dark_embrace_turn_end_select_blocks_end_turn(V107);
+}
+
+// ── Reboot's draw waits for the Stratagem pick of its own shuffle ────────
+
+/// Reboot shuffles the hand into the draw pile, and the shuffle's
+/// `StratagemPower.AfterShuffle` opens a pick. C# `Reboot.OnPlay` awaits
+/// `CardPileCmd.Shuffle` (and the select in it) before `CardPileCmd.Draw`
+/// (v0.107.1 Reboot.cs:29-30), so nothing is drawn before the pick and the
+/// picked card leads the hand. Rust drew one card first (Defect
+/// random-loadout v0.107.1 seeds 1016/1038, v0.111.0 seed 1026).
+fn reboot_draw_waits_for_stratagem_pick(version: GameVersion) {
+    let (mut state, _enemy) = fresh(version);
+    state.player.character = Some(CharacterId::Defect);
+    add_player_power(&mut state, 50, PowerKind::Stratagem, 1);
+    for id in [
+        CardId::StrikeDefect,
+        CardId::DefendDefect,
+        CardId::Zap,
+        CardId::Dualcast,
+        CardId::BallLightning,
+        CardId::ColdSnap,
+    ] {
+        let _ = push_draw(&mut state, id);
+    }
+    let _ = push_hand(&mut state, CardId::StrikeDefect);
+    let r = push_hand(&mut state, CardId::Reboot);
+    let _ = sts2_core::combat_loop::play_card(&mut state, r, None);
+
+    let pc = state.pending_choice.as_ref().expect("Stratagem grid opens");
+    assert_eq!(pc.kind, sts2_core::ChoiceKind::AddFromDrawToHand);
+    assert!(
+        state.player.hand.is_empty(),
+        "nothing is drawn before the Stratagem pick: {:?}",
+        state.player.hand
+    );
+    let picked = pc.options[0].card_uid.expect("card option");
+
+    resolve(&mut state, 0);
+    assert!(state.pending_choice.is_none());
+    assert!(state.pending_draw_resume.is_none());
+    assert_eq!(state.player.hand.len(), 5, "the pick + Reboot's 4 draws");
+    assert_eq!(
+        state.player.hand[0], picked,
+        "the pick reaches the hand first"
+    );
+    assert_eq!(state.player.draw.len(), 2, "7 shuffled - pick - 4 drawn");
+}
+
+#[test]
+fn reboot_draw_waits_for_stratagem_pick_v0111() {
+    reboot_draw_waits_for_stratagem_pick(V111);
+}
+
+#[test]
+fn reboot_draw_waits_for_stratagem_pick_v0107() {
+    reboot_draw_waits_for_stratagem_pick(V107);
+}

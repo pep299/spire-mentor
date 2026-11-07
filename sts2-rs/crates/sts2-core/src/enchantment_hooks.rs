@@ -560,7 +560,16 @@ pub fn dispatch_on_card_played(state: &mut CombatState, card_uid: CardUid) {
     if card.enchantments.is_empty() {
         return;
     }
+    // `Enchantment.OnPlay` runs for THIS card (`base.Card`), but it fires from
+    // `finish_card_play`, after `dispatch_for_card` restored the enclosing
+    // resolving card. Name this card for the duration so card-keyed listeners
+    // see it: Corrupted's self-damage inside a Cascade auto-play is owed to
+    // the auto-played card in `RupturePower.playedCards`, not to Cascade
+    // (act23 Ironclad-4134 act 2 @558). A hand play has no enclosing card, so
+    // the `play.last()` fallback already named it: byte-neutral there.
+    let prev = state.resolving_card.replace(card_uid);
     on_card_played_stub(state, card_uid);
+    state.resolving_card = prev;
 }
 
 /// Per-card listener body.
@@ -651,19 +660,34 @@ fn on_card_played_stub(state: &mut CombatState, card_uid: CardUid) {
         crate::card_effects::gain_block_player(state, adroit_amount);
     }
 
-    // Swift: draw N cards on first play per combat. Python pin checks
-    // `not combat_vars[_used_key("Swift")]`; the marker is set in
-    // `after_card_played` immediately after this site resolves.
+    // Swift: draw N cards on first play per combat. C# `Swift.OnPlay`
+    // (Swift.cs:15-22) sets `Status = Disabled` right here, inside the play —
+    // not in `AfterCardPlayed` — so a Music Box `CreateClone()` made during
+    // `Hook.AfterCardPlayed` copies the spent status (EnchantmentModel.cs:
+    // 309-314 keeps `_status`). v0.111.0 disables before the draw, v0.107.1
+    // after it; the draw cannot reach this card (it is on the Play pile), so
+    // one order serves both.
     if swift_amount > 0 && (used_bits & SWIFT_USED_BIT) == 0 {
+        mark_used(state, card_uid, SWIFT_USED_BIT);
         // C# `Swift.OnPlay` → `CardPileCmd.Draw(fromHandDraw = false)` —
         // vetoed by NoDraw/Fiddle like every card-effect draw.
         let _ = state.draw_into_hand_card_effect(swift_amount);
     }
 
-    // Sown: gain N energy on first play per combat. Same first-play
-    // gate as Swift; marker set in after_card_played.
+    // Sown: gain N energy on first play per combat. Same first-play gate and
+    // in-play disable as Swift (Sown.cs:13-20).
     if sown_amount > 0 && (used_bits & SOWN_USED_BIT) == 0 {
+        mark_used(state, card_uid, SOWN_USED_BIT);
         state.gain_energy(sown_amount);
+    }
+}
+
+/// Set a first-play `*_USED_BIT` on the card (C# `Status = Disabled`).
+fn mark_used(state: &mut CombatState, card_uid: CardUid, bit: i32) {
+    let idx = (card_uid.get() as usize).saturating_sub(1);
+    if let Some(card) = state.cards.get_mut(idx) {
+        let bits = card.combat_var(VarKey::EnchantmentUsed);
+        card.set_combat_var(VarKey::EnchantmentUsed, bits | bit);
     }
 }
 
@@ -672,8 +696,8 @@ fn on_card_played_stub(state: &mut CombatState, card_uid: CardUid) {
 // ---------------------------------------------------------------------------
 
 /// Fire enchantment `after_card_played` for a card whose effect has
-/// fully resolved. Marks first-play-only enchantments (Swift / Sown /
-/// Vigorous / Glam) as consumed and ticks Goopy's amount.
+/// fully resolved. Marks the after-played first-play enchantments
+/// (Vigorous / Glam) as consumed and ticks Goopy's amount.
 ///
 /// Python entry: `enchantments.py:184` — `after_card_played(card)`.
 pub fn dispatch_after_card_played(state: &mut CombatState, card_uid: CardUid) {
@@ -690,10 +714,8 @@ pub fn dispatch_after_card_played(state: &mut CombatState, card_uid: CardUid) {
 ///
 /// **Wave 2 (`sts2-rs-vkpir`):** Vigorous-used bit.
 ///
-/// **Wave 3 (`sts2-rs-g7rni`):** Swift / Sown / Glam consumed markers.
-/// Mirrors Python's `for name in ("Swift", "Sown", "Vigorous", "Glam"):
-/// if card.has_enchantment(name): card.combat_vars[_used_key(name)] = 1`
-/// at `enchantments.py:184-194`.
+/// **Wave 3 (`sts2-rs-g7rni`):** Glam consumed marker. Swift / Sown set
+/// theirs in [`on_card_played_stub`], as C# disables them inside `OnPlay`.
 ///
 /// **GH #952:** Goopy's amount grows by one per play (C# `Goopy.AfterCardPlayed`:
 /// `base.Amount++`), so each later play's [`enchant_block_additive`] reads the
@@ -712,12 +734,8 @@ fn after_card_played_stub(state: &mut CombatState, card_uid: CardUid) {
     if card.has_enchantment(EnchantmentId::Glam) {
         bits |= GLAM_USED_BIT;
     }
-    if card.has_enchantment(EnchantmentId::Swift) {
-        bits |= SWIFT_USED_BIT;
-    }
-    if card.has_enchantment(EnchantmentId::Sown) {
-        bits |= SOWN_USED_BIT;
-    }
+    // Swift / Sown disable inside their own `OnPlay` (see
+    // `on_card_played_stub`); only Vigorous and Glam wait for AfterCardPlayed.
     card.set_combat_var(VarKey::EnchantmentUsed, bits);
     if card.has_enchantment(EnchantmentId::Goopy) {
         let amount = card.enchantment(EnchantmentId::Goopy);
@@ -1272,6 +1290,39 @@ mod tests {
         // Second play is inert.
         dispatch_on_card_played(&mut state, uid(1));
         assert_eq!(state.player.energy, 2);
+    }
+
+    /// C# `Sown.OnPlay` / `Swift.OnPlay` (Sown.cs:13-20, Swift.cs:15-22) set
+    /// `Status = Disabled` INSIDE the play, before `Hook.AfterCardPlayed`, so a
+    /// Music Box `CreateClone()` there (MusicBox.cs:73-84; the clone keeps
+    /// `_status`, EnchantmentModel.cs:309-314) is already Disabled and grants
+    /// nothing (ckpt_act3_8000 Ironclad-8148-a0-act3#b1 @900: energy cs=0 rs=1).
+    #[test]
+    fn sown_and_swift_disable_during_on_play_so_a_mid_play_clone_is_spent() {
+        for (ench, bit) in [
+            (EnchantmentId::Sown, SOWN_USED_BIT),
+            (EnchantmentId::Swift, SWIFT_USED_BIT),
+        ] {
+            let mut state = state_with_one_enchanted_card(ench, 1);
+            dispatch_on_card_played(&mut state, uid(1));
+            assert_eq!(
+                state.cards[0].combat_var(VarKey::EnchantmentUsed) & bit,
+                bit,
+                "{ench:?} is spent by its own OnPlay, before AfterCardPlayed"
+            );
+        }
+        // The clone's play: energy stays put.
+        let mut state = state_with_one_enchanted_card(EnchantmentId::Sown, 2);
+        state.player.energy = 0;
+        dispatch_on_card_played(&mut state, uid(1));
+        let mut clone = state.cards[0].create_clone();
+        clone.uid = uid(2);
+        state.cards.push(clone);
+        dispatch_on_card_played(&mut state, uid(2));
+        assert_eq!(
+            state.player.energy, 2,
+            "the Disabled clone grants no energy"
+        );
     }
 
     /// Glam: after_card_played sets bit 1 (matches sts2-content

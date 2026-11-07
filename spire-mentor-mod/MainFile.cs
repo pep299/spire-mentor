@@ -160,6 +160,11 @@ public static class MainFile
             TaskHelper.RunSafely(CoachOnWhenReadyAsync());
         }
 
+        if (_patcher != null)
+        {
+            SimAiPartner.Install(_patcher);
+        }
+
         // Backstop only: GameQuitPatch is the graceful shutdown path.
         AppDomain.CurrentDomain.ProcessExit += (_, _) => SimShutdown.Run("ProcessExit");
 

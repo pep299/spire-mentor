@@ -1,88 +1,56 @@
 {
- "assumptions": {
-  "energy": 3,
-  "hand": 5,
-  "samples": 200
+ "config": {
+  "c_puct": 2.5,
+  "depth": 200,
+  "draw_widening_c": 2.0,
+  "hidden_info": "beliefdraw",
+  "seed": 1,
+  "sims": 48,
+  "threads": 1
  },
- "block": {
-  "per_turn": 8.0,
-  "scaling_cards": []
- },
- "composition": {
-  "by_rarity": {
-   "Basic": 9,
-   "Common": 5,
-   "Curse": 1,
-   "Quest": 1,
-   "Uncommon": 1
-  },
-  "by_type": {
-   "Attack": 7,
-   "Curse": 1,
-   "Quest": 1,
-   "Skill": 8
-  },
-  "dead_cards": 1,
-  "energy_curve": {
-   "0": 4,
-   "1": 11,
-   "X": 1
-  },
-  "unupgraded_basics": 8
- },
- "damage": {
-  "aoe_attacks": [
-   "Sweeping Beam"
-  ],
-  "attack_count": 7,
-  "per_turn": 16.3,
-  "scaling_cards": [
-   "Zap"
-  ],
-  "single_target": 14.5,
-  "vs_group": 18.1
- },
- "deck_size": 17,
- "lenses": {
-  "boss": 28.1,
-  "hallway": 30.2,
-  "scaling": 26.9
- },
- "scores": {
-  "block": 32.9,
-  "damage": 33.5,
-  "velocity": 17.6,
-  "volume": 26.9
- },
- "velocity": {
-  "bottleneck": "draw",
-  "cards_per_turn": 4.2,
-  "dilution": 0.88,
-  "draw_limited_turns": 2.7,
-  "energy_limited_turns": 2.6,
-  "engine_cards": 2,
-  "extra_per_turn": 0.2,
-  "tags": {
-   "draw": 1,
-   "energy": 1
-  }
- },
- "warnings": [
+ "pv": null,
+ "scores": [
   {
-   "severity": "warn",
-   "text": "Thin on block and no block engine — big hits will land in Act 2+."
+   "action": "STRIKE_DEFECT.title",
+   "hp_n": 0,
+   "hp_sd": null,
+   "is_best": true,
+   "low_confidence": false,
+   "mean_final_hp": null,
+   "q": 1.1954,
+   "q_saturated": false,
+   "stable_idx": 4,
+   "target_index": null,
+   "visits": 16,
+   "win_prob": 1.0
   },
   {
-   "severity": "info",
-   "text": "Low velocity — few draw/energy cards; you'll often draw the wrong hand."
+   "action": "DEFEND_DEFECT.title",
+   "hp_n": 0,
+   "hp_sd": null,
+   "is_best": false,
+   "low_confidence": false,
+   "mean_final_hp": null,
+   "q": 1.1927,
+   "q_saturated": false,
+   "stable_idx": 0,
+   "target_index": null,
+   "visits": 16,
+   "win_prob": 1.0
   },
   {
-   "severity": "info",
-   "text": "Draw-limited — hand empties with energy to spare; add card draw, not energy."
-  },
-  {
-   "severity": "warn",
-   "text": "Deck clogged with basics/curses — prioritise removals."
+   "action": "end turn",
+   "hp_n": 0,
+   "hp_sd": null,
+   "is_best": false,
+   "low_confidence": false,
+   "mean_final_hp": null,
+   "q": 1.1715,
+   "q_saturated": false,
+   "stable_idx": -1,
+   "target_index": null,
+   "visits": 16,
+   "win_prob": 1.0
   }
  ]
 }

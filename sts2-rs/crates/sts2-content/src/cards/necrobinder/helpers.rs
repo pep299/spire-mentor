@@ -143,7 +143,7 @@ pub(crate) fn apply_power_signed_to_creature(
     );
 }
 
-fn apply_power_signed_to_creature_raw(
+pub(crate) fn apply_power_signed_to_creature_raw(
     state: &mut CombatState,
     target_uid: CreatureUid,
     kind: PowerKind,

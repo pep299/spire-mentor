@@ -13,9 +13,15 @@ pub(crate) fn play_shadow_step(state: &mut CombatState, _t: Option<CreatureUid>)
     // C# `CardCmd.Discard` fires the Sly auto-play for each discarded Sly card;
     // a raw pile move drops it (the discard hook + Tactician/Ricochet/Sneaky/…
     // trigger). Route through the shared hook-aware path.
-    let _ = sts2_core::card_effects::discard_hand_cards_with_hooks(state, &hand_uids);
-    apply_power_to_player(state, PowerKind::ShadowStep, 1);
+    // The power waits behind every Sly auto-play, including a Sly select the
+    // player answers first (GH #1131).
+    let then = sts2_core::LoopThen::Call(shadow_step_then, 0);
+    let _ = sts2_core::card_effects::discard_hand_cards_then(state, &hand_uids, Some(then));
     EffectResult::Resolved
+}
+
+fn shadow_step_then(state: &mut CombatState, _arg: u32) {
+    apply_power_to_player(state, PowerKind::ShadowStep, 1);
 }
 
 #[must_use]

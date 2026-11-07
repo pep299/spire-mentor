@@ -55,6 +55,7 @@ struct Setup {
     draw: Vec<CardId>,
     enemy_hps: Vec<i32>,
     relics: Vec<Relic>,
+    stars: i8,
 }
 
 impl Setup {
@@ -63,6 +64,7 @@ impl Setup {
             draw: draw.to_vec(),
             enemy_hps: vec![400],
             relics: vec![earring(false)],
+            stars: 0,
         }
     }
 }
@@ -127,6 +129,7 @@ fn run_turn(setup: Setup, round: Option<u16>) -> (CombatState, Vec<CardUid>, Ste
     if let Some(r) = round {
         state.round = r;
     }
+    state.player.stars = setup.stars;
     let res = start_player_turn(&mut state);
     (state, uids, res)
 }
@@ -238,6 +241,57 @@ fn x_cost_card_captures_the_energy_it_spent() {
     assert_eq!(
         ids(&state, &state.player.hand),
         vec![STRIKE, DEFEND, DEFEND, DEFEND]
+    );
+}
+
+/// The Earring play's `Resources.EnergyValue` is `GetAmountToSpend()` AFTER
+/// `SpendResources()` (CardCmd.cs:126): for an X-cost card the energy left,
+/// 0 — not the X. IntimidatingHelmet (EnergyValue >= 2) does not grant on an
+/// Earring-played Whirlwind (loadout Ironclad v0.107.1 2009: C# block 7, Rust
+/// 11), and IvoryTile (>= 3) gives no energy.
+#[test]
+fn x_cost_card_energy_value_is_the_energy_left() {
+    let mut setup = Setup::new(&[CardId::Whirlwind, DEFEND, DEFEND, DEFEND, DEFEND]);
+    for (i, kind) in [RelicKind::IntimidatingHelmet, RelicKind::IvoryTile]
+        .into_iter()
+        .enumerate()
+    {
+        setup.relics.push(Relic {
+            id: std::num::NonZeroU32::new(u32::try_from(i + 2).expect("fits")).expect("non-zero"),
+            kind,
+            counter: 0,
+            is_wax: false,
+            is_melted: false,
+        });
+    }
+    let (state, uids, _) = run_turn_one(setup);
+    assert_eq!(hp(&state, 0), 400 - 4 * 5, "Whirlwind X=4");
+    assert_eq!(state.player.block, 0, "no IntimidatingHelmet block");
+    assert_eq!(state.player.energy, 0, "no IvoryTile energy");
+    let whirlwind = &state.cards[uids[0].0.get() as usize - 1];
+    assert_eq!(whirlwind.energy_spent, 4, "the X stays the spent energy");
+    assert_eq!(sts2_core::cards::play_energy_value(whirlwind), 0);
+}
+
+/// Stardust under the Earring: `SpendResources()` spends the stars and sets
+/// `LastStarsSpent`, then `AutoPlay(skipXCapture: true)` keeps it — 3 stars
+/// hit 3 times (loadout Regent v0.111.0 2020: Rust hit 0 times).
+#[test]
+fn stardust_hits_once_per_star_it_spent() {
+    let mut setup = Setup::new(&[CardId::Stardust, DEFEND, DEFEND, DEFEND, DEFEND]);
+    setup.stars = 3;
+    let targets_before = {
+        let mut probe = Setup::new(&[DEFEND, DEFEND, DEFEND, DEFEND, DEFEND]);
+        probe.relics = Vec::new();
+        run_turn_one(probe).0.run_rng.combat_targets.counter()
+    };
+    let (state, _, _) = run_turn_one(setup);
+    assert_eq!(state.player.stars, 0, "the stars were spent");
+    assert_eq!(hp(&state, 0), 400 - 3 * 5, "one 5-damage hit per star");
+    assert_eq!(
+        state.run_rng.combat_targets.counter(),
+        targets_before + 3,
+        "each random hit reads combat_targets"
     );
 }
 

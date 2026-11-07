@@ -334,11 +334,13 @@ pub fn deal_damage_from_osty_to_enemy(
         return 0;
     };
     let card = originating_card_id(state);
-    let dealt = damage::apply_damage(state, dealer, target_uid, base, ValueProps::MOVE, card);
-    if !state.combat_log.osty_attack_command_open {
-        after_osty_attack_costs(state);
-    }
-    dealt
+    // One `AttackCommand` even when the target is already dead: C# still runs
+    // it (no hit) and its `AfterAttack` (BoneFlute) — a replayed Unleash /
+    // Snap whose first play killed the target (loadout Necrobinder
+    // 1038-v0.111.0, 1192-v0.107.1).
+    osty_attack_command(state, |state| {
+        damage::apply_damage(state, dealer, target_uid, base, ValueProps::MOVE, card)
+    })
 }
 
 /// Run `f` as ONE Osty `AttackCommand`: its hits leave
@@ -358,6 +360,16 @@ pub fn osty_attack_command<R>(state: &mut CombatState, f: impl FnOnce(&mut Comba
     if !outer {
         state.combat_log.osty_attacks_this_turn =
             state.combat_log.osty_attacks_this_turn.saturating_add(1);
+        // `Hook.AfterAttack` runs after the hit loop even when no hit landed
+        // (`AttackCommand.cs:551-673`: no live target breaks the loop), so the
+        // command owes `BoneFlute.AfterAttack`'s block either way. Bone Shards
+        // into a lone reviving TestSubject (Adaptable) hits nothing and still
+        // grants +2 (loadout Necrobinder 1192-v0.111.0). Hits latch it too
+        // (`bone_flute::on_after_damage_given_bone_flute`); it is a flag, so
+        // the command grants once.
+        if !state.is_over {
+            state.combat_log.bone_flute_latched = true;
+        }
     }
     r
 }
@@ -383,27 +395,31 @@ pub fn deal_damage_from_osty_to_all_alive_enemies(state: &mut CombatState, base:
                 .any(|c| c.id == uid.0 && c.current_hp > 0)
         })
         .collect();
-    // One command across every target (`TargetingAllOpponents`).
+    // One command across every target (`TargetingAllOpponents`), whose hit is
+    // one multi-target `CreatureCmd.Damage(validTargets)` (AttackCommand.cs:654):
+    // every target's HP loss lands before any after-hit hook or kill.
     osty_attack_command(state, |state| {
-        let mut total = 0_i32;
-        for target_uid in targets {
-            let alive = state
-                .creatures
-                .iter()
-                .any(|c| c.id == target_uid.0 && c.current_hp > 0);
-            if !alive {
-                continue;
+        damage::with_deferred_enemy_deaths(state, |state| {
+            let mut total = 0_i32;
+            for target_uid in targets {
+                let alive = state
+                    .creatures
+                    .iter()
+                    .any(|c| c.id == target_uid.0 && c.current_hp > 0);
+                if !alive {
+                    continue;
+                }
+                total = total.saturating_add(damage::apply_damage(
+                    state,
+                    dealer,
+                    target_uid,
+                    base,
+                    ValueProps::MOVE,
+                    card,
+                ));
             }
-            total = total.saturating_add(damage::apply_damage(
-                state,
-                dealer,
-                target_uid,
-                base,
-                ValueProps::MOVE,
-                card,
-            ));
-        }
-        total
+            total
+        })
     })
 }
 
@@ -965,7 +981,25 @@ pub fn apply_power_to_creature(
     kind: PowerKind,
     amount: i32,
 ) {
-    apply_power_to_creature_inner(state, target_uid, kind, amount, /*allow_dead=*/ false);
+    apply_power_to_creature_inner(
+        state, target_uid, kind, amount, /*allow_dead=*/ false, false, None,
+    );
+}
+
+/// [`apply_power_to_creature`] for a relic's own `PowerCmd.Apply(...,
+/// cardSource: null)` that fires while a card is resolving (Hand Drill's
+/// Vulnerable on a block break, `HandDrill.cs`): the apply carries no card
+/// source, so Unsettling Lamp (`cardSource == null` -> return,
+/// `UnsettlingLamp.cs`) neither captures nor doubles it.
+pub fn apply_power_to_creature_cardless(
+    state: &mut CombatState,
+    target_uid: CreatureUid,
+    kind: PowerKind,
+    amount: i32,
+) {
+    apply_power_to_creature_inner(
+        state, target_uid, kind, amount, /*allow_dead=*/ false, true, None,
+    );
 }
 
 /// Like [`apply_power_to_creature`] but permits a **dead-but-present** target.
@@ -984,7 +1018,9 @@ pub fn apply_power_to_creature_allow_dead(
     kind: PowerKind,
     amount: i32,
 ) {
-    apply_power_to_creature_inner(state, target_uid, kind, amount, /*allow_dead=*/ true);
+    apply_power_to_creature_inner(
+        state, target_uid, kind, amount, /*allow_dead=*/ true, false, None,
+    );
 }
 
 /// Whether a dead creature may still receive powers. C#
@@ -994,7 +1030,7 @@ pub fn apply_power_to_creature_allow_dead(
 /// (`DieForYouPower.cs:35`). So while an Osty carries it, alive or dead, no
 /// corpse receives powers: MonarchsGaze's killing-blow StrengthDown never
 /// lands (Regent full tier seed 5371, Bound Phylactery; GH #1054 item 5).
-fn corpses_can_receive_powers(state: &CombatState) -> bool {
+pub(crate) fn corpses_can_receive_powers(state: &CombatState) -> bool {
     !state.powers.iter().any(|p| p.kind == PowerKind::DieForYou)
 }
 
@@ -1077,12 +1113,19 @@ pub fn apply_signed_power_to_creature_allow_dead(
     }
 }
 
+/// A temporary-Strength debuff's Strength leg, run by
+/// [`apply_power_to_creature_inner`] with the post-fold amount — see
+/// [`apply_temporary_strength_debuff`].
+type TemporaryStrengthLeg = fn(&mut CombatState, CreatureUid, i32);
+
 fn apply_power_to_creature_inner(
     state: &mut CombatState,
     target_uid: CreatureUid,
     kind: PowerKind,
     amount: i32,
     allow_dead: bool,
+    cardless: bool,
+    strength_leg: Option<TemporaryStrengthLeg>,
 ) {
     if amount <= 0 {
         return;
@@ -1096,18 +1139,14 @@ fn apply_power_to_creature_inner(
     if state.is_over {
         return;
     }
-    let Some(creature_idx) = crate::creature_pos(&state.creatures, target_uid.0).filter(|&i| {
-        state.creatures[i].current_hp > 0 || (allow_dead && corpses_can_receive_powers(state))
-    }) else {
+    let can_receive = |state: &CombatState| {
+        crate::creature_pos(&state.creatures, target_uid.0).filter(|&i| {
+            state.creatures[i].current_hp > 0 || (allow_dead && corpses_can_receive_powers(state))
+        })
+    };
+    let Some(mut creature_idx) = can_receive(state) else {
         return;
     };
-
-    // Bead `sts2-rs-zdjjx`: Artifact negates a debuff destined for its owner
-    // (and consumes a stack) before any apply work. C#-equivalent of
-    // ArtifactPower folded into PowerCmd.Apply's ModifyPowerAmountReceived.
-    if try_consume_artifact_for_debuff(state, creature_idx, kind) {
-        return;
-    }
 
     // Bead `sts2-rs-47jv` + `sts2-rs-7uo4`: C#-canon channel order is
     // `before_power_amount_changed` → modify chain → mutation →
@@ -1124,12 +1163,37 @@ fn apply_power_to_creature_inner(
         kind,
         amount,
         PowerAmountObserverPhase::Before,
+        cardless,
     );
-    let amount = pipe_power_amount_through_modify_chain(state, None, target_uid, kind, amount);
+    // Bead `sts2-rs-zdjjx`: Artifact negates a debuff destined for its owner
+    // (and consumes a stack). C# folds ArtifactPower into
+    // `ModifyPowerAmountReceived`, which runs AFTER `BeforePowerAmountChanged`
+    // (`PowerCmd.cs` Apply/ModifyAmount), so a Before listener (Unsettling
+    // Lamp, v0.107.1) still sees — and captures — an Artifact-eaten debuff.
+    if try_consume_artifact_for_debuff(state, creature_idx, kind) {
+        return;
+    }
+    let amount =
+        pipe_power_amount_through_modify_chain(state, None, target_uid, kind, amount, cardless);
     // C# `PowerCmd.Apply` scales some enemy powers by the player count.
     let amount = crate::coop::scale_enemy_power(state, target_uid, kind, amount);
     if amount <= 0 {
         return;
+    }
+
+    // A fresh temporary-Strength debuff runs `BeforeApplied` (its Strength
+    // leg) BEFORE it lands, and lands only `if (target.CanReceivePowers)`
+    // (PowerCmd.cs:132-135 v0.111.0) — the leg's reactors can kill the target.
+    // A stack instead goes through `ModifyAmount`, and the leg follows the
+    // change (`TemporaryStrengthPower.AfterPowerAmountChanged`), below.
+    if let Some(leg) = strength_leg {
+        if existing_power_uid_unioned(state, creature_idx, target_uid, kind).is_none() {
+            leg(state, target_uid, amount);
+            match can_receive(state) {
+                Some(i) => creature_idx = i,
+                None => return,
+            }
+        }
     }
 
     // Event log (C# `PowerReceivedEntry`). This entry point carries no
@@ -1212,6 +1276,7 @@ fn apply_power_to_creature_inner(
             kind,
             amount,
             PowerAmountObserverPhase::After,
+            cardless,
         );
         fire_after_power_applied(state, target_uid, kind, amount);
         if let Some(pid) = remove_pid {
@@ -1220,6 +1285,9 @@ fn apply_power_to_creature_inner(
             for c in &mut state.creatures {
                 c.powers.retain(|u| u.0 != pid);
             }
+        }
+        if let Some(leg) = strength_leg {
+            leg(state, target_uid, amount);
         }
         return;
     }
@@ -1232,12 +1300,13 @@ fn apply_power_to_creature_inner(
         .max()
         .map_or(1, |m| m.saturating_add(1));
     let new_id = NonZeroU32::new(next_id_raw).expect("power id non-zero");
+    let applier = enemy_self_attribute_applier(state, target_uid, kind);
     state.powers.push(Power {
         id: new_id,
         kind,
         amount,
         counter: 0,
-        applier: None,
+        applier,
         // Bead `sts2-rs-st9tl`: defer the first decrement tick for
         // Vulnerable / Weak / Frail, but ONLY when the target is the
         // player. Mirrors C# `PowerCmd.Apply` (PowerCmd.cs:104-106):
@@ -1263,6 +1332,7 @@ fn apply_power_to_creature_inner(
         kind,
         amount,
         PowerAmountObserverPhase::After,
+        cardless,
     );
     fire_after_power_applied(state, target_uid, kind, amount);
     // Bead `sts2-rs-ig66w`: monster-power AfterApplied dispatch fires
@@ -1272,6 +1342,85 @@ fn apply_power_to_creature_inner(
     let _ = crate::monster_power_effects::dispatch_after_applied_for_power(
         state, target_uid, kind, None,
     );
+}
+
+/// The C# `Applier` a fresh Strength / Dexterity / Focus instance gets when
+/// it lands on an ENEMY through the applier-less positive surface
+/// ([`apply_power_to_creature`]): the enemy itself.
+///
+/// A positive attribute on an enemy is a monster buff — Rocket's
+/// `PowerCmd.Apply<StrengthPower>(base.Creature, 2, base.Creature, null)`,
+/// Crusher's Adapt, CrabRage (`base.Owner, ..., base.Owner`) — and C# keeps
+/// the creating applier for the instance's lifetime (`PowerCmd.Apply` sets
+/// `Applier` only on a fresh instance, PowerCmd.cs:113-119; a stack goes
+/// through `ModifyAmount`). The instance can later read as a Debuff once a
+/// player drain takes it negative, and Misery then copies it with that
+/// monster applier, so Sleight of Flesh (`applier == Owner`) does not react.
+/// Rust left it `None`, which Misery reads as player-applied: loadout
+/// Necrobinder 1210-v0.107.1, Misery on Rocket (Strength 2 -> -7 under Dark
+/// Shackles) fired Sleight of Flesh on the copied Strength too (C# 37 -> 28
+/// -> 22, Rust 37 -> 13). A player card that grants an enemy Strength (Fight
+/// Me) restamps its fresh instance.
+fn enemy_self_attribute_applier(
+    state: &CombatState,
+    target_uid: CreatureUid,
+    kind: PowerKind,
+) -> Option<CreatureUid> {
+    (matches!(
+        kind,
+        PowerKind::Strength | PowerKind::Dexterity | PowerKind::Focus
+    ) && state.enemy_uids.contains(&target_uid))
+    .then_some(target_uid)
+}
+
+/// C# `PowerCmd.Apply` of a temporary-Strength DEBUFF (a
+/// `TemporaryStrengthPower` with `IsPositive => false`: CrushUnder,
+/// DarkShackles, DyingStar, EnfeeblingTouch, ManglePower, PiercingWail,
+/// ShacklingPotion, ...) to `target_uid`, Strength leg included.
+///
+/// The leg is `Strength -amount` with the MODIFIED amount (after Unsettling
+/// Lamp's x2 / Artifact's 0; the Lamp's `HasDoubledTemporaryPowerSource`
+/// keeps the leg itself from doubling again). Order follows C#:
+/// * a fresh power: `BeforeApplied` drains the Strength first, then the power
+///   lands `if (target.CanReceivePowers)` (PowerCmd.cs:132-135 v0.111.0,
+///   TemporaryStrengthPower.cs:134-136). The drain fires Sleight of Flesh,
+///   which can kill the target first: a dying Parafright (reviving
+///   IllusionPower, `ShouldAllowHitting` false) ends with the Strength but
+///   without the power (loadout Necrobinder 1189 v0.111.0: Shackling Potion,
+///   then Dark Shackles);
+/// * a stack: `ModifyAmount`, then `AfterPowerAmountChanged` drains
+///   (TemporaryStrengthPower.cs:139-145).
+///
+/// The per-card ports applied the power and then drained what landed, which
+/// gets the amount right but not the order.
+pub fn apply_temporary_strength_debuff(
+    state: &mut CombatState,
+    target_uid: CreatureUid,
+    kind: PowerKind,
+    amount: i32,
+) {
+    debug_assert!(
+        crate::afflictions::is_temporary_power_debuff(kind),
+        "apply_temporary_strength_debuff is for TemporaryStrengthPower debuffs"
+    );
+    apply_power_to_creature_inner(
+        state,
+        target_uid,
+        kind,
+        amount,
+        false,
+        false,
+        Some(temporary_strength_leg),
+    );
+}
+
+/// `TemporaryStrengthPower`'s `PowerCmd.Apply<StrengthPower>(target,
+/// -amount, applier, cardSource, silent: true)`: a silent signed drain whose
+/// `AfterPowerAmountChanged` reactors (Sleight of Flesh) still fire.
+fn temporary_strength_leg(state: &mut CombatState, target_uid: CreatureUid, amount: i32) {
+    signed_power_apply_with_reactors(state, target_uid, PowerKind::Strength, -amount, |s| {
+        apply_signed_attr_power(s, target_uid, PowerKind::Strength, -amount);
+    });
 }
 
 /// Apply a **signed** delta to one of the `AllowNegative` attribute powers
@@ -1360,6 +1509,68 @@ pub fn apply_signed_attr_power(
         skip_next_tick: false,
     });
     state.creatures[creature_idx].powers.push(PowerUid(new_id));
+}
+
+/// The amount a player CARD's signed drain on `target_uid` actually applies —
+/// C#'s `PowerCmd.Apply` front half (`BeforePowerAmountChanged`, then
+/// `ModifyPowerAmountGiven`, PowerCmd.cs:120-125) for an apply the signed
+/// helpers would otherwise skip. Call it before the signed apply and pass the
+/// result on.
+///
+/// Shared Fate's enemy `Strength -2`, Malaise's `Strength -X` and Resonance's
+/// `Strength -1` are ordinary `PowerCmd.Apply<StrengthPower>(target, -N,
+/// owner, this)` calls, and a negative amount of an `AllowNegative` power
+/// reads as a Debuff (`PowerModel.GetTypeForAmount`). So Unsettling Lamp
+/// captures and doubles them like any card debuff (loadout Necrobinder 1101
+/// v0.111.0: Shared Fate took a Mecha Knight's Strength 10 -> 6 in C#, 10 -> 8
+/// in Rust, which never showed the drain to the Lamp).
+///
+/// Only for card-level drains: the signed helpers also carry
+/// `TemporaryStrengthPower.BeforeApplied`'s inner `Strength -N`, which must
+/// stay unfolded, because it already drains the landed (doubled) amount and
+/// the Lamp's `HasDoubledTemporaryPowerSource` skips it. Artifact
+/// (`ModifyPowerAmountReceived`) stays with the signed helper.
+pub fn fold_player_card_signed_apply(
+    state: &mut CombatState,
+    target_uid: CreatureUid,
+    kind: PowerKind,
+    amount: i32,
+) -> i32 {
+    if amount == 0 || state.is_over {
+        return amount;
+    }
+    // C# `PowerCmd.Apply` returns before any hook when the target cannot
+    // receive powers; the signed helpers skip dead targets the same way.
+    if !state
+        .creatures
+        .iter()
+        .any(|c| c.id == target_uid.0 && c.current_hp > 0)
+    {
+        return amount;
+    }
+    let applier = state.player.creature_uid;
+    fire_power_amount_observer_channels(
+        state,
+        applier,
+        target_uid,
+        kind,
+        amount,
+        PowerAmountObserverPhase::Before,
+        false,
+    );
+    if !relic_guarded_channel_live(state, GuardedChannel::ModifyPowerAmountGiven) {
+        return amount;
+    }
+    let ctx = hooks::PowerAmountCtx {
+        source_card: source_card(state, false),
+        ..hooks::PowerAmountCtx::new(
+            applier.map(|uid| creature_ref_for(state, uid)),
+            creature_ref_for(state, target_uid),
+            kind,
+            amount,
+        )
+    };
+    crate::relic_effects::dispatch_modify_power_amount_given(state, &ctx)
 }
 
 /// Run a content-side SIGNED power apply (`raw`, a player-applied drain such
@@ -1452,6 +1663,7 @@ fn pipe_power_amount_through_modify_chain(
     target_uid: CreatureUid,
     kind: PowerKind,
     amount: i32,
+    cardless: bool,
 ) -> i32 {
     // J03: with both relic folds dead (no owned handler) both return
     // `amount`; skip building their context.
@@ -1461,7 +1673,7 @@ fn pipe_power_amount_through_modify_chain(
         let target_ref = creature_ref_for(state, target_uid);
         let applier_ref = applier.map(|uid| creature_ref_for(state, uid));
         let ctx = hooks::PowerAmountCtx {
-            source_card: resolving_card(state),
+            source_card: source_card(state, cardless),
             ..hooks::PowerAmountCtx::new(applier_ref, target_ref, kind, amount)
         };
         let amt = crate::relic_effects::dispatch_modify_power_amount_given(state, &ctx);
@@ -1488,6 +1700,19 @@ fn resolving_card(state: &CombatState) -> Option<CardUid> {
     resolving_card_uid(state)
 }
 
+/// The `cardSource` of one power application: [`resolving_card`], or `None`
+/// for a `cardless` apply — a power hook's own `PowerCmd.Apply(..., null)`
+/// that runs while a card is resolving (Reaper Form's Doom,
+/// `ReaperFormPower.cs:57-64`), which C#'s `cardSource == null` gates
+/// (Unsettling Lamp) must not see as card-sourced.
+fn source_card(state: &CombatState, cardless: bool) -> Option<CardUid> {
+    if cardless {
+        None
+    } else {
+        resolving_card(state)
+    }
+}
+
 /// Bead `sts2-rs-47jv`: fire the observer channels (before-changed +
 /// after-modifying-given + after-modifying-received) around the
 /// power-amount mutation. `before_power_amount_changed` runs before
@@ -1500,6 +1725,7 @@ fn fire_power_amount_observer_channels(
     kind: PowerKind,
     amount: i32,
     when: PowerAmountObserverPhase,
+    cardless: bool,
 ) {
     // J03: the observers' answers are discarded, so channels with no owned
     // handler need neither the context nor the dispatch.
@@ -1519,7 +1745,7 @@ fn fire_power_amount_observer_channels(
         let target_ref = creature_ref_for(state, target_uid);
         let applier_ref = applier.map(|uid| creature_ref_for(state, uid));
         let ctx = hooks::PowerAmountCtx {
-            source_card: resolving_card(state),
+            source_card: source_card(state, cardless),
             ..hooks::PowerAmountCtx::new(applier_ref, target_ref, kind, amount)
         };
         match when {
@@ -1617,7 +1843,9 @@ pub fn apply_power_to_creature_with_applier(
     amount: i32,
     applier: Option<CreatureUid>,
 ) {
-    apply_power_to_creature_with_applier_inner(state, target_uid, kind, amount, applier, false);
+    apply_power_to_creature_with_applier_inner(
+        state, target_uid, kind, amount, applier, false, false,
+    );
 }
 
 /// [`apply_power_to_creature_with_applier`] that also lands on a
@@ -1633,7 +1861,26 @@ pub fn apply_power_to_creature_with_applier_allow_dead(
     amount: i32,
     applier: Option<CreatureUid>,
 ) {
-    apply_power_to_creature_with_applier_inner(state, target_uid, kind, amount, applier, true);
+    apply_power_to_creature_with_applier_inner(
+        state, target_uid, kind, amount, applier, true, false,
+    );
+}
+
+/// [`apply_power_to_creature_with_applier_allow_dead`] for a power hook's
+/// own `PowerCmd.Apply(..., cardSource: null)` that fires while a card is
+/// resolving (Reaper Form's Doom, `ReaperFormPower.cs:57-64`): the apply's
+/// `cardSource` is `None`, not the resolving card, so Unsettling Lamp
+/// (`cardSource == null` → return) neither captures nor doubles it.
+pub fn apply_power_to_creature_cardless_with_applier_allow_dead(
+    state: &mut CombatState,
+    target_uid: CreatureUid,
+    kind: PowerKind,
+    amount: i32,
+    applier: Option<CreatureUid>,
+) {
+    apply_power_to_creature_with_applier_inner(
+        state, target_uid, kind, amount, applier, true, true,
+    );
 }
 
 fn apply_power_to_creature_with_applier_inner(
@@ -1643,6 +1890,7 @@ fn apply_power_to_creature_with_applier_inner(
     amount: i32,
     applier: Option<CreatureUid>,
     allow_dead: bool,
+    cardless: bool,
 ) {
     if amount <= 0 {
         return;
@@ -1652,6 +1900,11 @@ fn apply_power_to_creature_with_applier_inner(
     if state.is_over {
         return;
     }
+    // A corpse receives the power only while no `DieForYou` is in the fight
+    // ([`corpses_can_receive_powers`]): with an Osty summoned, Reaper Form's
+    // killing-blow Doom never lands, so Shroud grants no block for it
+    // (loadout Necrobinder 1073/1078/1092/1114/1122/1035/1109).
+    let allow_dead = allow_dead && corpses_can_receive_powers(state);
     let Some(creature_idx) = state
         .creatures
         .iter()
@@ -1659,13 +1912,6 @@ fn apply_power_to_creature_with_applier_inner(
     else {
         return;
     };
-
-    // Bead `sts2-rs-zdjjx`: Artifact debuff-negation gate (see
-    // `apply_power_to_creature`). Scoped to the target creature, so a
-    // player-applied debuff onto an Artifact-bearing monster is consumed here.
-    if try_consume_artifact_for_debuff(state, creature_idx, kind) {
-        return;
-    }
 
     // Bead `sts2-rs-47jv` + `sts2-rs-7uo4`: C#-canon order is
     // Before → Modify → mutation → After, with the real applier
@@ -1677,8 +1923,17 @@ fn apply_power_to_creature_with_applier_inner(
         kind,
         amount,
         PowerAmountObserverPhase::Before,
+        cardless,
     );
-    let amount = pipe_power_amount_through_modify_chain(state, applier, target_uid, kind, amount);
+    // Bead `sts2-rs-zdjjx`: Artifact debuff-negation gate, AFTER the Before
+    // channel as in C# (see `apply_power_to_creature_inner`). Scoped to the
+    // target creature, so a player-applied debuff onto an Artifact-bearing
+    // monster is consumed here.
+    if try_consume_artifact_for_debuff(state, creature_idx, kind) {
+        return;
+    }
+    let amount =
+        pipe_power_amount_through_modify_chain(state, applier, target_uid, kind, amount, cardless);
     // C# `PowerCmd.Apply` scales some enemy powers by the player count.
     let amount = crate::coop::scale_enemy_power(state, target_uid, kind, amount);
     if amount <= 0 {
@@ -1754,6 +2009,7 @@ fn apply_power_to_creature_with_applier_inner(
             kind,
             amount,
             PowerAmountObserverPhase::After,
+            cardless,
         );
         fire_after_power_applied_with(state, target_uid, kind, amount, applier);
         if let Some(pid) = remove_pid {
@@ -1792,6 +2048,7 @@ fn apply_power_to_creature_with_applier_inner(
         kind,
         amount,
         PowerAmountObserverPhase::After,
+        cardless,
     );
     fire_after_power_applied_with(state, target_uid, kind, amount, applier);
     // Bead `sts2-rs-ig66w`: parallel AfterApplied dispatch for the
@@ -2150,6 +2407,37 @@ pub fn discard_hand_cards_with_hooks(state: &mut CombatState, uids: &[CardUid]) 
     discard_and_draw_with_hooks(state, uids, 0)
 }
 
+/// Scrape's tail (Scrape.cs OnPlay): discard the cards its `CardPileCmd.Draw`
+/// returned that are not free. v0.107.1 reads
+/// `EnergyCost.GetWithModifiers(Local) != 0 || CostsX` (Scrape.cs:30), so a
+/// RocketPunch made free until played by a status draw is 0 and stays in hand
+/// (Defect full seed 3042). v0.111.0 reads `GetWithModifiers(All)`
+/// (Scrape.cs:32): the global modifiers count too, and a negative base (an
+/// unplayable Infection / curse, cost -1) returns -1 before any clamp
+/// (CardEnergyCost.cs:101-104), so it is discarded (Defect QX197).
+/// `CardCmd.Discard` fires `AfterCardDiscarded` per card and auto-plays a
+/// discarded Sly card, hence the hooked discard.
+pub fn scrape_discard_drawn(state: &mut CombatState, drawn: &[CardUid]) {
+    let v0111 = state.game_version >= crate::GameVersion::V0_111_0;
+    let to_discard: smallvec::SmallVec<[CardUid; 10]> = drawn
+        .iter()
+        .copied()
+        .filter(|&uid| {
+            let Some(card) = state.cards.get(uid.0.get() as usize - 1) else {
+                return false;
+            };
+            if v0111 {
+                card.is_x_cost()
+                    || card.cost < 0
+                    || hooks::effective_card_cost_inst(state, card, uid) != 0
+            } else {
+                card.is_x_cost() || hooks::local_card_cost(state, card) != 0
+            }
+        })
+        .collect();
+    let _ = discard_and_draw_with_hooks(state, &to_discard, 0);
+}
+
 /// Full C# `CardCmd.DiscardAndDraw` (`MegaCrit.Sts2.Core.Commands/CardCmd.cs:172-205`):
 /// for each card, move Hand→Discard and fire `Hook.AfterCardDiscarded`; then,
 /// **after** an optional `draw_count`-card draw, auto-play every discarded
@@ -2171,6 +2459,28 @@ pub fn discard_and_draw_with_hooks(
     state: &mut CombatState,
     uids: &[CardUid],
     draw_count: i32,
+) -> i32 {
+    discard_and_draw_then(state, uids, draw_count, None)
+}
+
+/// [`discard_hand_cards_with_hooks`] for a card whose `OnPlay` goes on after
+/// the discard: `then` runs once every discarded Sly card has auto-played,
+/// which may be after a Sly card's select is answered (GH #1131).
+pub fn discard_hand_cards_then(
+    state: &mut CombatState,
+    uids: &[CardUid],
+    then: Option<crate::LoopThen>,
+) -> i32 {
+    discard_and_draw_then(state, uids, 0, then)
+}
+
+/// [`discard_and_draw_with_hooks`] with a follow-up `then`, run after the
+/// last Sly auto-play. See [`play_discarded_sly`].
+pub fn discard_and_draw_then(
+    state: &mut CombatState,
+    uids: &[CardUid],
+    draw_count: i32,
+    then: Option<crate::LoopThen>,
 ) -> i32 {
     // Snapshot the Sly subset (in supplied order) BEFORE the discards, mirroring
     // C#'s `slyCards` collection inside the per-card loop. The keyword check is
@@ -2210,22 +2520,78 @@ pub fn discard_and_draw_with_hooks(
     }
     // Auto-play each Sly card BY REFERENCE wherever it now sits (the draw may
     // have reshuffled it from discard into draw/hand) — CardCmd.cs:201-204.
-    // C# `await`s each `AutoPlay(item, SlyDiscard)` to completion before the
-    // next, so a Sly card whose own `OnPlay` opens a select (a
-    // MasterPlanner-Sly Survivor/Acrobatics/Prepared) auto-resolves that select
-    // INLINE within the loop. Hold `autoplay_inline_resolve` so the nested
-    // select drains here instead of surfacing — surfacing would park an
-    // `AutoPlayFinish` resume that this simple loop's next iteration clobbers,
-    // dropping the surfacing card entirely (Silent sweep seeds 481/306/984/1400
-    // once MasterPlanner makes those Skills Sly). Bead
-    // `sts2-rs-masterplanner-sly`.
+    play_discarded_sly(state, &sly, then);
+    discarded
+}
+
+/// Auto-play the discarded Sly `cards` in order, then apply `then`.
+///
+/// C# `await`s each `CardCmd.AutoPlay(item, SlyDiscard)` before the next
+/// (`CardCmd.cs:201-204`), and the discarding card's `OnPlay` goes on only
+/// after the last. So a Sly card whose `OnPlay` opens a select (an Armaments
+/// made Sly by Master Planner) prompts the player, and the rest waits for the
+/// pick. When the auto-play parks its resume, this records the cards not yet
+/// played and `then` as the resume's loop continuation, the BeatDown way, and
+/// returns. The resolver runs [`resume_discarded_sly`] once the pick lands.
+///
+/// Under an already parked auto-play (the discarding card was itself
+/// auto-played and its discard select prompted), that resume is set aside. If
+/// a Sly card parks, the set-aside finish becomes the frame after it, with the
+/// rest of this loop as the frame's continuation, the DecisionsDecisions way.
+/// GH #1131.
+pub fn play_discarded_sly(
+    state: &mut CombatState,
+    cards: &[CardUid],
+    then: Option<crate::LoopThen>,
+) {
+    let outer = state.pending_autoplay_resume.take();
+    // A resume parked mid-draw keeps its draw on the top slot only, so it
+    // can't become a frame. Drain inline there, as before.
+    let nestable = outer.as_ref().is_none_or(|o| o.inner_draw.is_none());
+    debug_assert!(nestable, "a Sly discard under a parked draw");
     let prev_inline = state.autoplay_inline_resolve;
-    state.autoplay_inline_resolve = true;
-    for uid in sly {
+    state.autoplay_inline_resolve = prev_inline || !nestable;
+    for (i, &uid) in cards.iter().enumerate() {
         let _ = crate::combat_loop::auto_play_specific_card_from_discard(state, uid, false);
+        if let Some(resume) = state.pending_autoplay_resume.as_mut() {
+            let cont = crate::AutoPlayLoopCont {
+                resume_fn: resume_discarded_sly,
+                iters: 0,
+                uids: cards[i + 1..].iter().copied().collect(),
+                force_exhaust: false,
+                then,
+            };
+            debug_assert!(resume.continuation.is_none());
+            match outer {
+                Some(outer) => {
+                    resume
+                        .parent_chain
+                        .push(crate::combat_loop::AutoPlayParentFrame {
+                            finish: outer.finish,
+                            remaining: outer.remaining,
+                            force_exhaust: outer.force_exhaust,
+                            continuation: Some(cont),
+                        });
+                    resume.parent_chain.extend(outer.parent_chain);
+                    resume.continuation = outer.continuation;
+                }
+                None => resume.continuation = Some(cont),
+            }
+            state.autoplay_inline_resolve = prev_inline;
+            return;
+        }
     }
     state.autoplay_inline_resolve = prev_inline;
-    discarded
+    state.pending_autoplay_resume = outer;
+    if let Some(then) = then {
+        then.run(state);
+    }
+}
+
+/// Loop continuation for [`play_discarded_sly`]: the Sly cards not yet played
+/// and the discarding card's follow-up.
+fn resume_discarded_sly(state: &mut CombatState, cont: &crate::AutoPlayLoopCont) {
+    play_discarded_sly(state, &cont.uids, cont.then);
 }
 
 // ---------------------------------------------------------------------------
@@ -2448,6 +2814,34 @@ pub fn spawn_card_into_draw_pile_random(
     card.normalize_for_version(state.game_version);
     card.initialize_local_energy_cost(state.game_version);
     state.cards.push(card);
+    add_generated_card_to_draw_random(state, uid, added_by_player);
+    uid
+}
+
+/// Place a card that is ALREADY in the arena (minted by a content-side
+/// sampler such as Metamorphosis's `GetForCombat`) at a uniform-random index
+/// of the draw pile and fire the generation listeners — the
+/// `CardPilePosition.Random` half of C# `CardPileCmd.AddGeneratedCardToCombat`
+/// (one `Shuffle` read, then `Hook.AfterCardGeneratedForCombat`). See
+/// [`spawn_card_into_draw_pile_random`].
+pub fn add_generated_card_to_draw_random(
+    state: &mut CombatState,
+    uid: CardUid,
+    added_by_player: bool,
+) {
+    // C# `CardPileCmd.Add` returns `success = false` before the slot read
+    // when `newPile.IsCombatPile && CombatManager.IsEnding` (CardPileCmd.cs:312
+    // v0.107.1, :379 v0.111.0): a card generated after the last enemy died
+    // never reaches the draw pile and draws no `Shuffle` read. The caller's
+    // `History.CardGenerated` and the generation hook still run (the hook's
+    // listeners are themselves gated on ending), so the tally path below is
+    // kept. Metamorphosis whose Regalite+Juggernaut kills mid-loop: Rust read
+    // one extra `Shuffle` and desynced the next combat's opening shuffle
+    // (random-loadout Ironclad v0.107.1 seed 1001).
+    if crate::combat_loop::combat_is_ending(state) {
+        fire_card_generation_listeners(state, uid, PileKind::Draw, added_by_player);
+        return;
+    }
     // Bead `sts2-rs-09x5n` (F2 `HiddenInfoMode::BeliefDraw`): under a
     // deferred-draw-order pile there is no physical position for a random
     // index to land in — fold the new uid into the canonical (uid-sorted)
@@ -2463,7 +2857,6 @@ pub fn spawn_card_into_draw_pile_random(
         state.player.draw.insert(idx, uid);
     }
     fire_card_generation_listeners(state, uid, PileKind::Draw, added_by_player);
-    uid
 }
 
 /// Fire the player-only `AfterCardGeneratedForCombat` listener cascade that
@@ -2544,9 +2937,10 @@ pub(crate) fn fire_card_generated_for_combat_powers(
     // `IterateCombatHookListeners`, which yields NO listeners if combat is
     // over or ending (`CombatManager.IsOverOrEnding`) when the dispatch
     // begins (`Hook.cs:177-207`, `:395-402`). `AddGeneratedCardsToCombat`
-    // still adds the card and records `History.CardGenerated` (its only
-    // guard is `!IsInProgress`, `CardPileCmd.cs:281-313`), so callers keep
-    // the Supermassive tally outside this gate. A Gunk Up that kills the
+    // still records `History.CardGenerated` (its only guard is
+    // `!IsInProgress`, `CardPileCmd.cs:281-313`), so callers keep the
+    // Supermassive tally outside this gate. (The card itself is NOT added:
+    // `CardPileCmd.Add` bails on `IsEnding`, CardPileCmd.cs:312.) A Gunk Up that kills the
     // last primary enemy and then generates Slimed must NOT roll a
     // TrashToTreasure orb (Defect seed 1016: the extra `combat_orbs` read
     // carried into the next combat).
@@ -2743,16 +3137,20 @@ pub(crate) fn fire_smokestack_on_status_generation(
                 .any(|c| c.id == e.0 && c.current_hp > 0)
         })
         .collect();
-    for target in targets {
-        let _ = crate::damage::apply_damage(
-            state,
-            crate::hooks::CreatureRef::Player,
-            target,
-            amount,
-            crate::hooks::ValueProps::UNPOWERED,
-            None,
-        );
-    }
+    // One multi-target `CreatureCmd.Damage` (SmokestackPower.cs): its kills
+    // die after the last hit.
+    damage::with_deferred_enemy_deaths(state, |state| {
+        for target in targets {
+            let _ = crate::damage::apply_damage(
+                state,
+                crate::hooks::CreatureRef::Player,
+                target,
+                amount,
+                crate::hooks::ValueProps::UNPOWERED,
+                None,
+            );
+        }
+    });
 }
 
 /// C# `TrashToTreasurePower.AfterCardGeneratedForCombat`
@@ -3067,7 +3465,8 @@ pub fn stamp_entered_combat_cost_backfill(state: &mut CombatState, uid: CardUid)
 /// The engine has no clone flag, so the shave covers only the plays the card
 /// has not yet counted ([`crate::cards::VarKey::BansheesCryEtherealCounted`]):
 /// a fresh card counts none, and a copy of one already in combat carries the
-/// original's count. Floored at 0 like `CardEnergyCost`.
+/// original's count. Unclamped like every `AddThisCombat`
+/// ([`crate::cards::Card::add_cost_this_combat`]).
 fn banshees_cry_entered_combat(state: &mut CombatState, uid: CardUid) {
     let total =
         i32::try_from(state.combat_log.ethereal_cards_played_this_combat).unwrap_or(i32::MAX);
@@ -3078,7 +3477,7 @@ fn banshees_cry_entered_combat(state: &mut CombatState, uid: CardUid) {
     let missed = total - c.combat_var(key);
     if missed > 0 {
         let shave = missed.saturating_mul(2);
-        c.cost = i8::try_from((i32::from(c.cost) - shave).max(0)).unwrap_or(0);
+        c.add_cost_this_combat(-shave);
         c.set_combat_var(key, total);
     }
 }
@@ -3647,6 +4046,7 @@ pub fn exhaust_card_uid(state: &mut CombatState, uid: CardUid) -> bool {
     // Surgical card-effect-driven exhaust (Stoke, etc.) — not the
     // end-of-turn ethereal sweep, so `caused_by_ethereal = false`. Bead
     // `sts2-rs-umouk`.
+    let draw_was_suspended = state.pending_draw_resume.is_some();
     crate::hooks::dispatch_after_card_exhausted(state, &hook_ctx, false);
 
     let relic_ctx = crate::relic_effects::CardEventCtx {
@@ -3656,7 +4056,7 @@ pub fn exhaust_card_uid(state: &mut CombatState, uid: CardUid) -> bool {
         card_tags,
         energy_spent: 0,
     };
-    let _ = crate::relic_effects::dispatch_after_card_exhausted(state, &relic_ctx);
+    state.relic_after_card_exhausted_behind_powers(draw_was_suspended, &relic_ctx);
     true
 }
 
@@ -6740,6 +7140,61 @@ mod tests {
         assert_eq!(state.creatures[2].current_hp, 15);
         // Dead enemy unchanged.
         assert_eq!(state.creatures[3].current_hp, 0);
+    }
+
+    /// C# `CreatureCmd.Damage` over several targets applies every target's HP
+    /// loss before any after-hit hook (CreatureCmd.cs:394-430; v0.107.1
+    /// :359-408). So the Outbreak that the first target's Envenom Poison sets
+    /// off lands after the second target already took the AoE: the second
+    /// target dies to Outbreak, not to the AoE, which kills nothing (Echoing
+    /// Slash does not repeat). Silent loadout v0.107.1 seeds 1000, 1037.
+    #[test]
+    fn aoe_after_hit_hooks_wait_for_every_targets_hp_loss() {
+        let mut state = CombatState {
+            rng: crate::dotnet_rng::Rng::new(0_i32),
+            ..Default::default()
+        };
+        state.player.current_hp = 80;
+        state.player.max_hp = 80;
+        let _player_uid = state.init_player_creature();
+        for (slot, hp) in [(1_u32, 40_i32), (2_u32, 15_i32)] {
+            let id = NonZeroU32::new(slot + 10).expect("non-zero");
+            state.creatures.push(Creature {
+                id,
+                current_hp: hp,
+                max_hp: 40,
+                block: 0,
+                powers: SmallVec::new(),
+                species: Some(MonsterKind::Nibbit),
+                intent: None,
+                intent_history: IntentHistory::default(),
+                monster_id: MonsterId("Nibbit"),
+                ai: None,
+            });
+            state.enemy_uids.push(CreatureUid(id));
+        }
+        // Envenom(1), and Outbreak(11) one Poison short of firing.
+        for (pid, kind, amount, counter) in [
+            (1_u32, PowerKind::Envenom, 1, 0),
+            (2_u32, PowerKind::Outbreak, 11, 2),
+        ] {
+            let pid = NonZeroU32::new(pid).expect("nz");
+            state.powers.push(crate::Power {
+                id: pid,
+                kind,
+                amount,
+                counter,
+                applier: None,
+                skip_next_tick: false,
+            });
+            state.player.powers.push(crate::PowerUid(pid));
+        }
+        let (total, kills) =
+            deal_damage_to_all_alive_enemies_counting_kills(&mut state, 5, ValueProps::MOVE, None);
+        assert_eq!(total, 10, "both targets take the full AoE before Outbreak");
+        assert_eq!(kills, 0, "the second target dies to Outbreak, not the AoE");
+        assert_eq!(state.creatures[1].current_hp, 24, "40 - 5 - 11");
+        assert_eq!(state.creatures[2].current_hp, 0, "15 - 5 - 11");
     }
 
     /// Osty-as-dealer attack path (`FromOsty`): a summoned Osty deals

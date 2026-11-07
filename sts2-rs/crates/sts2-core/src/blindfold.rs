@@ -91,6 +91,7 @@ const BELIEF_ROOT_STREAM_SALT: u64 = 0xF00D_BEEF_CAFE_0004;
 ///
 /// [`HiddenInfoMode::RootScramble`]: https://docs.rs/sts2-mcts (see `sts2_mcts::HiddenInfoMode`)
 pub fn blindfold_root(state: &mut CombatState, seed: u64) {
+    state.for_each_enemy_side_snapshot(|s| blindfold_root(s, seed));
     // 1. Pile: canonicalize the unknown middle segment, then shuffle it
     //    with an RNG seeded purely from `seed`. Pins are untouched by the
     //    canonicalization step and re-preserved by `cards::shuffle`.
@@ -156,6 +157,7 @@ fn reseed_hidden_streams(state: &mut CombatState, seed: u64, salt: u64) {
 /// `config.seed` (never from anything in `state`), exactly like
 /// `blindfold_root`'s call site.
 pub fn belief_root(state: &mut CombatState, seed: u64) {
+    state.for_each_enemy_side_snapshot(|s| belief_root(s, seed));
     canonicalize_unknown_middle(&mut state.player);
     state.player.deferred_draw_order = true;
     // Co-op (GH #1046): each teammate's draws are deferred the same way; the

@@ -1,10 +1,10 @@
 {
  "details": [
-  "Play Bloodletting",
-  "You HP 72→69 (−3)"
+  "Play Strike",
+  "Nibbit HP 23→17 (−6)"
  ],
  "error": null,
- "label": "Play Bloodletting",
+ "label": "Play Strike → Nibbit",
  "step": {
   "action_label": "",
   "assets_base": "https://assets.test",
@@ -183,9 +183,28 @@
      "target_type": "None",
      "type": "Skill",
      "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "red",
+     "cost": 1,
+     "description": "Deal 6 damage.",
+     "description_rich": "Deal 6 damage.",
+     "id": "STRIKE_IRONCLAD",
+     "image": "https://assets.test/card_atlas/ironclad/strike_ironclad.png",
+     "index": -1,
+     "name": "Strike",
+     "rarity": "Basic",
+     "stats": {
+      "damage": 6
+     },
+     "target_type": "None",
+     "type": "Attack",
+     "upgraded": false
     }
    ],
-   "discard_pile_count": 8,
+   "discard_pile_count": 9,
    "draw_pile": [
     {
      "base_cost": 2,
@@ -249,7 +268,7 @@
    "enemies": [
     {
      "block": 0,
-     "hp": 23,
+     "hp": 17,
      "image": "https://assets.test/monsters/nibbit.png",
      "index": 0,
      "intents": [
@@ -271,7 +290,7 @@
      "uid": 2
     }
    ],
-   "energy": 2,
+   "energy": 1,
    "energy_image": "https://assets.test/sprite_fonts/ironclad_energy_icon.png",
    "exhaust_pile": [
     {
@@ -296,30 +315,7 @@
    ],
    "exhaust_pile_count": 1,
    "floor": 5,
-   "hand": [
-    {
-     "base_cost": 1,
-     "can_play": true,
-     "color": "red",
-     "cost": 1,
-     "damage_preview": {
-      "0": 6
-     },
-     "description": "Deal 6 damage.",
-     "description_rich": "Deal 6 damage.",
-     "id": "STRIKE_IRONCLAD",
-     "image": "https://assets.test/card_atlas/ironclad/strike_ironclad.png",
-     "index": 0,
-     "name": "Strike",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 6
-     },
-     "target_type": "AnyEnemy",
-     "type": "Attack",
-     "upgraded": false
-    }
-   ],
+   "hand": [],
    "max_energy": 3,
    "options": [],
    "player": {

@@ -49,6 +49,9 @@ pub(crate) fn on_should_die_late_lizard_tail(state: &mut CombatState) -> EffectR
         return EffectResult::NotImplemented;
     };
     state.relics[relic_idx].counter = 1;
+    // The lethal hit's 0-HP `AfterCurrentHpChanged` ran before `ShouldDie`
+    // (see `red_skull_probe_at_death`).
+    red_skull_probe_at_death(state);
     let max_hp = state.creatures[creature_idx].max_hp;
     // `max(1, MaxHp * 50/100)` healed from the 0-HP death floor ==
     // `max(1, floor(MaxHp / 2))`, capped at MaxHp (MaxHp=1 edge).

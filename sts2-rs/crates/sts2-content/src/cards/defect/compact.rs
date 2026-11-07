@@ -41,12 +41,17 @@ pub(crate) fn play_compact(state: &mut CombatState, _t: Option<CreatureUid>) -> 
             fuel_uids.push((pos, new_uid));
         }
     }
-    reorder_like_batch_transform(state, &fuel_uids);
+    // v0.107.1 `Compact.cs` awaits one `CardCmd.Transform(item, fuel)` per
+    // Status, each an in-place swap — exactly what `transform_card` did.
+    // Only v0.111.0 batches them into one `CardCmd.Transform(list)`.
+    if crate::cards::v0111::is_v0111(state.game_version) {
+        reorder_like_batch_transform(state, &fuel_uids);
+    }
     EffectResult::Resolved
 }
 
-/// C# Compact makes ONE batch `CardCmd.Transform(list)` call
-/// (`Compact.cs:34-46`), not one transform per card. The batch first removes
+/// v0.111.0 C# Compact makes ONE batch `CardCmd.Transform(list)` call
+/// (v0.111.0 `Compact.cs:34-46`), not one transform per card. The batch first removes
 /// every original, recording each index with `IndexOf` AFTER the earlier
 /// removals (`CardCmd.cs:384-405`), sorts by (pile, index) (`PileIndexSort`,
 /// `CardCmd.cs:355-362`), then re-inserts each replacement with

@@ -1,54 +1,30 @@
 {
  "debug": {
-  "action": "Play Double Energy",
+  "action": "Play Strike+ → Cubex Construct",
   "combat_search": {
    "actions": [
     {
      "action": {
       "action": "play",
       "card_index": 0,
-      "target_index": null
+      "target_index": 0
      },
      "bucket": "likely-loss",
-     "hp_n": 2,
+     "hp_n": 4,
      "hp_sd": 0.0,
      "is_best": false,
-     "losses": 2,
+     "losses": 4,
      "low_confidence": false,
      "mean_final_hp": 0.0,
      "p_loss": 1.0,
      "p_tie": 0.0,
      "p_win": 0.0,
-     "q": -1.2554,
+     "q": -1.2348,
      "q_saturated": false,
      "ties": 0,
      "value": -1.0,
-     "value_sum": -2.5107,
-     "visits": 2,
-     "wins": 0
-    },
-    {
-     "action": {
-      "action": "play",
-      "card_index": 3,
-      "target_index": null
-     },
-     "bucket": "likely-loss",
-     "hp_n": 3,
-     "hp_sd": 0.0,
-     "is_best": true,
-     "losses": 3,
-     "low_confidence": false,
-     "mean_final_hp": 0.0,
-     "p_loss": 1.0,
-     "p_tie": 0.0,
-     "p_win": 0.0,
-     "q": -1.2279,
-     "q_saturated": false,
-     "ties": 0,
-     "value": -1.0,
-     "value_sum": -3.6838,
-     "visits": 3,
+     "value_sum": -4.9391,
+     "visits": 4,
      "wins": 0
     },
     {
@@ -58,45 +34,21 @@
       "target_index": 0
      },
      "bucket": "likely-loss",
-     "hp_n": 3,
+     "hp_n": 4,
      "hp_sd": 0.0,
-     "is_best": false,
-     "losses": 3,
+     "is_best": true,
+     "losses": 4,
      "low_confidence": false,
      "mean_final_hp": 0.0,
      "p_loss": 1.0,
      "p_tie": 0.0,
      "p_win": 0.0,
-     "q": -1.2314,
+     "q": -1.2245,
      "q_saturated": false,
      "ties": 0,
      "value": -1.0,
-     "value_sum": -3.6941,
-     "visits": 3,
-     "wins": 0
-    },
-    {
-     "action": {
-      "action": "play",
-      "card_index": 2,
-      "target_index": 0
-     },
-     "bucket": "likely-loss",
-     "hp_n": 2,
-     "hp_sd": 0.0,
-     "is_best": false,
-     "losses": 2,
-     "low_confidence": false,
-     "mean_final_hp": 0.0,
-     "p_loss": 1.0,
-     "p_tie": 0.0,
-     "p_win": 0.0,
-     "q": -1.2296,
-     "q_saturated": false,
-     "ties": 0,
-     "value": -1.0,
-     "value_sum": -2.4593,
-     "visits": 2,
+     "value_sum": -4.898,
+     "visits": 4,
      "wins": 0
     },
     {
@@ -104,40 +56,40 @@
       "action": "end_turn"
      },
      "bucket": "likely-loss",
-     "hp_n": 2,
+     "hp_n": 4,
      "hp_sd": 0.0,
      "is_best": false,
-     "losses": 2,
+     "losses": 4,
      "low_confidence": false,
      "mean_final_hp": 0.0,
      "p_loss": 1.0,
      "p_tie": 0.0,
      "p_win": 0.0,
-     "q": -1.2656,
+     "q": -1.2554,
      "q_saturated": false,
      "ties": 0,
      "value": -1.0,
-     "value_sum": -2.5313,
-     "visits": 2,
+     "value_sum": -5.0214,
+     "visits": 4,
      "wins": 0
     }
    ],
    "recommended": {
     "action": "play",
-    "card_index": 3,
-    "target_index": null
+    "card_index": 1,
+    "target_index": 0
    }
   },
   "is_combat": true,
   "phase": "combat",
   "result": "Advanced",
-  "summary": "combat MCTS → Play Double Energy"
+  "summary": "combat MCTS → Play Strike+ → Cubex Construct"
  },
  "done": false,
  "error": null,
  "over": false,
  "search": {
-  "action": "Play Double Energy",
+  "action": "Play Strike+ → Cubex Construct",
   "enemies": [
    {
     "block": 0,
@@ -181,102 +133,62 @@
   ],
   "scores": [
    {
-    "action": "Double Energy",
-    "hp_n": 3,
+    "action": "Strike",
+    "hp_n": 4,
     "hp_sd": 0.0,
     "in_band": false,
     "is_best": true,
-    "losses": 3,
+    "losses": 4,
     "low_confidence": false,
     "mean_final_hp": 0.0,
     "pick_rank": null,
     "pick_reason": null,
-    "q": -1.2279,
+    "q": -1.2245,
     "q_saturated": false,
-    "stable_idx": 3,
-    "target_index": null,
+    "stable_idx": 1,
+    "target_index": 0,
     "ties": 0,
-    "visits": 3,
+    "visits": 4,
     "win_prob": 0.0,
     "wins": 0
    },
    {
-    "action": "Zap",
-    "hp_n": 2,
+    "action": "Strike",
+    "hp_n": 4,
     "hp_sd": 0.0,
     "in_band": false,
     "is_best": false,
-    "losses": 2,
+    "losses": 4,
+    "low_confidence": false,
+    "mean_final_hp": 0.0,
+    "pick_rank": null,
+    "pick_reason": null,
+    "q": -1.2348,
+    "q_saturated": false,
+    "stable_idx": 0,
+    "target_index": 0,
+    "ties": 0,
+    "visits": 4,
+    "win_prob": 0.0,
+    "wins": 0
+   },
+   {
+    "action": "end turn",
+    "hp_n": 4,
+    "hp_sd": 0.0,
+    "in_band": false,
+    "is_best": false,
+    "losses": 4,
     "low_confidence": false,
     "mean_final_hp": 0.0,
     "pick_rank": null,
     "pick_reason": null,
     "q": -1.2554,
     "q_saturated": false,
-    "stable_idx": 0,
-    "target_index": null,
-    "ties": 0,
-    "visits": 2,
-    "win_prob": 0.0,
-    "wins": 0
-   },
-   {
-    "action": "Strike",
-    "hp_n": 3,
-    "hp_sd": 0.0,
-    "in_band": false,
-    "is_best": false,
-    "losses": 3,
-    "low_confidence": false,
-    "mean_final_hp": 0.0,
-    "pick_rank": null,
-    "pick_reason": null,
-    "q": -1.2314,
-    "q_saturated": false,
-    "stable_idx": 1,
-    "target_index": 0,
-    "ties": 0,
-    "visits": 3,
-    "win_prob": 0.0,
-    "wins": 0
-   },
-   {
-    "action": "Strike",
-    "hp_n": 2,
-    "hp_sd": 0.0,
-    "in_band": false,
-    "is_best": false,
-    "losses": 2,
-    "low_confidence": false,
-    "mean_final_hp": 0.0,
-    "pick_rank": null,
-    "pick_reason": null,
-    "q": -1.2296,
-    "q_saturated": false,
-    "stable_idx": 2,
-    "target_index": 0,
-    "ties": 0,
-    "visits": 2,
-    "win_prob": 0.0,
-    "wins": 0
-   },
-   {
-    "action": "end turn",
-    "hp_n": 2,
-    "hp_sd": 0.0,
-    "in_band": false,
-    "is_best": false,
-    "losses": 2,
-    "low_confidence": false,
-    "mean_final_hp": 0.0,
-    "pick_rank": null,
-    "pick_reason": null,
-    "q": -1.2656,
-    "q_saturated": false,
     "stable_idx": -1,
     "target_index": null,
     "ties": 0,
-    "visits": 2,
+    "visits": 4,
     "win_prob": 0.0,
     "wins": 0
    }
@@ -370,12 +282,12 @@
     },
     {
      "base_cost": 1,
-     "calculated_value": 0,
+     "calculated_value": 1,
      "can_play": false,
      "color": "blue",
      "cost": 1,
-     "description": "Deal 5 damage for each Channeled Orb.\n(Hits 0 times)",
-     "description_rich": "Deal 5 damage for each [gold]Channeled[/gold] Orb.\n(Hits 0 times)",
+     "description": "Deal 5 damage for each Channeled Orb.\n(Hits 1 time)",
+     "description_rich": "Deal 5 damage for each [gold]Channeled[/gold] Orb.\n(Hits 1 time)",
      "id": "BARRAGE",
      "image": "https://assets.test/card_atlas/defect/barrage.png",
      "index": -1,
@@ -499,15 +411,51 @@
      "target_type": "None",
      "type": "Skill",
      "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "blue",
+     "cost": 1,
+     "description": "Channel 1 Lightning.",
+     "description_rich": "[gold]Channel[/gold] 1 [gold]Lightning[/gold].",
+     "id": "ZAP",
+     "image": "https://assets.test/card_atlas/defect/zap.png",
+     "index": -1,
+     "name": "Zap",
+     "rarity": "Basic",
+     "stats": {},
+     "target_type": "None",
+     "type": "Skill",
+     "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "blue",
+     "cost": 1,
+     "description": "Deal 9 damage.",
+     "description_rich": "Deal 9 damage.",
+     "id": "STRIKE_DEFECT",
+     "image": "https://assets.test/card_atlas/defect/strike_defect.png",
+     "index": -1,
+     "name": "Strike",
+     "rarity": "Basic",
+     "stats": {
+      "damage": 9
+     },
+     "target_type": "None",
+     "type": "Attack",
+     "upgraded": true
     }
    ],
-   "discard_pile_count": 10,
+   "discard_pile_count": 12,
    "draw_pile": [],
    "draw_pile_count": 0,
    "enemies": [
     {
      "block": 0,
-     "hp": 21,
+     "hp": 12,
      "image": "https://assets.test/monsters/cubex_construct.png",
      "index": 0,
      "intents": [
@@ -557,7 +505,7 @@
      "uid": 2
     }
    ],
-   "energy": 2,
+   "energy": 0,
    "energy_image": "https://assets.test/sprite_fonts/defect_energy_icon.png",
    "exhaust_pile": [
     {
@@ -600,24 +548,7 @@
    "hand": [
     {
      "base_cost": 1,
-     "can_play": true,
-     "color": "blue",
-     "cost": 1,
-     "description": "Channel 1 Lightning.",
-     "description_rich": "[gold]Channel[/gold] 1 [gold]Lightning[/gold].",
-     "id": "ZAP",
-     "image": "https://assets.test/card_atlas/defect/zap.png",
-     "index": 0,
-     "name": "Zap",
-     "rarity": "Basic",
-     "stats": {},
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": true,
+     "can_play": false,
      "color": "blue",
      "cost": 1,
      "damage_preview": {
@@ -627,37 +558,16 @@
      "description_rich": "Deal 6 damage.",
      "id": "STRIKE_DEFECT",
      "image": "https://assets.test/card_atlas/defect/strike_defect.png",
-     "index": 1,
+     "index": 0,
      "name": "Strike",
      "rarity": "Basic",
      "stats": {
       "damage": 6
      },
-     "target_type": "AnyEnemy",
+     "target_type": "None",
      "type": "Attack",
+     "unplayable_reason": "cost",
      "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": true,
-     "color": "blue",
-     "cost": 1,
-     "damage_preview": {
-      "0": 9
-     },
-     "description": "Deal 9 damage.",
-     "description_rich": "Deal 9 damage.",
-     "id": "STRIKE_DEFECT",
-     "image": "https://assets.test/card_atlas/defect/strike_defect.png",
-     "index": 2,
-     "name": "Strike",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 9
-     },
-     "target_type": "AnyEnemy",
-     "type": "Attack",
-     "upgraded": true
     }
    ],
    "max_energy": 3,
@@ -667,48 +577,24 @@
       "action": {
        "action": "play",
        "card_index": 0,
-       "target_index": null
+       "target_index": 0
       },
       "bucket": "likely-loss",
-      "hp_n": 2,
+      "hp_n": 4,
       "hp_sd": 0.0,
       "is_best": false,
-      "losses": 2,
+      "losses": 4,
       "low_confidence": false,
       "mean_final_hp": 0.0,
       "p_loss": 1.0,
       "p_tie": 0.0,
       "p_win": 0.0,
-      "q": -1.2554,
+      "q": -1.2348,
       "q_saturated": false,
       "ties": 0,
       "value": -1.0,
-      "value_sum": -2.5107,
-      "visits": 2,
-      "wins": 0
-     },
-     {
-      "action": {
-       "action": "play",
-       "card_index": 3,
-       "target_index": null
-      },
-      "bucket": "likely-loss",
-      "hp_n": 3,
-      "hp_sd": 0.0,
-      "is_best": true,
-      "losses": 3,
-      "low_confidence": false,
-      "mean_final_hp": 0.0,
-      "p_loss": 1.0,
-      "p_tie": 0.0,
-      "p_win": 0.0,
-      "q": -1.2279,
-      "q_saturated": false,
-      "ties": 0,
-      "value": -1.0,
-      "value_sum": -3.6838,
-      "visits": 3,
+      "value_sum": -4.9391,
+      "visits": 4,
       "wins": 0
      },
      {
@@ -718,45 +604,21 @@
        "target_index": 0
       },
       "bucket": "likely-loss",
-      "hp_n": 3,
+      "hp_n": 4,
       "hp_sd": 0.0,
-      "is_best": false,
-      "losses": 3,
+      "is_best": true,
+      "losses": 4,
       "low_confidence": false,
       "mean_final_hp": 0.0,
       "p_loss": 1.0,
       "p_tie": 0.0,
       "p_win": 0.0,
-      "q": -1.2314,
+      "q": -1.2245,
       "q_saturated": false,
       "ties": 0,
       "value": -1.0,
-      "value_sum": -3.6941,
-      "visits": 3,
-      "wins": 0
-     },
-     {
-      "action": {
-       "action": "play",
-       "card_index": 2,
-       "target_index": 0
-      },
-      "bucket": "likely-loss",
-      "hp_n": 2,
-      "hp_sd": 0.0,
-      "is_best": false,
-      "losses": 2,
-      "low_confidence": false,
-      "mean_final_hp": 0.0,
-      "p_loss": 1.0,
-      "p_tie": 0.0,
-      "p_win": 0.0,
-      "q": -1.2296,
-      "q_saturated": false,
-      "ties": 0,
-      "value": -1.0,
-      "value_sum": -2.4593,
-      "visits": 2,
+      "value_sum": -4.898,
+      "visits": 4,
       "wins": 0
      },
      {
@@ -764,33 +626,42 @@
        "action": "end_turn"
       },
       "bucket": "likely-loss",
-      "hp_n": 2,
+      "hp_n": 4,
       "hp_sd": 0.0,
       "is_best": false,
-      "losses": 2,
+      "losses": 4,
       "low_confidence": false,
       "mean_final_hp": 0.0,
       "p_loss": 1.0,
       "p_tie": 0.0,
       "p_win": 0.0,
-      "q": -1.2656,
+      "q": -1.2554,
       "q_saturated": false,
       "ties": 0,
       "value": -1.0,
-      "value_sum": -2.5313,
-      "visits": 2,
+      "value_sum": -5.0214,
+      "visits": 4,
       "wins": 0
      }
     ],
     "recommended": {
      "action": "play",
-     "card_index": 3,
-     "target_index": null
+     "card_index": 1,
+     "target_index": 0
     }
    },
    "options": [],
    "orb_slots": 3,
-   "orbs": [],
+   "orbs": [
+    {
+     "evoke": 8,
+     "image": "https://assets.test/orb_atlas/lightning.png",
+     "index": 0,
+     "name": "LIGHTNING_ORB.title",
+     "passive": 3,
+     "type": "Lightning"
+    }
+   ],
    "player": {
     "block": 5,
     "deck": [
@@ -1020,6 +891,6 @@
    "round": 3
   }
  },
- "steps": 5,
+ "steps": 6,
  "victory": false
 }

@@ -26,14 +26,29 @@ pub(crate) fn play_all_for_one(
     let t = target.expect("AllForOne: Enemy-targeted");
     let base = current_card_damage(state);
     let _ = deal_damage_player_to_enemy(state, t, base);
-    let candidates: smallvec::SmallVec<[sts2_core::CardUid; 8]> =
-        sts2_core::card_effects::search_pile(state, PileKind::Discard, |c| {
-            c.cost == 0
-                && matches!(
-                    c.card_type,
-                    CardType::Attack | CardType::Skill | CardType::Power
-                )
-        });
+    // C# `Filter` (AllForOne.cs:36-47): `EnergyCost.GetWithModifiers(All) == 0
+    // && !CostsX`, i.e. the MODIFIED cost (local modifiers + the global
+    // `Hook.ModifyEnergyCostInCombat` walk: Corruption's free Skills, …), not
+    // the printed cost. `GetWithModifiers` returns a negative base unchanged,
+    // so an unplayable cost -1 card (a Quest card, modelled as a Skill) never
+    // matches. Random-loadout v0.107.1 seed 1178.
+    let candidates: smallvec::SmallVec<[sts2_core::CardUid; 8]> = state
+        .player
+        .discard
+        .iter()
+        .copied()
+        .filter(|&uid| {
+            sts2_core::card_by_uid(&state.cards, uid).is_some_and(|c| {
+                c.cost >= 0
+                    && !c.is_x_cost()
+                    && matches!(
+                        c.card_type,
+                        CardType::Attack | CardType::Skill | CardType::Power
+                    )
+                    && sts2_core::hooks::effective_card_cost_inst(state, c, uid) == 0
+            })
+        })
+        .collect();
     for uid in candidates {
         if let Some(pos) = state.player.discard.iter().position(|u| *u == uid) {
             state.player.discard.remove(pos);

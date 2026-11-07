@@ -1200,6 +1200,64 @@ fn well_laid_plans_no_eligible_card_no_prompt() {
     assert!(state.player.retain_this_turn.is_empty());
 }
 
+/// C# `CardSelectCmd.FromHand` returns empty once the combat
+/// `IsOverOrEnding` (CardSelectCmd.cs:699), so a turn end whose last enemy is
+/// already down opens no Well-Laid Plans retain select and does not park the
+/// flush (Silent loadout v0.107.1 seed 1025: Rust suspended on a select that
+/// `request_card_choice` refused to open).
+#[test]
+fn well_laid_plans_no_prompt_once_combat_is_ending() {
+    use sts2_core::combat_loop::{end_player_turn_phase_one, end_player_turn_phase_two};
+    use sts2_core::{CardUid, CombatPhase, StepResult};
+    install_pool();
+    let (mut state, euid) = fresh_state(CardId::WellLaidPlans, 0, 0);
+    state.player.current_hp = 70;
+    state.player.max_hp = 70;
+    let _ = state.init_player_creature();
+    let f = lookup(CardId::WellLaidPlans).expect("registered");
+    assert_eq!(f(&mut state, None), EffectResult::Resolved);
+
+    state.player.play.clear();
+    let card_uid = CardUid(NonZeroU32::new(2).expect("nz"));
+    state.cards.push(Card {
+        uid: card_uid,
+        card_id: CardId::StrikeSilent,
+        cost: 1,
+        card_type: CardType::Attack,
+        target_type: TargetType::Enemy,
+        ..Card::pod_defaults()
+    });
+    state.player.hand.push(card_uid);
+    // The last enemy sits at 2 HP; the turn-end Lightning passive (3) downs
+    // it after the end-turn win check, so combat is ending at the WLP step.
+    if let Some(c) = state.creatures.iter_mut().find(|c| c.id == euid.0) {
+        c.current_hp = 2;
+    }
+    state.player.orbs = sts2_core::orbs::OrbSlots::with_default_capacity();
+    sts2_core::orbs::channel_orb(&mut state, sts2_core::orbs::Orb::lightning());
+
+    state.phase = CombatPhase::PlayerPlayPhase;
+    end_player_turn_phase_one(&mut state);
+    let r2 = end_player_turn_phase_two(&mut state);
+    assert_ne!(
+        r2,
+        StepResult::PendingChoice,
+        "no retain select once ending"
+    );
+    assert_eq!(
+        state
+            .creatures
+            .iter()
+            .find(|c| c.id == euid.0)
+            .map(|c| c.current_hp),
+        Some(0),
+        "the orb zap downed the enemy"
+    );
+    assert!(state.pending_choice.is_none());
+    assert!(!state.pending_wlp_retain_resume, "flush not parked");
+    assert_eq!(state.player.pending_retain_count, 0);
+}
+
 /// Direct plumbing test: a card explicitly flagged in
 /// `retain_this_turn` survives the end-of-turn flush even with no
 /// retain-granting power. Locks the side-table contract used by
@@ -1903,6 +1961,52 @@ fn upgrade_260y4_footwork_and_corrosive_wave_scale() {
     assert_player_power(&cw, PowerKind::CorrosiveWave, 3);
 }
 
+/// `CorrosiveWavePower.AfterCardDrawn` applies Poison with `cardSource: null`
+/// (CorrosiveWavePower.cs:41), so Unsettling Lamp never doubles it — even when
+/// the draw comes from a resolving card (Prepared). Silent loadout v0.111.0
+/// seed 1015: Rust sourced the Poison to the resolving card (8 vs C# 4).
+#[test]
+fn corrosive_wave_poison_is_cardless_under_unsettling_lamp() {
+    install_pool();
+    crate::relics::dispatch::ensure_installed();
+    let (mut state, euid) = fresh_state(CardId::Prepared, 0, 0);
+    state.game_version = sts2_core::GameVersion::V0_111_0;
+    let _ = state.init_player_creature();
+    let p = state.player.creature_uid.expect("player creature");
+    sts2_core::card_effects::apply_power_to_creature(&mut state, p, PowerKind::CorrosiveWave, 4);
+    state.relics.push(sts2_core::Relic {
+        id: NonZeroU32::new(1).expect("non-zero"),
+        kind: sts2_core::RelicKind::UnsettlingLamp,
+        counter: sts2_core::RelicKind::UnsettlingLamp.initial_counter(),
+        is_wax: false,
+        is_melted: false,
+    });
+    // Prepared (uid 1) is resolving on the Play pile; one card to draw.
+    let draw_uid = sts2_core::CardUid(NonZeroU32::new(2).expect("nz"));
+    state.cards.push(Card {
+        uid: draw_uid,
+        card_id: CardId::StrikeSilent,
+        cost: 1,
+        card_type: CardType::Attack,
+        target_type: TargetType::Enemy,
+        ..Card::pod_defaults()
+    });
+    state.player.draw.push(draw_uid);
+    assert_eq!(state.draw_into_hand_card_effect(1), 1);
+    let poison = state
+        .creatures
+        .iter()
+        .find(|c| c.id == euid.0)
+        .and_then(|c| {
+            c.powers
+                .iter()
+                .filter_map(|u| state.powers.get_by_id(u.0))
+                .find(|pw| pw.kind == PowerKind::Poison)
+                .map(|pw| pw.amount)
+        });
+    assert_eq!(poison, Some(4), "Lamp does not double a cardless apply");
+}
+
 #[test]
 fn play_infinite_blades_stacks_1_infinite_blades() {
     install_pool();
@@ -2177,6 +2281,30 @@ fn hand_trick_auto_applies_sly_with_one_skill() {
         1,
         "the lone Skill is marked Sly this turn"
     );
+}
+
+/// HandTrick's filter is C# `card.Type == CardType.Skill` (`HandTrick.cs:30`);
+/// a Quest card (C# `CardType.Quest`, a Skill in Rust) is not a candidate, so
+/// one real Skill + Dowsing auto-applies to the Skill with no prompt.
+#[test]
+fn hand_trick_skips_quest_cards() {
+    install_pool();
+    let mut state = handtrick_state(1);
+    let raw = u32::try_from(state.cards.len() + 1).expect("fits");
+    let quest = sts2_core::CardUid::new(raw).expect("non-zero");
+    state.cards.push(Card {
+        uid: quest,
+        card_id: CardId::Dowsing,
+        cost: -1,
+        card_type: CardType::Skill,
+        target_type: TargetType::Self_,
+        ..Card::pod_defaults()
+    });
+    state.player.hand.push(quest);
+    let _ = lookup(CardId::HandTrick).expect("registered")(&mut state, None);
+    assert!(state.pending_choice.is_none(), "only one eligible Skill");
+    assert_eq!(state.player.sly_this_turn.len(), 1);
+    assert!(!state.player.sly_this_turn.contains(&quest));
 }
 
 #[test]
@@ -3449,6 +3577,57 @@ fn nightmare_two_hand_cards_opens_select_and_clones_chosen() {
         state.powers.iter().all(|p| p.kind != PowerKind::Nightmare),
         "Nightmare power removed after firing"
     );
+}
+
+/// C# `NightmarePower.SetSelectedCard` stores `card.CreateClone()` at select
+/// time and `BeforeHandDraw` clones that snapshot (NightmarePower.cs:41-63,
+/// both builds; `MutableClone` deep-copies the enchantment state). So a change
+/// to the original after the select (here an upgrade and a spent Glam-style
+/// combat var) does not reach the next-turn copies. Rust cloned the live card
+/// at BeforeHandDraw, so a played Glam original's used bit leaked into the
+/// clones (act23 Ironclad v0.111.0 seed 8180 act 3, step 980).
+#[test]
+fn nightmare_clones_the_select_time_snapshot_not_the_live_card() {
+    use sts2_core::cards::VarKey;
+    use sts2_core::hooks::dispatch_before_hand_draw_powers;
+    install_pool();
+    let (mut state, _) = fresh_state(CardId::Nightmare, 0, 0);
+    let mut uids = Vec::new();
+    for (raw, id) in [(2u32, CardId::StrikeSilent), (3, CardId::DefendSilent)] {
+        let uid = sts2_core::CardUid(NonZeroU32::new(raw).expect("nz"));
+        state.cards.push(Card {
+            uid,
+            card_id: id,
+            cost: 1,
+            ..Card::pod_defaults()
+        });
+        state.player.hand.push(uid);
+        uids.push(uid);
+    }
+    let _ = lookup(CardId::Nightmare).expect("registered")(&mut state, None);
+    let selection: SmallVec<[u8; 4]> = [0u8].into_iter().collect();
+    let _ = sts2_core::apply(&mut state, sts2_core::Action::ResolveChoice { selection });
+
+    // The original changes after the select.
+    let original = &mut state.cards[uids[0].0.get() as usize - 1];
+    assert_eq!(original.card_id, CardId::StrikeSilent);
+    original.upgraded = true;
+    original.set_combat_var(VarKey::EnchantmentUsed, 1);
+
+    dispatch_before_hand_draw_powers(&mut state);
+    let clones: Vec<&Card> = state
+        .player
+        .hand
+        .iter()
+        .filter(|u| !uids.contains(u))
+        .map(|u| &state.cards[u.0.get() as usize - 1])
+        .collect();
+    assert_eq!(clones.len(), 3);
+    for c in clones {
+        assert_eq!(c.card_id, CardId::StrikeSilent);
+        assert!(!c.upgraded, "the clone is the select-time snapshot");
+        assert_eq!(c.combat_var(VarKey::EnchantmentUsed), 0);
+    }
 }
 
 /// GH #364 A2 — a Nightmare power whose selected card is unrecoverable still

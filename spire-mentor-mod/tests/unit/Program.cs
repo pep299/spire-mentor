@@ -661,6 +661,100 @@ Check("screen: run snapshot", BugReportDump.ScreenOf(new Dictionary<string, obje
         L(RewardSwapLayout.Build(1, new List<int> { 0 }, true)), "P0 D0 X");
 }
 
+// Autobattle: which decisions stop for the player, and the "since your last
+// stop" chip (the workbench's autobattle.py, same expectations).
+{
+    string Stop(string? adviceFor, bool local, bool inCombat) =>
+        Autobattle.IsStop(adviceFor, local, inCombat).ToString();
+    Check("autobattle: a combat move plays", Stop("combat_action", false, true), "False");
+    Check("autobattle: a card pick inside a fight plays", Stop("card_select", false, true), "False");
+    Check("autobattle: an in-fight select confirm plays", Stop("card_select", true, true), "False");
+    Check("autobattle: card reward stops", Stop("card_reward", false, false), "True");
+    Check("autobattle: map stops", Stop("map_select", false, false), "True");
+    Check("autobattle: deck removal stops", Stop("card_select", false, false), "True");
+    Check("autobattle: the player's own selection is not confirmed for them", Stop("card_select", true, false), "True");
+    Check("autobattle: claiming the loot plays", Stop("reward_screen", true, false), "False");
+    Check("autobattle: opening the chest plays", Stop("treasure", true, false), "False");
+    Check("autobattle: game over never stops", Stop("game_over", true, false), "False");
+
+    AutobattleSnapshot Snap(int hp = 50, int gold = 99, string[]? deck = null, string[]? relics = null,
+        string[]? potions = null, int floor = 1, int maxHp = 75) =>
+        new(floor, hp, maxHp, gold,
+            (deck ?? Array.Empty<string>())
+                .Select(c => c.EndsWith('+') ? (c.TrimEnd('+'), true) : (c, false)).ToList(),
+            relics ?? Array.Empty<string>(), potions ?? Array.Empty<string>());
+    string Lines(AutobattleSnapshot? prev, AutobattleSnapshot cur, int autoplayed = 0) =>
+        string.Join(" | ", Autobattle.Lines(prev, cur, autoplayed));
+
+    Check("autobattle: first stop reports absolutes only",
+        Lines(null, Snap(deck: new[] { "Strike", "Defend" })), "HP 50/75 · Gold 99 · Deck 2");
+    Check("autobattle: adds and removes",
+        Lines(Snap(deck: new[] { "Strike", "Strike", "Defend" }), Snap(deck: new[] { "Strike", "Defend", "Inflame" })),
+        "Added Inflame | Removed Strike | HP 50/75 · Gold 99 · Deck 3");
+    Check("autobattle: an upgrade is not a removal plus an addition",
+        Lines(Snap(deck: new[] { "Strike", "Strike" }), Snap(deck: new[] { "Strike", "Strike+" })),
+        "Upgraded Strike | HP 50/75 · Gold 99 · Deck 2");
+    Check("autobattle: a surplus upgraded copy is added",
+        Lines(Snap(deck: new[] { "Strike", "Strike" }), Snap(deck: new[] { "Strike", "Strike+", "Strike+" })),
+        "Upgraded Strike | Added Strike+ | HP 50/75 · Gold 99 · Deck 3");
+    Check("autobattle: relics, potions and resources",
+        Lines(Snap(hp: 60, gold: 120, relics: new[] { "Burning Blood" }, potions: new[] { "Fire Potion" }),
+            Snap(hp: 48, gold: 45, relics: new[] { "Burning Blood", "Bag of Preparation" }), autoplayed: 7),
+        "Relic Bag of Preparation | Used potion Fire Potion | HP 48/75 (−12) · Gold 45 (−75) · Deck 0 | 7 decisions auto-played");
+    Check("autobattle: one decision auto-played",
+        Lines(Snap(hp: 40), Snap(hp: 45), autoplayed: 1), "HP 45/75 (+5) · Gold 99 · Deck 0 | 1 decision auto-played");
+    Check("autobattle: nothing changed",
+        Lines(Snap(deck: new[] { "Strike" }), Snap(deck: new[] { "Strike" })), "Nothing changed. | HP 50/75 · Gold 99 · Deck 1");
+    Check("autobattle: a new floor alone is not a move",
+        Autobattle.Moved(Snap(floor: 3, maxHp: 75), Snap(floor: 4, maxHp: 80)).ToString(), "False");
+    Check("autobattle: a used potion is a move",
+        Autobattle.Moved(Snap(potions: new[] { "Fire Potion" }), Snap()).ToString(), "True");
+    ChipText first = Autobattle.Chip("autobattle:1", null, Snap(floor: 3), 0);
+    Check("autobattle: first chip title", first.Title, "Autobattle — your call — floor 3");
+    Check("autobattle: later chip title", Autobattle.Chip("autobattle:2", Snap(), Snap(floor: 7), 3).Title,
+        "Since your last stop — floor 7");
+    Check("autobattle: chip kind", first.Kind, Autobattle.ChipKind);
+}
+
+// Speed hotkeys step in whole speeds; autobattle raises 1x to 2x and only 1x.
+{
+    string Up(double s) => SpeedSteps.Label(SpeedSteps.Step(s, 1));
+    string Down(double s) => SpeedSteps.Label(SpeedSteps.Step(s, -1));
+    Check("speed: up from 1x", Up(1.0), "2x");
+    Check("speed: up from 3x", Up(3.0), "4x");
+    Check("speed: up stops at 4x", Up(4.0), "4x");
+    Check("speed: down from 4x", Down(4.0), "3x");
+    Check("speed: down stops at 1x", Down(1.0), "1x");
+    Check("speed: between steps goes up to the next whole speed", Up(1.5), "2x");
+    Check("speed: between steps goes down to the next whole speed", Down(1.5), "1x");
+    Check("speed: a value a hair under a step counts as that step", Up(1.9999999), "3x");
+    Check("speed: below 1x, up goes to 1x", Up(0.5), "1x");
+    Check("speed: below 1x, down never speeds up", Down(0.5), "0.5x");
+    Check("speed: autobattle raises 1x", SpeedSteps.AutobattleOn(1.0)?.ToString() ?? "keep", "2");
+    Check("speed: autobattle keeps 1.5x", SpeedSteps.AutobattleOn(1.5)?.ToString() ?? "keep", "keep");
+    Check("speed: autobattle keeps 3x", SpeedSteps.AutobattleOn(3.0)?.ToString() ?? "keep", "keep");
+    Check("speed: autobattle keeps 0.5x", SpeedSteps.AutobattleOn(0.5)?.ToString() ?? "keep", "keep");
+    Check("speed: off restores an untouched 2x", SpeedSteps.RestoreOnOff(2.0).ToString(), "True");
+    Check("speed: off keeps a speed the player changed", SpeedSteps.RestoreOnOff(3.0).ToString(), "False");
+}
+
+// The action log sits under the advice column until dragged.
+{
+    string Below(float bottom, float want, float view)
+    {
+        (float top, float height) = LogPanelPlacement.BelowColumn(bottom, want, view);
+        return $"{top:0} {height:0}";
+    }
+    Check("log: fits under the column", Below(400f, 450f, 1080f), "408 450");
+    Check("log: shortened to the room left", Below(700f, 450f, 1080f), "708 364");
+    Check("log: never below its minimum, overlapping instead", Below(1000f, 450f, 1080f), "932 140");
+    Check("log: a short log is not stretched to the minimum", Below(1000f, 100f, 1080f), "972 100");
+    bool parsed = LogPanelPlacement.TryParse(LogPanelPlacement.Format(23.4f, 324f), out float lx, out float ly);
+    Check("log: position round-trips", $"{parsed} {lx} {ly}", "True 23 324");
+    Check("log: blank follows the column", LogPanelPlacement.TryParse("", out _, out _).ToString(), "False");
+    Check("log: junk follows the column", LogPanelPlacement.TryParse("12;x", out _, out _).ToString(), "False");
+}
+
 if (OperatingSystem.IsWindows())
 {
     WindowsChildProcessTests.Run(Check);

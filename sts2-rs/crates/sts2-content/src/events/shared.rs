@@ -1664,10 +1664,23 @@ pub const HUNGRY_FOR_MUSHROOMS: EventSpec = EventSpec {
 // rarity is rolled off base RegularEncounter odds (no pity, no upgrade roll).
 // The old `Reward::Card(empty)` push surfaced a random unfiltered 3-card pick
 // (extra step + wrong cards + Rewards-stream desync). Bead `sts2-rs-RP28`.
+/// `CardFactory.CreateForReward` runs `Hook.TryModifyCardRewardOptions` on
+/// its list unless `NoModifyHooks` is set (CardFactory.cs:104-107); neither
+/// Study (`NoUpgradeRoll`) nor TouchCore (`| NoCardPoolModifications`) sets
+/// it, so WingCharm / Glitter / FresnelLens / the eggs see the card before
+/// `CardPileCmd.Add`. No `IsCardReward` flag (no `CardReward` wrapper), so
+/// SilverCrucible / SilkenTress return early (see `offer_card_slate`).
+fn add_created_for_reward_card(state: &mut RunState, card: &sts2_core::cards::Card) {
+    let mut cards = state.offer_card_slate(vec![*card], false);
+    if let Some(card) = cards.pop() {
+        state.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::EventGain);
+    }
+}
+
 fn infested_study(state: &mut RunState) -> EventOutcome {
     if let Some(id) = crate::cards::spec_index::roll_infested_study_card(state) {
         if let Some(card) = crate::cards::spec_index::card_pod_from_id(id, false) {
-            state.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::EventGain);
+            add_created_for_reward_card(state, &card);
         }
     }
     EventOutcome::finished("Gained a random Power card.")
@@ -1676,7 +1689,7 @@ fn infested_study(state: &mut RunState) -> EventOutcome {
 fn infested_touch_core(state: &mut RunState) -> EventOutcome {
     if let Some(id) = crate::cards::spec_index::roll_infested_touch_core_card(state) {
         if let Some(card) = crate::cards::spec_index::card_pod_from_id(id, false) {
-            state.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::EventGain);
+            add_created_for_reward_card(state, &card);
         }
     }
     EventOutcome::finished("Gained a random 0-cost card.")
@@ -2447,6 +2460,33 @@ mod tests {
             Some(0),
             "TouchCore grants a 0-cost (non-X) card",
         );
+    }
+
+    /// Study / TouchCore build their card with `CardFactory.CreateForReward`
+    /// (InfestedAutomaton.cs:28-52, both builds), whose options set no
+    /// `NoModifyHooks`, so `Hook.TryModifyCardRewardOptions` runs on the
+    /// 1-card list (CardFactory.cs:104-107): an owned WingCharm draws
+    /// `Rng.Niche` and Swifts the card (WingCharm.cs:24-43) before it goes
+    /// to the deck (act23 Ironclad 8005 act2#b0/#b1, Niche one behind).
+    #[test]
+    fn infested_options_run_the_card_reward_hooks() {
+        use sts2_core::cards::EnchantmentId;
+        crate::relics::dispatch::ensure_installed();
+        for option in 0..2 {
+            let mut rs = RunState::new();
+            rs.relics.push(sts2_core::RelicId::WingCharm);
+            let niche_before = rs.rng.niche.counter();
+            let before = rs.master_deck.len();
+            (INFESTED_AUTOMATON.options[option].handler)(&mut rs);
+            assert_eq!(rs.master_deck.len(), before + 1);
+            assert_eq!(rs.rng.niche.counter(), niche_before + 1, "option {option}");
+            let added = rs.master_deck.last().unwrap();
+            assert_eq!(
+                added.enchantment(EnchantmentId::Swift),
+                1,
+                "option {option}"
+            );
+        }
     }
 
     /// Amalgamator CombineStrikes removes 2 Basic Strikes and adds Ultimate

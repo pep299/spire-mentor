@@ -18,11 +18,8 @@ pub(crate) fn on_after_side_turn_start_divine_destiny(
         return EffectResult::NotImplemented;
     }
     let stars = divine_destiny_stars(state.game_version);
-    state.player.stars = state.player.stars.saturating_add(stars);
-    state.player.stars_gained_this_turn = state
-        .player
-        .stars_gained_this_turn
-        .saturating_add(stars.unsigned_abs().into());
+    // `PlayerCmd.GainStars` → `Hook.AfterStarsGained` (Black Hole).
+    state.gain_stars(i32::from(stars));
     EffectResult::Resolved
 }
 

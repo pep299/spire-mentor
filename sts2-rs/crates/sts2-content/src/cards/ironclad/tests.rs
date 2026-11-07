@@ -423,15 +423,12 @@ fn hemokinesis_self_damage_does_not_buff_its_own_attack_with_rupture() {
         0,
         "Rupture Strength is deferred until after the card resolves",
     );
-    // The owed Strength is parked on the Rupture instance's counter (= 2).
-    let rupture_counter = state
-        .powers
-        .iter()
-        .find(|p| p.id == rupture_pid)
-        .map_or(-1, |p| p.counter);
+    // The owed Strength (= 2) is parked under Hemokinesis's own entry.
+    let hemo = *state.player.play.last().expect("Hemokinesis on Play");
     assert_eq!(
-        rupture_counter, 2,
-        "deferred Strength parked on Rupture counter"
+        state.combat_log.rupture_deferred_strength,
+        vec![(hemo, 2)],
+        "deferred Strength owed to the playing Hemokinesis"
     );
 }
 
@@ -508,14 +505,338 @@ fn hemokinesis_rupture_strength_lands_after_card_resolves() {
         2,
         "deferred Rupture Strength applied after the card resolves",
     );
-    let rupture_counter = state
-        .powers
-        .iter()
-        .find(|p| p.id == rupture_pid)
-        .map_or(-1, |p| p.counter);
+    assert!(
+        state.combat_log.rupture_deferred_strength.is_empty(),
+        "Rupture deferred-Strength entry drained"
+    );
+}
+
+/// Galvanic's self-damage lands in the enemy-power lane of a Power card's
+/// `AfterCardPlayed`, after `RupturePower.AfterCardPlayed` has already removed
+/// that card from `playedCards`, and C# deals it with `cardSource = null`
+/// (GalvanicPower.cs AfterCardPlayed; RupturePower.cs AfterDamageReceived).
+/// So Rupture grants the Strength at once. A deferred entry under the played
+/// card would never drain.
+#[test]
+fn rupture_strength_from_galvanic_after_a_power_play_is_not_lost() {
+    use sts2_core::combat_loop::play_card;
+    install_pool();
+    let (mut state, _enemy) = fresh_state_with_enemy(200);
+    let rupture_pid = NonZeroU32::new(9010).expect("non-zero");
+    state.powers.push(Power {
+        id: rupture_pid,
+        kind: PowerKind::Rupture,
+        amount: 2,
+        counter: 0,
+        applier: None,
+        skip_next_tick: false,
+    });
+    state.player.powers.push(PowerUid(rupture_pid));
+    let galvanic_pid = NonZeroU32::new(9011).expect("non-zero");
+    state.powers.push(Power {
+        id: galvanic_pid,
+        kind: PowerKind::Galvanic,
+        amount: 6,
+        counter: 0,
+        applier: None,
+        skip_next_tick: false,
+    });
+    state.creatures[0].powers.push(PowerUid(galvanic_pid));
+    state.init_player_creature();
+    state.side = sts2_core::Side::Player;
+    state.phase = sts2_core::CombatPhase::PlayerPlayPhase;
+    state.player.energy = 3;
+    state.player.max_energy = 3;
+    let raw = u32::try_from(state.cards.len() + 1).expect("fits");
+    let card_uid = sts2_core::CardUid::new(raw).expect("non-zero");
+    state.cards.push(Card {
+        local_energy_cost: None,
+        uid: card_uid,
+        card_id: CardId::Inflame,
+        cost: 1,
+        card_type: CardType::Power,
+        target_type: TargetType::Self_,
+        upgraded: false,
+        base_damage: 0,
+        base_block: 0,
+        combat_vars: sts2_core::cards::CombatVars::new(),
+        enchantments: sts2_core::cards::CardEnchantments::new(),
+        tags: CardTags::NONE,
+        energy_spent: 0,
+        base_replay_count: 0,
+        keyword_override: None,
+        affliction: None,
+    });
+    state.player.hand.push(card_uid);
+    let hp_before = state.player.current_hp;
+    let _ = play_card(&mut state, 0, None);
     assert_eq!(
-        rupture_counter, 0,
-        "Rupture deferred-Strength counter drained"
+        hp_before - state.player.current_hp,
+        6,
+        "Galvanic dealt its 6"
+    );
+    assert!(
+        state.combat_log.rupture_deferred_strength.is_empty(),
+        "no Rupture entry left parked under the finished play"
+    );
+    // Inflame's 2 (Inflame.cs:18) plus Rupture's 2 for the Galvanic HP loss.
+    assert_eq!(state.player_power_amount(PowerKind::Strength), 4);
+}
+
+/// Seed 4536 (v0.111 combat sweep, GLOBE_HEAD_NORMAL): Cascade auto-plays a
+/// Rupture card, whose Galvanic self-damage (6) must grant Rupture's Strength
+/// at once, so the next auto-played attack hits with it. C# `GalvanicPower`
+/// deals that damage with `cardSource = null` (GalvanicPower.cs
+/// AfterCardPlayed), and `RupturePower.AfterDamageReceived` applies Strength
+/// immediately for a null `cardSource` (RupturePower.cs). It must not park it
+/// under the enclosing Cascade, which would hold it until Cascade's own
+/// after-played and let the Strike miss it (C# hp 91, Rust 92).
+#[test]
+fn rupture_strength_from_galvanic_in_a_cascade_auto_play_lands_before_the_next_card() {
+    use sts2_core::combat_loop::play_card;
+    install_pool();
+    sts2_core::card_effects::install_default_registry();
+    let (mut state, _enemy) = fresh_state_with_enemy(200);
+    let galvanic_pid = NonZeroU32::new(9011).expect("non-zero");
+    state.powers.push(Power {
+        id: galvanic_pid,
+        kind: PowerKind::Galvanic,
+        amount: 6,
+        counter: 0,
+        applier: None,
+        skip_next_tick: false,
+    });
+    state.creatures[0].powers.push(PowerUid(galvanic_pid));
+    state.init_player_creature();
+    state.side = sts2_core::Side::Player;
+    state.phase = sts2_core::CombatPhase::PlayerPlayPhase;
+    state.player.energy = 2;
+    state.player.max_energy = 3;
+    // Draw top = [Rupture, Strike] (each push inserts at the front).
+    let _strike = push_draw_top_card(
+        &mut state,
+        CardId::StrikeIronclad,
+        CardType::Attack,
+        TargetType::Enemy,
+        6,
+        0,
+    );
+    let _rupture = push_draw_top_card(
+        &mut state,
+        CardId::RuptureCard,
+        CardType::Power,
+        TargetType::Self_,
+        0,
+        0,
+    );
+    let raw = u32::try_from(state.cards.len() + 1).expect("fits");
+    let cascade_uid = sts2_core::CardUid::new(raw).expect("non-zero");
+    state.cards.push(Card {
+        local_energy_cost: None,
+        uid: cascade_uid,
+        card_id: CardId::Cascade,
+        cost: -1,
+        card_type: CardType::Skill,
+        target_type: TargetType::Self_,
+        upgraded: false,
+        base_damage: 0,
+        base_block: 0,
+        combat_vars: sts2_core::cards::CombatVars::new(),
+        enchantments: sts2_core::cards::CardEnchantments::new(),
+        tags: CardTags::NONE,
+        energy_spent: 0,
+        base_replay_count: 0,
+        keyword_override: None,
+        affliction: None,
+    });
+    state.player.hand.push(cascade_uid);
+    let player_hp = state.player.current_hp;
+    let enemy_hp = state.creatures[0].current_hp;
+    let _ = play_card(&mut state, 0, None);
+    assert_eq!(
+        player_hp - state.player.current_hp,
+        6,
+        "Galvanic dealt its 6"
+    );
+    assert_eq!(state.player_power_amount(PowerKind::Strength), 1);
+    assert_eq!(
+        enemy_hp - state.creatures[0].current_hp,
+        7,
+        "the auto-played Strike already has Rupture's +1 Strength"
+    );
+    assert!(state.combat_log.rupture_deferred_strength.is_empty());
+}
+
+/// Act23 Ironclad-4134 act 2 @558 (v0.111): Cascade auto-plays a Corrupted
+/// attack. Its 2 self-damage (`Corrupted.OnPlay`, `cardSource` = the
+/// enchanted card) is owed to THAT card in `RupturePower.playedCards`, so
+/// `RupturePower.AfterCardPlayed` grants the Strength when the auto-played
+/// card finishes — before Cascade plays the next card. Rust parked it under
+/// the enclosing Cascade, so the next attack missed it (C# 2 hp, Rust 3).
+#[test]
+fn rupture_strength_from_corrupted_in_a_cascade_auto_play_lands_before_the_next_card() {
+    use sts2_core::cards::EnchantmentId;
+    use sts2_core::combat_loop::play_card;
+    install_pool();
+    sts2_core::card_effects::install_default_registry();
+    let (mut state, _enemy) = fresh_state_with_enemy(200);
+    let rupture_pid = NonZeroU32::new(9012).expect("non-zero");
+    state.powers.push(Power {
+        id: rupture_pid,
+        kind: PowerKind::Rupture,
+        amount: 1,
+        counter: 0,
+        applier: None,
+        skip_next_tick: false,
+    });
+    state.player.powers.push(PowerUid(rupture_pid));
+    state.init_player_creature();
+    state.side = sts2_core::Side::Player;
+    state.phase = sts2_core::CombatPhase::PlayerPlayPhase;
+    state.player.energy = 2;
+    state.player.max_energy = 3;
+    // Draw top = [Corrupted Strike, Strike] (each push inserts at the front).
+    let _strike = push_draw_top_card(
+        &mut state,
+        CardId::StrikeIronclad,
+        CardType::Attack,
+        TargetType::Enemy,
+        6,
+        0,
+    );
+    let corrupted = push_draw_top_card(
+        &mut state,
+        CardId::StrikeIronclad,
+        CardType::Attack,
+        TargetType::Enemy,
+        6,
+        0,
+    );
+    state.cards[corrupted.get() as usize - 1]
+        .enchantments
+        .push((EnchantmentId::Corrupted, 1));
+    let raw = u32::try_from(state.cards.len() + 1).expect("fits");
+    let cascade_uid = sts2_core::CardUid::new(raw).expect("non-zero");
+    state.cards.push(Card {
+        local_energy_cost: None,
+        uid: cascade_uid,
+        card_id: CardId::Cascade,
+        cost: -1,
+        card_type: CardType::Skill,
+        target_type: TargetType::Self_,
+        upgraded: false,
+        base_damage: 0,
+        base_block: 0,
+        combat_vars: sts2_core::cards::CombatVars::new(),
+        enchantments: sts2_core::cards::CardEnchantments::new(),
+        tags: CardTags::NONE,
+        energy_spent: 0,
+        base_replay_count: 0,
+        keyword_override: None,
+        affliction: None,
+    });
+    state.player.hand.push(cascade_uid);
+    let player_hp = state.player.current_hp;
+    let enemy_hp = state.creatures[0].current_hp;
+    let _ = play_card(&mut state, 0, None);
+    assert_eq!(
+        player_hp - state.player.current_hp,
+        2,
+        "Corrupted dealt its 2"
+    );
+    assert_eq!(state.player_power_amount(PowerKind::Strength), 1);
+    assert_eq!(
+        enemy_hp - state.creatures[0].current_hp,
+        9 + 7,
+        "Corrupted Strike 6x1.5, then the next Strike already has Rupture's +1"
+    );
+    assert!(state.combat_log.rupture_deferred_strength.is_empty());
+}
+
+/// C# `RupturePower` keys its deferred Strength by card
+/// (`Dictionary<CardModel,int> playedCards`, RupturePower.cs, both builds):
+/// `AfterCardPlayed` applies only the entry of the card that just finished.
+/// Offering's self-HP-loss is owed to Offering, so the Strikes Hellraiser
+/// auto-plays out of Offering's draw (nested inside its `OnPlay`) must NOT
+/// flush it: both hit with the pre-Offering Strength and the +1 lands when
+/// Offering finishes. Act23 Ironclad-6029 act 2 @784: C# 9+9, Rust 9+10.
+#[test]
+fn rupture_offering_strength_not_flushed_by_nested_hellraiser_auto_plays() {
+    use sts2_core::combat_loop::play_card;
+    install_pool();
+    sts2_core::card_effects::install_default_registry();
+    let (mut state, _enemy) = fresh_state_with_enemy(200);
+    let rupture_pid = NonZeroU32::new(9003).expect("non-zero");
+    state.powers.push(Power {
+        id: rupture_pid,
+        kind: PowerKind::Rupture,
+        amount: 1,
+        counter: 0,
+        applier: None,
+        skip_next_tick: false,
+    });
+    state.player.powers.push(PowerUid(rupture_pid));
+    state.init_player_creature();
+    let player_uid = state.player.creature_uid.expect("mirror");
+    sts2_core::card_effects::apply_power_to_creature(
+        &mut state,
+        player_uid,
+        PowerKind::Hellraiser,
+        1,
+    );
+    state.side = sts2_core::Side::Player;
+    state.phase = sts2_core::CombatPhase::PlayerPlayPhase;
+    state.player.energy = 3;
+    state.player.max_energy = 3;
+
+    let _filler = push_draw_top_card(
+        &mut state,
+        CardId::DefendIronclad,
+        CardType::Skill,
+        TargetType::Self_,
+        0,
+        5,
+    );
+    for _ in 0..2 {
+        let s = push_draw_top_card(
+            &mut state,
+            CardId::StrikeIronclad,
+            CardType::Attack,
+            TargetType::Enemy,
+            6,
+            0,
+        );
+        state.cards[s.0.get() as usize - 1].tags = CardTags::one(sts2_core::cards::CardTag::Strike);
+    }
+    let offering = push_hand_card(&mut state, CardId::Offering);
+    {
+        let c = &mut state.cards[offering.0.get() as usize - 1];
+        c.card_type = CardType::Skill;
+        c.target_type = TargetType::Self_;
+        c.cost = 0;
+        c.base_damage = 0;
+    }
+    let idx = u8::try_from(
+        state
+            .player
+            .hand
+            .iter()
+            .position(|&u| u == offering)
+            .expect("in hand"),
+    )
+    .expect("fits");
+
+    let enemy_before = state.creatures[0].current_hp;
+    let _ = play_card(&mut state, idx, None);
+    assert_eq!(
+        enemy_before - state.creatures[0].current_hp,
+        12,
+        "both nested Strikes hit for 6: Offering's Rupture Strength is still owed",
+    );
+    assert_eq!(
+        state.player_power_amount(PowerKind::Strength),
+        1,
+        "Offering's deferred Rupture Strength lands once Offering finishes",
     );
 }
 
@@ -1624,6 +1945,40 @@ fn thrash_folds_calculated_damage_of_exhausted_mind_blast() {
         9,
         "Thrash base folds the draw-pile-scaled MindBlast damage (4 + 5)"
     );
+}
+
+/// Thrash folds an Osty attack's `OstyDamage.BaseValue` (`Thrash.cs:62-65`),
+/// which `OnUpgrade` raises (`BoneShards.cs:48` +3, ...). Rust keeps those
+/// cards' `base_damage` at the printed value and applies the upgrade in the
+/// handler, so the fold must add it: Bone Shards+ folds 12, not 9
+/// (Ironclad-8019 act3#b2 @1078). Same values in v0.107.1.
+#[test]
+fn thrash_folds_upgraded_osty_damage() {
+    for (card_id, base, upgraded) in [
+        (CardId::BoneShards, 9, 12),
+        (CardId::Fetch, 3, 6),
+        (CardId::Flatten, 12, 16),
+        (CardId::HighFive, 11, 13),
+        (CardId::Rattle, 7, 9),
+        (CardId::SicEm, 5, 6),
+        (CardId::RightHandHand, 4, 6),
+    ] {
+        for up in [false, true] {
+            install_pool();
+            let (mut state, enemy) = fresh_state_with_enemy(200);
+            let thrash = push_play_card(&mut state, CardId::Thrash, /*base_damage=*/ 4, 0);
+            let pick = push_hand_card(&mut state, card_id);
+            let card = &mut state.cards[pick.0.get() as usize - 1];
+            card.base_damage = base;
+            card.upgraded = up;
+            let _ = dispatch(&mut state, CardId::Thrash, Some(enemy));
+            assert_eq!(
+                state.cards[thrash.0.get() as usize - 1].base_damage,
+                4 + if up { upgraded } else { base },
+                "{card_id:?} upgraded={up}"
+            );
+        }
+    }
 }
 
 /// GH #558: Thrash's fold is a NULL-target `Hook.ModifyDamage` (`Thrash.cs:67`),
@@ -3163,6 +3518,47 @@ fn stoke_exhausts_hand_and_generates_random_ironclad_cards() {
     }
 }
 
+/// Stoke.cs:33 adds its cards through `CardPileCmd.AddGeneratedCardsToCombat
+/// (cards, Hand, Owner)`, which raises `Hook.AfterCardGeneratedForCombat`
+/// per card — Pillar of Creation's block fires once per generated card. The
+/// hand-rolled body dispatched only the entered-combat bus.
+#[test]
+fn stoke_fires_card_generated_for_combat_listeners() {
+    install_pool();
+    let (mut state, _) = fresh_state_with_enemy(50);
+    state.player.character = Some(sts2_core::potions::CharacterId::Ironclad);
+    let puid = state.init_player_creature();
+    sts2_core::card_effects::apply_power_to_creature(
+        &mut state,
+        puid,
+        PowerKind::PillarOfCreation,
+        2,
+    );
+    let _ = push_play_card(&mut state, CardId::Stoke, 0, 0);
+    for _ in 0..3 {
+        let raw = u32::try_from(state.cards.len() + 1).expect("nz");
+        let uid = sts2_core::CardUid::new(raw).expect("nz");
+        state.cards.push(Card {
+            uid,
+            card_id: CardId::StrikeIronclad,
+            cost: 1,
+            card_type: CardType::Attack,
+            target_type: TargetType::Enemy,
+            base_damage: 6,
+            ..Card::pod_defaults()
+        });
+        state.player.hand.push(uid);
+    }
+    let _ = dispatch(&mut state, CardId::Stoke, None);
+    assert_eq!(state.player.hand.len(), 3);
+    assert_eq!(
+        state.player.block,
+        2 * 3,
+        "Pillar of Creation per Stoke card"
+    );
+    assert_eq!(state.count_player_generated_cards_this_combat(), 3);
+}
+
 /// `PrimalForce` (bead `sts2-rs-6ynt.7`): every Attack in hand
 /// transforms into a `GiantRock`; non-Attack cards are left alone.
 /// Mirrors `sts2-rl-agent@01c094d:sts2_env/cards/ironclad.py:1947-1953`.
@@ -3753,9 +4149,11 @@ fn cascade_stops_gracefully_when_draw_pile_runs_out() {
 /// `autoplay_inline_resolve`, that select SUSPENDS (parks a
 /// `pending_autoplay_resume` with Armaments stranded on Play); the dupe
 /// path's pop then corrupts the pile and Armaments vanishes (C# draw
-/// `[CASCADE, ARMAMENTS]` vs Rust `[CASCADE]`, player block 10 vs 5). The
-/// fix drains the nested select inline, so Armaments resolves (upgrades a
-/// hand card) and disposes to discard, and no choice/resume is left dangling.
+/// `[CASCADE, ARMAMENTS]` vs Rust `[CASCADE]`, player block 10 vs 5).
+///
+/// The select now prompts the player, as C# does (GH #1131): the dupe goes
+/// through the general auto-play path, which parks it under Armaments, and
+/// the answer finishes Armaments and then disposes the dupe.
 #[test]
 fn history_course_dupe_of_cascade_keeps_surfacing_armaments() {
     install_pool();
@@ -3799,11 +4197,17 @@ fn history_course_dupe_of_cascade_keeps_surfacing_armaments() {
     let r = sts2_core::relic_effects::dispatch_before_play_phase_start(&mut state);
     assert_eq!(r, EffectResult::Resolved);
 
-    // The surfacing select drained inline — nothing left dangling.
-    assert!(
-        state.pending_choice.is_none(),
-        "nested Armaments select drained inline, not surfaced"
+    let pc = state.pending_choice.as_ref().expect("Armaments prompts");
+    assert_eq!(pc.kind, sts2_core::ChoiceKind::UpgradeInHand);
+    assert_eq!(pc.options.len(), 2);
+    let _ = sts2_core::apply(
+        &mut state,
+        sts2_core::Action::ResolveChoice {
+            selection: smallvec::smallvec![0],
+        },
     );
+
+    assert!(state.pending_choice.is_none());
     assert!(
         state.pending_autoplay_resume.is_none(),
         "no auto-play resume stranded across the dupe disposal"
@@ -3818,6 +4222,7 @@ fn history_course_dupe_of_cascade_keeps_surfacing_armaments() {
         !state.player.play.contains(&arm_uid),
         "Armaments left the Play pile"
     );
+    assert!(state.player.play.is_empty(), "the dupe is gone too");
     // Its OnPlay ran: 5 block gained + one hand card upgraded (option 0).
     assert_eq!(state.player.block, 5, "Armaments gained its 5 block");
     let upgraded = state.cards[s0.0.get() as usize - 1].upgraded
@@ -3913,6 +4318,63 @@ fn auto_play_skips_unplayable_card_from_draw_top() {
         1,
         "only the playable card counts as a play; the skipped unplayable one does not",
     );
+}
+
+/// C# `CardModel.MoveToResultPileWithoutPlaying` (CardModel.cs:2103-2121,
+/// both builds) checks `IsDupe` FIRST and removes a dupe from combat, before
+/// the Exhaust / Discard branches. `CardCmd.AutoPlay` takes that route for an
+/// Unplayable card and for a `Hook.ShouldPlay` veto (CardCmd.cs:51-73). Act23
+/// Ironclad-8184 act 2 @967: Stampede auto-played a Chains-bound dupe Anger,
+/// C# removed it, Rust discarded it (discard 16 vs 17). Covers the
+/// unplayable and the ShouldPlay-veto guards (here Normality's 4th-play veto).
+#[test]
+fn auto_play_unplayed_dupe_leaves_combat() {
+    for vetoed_by_should_play in [false, true] {
+        install_pool();
+        sts2_core::card_effects::install_default_registry();
+        let (mut state, _enemy) = fresh_state_with_enemy(200);
+        let dupe = push_draw_top_card(
+            &mut state,
+            CardId::Anger,
+            CardType::Attack,
+            TargetType::Enemy,
+            6,
+            0,
+        );
+        let dupe_idx = dupe.0.get() as usize - 1;
+        state.cards[dupe_idx].set_combat_var(sts2_core::cards::VarKey::IsDupe, 1);
+        if vetoed_by_should_play {
+            let normality =
+                sts2_core::CardUid::new(u32::try_from(state.cards.len() + 1).expect("fits"))
+                    .expect("nz");
+            state.cards.push(sts2_core::cards::Card {
+                uid: normality,
+                card_id: CardId::Normality,
+                card_type: CardType::Curse,
+                ..sts2_core::cards::Card::pod_defaults()
+            });
+            state.player.hand.push(normality);
+            state.player.card_plays_started_this_turn = 3;
+        } else {
+            state.cards[dupe_idx].keyword_override =
+                Some(sts2_core::cards::KeywordOverride::UNPLAYABLE);
+        }
+        let hp_before = state.creatures[0].current_hp;
+        sts2_core::combat_loop::auto_play_n_from_draw_top(&mut state, 1, false);
+        assert_eq!(
+            state.creatures[0].current_hp, hp_before,
+            "vetoed={vetoed_by_should_play}: the dupe is not played"
+        );
+        let p = &state.player;
+        assert!(
+            !p.discard.contains(&dupe)
+                && !p.exhaust.contains(&dupe)
+                && !p.play.contains(&dupe)
+                && !p.hand.contains(&dupe)
+                && !p.draw.contains(&dupe),
+            "vetoed={vetoed_by_should_play}: an unplayed dupe is removed from combat"
+        );
+    }
 }
 
 /// Bead `sts2-rs-k37j`: when NoDraw is NOT active, PommelStrike still
@@ -4674,6 +5136,177 @@ fn hellraiser_auto_plays_strikes_before_chains_of_binding_binds_them() {
     }
 }
 
+/// Hellraiser (via its card) plus `extra` legacy-surface powers, an enemy
+/// with `enemy_hp`, and a draw pile of Pommel Strike (a Strike that draws 1)
+/// then a Defend. Returns (state, pommel, defend).
+#[cfg(test)]
+fn hellraiser_pommel_then_defend(
+    enemy_hp: i32,
+    extra: &[(PowerKind, i32)],
+    seed: i32,
+) -> (CombatState, sts2_core::CardUid, sts2_core::CardUid) {
+    install_pool();
+    sts2_core::card_effects::install_default_registry();
+    let (mut state, _enemy) = fresh_state_with_enemy(enemy_hp);
+    state.run_rng = sts2_core::run_rng_set::RunRngSet::new(seed);
+    state.init_player_creature();
+    let _ = push_play_card(&mut state, CardId::HellraiserCard, 0, 0);
+    let _ = dispatch(&mut state, CardId::HellraiserCard, None);
+    for &(kind, amount) in extra {
+        crate::monsters::apply_power_to_player_via_legacy_surface(&mut state, kind, amount);
+    }
+    let pommel = push_draw_tail(&mut state, CardId::PommelStrike, CardType::Attack, 9);
+    let defend = push_draw_tail(&mut state, CardId::DefendIronclad, CardType::Skill, 0);
+    (state, pommel, defend)
+}
+
+/// C# `Hook.AfterCardDrawn` (Hook.cs:345-361, both builds) runs the whole
+/// `AfterCardDrawnEarly` pass, then a FRESH `IterateCombatHookListeners` for
+/// the normal pass, and that iterator yields nothing once
+/// `IsOverOrEnding` (Hook.cs ~100). A Strike HellraiserPower auto-plays in
+/// the Early pass that kills the last enemy therefore takes no
+/// `ConfusedPower.AfterCardDrawn` cost roll (ConfusedPower.cs:31-45). Rust
+/// rolled it before the deferred auto-play, one `CombatEnergyCosts` read
+/// ahead into the next fight (act23 Ironclad:6183 act3 @702).
+#[test]
+fn hellraiser_strike_that_ends_the_combat_takes_no_confused_roll() {
+    install_pool();
+    sts2_core::card_effects::install_default_registry();
+    let (mut state, _enemy) = fresh_state_with_enemy(5);
+    state.init_player_creature();
+    let _ = push_play_card(&mut state, CardId::HellraiserCard, 0, 0);
+    let _ = dispatch(&mut state, CardId::HellraiserCard, None);
+    crate::monsters::apply_power_to_player_via_legacy_surface(&mut state, PowerKind::Confused, 1);
+    let strike = push_draw_tail(&mut state, CardId::StrikeIronclad, CardType::Attack, 6);
+    let before = state.run_rng.combat_energy_costs.counter();
+
+    let _ = sts2_core::cards::draw_via_state(&mut state, 1);
+
+    assert!(state.player.discard.contains(&strike), "Strike auto-played");
+    assert!(sts2_core::combat_loop::combat_is_ending(&state));
+    assert_eq!(
+        state.run_rng.combat_energy_costs.counter(),
+        before,
+        "the normal AfterCardDrawn pass is empty once the combat is ending",
+    );
+}
+
+/// Same Hook.cs:345-361 ordering, non-lethal: the auto-played Pommel
+/// Strike's nested draw (the Defend, with its own full `AfterCardDrawn`)
+/// resolves inside the Early pass, so the Defend takes the FIRST
+/// `CombatEnergyCosts` roll and the Pommel Strike's own Confused roll comes
+/// second. Rust rolled the Pommel first.
+#[test]
+fn hellraiser_nested_draw_rolls_confused_before_the_auto_played_strike() {
+    // A seed whose first two `NextInt(4)` rolls differ, so the order shows.
+    let seed = (0_i32..10_000)
+        .find(|&s| {
+            let mut p = sts2_core::run_rng_set::RunRngSet::new(s);
+            p.combat_energy_costs.next_int(0, 3) != p.combat_energy_costs.next_int(0, 3)
+        })
+        .expect("a seed with two distinct first rolls");
+    let (mut state, pommel, defend) =
+        hellraiser_pommel_then_defend(400, &[(PowerKind::Confused, 1)], seed);
+    let mut probe = state.run_rng.combat_energy_costs.clone();
+    let first = probe.next_int(0, 3) as i8;
+    let second = probe.next_int(0, 3) as i8;
+
+    let _ = sts2_core::cards::draw_via_state(&mut state, 1);
+
+    assert!(state.player.discard.contains(&pommel), "Pommel auto-played");
+    assert!(
+        state.player.hand.contains(&defend),
+        "Pommel drew the Defend"
+    );
+    assert_eq!(state.cards[defend.0.get() as usize - 1].cost, first);
+    assert_eq!(state.cards[pommel.0.get() as usize - 1].cost, second);
+}
+
+/// ChainsOfBindingPower.AfterCardDrawn (ChainsOfBindingPower.cs:36-46) is a
+/// normal-pass listener that counts this turn's `Bound` `CardAfflictedEntry`s
+/// at hook time. With Chains 1, the Defend drawn by the auto-played Pommel
+/// Strike (Early pass) takes the only Bound and the Pommel's own Chains call
+/// then finds the cap reached. Rust spent the budget on the Pommel before its
+/// auto-play (act23 Ironclad:8149 act3 @657, Ironclad:8061 act2 @902).
+#[test]
+fn hellraiser_nested_draw_takes_chains_budget_before_the_auto_played_strike() {
+    let (mut state, pommel, defend) =
+        hellraiser_pommel_then_defend(400, &[(PowerKind::ChainsOfBinding, 1)], 0);
+
+    let _ = sts2_core::cards::draw_via_state(&mut state, 1);
+
+    assert!(state.player.discard.contains(&pommel), "Pommel auto-played");
+    assert!(
+        state.player.hand.contains(&defend),
+        "Pommel drew the Defend"
+    );
+    let bound = |uid: sts2_core::CardUid| {
+        matches!(
+            state.cards[uid.0.get() as usize - 1].affliction,
+            Some(sts2_core::card_afflictions::CardAffliction {
+                kind: sts2_core::card_afflictions::CardAfflictionKind::Bound,
+                ..
+            })
+        )
+    };
+    assert!(bound(defend), "the nested draw is bound first");
+    assert!(
+        !bound(pommel),
+        "the Chains cap was reached before the Pommel"
+    );
+    assert_eq!(
+        state.combat_log.bound_cards_afflicted_by_chains_this_turn,
+        1
+    );
+}
+
+/// HellraiserPower's auto-play (Early pass) reads `EnergyValue =
+/// EnergyCost.GetAmountToSpend()` (CardCmd.cs:125-126) BEFORE ConfusedPower's
+/// normal-pass `SetThisCombat` roll, so a 2-cost Strike is played at cost 2
+/// and IntimidatingHelmet (`EnergyValue >= 2`, IntimidatingHelmet.cs:24-30)
+/// grants Block whatever the roll. Rust wrote the roll into the cost first
+/// (act23 Ironclad:6183 act3 #b0 @858: player.block cs=8 rs=4).
+#[test]
+fn hellraiser_auto_play_spends_the_pre_confused_cost() {
+    // A seed whose first roll is below 2, so the old order loses the Block.
+    let seed = (0_i32..10_000)
+        .find(|&s| {
+            sts2_core::run_rng_set::RunRngSet::new(s)
+                .combat_energy_costs
+                .next_int(0, 3)
+                < 2
+        })
+        .expect("a seed with a first roll below 2");
+    install_pool();
+    sts2_core::card_effects::install_default_registry();
+    crate::relics::dispatch::ensure_installed();
+    let (mut state, _enemy) = fresh_state_with_enemy(400);
+    state.run_rng = sts2_core::run_rng_set::RunRngSet::new(seed);
+    state.init_player_creature();
+    state.relics.push(sts2_core::Relic {
+        id: std::num::NonZeroU32::new(1).expect("non-zero"),
+        kind: sts2_core::RelicKind::IntimidatingHelmet,
+        counter: 0,
+        is_wax: false,
+        is_melted: false,
+    });
+    let _ = push_play_card(&mut state, CardId::HellraiserCard, 0, 0);
+    let _ = dispatch(&mut state, CardId::HellraiserCard, None);
+    crate::monsters::apply_power_to_player_via_legacy_surface(&mut state, PowerKind::Confused, 1);
+    let strike = push_draw_tail(&mut state, CardId::StrikeIronclad, CardType::Attack, 6);
+    state.cards[strike.0.get() as usize - 1].cost = 2;
+    let block_before = state.player.block;
+
+    let _ = sts2_core::cards::draw_via_state(&mut state, 1);
+
+    assert!(state.player.discard.contains(&strike), "Strike auto-played");
+    assert_eq!(state.player.block - block_before, 4, "played at cost 2");
+    assert!(
+        state.cards[strike.0.get() as usize - 1].cost < 2,
+        "then rolled"
+    );
+}
+
 /// Regression (bead `sts2-rs-pillage-hellraiser`): Pillage + Hellraiser with
 /// no alive enemy must terminate. It used to hang: each drawn Strike was
 /// auto-played into an empty board, reshuffled and redrawn forever. With the
@@ -4701,6 +5334,114 @@ fn pillage_hellraiser_no_autoplay_without_alive_enemy() {
         state.player.draw.as_slice(),
         s.as_slice(),
         "an ending combat draws nothing, so nothing is auto-played either"
+    );
+}
+
+/// Push a Game Piece relic and a played Power card, ready for
+/// `dispatch_after_card_played_buses`. Returns the buses' two contexts.
+fn game_piece_power_play(
+    state: &mut CombatState,
+) -> (
+    sts2_core::relic_effects::CardEventCtx,
+    sts2_core::hooks::CardCtx,
+) {
+    sts2_core::card_effects::install_default_registry();
+    crate::relics::dispatch::ensure_installed();
+    state.relics.push(sts2_core::Relic {
+        id: std::num::NonZeroU32::new(1).expect("non-zero"),
+        kind: sts2_core::RelicKind::GamePiece,
+        counter: 0,
+        is_wax: false,
+        is_melted: false,
+    });
+    let power = push_play_card(state, CardId::Inflame, 0, 0);
+    state.cards[power.0.get() as usize - 1].card_type = CardType::Power;
+    let played_ctx = sts2_core::relic_effects::CardEventCtx {
+        card_id: CardId::Inflame,
+        card_uid: Some(power),
+        target: None,
+        card_tags: CardTags::NONE,
+        energy_spent: 0,
+    };
+    let hook_ctx = sts2_core::hooks::CardCtx {
+        card_id: Some(CardId::Inflame),
+        card_uid: Some(power),
+        card_tags: CardTags::NONE,
+        card_type: Some(CardType::Power),
+    };
+    (played_ctx, hook_ctx)
+}
+
+/// C# `Hook.AfterCardPlayed` (Hook.cs:422-438) walks
+/// `CombatState.IterateHookListeners` (CombatState.cs:117-137): per creature,
+/// its Powers, THEN that player's Relics. So the player's `TenderPower`
+/// (TenderPower.cs:44-53, Strength -1) lands BEFORE `GamePiece.AfterCardPlayed`
+/// (GamePiece.cs:20-25) draws, and the Strike Hellraiser auto-plays off that
+/// draw hits at the lowered Strength. Rust ran the relic bus first
+/// (Ironclad-6195-a0-act2#b1 @599: HP 68 vs 67).
+#[test]
+fn tender_drains_strength_before_game_piece_draw_is_auto_played() {
+    install_pool();
+    let (mut state, enemy) = fresh_state_with_enemy(200);
+    state.init_player_creature();
+    let _ = push_play_card(&mut state, CardId::HellraiserCard, 0, 0);
+    let _ = dispatch(&mut state, CardId::HellraiserCard, None);
+    crate::monsters::apply_power_to_player_via_legacy_surface(&mut state, PowerKind::Tender, 1);
+    let _strike = push_draw_tail(&mut state, CardId::StrikeIronclad, CardType::Attack, 6);
+    let (played_ctx, hook_ctx) = game_piece_power_play(&mut state);
+
+    sts2_core::combat_loop::dispatch_after_card_played_buses(&mut state, &played_ctx, &hook_ctx);
+
+    let enemy_hp = state
+        .creatures
+        .iter()
+        .find(|c| c.id == enemy.0)
+        .expect("enemy")
+        .current_hp;
+    assert_eq!(
+        enemy_hp,
+        200 - 5,
+        "the auto-played Strike hits at Strength -1 (Tender fired before Game Piece drew)",
+    );
+}
+
+/// Same listener order as above: the player's `StormPower.AfterCardPlayed`
+/// (StormPower.cs:53-63) channels its Lightning BEFORE `GamePiece` draws
+/// (Ironclad-6155-a0-act3#b3 @652: Rust drew — and reshuffled — first).
+#[test]
+fn storm_channels_before_game_piece_draws() {
+    use sts2_core::event_log::EventLogEntry;
+    install_pool();
+    let (mut state, _enemy) = fresh_state_with_enemy(200);
+    let puid = state.init_player_creature();
+    sts2_core::card_effects::apply_power_to_creature(&mut state, puid, PowerKind::Storm, 1);
+    sts2_core::hooks::arm_storm_snapshot(&mut state);
+    let _drawn = push_draw_tail(&mut state, CardId::DefendIronclad, CardType::Skill, 0);
+    let (played_ctx, hook_ctx) = game_piece_power_play(&mut state);
+    state.combat_log.event_log.set_recording(true);
+
+    sts2_core::combat_loop::dispatch_after_card_played_buses(&mut state, &played_ctx, &hook_ctx);
+
+    let rows = state.combat_log.event_log.rows();
+    let storm = rows
+        .iter()
+        .position(|r| {
+            matches!(
+                r.entry,
+                EventLogEntry::PowerFlashed {
+                    power: PowerKind::Storm,
+                    ..
+                }
+            )
+        })
+        .expect("Storm fired");
+    let drawn = rows
+        .iter()
+        .position(|r| matches!(r.entry, EventLogEntry::CardDrawn { .. }))
+        .expect("Game Piece drew");
+    assert!(
+        storm < drawn,
+        "Storm (player power) fires before Game Piece (relic): {rows:?}"
     );
 }
 
@@ -4837,6 +5578,56 @@ fn cinder_killing_blow_exhausts_nothing_joss_paper_counts() {
         counter,
         Some(4),
         "no exhaust is counted once the fight is ending"
+    );
+}
+
+/// Exhaust a Defend with Joss Paper (one exhaust from its draw) and Burning
+/// Sticks equipped in `relics` order; returns the hand's card ids.
+fn joss_paper_and_burning_sticks_hand(relics: [sts2_core::RelicKind; 2]) -> Vec<CardId> {
+    install_pool();
+    crate::cards::dispatch::ensure_installed();
+    crate::relics::dispatch::ensure_installed();
+    let (mut state, _enemy) = fresh_state_with_enemy(200);
+    state.init_player_creature();
+    for (i, kind) in relics.into_iter().enumerate() {
+        state.relics.push(sts2_core::Relic {
+            id: NonZeroU32::new(u32::try_from(i + 1).expect("fits")).expect("non-zero"),
+            kind,
+            counter: if kind == sts2_core::RelicKind::JossPaper {
+                4
+            } else {
+                0
+            },
+            is_wax: false,
+            is_melted: false,
+        });
+    }
+    push_draw_tail(&mut state, CardId::StrikeIronclad, CardType::Attack, 6);
+    let defend = push_hand_card_typed(&mut state, CardId::DefendIronclad, CardType::Skill);
+    assert!(sts2_core::card_effects::exhaust_card_uid(
+        &mut state, defend
+    ));
+    state
+        .player
+        .hand
+        .iter()
+        .map(|u| state.cards[u.0.get() as usize - 1].card_id)
+        .collect()
+}
+
+/// C# `Hook.AfterCardExhausted` reaches relics in equip order: Joss Paper
+/// equipped first draws before Burning Sticks adds its clone, and vice versa
+/// (random-loadout v0.107.1 seed 1176).
+#[test]
+fn after_card_exhausted_relics_fire_in_equip_order() {
+    use sts2_core::RelicKind::{BurningSticks, JossPaper};
+    assert_eq!(
+        joss_paper_and_burning_sticks_hand([JossPaper, BurningSticks]),
+        vec![CardId::StrikeIronclad, CardId::DefendIronclad]
+    );
+    assert_eq!(
+        joss_paper_and_burning_sticks_hand([BurningSticks, JossPaper]),
+        vec![CardId::DefendIronclad, CardId::StrikeIronclad]
     );
 }
 

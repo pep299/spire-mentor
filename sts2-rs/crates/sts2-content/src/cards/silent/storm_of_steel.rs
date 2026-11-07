@@ -17,15 +17,27 @@ pub(crate) fn play_storm_of_steel(
     let count = hand_uids.len();
     // C# `CardCmd.Discard` fires the Sly auto-play for each discarded Sly card;
     // a raw pile move drops it. Route through the shared hook-aware path.
-    let _ = sts2_core::card_effects::discard_hand_cards_with_hooks(state, &hand_uids);
-    let upgrade_shivs = current_card_upgraded(state);
-    for _ in 0..count {
+    // The Shivs wait behind every Sly auto-play, including a Sly select the
+    // player answers first (GH #1131). Bit 31 of the packed arg is the upgrade.
+    let upgrade_bit = if current_card_upgraded(state) {
+        1 << 31
+    } else {
+        0
+    };
+    let packed = u32::try_from(count).unwrap_or(0) | upgrade_bit;
+    let then = sts2_core::LoopThen::Call(storm_of_steel_shivs, packed);
+    let _ = sts2_core::card_effects::discard_hand_cards_then(state, &hand_uids, Some(then));
+    EffectResult::Resolved
+}
+
+fn storm_of_steel_shivs(state: &mut CombatState, packed: u32) {
+    let upgrade_shivs = packed & (1 << 31) != 0;
+    for _ in 0..(packed & !(1 << 31)) {
         let shiv_uid = spawn_shiv(state, PileKind::Hand);
         if upgrade_shivs {
             let _ = sts2_core::card_effects::upgrade_card_uid(state, shiv_uid);
         }
     }
-    EffectResult::Resolved
 }
 
 #[must_use]

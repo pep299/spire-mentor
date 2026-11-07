@@ -1,544 +1,1001 @@
 {
- "details": [
-  "Play Bash",
-  "Nibbit HP 17→14 (−3)",
-  "Nibbit Block 5→0",
-  "Nibbit +2 Vulnerable"
- ],
- "error": null,
- "label": "Play Bash → Nibbit",
- "step": {
-  "action_label": "",
-  "assets_base": "https://assets.test",
-  "chosen_action": null,
-  "decision": "combat_play",
-  "idx": 0,
-  "meta": {
+ "graphs": [
+  {
    "act": 1,
    "act_name": "Overgrowth",
-   "bg_col": 3,
-   "bg_row": 4,
-   "bg_seed": 1772253313,
    "floor": 5,
-   "step_no": 0,
-   "turn": 3
-  },
-  "pv": null,
-  "scores": [],
-  "source": "live",
-  "state": {
-   "act": 1,
-   "act1": "overgrowth",
-   "act_name": "Overgrowth",
-   "ascension": 0,
-   "bg_col": 3,
-   "bg_row": 4,
-   "bg_seed": 1772253313,
-   "decision": "combat_play",
-   "discard_pile": [
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "red",
-     "cost": 1,
-     "description": "Gain 5 Block.",
-     "description_rich": "Gain 5 [gold]Block[/gold].",
-     "id": "DEFEND_IRONCLAD",
-     "image": "https://assets.test/card_atlas/ironclad/defend_ironclad.png",
-     "index": -1,
-     "name": "Defend",
-     "rarity": "Basic",
-     "stats": {
-      "block": 5
-     },
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
+   "full_map": {
+    "boss": {
+     "col": 3,
+     "icon": "https://assets.test/run_history/vantom_boss.png",
+     "id": "VANTOM_BOSS",
+     "kind": "Vantom",
+     "name": "Vantom",
+     "row": 16,
+     "type": "Boss"
     },
-    {
-     "base_cost": 2,
-     "can_play": false,
-     "color": "red",
-     "cost": 2,
-     "description": "Deal 8 damage.\nApply 2 Vulnerable.",
-     "description_rich": "Deal 8 damage.\nApply 2 [gold]Vulnerable[/gold].",
-     "id": "BASH",
-     "image": "https://assets.test/card_atlas/ironclad/bash.png",
-     "index": -1,
-     "name": "Bash",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 8
-     },
-     "target_type": "None",
-     "type": "Attack",
-     "upgraded": false
-    }
-   ],
-   "discard_pile_count": 2,
-   "draw_pile": [
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "red",
-     "cost": 1,
-     "description": "Gain 5 Block.",
-     "description_rich": "Gain 5 [gold]Block[/gold].",
-     "id": "DEFEND_IRONCLAD",
-     "image": "https://assets.test/card_atlas/ironclad/defend_ironclad.png",
-     "index": -1,
-     "name": "Defend",
-     "rarity": "Basic",
-     "stats": {
-      "block": 5
-     },
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
+    "current_coord": {
+     "col": 3,
+     "row": 4
     },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "red",
-     "cost": 1,
-     "description": "Gain 5 Block.",
-     "description_rich": "Gain 5 [gold]Block[/gold].",
-     "id": "DEFEND_IRONCLAD",
-     "image": "https://assets.test/card_atlas/ironclad/defend_ironclad.png",
-     "index": -1,
-     "name": "Defend",
-     "rarity": "Basic",
-     "stats": {
-      "block": 5
-     },
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "red",
-     "cost": 1,
-     "description": "Gain 5 Block.",
-     "description_rich": "Gain 5 [gold]Block[/gold].",
-     "id": "DEFEND_IRONCLAD",
-     "image": "https://assets.test/card_atlas/ironclad/defend_ironclad.png",
-     "index": -1,
-     "name": "Defend",
-     "rarity": "Basic",
-     "stats": {
-      "block": 5
-     },
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "red",
-     "cost": 1,
-     "description": "Deal 6 damage.",
-     "description_rich": "Deal 6 damage.",
-     "id": "STRIKE_IRONCLAD",
-     "image": "https://assets.test/card_atlas/ironclad/strike_ironclad.png",
-     "index": -1,
-     "name": "Strike",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 6
-     },
-     "target_type": "None",
-     "type": "Attack",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "red",
-     "cost": 1,
-     "description": "Deal 6 damage.",
-     "description_rich": "Deal 6 damage.",
-     "id": "STRIKE_IRONCLAD",
-     "image": "https://assets.test/card_atlas/ironclad/strike_ironclad.png",
-     "index": -1,
-     "name": "Strike",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 6
-     },
-     "target_type": "None",
-     "type": "Attack",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "red",
-     "cost": 1,
-     "description": "Gain 7 Block.\nExhaust 1 card at random.",
-     "description_rich": "Gain 7 [gold]Block[/gold].\n[gold]Exhaust[/gold] 1 card at random.",
-     "id": "TRUE_GRIT",
-     "image": "https://assets.test/card_atlas/ironclad/true_grit.png",
-     "index": -1,
-     "name": "True Grit",
-     "rarity": "Common",
-     "stats": {
-      "block": 7
-     },
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "colorless",
-     "cost": 1,
-     "description": "Deal 14 damage.",
-     "description_rich": "Deal 14 damage.",
-     "id": "ULTIMATE_STRIKE",
-     "image": "https://assets.test/card_atlas/colorless/ultimate_strike.png",
-     "index": -1,
-     "name": "Ultimate Strike",
-     "rarity": "Uncommon",
-     "stats": {
-      "damage": 14
-     },
-     "target_type": "None",
-     "type": "Attack",
-     "upgraded": false
-    }
-   ],
-   "draw_pile_count": 7,
-   "enemies": [
-    {
-     "block": 0,
-     "hp": 14,
-     "image": "https://assets.test/monsters/nibbit.png",
-     "index": 0,
-     "intents": [
+    "path_plan": {
+     "baseline_col": 3,
+     "best_col": 3,
+     "columns": [
       {
-       "damage": 2,
-       "intent_image": "https://assets.test/intent_atlas/intent_buff.png",
-       "type": "Buff"
+       "baseline_score": 0.7988,
+       "can_skip_elite": true,
+       "col": 3,
+       "is_pick": true,
+       "max_elites": 2,
+       "min_elites": 0,
+       "n_paths": 7,
+       "score": 0.7988
       }
      ],
-     "kind": "Nibbit",
-     "max_hp": 43,
-     "move_state": "HISS",
-     "name": "Nibbit",
-     "powers": [
+     "diverged": false,
+     "first_col": null,
+     "route": [
       {
-       "amount": 2,
-       "display_amount": 2,
-       "id": "VULNERABLE",
-       "image": "https://assets.test/power_atlas/vulnerable_power.png",
-       "image_big": "https://assets.test/power_big/vulnerable_power.png",
-       "name": "Vulnerable"
+       "col": 3,
+       "row": 5
+      },
+      {
+       "col": 3,
+       "row": 6
+      },
+      {
+       "col": 2,
+       "row": 7
+      },
+      {
+       "col": 3,
+       "row": 8
+      },
+      {
+       "col": 3,
+       "row": 9
+      },
+      {
+       "col": 3,
+       "row": 10
+      },
+      {
+       "col": 3,
+       "row": 11
+      },
+      {
+       "col": 4,
+       "row": 12
+      },
+      {
+       "col": 5,
+       "row": 13
+      },
+      {
+       "col": 4,
+       "row": 14
+      },
+      {
+       "col": 3,
+       "row": 15
+      }
+     ]
+    },
+    "rows": [
+     [
+      {
+       "children": [
+        {
+         "col": 2,
+         "row": 1
+        },
+        {
+         "col": 4,
+         "row": 1
+        },
+        {
+         "col": 5,
+         "row": 1
+        }
+       ],
+       "col": 3,
+       "current": false,
+       "icon": "https://assets.test/run_history/ancient.png",
+       "row": 0,
+       "type": "Ancient",
+       "visited": false
       }
      ],
-     "rig": "https://assets.test/monster_rigs/nibbit/nibbit",
-     "rig_bounds_h": 146.0,
-     "rig_bounds_w": 270.0,
-     "rig_scale": 0.28,
-     "uid": 2
-    }
-   ],
-   "energy": 0,
-   "energy_image": "https://assets.test/sprite_fonts/ironclad_energy_icon.png",
-   "exhaust_pile": [
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "red",
-     "cost": 1,
-     "description": "Deal 6 damage.",
-     "description_rich": "Deal 6 damage.",
-     "id": "STRIKE_IRONCLAD",
-     "image": "https://assets.test/card_atlas/ironclad/strike_ironclad.png",
-     "index": -1,
-     "name": "Strike",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 6
-     },
-     "target_type": "None",
-     "type": "Attack",
-     "upgraded": false
-    }
-   ],
-   "exhaust_pile_count": 1,
-   "floor": 5,
-   "hand": [
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "red",
-     "cost": 1,
-     "damage_preview": {
-      "0": 9
-     },
-     "description": "Deal 6 damage.",
-     "description_rich": "Deal 6 damage.",
-     "id": "STRIKE_IRONCLAD",
-     "image": "https://assets.test/card_atlas/ironclad/strike_ironclad.png",
-     "index": 0,
-     "name": "Strike",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 6
-     },
-     "target_type": "None",
-     "type": "Attack",
-     "unplayable_reason": "cost",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "red",
-     "cost": 1,
-     "damage_preview": {
-      "0": 9
-     },
-     "description": "Deal 6 damage.",
-     "description_rich": "Deal 6 damage.",
-     "id": "STRIKE_IRONCLAD",
-     "image": "https://assets.test/card_atlas/ironclad/strike_ironclad.png",
-     "index": 1,
-     "name": "Strike",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 6
-     },
-     "target_type": "None",
-     "type": "Attack",
-     "unplayable_reason": "cost",
-     "upgraded": false
-    },
-    {
-     "base_cost": 0,
-     "can_play": true,
-     "color": "red",
-     "cost": 0,
-     "description": "Lose 3 HP.\nGain Energy.",
-     "description_rich": "Lose 3 HP.\nGain Energy.",
-     "id": "BLOODLETTING",
-     "image": "https://assets.test/card_atlas/ironclad/bloodletting.png",
-     "index": 2,
-     "name": "Bloodletting",
-     "rarity": "Common",
-     "stats": {},
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    }
-   ],
-   "max_energy": 3,
-   "options": [],
-   "player": {
-    "block": 5,
-    "deck": [
-     {
-      "color": "red",
-      "cost": 1,
-      "description": "Deal 6 damage.",
-      "description_rich": "Deal 6 damage.",
-      "id": "STRIKE_IRONCLAD",
-      "image": "https://assets.test/card_atlas/ironclad/strike_ironclad.png",
-      "index": 0,
-      "name": "Strike",
-      "rarity": "Basic",
-      "type": "Attack",
-      "upgraded": false
-     },
-     {
-      "color": "red",
-      "cost": 1,
-      "description": "Deal 6 damage.",
-      "description_rich": "Deal 6 damage.",
-      "id": "STRIKE_IRONCLAD",
-      "image": "https://assets.test/card_atlas/ironclad/strike_ironclad.png",
-      "index": 1,
-      "name": "Strike",
-      "rarity": "Basic",
-      "type": "Attack",
-      "upgraded": false
-     },
-     {
-      "color": "red",
-      "cost": 1,
-      "description": "Deal 6 damage.",
-      "description_rich": "Deal 6 damage.",
-      "id": "STRIKE_IRONCLAD",
-      "image": "https://assets.test/card_atlas/ironclad/strike_ironclad.png",
-      "index": 2,
-      "name": "Strike",
-      "rarity": "Basic",
-      "type": "Attack",
-      "upgraded": false
-     },
-     {
-      "color": "red",
-      "cost": 1,
-      "description": "Deal 6 damage.",
-      "description_rich": "Deal 6 damage.",
-      "id": "STRIKE_IRONCLAD",
-      "image": "https://assets.test/card_atlas/ironclad/strike_ironclad.png",
-      "index": 3,
-      "name": "Strike",
-      "rarity": "Basic",
-      "type": "Attack",
-      "upgraded": false
-     },
-     {
-      "color": "red",
-      "cost": 1,
-      "description": "Deal 6 damage.",
-      "description_rich": "Deal 6 damage.",
-      "id": "STRIKE_IRONCLAD",
-      "image": "https://assets.test/card_atlas/ironclad/strike_ironclad.png",
-      "index": 4,
-      "name": "Strike",
-      "rarity": "Basic",
-      "type": "Attack",
-      "upgraded": false
-     },
-     {
-      "color": "red",
-      "cost": 1,
-      "description": "Gain 5 Block.",
-      "description_rich": "Gain 5 Block.",
-      "id": "DEFEND_IRONCLAD",
-      "image": "https://assets.test/card_atlas/ironclad/defend_ironclad.png",
-      "index": 5,
-      "name": "Defend",
-      "rarity": "Basic",
-      "type": "Skill",
-      "upgraded": false
-     },
-     {
-      "color": "red",
-      "cost": 1,
-      "description": "Gain 5 Block.",
-      "description_rich": "Gain 5 Block.",
-      "id": "DEFEND_IRONCLAD",
-      "image": "https://assets.test/card_atlas/ironclad/defend_ironclad.png",
-      "index": 6,
-      "name": "Defend",
-      "rarity": "Basic",
-      "type": "Skill",
-      "upgraded": false
-     },
-     {
-      "color": "red",
-      "cost": 1,
-      "description": "Gain 5 Block.",
-      "description_rich": "Gain 5 Block.",
-      "id": "DEFEND_IRONCLAD",
-      "image": "https://assets.test/card_atlas/ironclad/defend_ironclad.png",
-      "index": 7,
-      "name": "Defend",
-      "rarity": "Basic",
-      "type": "Skill",
-      "upgraded": false
-     },
-     {
-      "color": "red",
-      "cost": 1,
-      "description": "Gain 5 Block.",
-      "description_rich": "Gain 5 Block.",
-      "id": "DEFEND_IRONCLAD",
-      "image": "https://assets.test/card_atlas/ironclad/defend_ironclad.png",
-      "index": 8,
-      "name": "Defend",
-      "rarity": "Basic",
-      "type": "Skill",
-      "upgraded": false
-     },
-     {
-      "color": "red",
-      "cost": 2,
-      "description": "Deal 8 damage.\nApply 2 Vulnerable.",
-      "description_rich": "Deal 8 damage.\nApply 2 Vulnerable.",
-      "id": "BASH",
-      "image": "https://assets.test/card_atlas/ironclad/bash.png",
-      "index": 9,
-      "name": "Bash",
-      "rarity": "Basic",
-      "type": "Attack",
-      "upgraded": false
-     },
-     {
-      "color": "colorless",
-      "cost": 1,
-      "description": "Deal 14 damage.",
-      "description_rich": "Deal 14 damage.",
-      "id": "ULTIMATE_STRIKE",
-      "image": "https://assets.test/card_atlas/colorless/ultimate_strike.png",
-      "index": 10,
-      "name": "Ultimate Strike",
-      "rarity": "Uncommon",
-      "type": "Attack",
-      "upgraded": false
-     },
-     {
-      "color": "red",
-      "cost": 0,
-      "description": "Lose 3 HP.\nGain 2 Energy.",
-      "description_rich": "Lose 3 HP.\nGain 2 Energy.",
-      "id": "BLOODLETTING",
-      "image": "https://assets.test/card_atlas/ironclad/bloodletting.png",
-      "index": 11,
-      "name": "Bloodletting",
-      "rarity": "Common",
-      "type": "Skill",
-      "upgraded": false
-     },
-     {
-      "color": "red",
-      "cost": 1,
-      "description": "Gain 7 Block.\nExhaust 1 card at random.",
-      "description_rich": "Gain 7 Block.\nExhaust 1 card at random.",
-      "id": "TRUE_GRIT",
-      "image": "https://assets.test/card_atlas/ironclad/true_grit.png",
-      "index": 12,
-      "name": "True Grit",
-      "rarity": "Common",
-      "type": "Skill",
-      "upgraded": false
-     }
+     [
+      {
+       "children": [
+        {
+         "col": 2,
+         "row": 2
+        }
+       ],
+       "col": 2,
+       "current": false,
+       "icon": "https://assets.test/run_history/monster.png",
+       "row": 1,
+       "type": "Monster",
+       "visited": true
+      },
+      {
+       "children": [
+        {
+         "col": 4,
+         "row": 2
+        },
+        {
+         "col": 3,
+         "row": 2
+        }
+       ],
+       "col": 4,
+       "current": false,
+       "icon": "https://assets.test/run_history/monster.png",
+       "row": 1,
+       "type": "Monster",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 5,
+         "row": 2
+        }
+       ],
+       "col": 5,
+       "current": false,
+       "icon": "https://assets.test/run_history/monster.png",
+       "row": 1,
+       "type": "Monster",
+       "visited": false
+      }
+     ],
+     [
+      {
+       "children": [
+        {
+         "col": 2,
+         "row": 3
+        }
+       ],
+       "col": 2,
+       "current": false,
+       "icon": "https://assets.test/run_history/monster.png",
+       "row": 2,
+       "type": "Monster",
+       "visited": true
+      },
+      {
+       "children": [
+        {
+         "col": 4,
+         "row": 3
+        },
+        {
+         "col": 2,
+         "row": 3
+        }
+       ],
+       "col": 3,
+       "current": false,
+       "icon": null,
+       "row": 2,
+       "type": "Unknown",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 5,
+         "row": 3
+        }
+       ],
+       "col": 4,
+       "current": false,
+       "icon": "https://assets.test/run_history/monster.png",
+       "row": 2,
+       "type": "Monster",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 5,
+         "row": 3
+        }
+       ],
+       "col": 5,
+       "current": false,
+       "icon": "https://assets.test/run_history/shop.png",
+       "row": 2,
+       "type": "Shop",
+       "visited": false
+      }
+     ],
+     [
+      {
+       "children": [
+        {
+         "col": 1,
+         "row": 4
+        },
+        {
+         "col": 3,
+         "row": 4
+        }
+       ],
+       "col": 2,
+       "current": false,
+       "icon": null,
+       "row": 3,
+       "type": "Unknown",
+       "visited": true
+      },
+      {
+       "children": [
+        {
+         "col": 5,
+         "row": 4
+        }
+       ],
+       "col": 4,
+       "current": false,
+       "icon": "https://assets.test/run_history/monster.png",
+       "row": 3,
+       "type": "Monster",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 6,
+         "row": 4
+        },
+        {
+         "col": 5,
+         "row": 4
+        }
+       ],
+       "col": 5,
+       "current": false,
+       "icon": null,
+       "row": 3,
+       "type": "Unknown",
+       "visited": false
+      }
+     ],
+     [
+      {
+       "children": [
+        {
+         "col": 1,
+         "row": 5
+        }
+       ],
+       "col": 1,
+       "current": false,
+       "icon": null,
+       "row": 4,
+       "type": "Unknown",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 3,
+         "row": 5
+        }
+       ],
+       "col": 3,
+       "current": true,
+       "icon": "https://assets.test/run_history/monster.png",
+       "row": 4,
+       "type": "Monster",
+       "visited": true
+      },
+      {
+       "children": [
+        {
+         "col": 5,
+         "row": 5
+        }
+       ],
+       "col": 5,
+       "current": false,
+       "icon": "https://assets.test/run_history/monster.png",
+       "row": 4,
+       "type": "Monster",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 5,
+         "row": 5
+        }
+       ],
+       "col": 6,
+       "current": false,
+       "icon": null,
+       "row": 4,
+       "type": "Unknown",
+       "visited": false
+      }
+     ],
+     [
+      {
+       "children": [
+        {
+         "col": 1,
+         "row": 6
+        }
+       ],
+       "col": 1,
+       "current": false,
+       "icon": "https://assets.test/run_history/monster.png",
+       "row": 5,
+       "type": "Monster",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 3,
+         "row": 6
+        }
+       ],
+       "col": 3,
+       "current": false,
+       "icon": null,
+       "row": 5,
+       "type": "Unknown",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 6,
+         "row": 6
+        },
+        {
+         "col": 5,
+         "row": 6
+        },
+        {
+         "col": 4,
+         "row": 6
+        }
+       ],
+       "col": 5,
+       "current": false,
+       "icon": "https://assets.test/run_history/monster.png",
+       "row": 5,
+       "type": "Monster",
+       "visited": false
+      }
+     ],
+     [
+      {
+       "children": [
+        {
+         "col": 2,
+         "row": 7
+        }
+       ],
+       "col": 1,
+       "current": false,
+       "icon": "https://assets.test/run_history/monster.png",
+       "row": 6,
+       "type": "Monster",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 2,
+         "row": 7
+        }
+       ],
+       "col": 3,
+       "current": false,
+       "icon": "https://assets.test/run_history/monster.png",
+       "row": 6,
+       "type": "Monster",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 3,
+         "row": 7
+        }
+       ],
+       "col": 4,
+       "current": false,
+       "icon": "https://assets.test/run_history/elite.png",
+       "row": 6,
+       "type": "Elite",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 4,
+         "row": 7
+        },
+        {
+         "col": 5,
+         "row": 7
+        }
+       ],
+       "col": 5,
+       "current": false,
+       "icon": "https://assets.test/run_history/rest_site.png",
+       "row": 6,
+       "type": "RestSite",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 6,
+         "row": 7
+        }
+       ],
+       "col": 6,
+       "current": false,
+       "icon": null,
+       "row": 6,
+       "type": "Unknown",
+       "visited": false
+      }
+     ],
+     [
+      {
+       "children": [
+        {
+         "col": 3,
+         "row": 8
+        },
+        {
+         "col": 2,
+         "row": 8
+        }
+       ],
+       "col": 2,
+       "current": false,
+       "icon": "https://assets.test/run_history/rest_site.png",
+       "row": 7,
+       "type": "RestSite",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 3,
+         "row": 8
+        }
+       ],
+       "col": 3,
+       "current": false,
+       "icon": "https://assets.test/run_history/rest_site.png",
+       "row": 7,
+       "type": "RestSite",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 5,
+         "row": 8
+        },
+        {
+         "col": 3,
+         "row": 8
+        }
+       ],
+       "col": 4,
+       "current": false,
+       "icon": "https://assets.test/run_history/monster.png",
+       "row": 7,
+       "type": "Monster",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 6,
+         "row": 8
+        }
+       ],
+       "col": 5,
+       "current": false,
+       "icon": "https://assets.test/run_history/monster.png",
+       "row": 7,
+       "type": "Monster",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 6,
+         "row": 8
+        }
+       ],
+       "col": 6,
+       "current": false,
+       "icon": "https://assets.test/run_history/monster.png",
+       "row": 7,
+       "type": "Monster",
+       "visited": false
+      }
+     ],
+     [
+      {
+       "children": [
+        {
+         "col": 2,
+         "row": 9
+        }
+       ],
+       "col": 2,
+       "current": false,
+       "icon": "https://assets.test/run_history/shop.png",
+       "row": 8,
+       "type": "Shop",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 2,
+         "row": 9
+        },
+        {
+         "col": 3,
+         "row": 9
+        }
+       ],
+       "col": 3,
+       "current": false,
+       "icon": "https://assets.test/run_history/elite.png",
+       "row": 8,
+       "type": "Elite",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 5,
+         "row": 9
+        }
+       ],
+       "col": 5,
+       "current": false,
+       "icon": null,
+       "row": 8,
+       "type": "Unknown",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 6,
+         "row": 9
+        }
+       ],
+       "col": 6,
+       "current": false,
+       "icon": "https://assets.test/run_history/monster.png",
+       "row": 8,
+       "type": "Monster",
+       "visited": false
+      }
+     ],
+     [
+      {
+       "children": [
+        {
+         "col": 1,
+         "row": 10
+        }
+       ],
+       "col": 2,
+       "current": false,
+       "icon": "https://assets.test/run_history/treasure.png",
+       "row": 9,
+       "type": "Treasure",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 3,
+         "row": 10
+        }
+       ],
+       "col": 3,
+       "current": false,
+       "icon": "https://assets.test/run_history/treasure.png",
+       "row": 9,
+       "type": "Treasure",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 5,
+         "row": 10
+        }
+       ],
+       "col": 5,
+       "current": false,
+       "icon": "https://assets.test/run_history/treasure.png",
+       "row": 9,
+       "type": "Treasure",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 6,
+         "row": 10
+        }
+       ],
+       "col": 6,
+       "current": false,
+       "icon": "https://assets.test/run_history/treasure.png",
+       "row": 9,
+       "type": "Treasure",
+       "visited": false
+      }
+     ],
+     [
+      {
+       "children": [
+        {
+         "col": 2,
+         "row": 11
+        },
+        {
+         "col": 0,
+         "row": 11
+        }
+       ],
+       "col": 1,
+       "current": false,
+       "icon": "https://assets.test/run_history/rest_site.png",
+       "row": 10,
+       "type": "RestSite",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 3,
+         "row": 11
+        },
+        {
+         "col": 2,
+         "row": 11
+        }
+       ],
+       "col": 3,
+       "current": false,
+       "icon": null,
+       "row": 10,
+       "type": "Unknown",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 5,
+         "row": 11
+        }
+       ],
+       "col": 5,
+       "current": false,
+       "icon": "https://assets.test/run_history/elite.png",
+       "row": 10,
+       "type": "Elite",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 6,
+         "row": 11
+        }
+       ],
+       "col": 6,
+       "current": false,
+       "icon": "https://assets.test/run_history/rest_site.png",
+       "row": 10,
+       "type": "RestSite",
+       "visited": false
+      }
+     ],
+     [
+      {
+       "children": [
+        {
+         "col": 0,
+         "row": 12
+        }
+       ],
+       "col": 0,
+       "current": false,
+       "icon": "https://assets.test/run_history/elite.png",
+       "row": 11,
+       "type": "Elite",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 1,
+         "row": 12
+        }
+       ],
+       "col": 2,
+       "current": false,
+       "icon": "https://assets.test/run_history/monster.png",
+       "row": 11,
+       "type": "Monster",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 4,
+         "row": 12
+        }
+       ],
+       "col": 3,
+       "current": false,
+       "icon": "https://assets.test/run_history/monster.png",
+       "row": 11,
+       "type": "Monster",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 5,
+         "row": 12
+        }
+       ],
+       "col": 5,
+       "current": false,
+       "icon": "https://assets.test/run_history/rest_site.png",
+       "row": 11,
+       "type": "RestSite",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 5,
+         "row": 12
+        }
+       ],
+       "col": 6,
+       "current": false,
+       "icon": "https://assets.test/run_history/monster.png",
+       "row": 11,
+       "type": "Monster",
+       "visited": false
+      }
+     ],
+     [
+      {
+       "children": [
+        {
+         "col": 0,
+         "row": 13
+        }
+       ],
+       "col": 0,
+       "current": false,
+       "icon": null,
+       "row": 12,
+       "type": "Unknown",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 0,
+         "row": 13
+        }
+       ],
+       "col": 1,
+       "current": false,
+       "icon": null,
+       "row": 12,
+       "type": "Unknown",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 5,
+         "row": 13
+        }
+       ],
+       "col": 4,
+       "current": false,
+       "icon": "https://assets.test/run_history/rest_site.png",
+       "row": 12,
+       "type": "RestSite",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 5,
+         "row": 13
+        },
+        {
+         "col": 6,
+         "row": 13
+        }
+       ],
+       "col": 5,
+       "current": false,
+       "icon": "https://assets.test/run_history/monster.png",
+       "row": 12,
+       "type": "Monster",
+       "visited": false
+      }
+     ],
+     [
+      {
+       "children": [
+        {
+         "col": 0,
+         "row": 14
+        }
+       ],
+       "col": 0,
+       "current": false,
+       "icon": "https://assets.test/run_history/monster.png",
+       "row": 13,
+       "type": "Monster",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 4,
+         "row": 14
+        },
+        {
+         "col": 6,
+         "row": 14
+        }
+       ],
+       "col": 5,
+       "current": false,
+       "icon": "https://assets.test/run_history/monster.png",
+       "row": 13,
+       "type": "Monster",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 6,
+         "row": 14
+        }
+       ],
+       "col": 6,
+       "current": false,
+       "icon": "https://assets.test/run_history/shop.png",
+       "row": 13,
+       "type": "Shop",
+       "visited": false
+      }
+     ],
+     [
+      {
+       "children": [
+        {
+         "col": 1,
+         "row": 15
+        }
+       ],
+       "col": 0,
+       "current": false,
+       "icon": "https://assets.test/run_history/monster.png",
+       "row": 14,
+       "type": "Monster",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 3,
+         "row": 15
+        }
+       ],
+       "col": 4,
+       "current": false,
+       "icon": "https://assets.test/run_history/elite.png",
+       "row": 14,
+       "type": "Elite",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 5,
+         "row": 15
+        }
+       ],
+       "col": 6,
+       "current": false,
+       "icon": null,
+       "row": 14,
+       "type": "Unknown",
+       "visited": false
+      }
+     ],
+     [
+      {
+       "children": [
+        {
+         "col": 3,
+         "row": 16
+        }
+       ],
+       "col": 1,
+       "current": false,
+       "icon": "https://assets.test/run_history/rest_site.png",
+       "row": 15,
+       "type": "RestSite",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 3,
+         "row": 16
+        }
+       ],
+       "col": 3,
+       "current": false,
+       "icon": "https://assets.test/run_history/rest_site.png",
+       "row": 15,
+       "type": "RestSite",
+       "visited": false
+      },
+      {
+       "children": [
+        {
+         "col": 3,
+         "row": 16
+        }
+       ],
+       "col": 5,
+       "current": false,
+       "icon": "https://assets.test/run_history/rest_site.png",
+       "row": 15,
+       "type": "RestSite",
+       "visited": false
+      }
+     ]
     ],
-    "gold": 193,
-    "hp": 69,
-    "image": "https://assets.test/character_sprites/ironclad.png",
-    "max_hp": 80,
-    "name": "Ironclad",
-    "potion_slots": 3,
-    "potions": [],
-    "relics": [
-     {
-      "description": "At the end of combat, heal 6 HP.",
-      "id": "BURNING_BLOOD",
-      "image": "https://assets.test/relic_atlas/burning_blood.png",
-      "name": "Burning Blood"
-     },
-     {
-      "description": "Upon pickup, choose 1 of 2 Colorless cards to add to your Deck.",
-      "id": "LEAD_PAPERWEIGHT",
-      "image": "https://assets.test/relic_atlas/lead_paperweight.png",
-      "name": "Lead Paperweight"
-     }
-    ],
-    "rig": "https://assets.test/character_rigs/ironclad/ironclad",
-    "rig_bounds_h": 278.0,
-    "rig_bounds_w": 242.0,
-    "rig_scale": 0.28
+    "second_boss": null
    },
-   "player_powers": [],
-   "round": 3
+   "idx": 0
   }
- }
+ ],
+ "rows": []
 }

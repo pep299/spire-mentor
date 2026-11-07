@@ -41,12 +41,20 @@ pub(crate) fn play_hidden_daggers(
         // The prior raw `discard_hand_card` loop dropped the Sly trigger
         // (Silent fuzz seed 24: HiddenDaggers discarding Tactician left energy
         // at 0 vs C#'s 1).
-        if !sts2_core::combat_loop::combat_is_ending(state) {
+        if sts2_core::combat_loop::combat_is_ending(state) {
+            spawn_hidden_dagger_shivs(state, shivs);
+        } else {
             let to_discard: smallvec::SmallVec<[sts2_core::CardUid; 16]> =
                 original.iter().take(discard_count).copied().collect();
-            let _ = sts2_core::card_effects::discard_hand_cards_with_hooks(state, &to_discard);
+            // The Shivs wait behind every Sly auto-play, including a Sly
+            // select the player answers first (GH #1131).
+            let then = sts2_core::LoopThen::Call(
+                spawn_hidden_dagger_shivs_packed,
+                u32::from(current_card_upgraded(state)),
+            );
+            let _ =
+                sts2_core::card_effects::discard_hand_cards_then(state, &to_discard, Some(then));
         }
-        spawn_hidden_dagger_shivs(state, shivs);
     } else {
         // Pick exactly `discard_count` of the hand to discard. The
         // `sts2-rs-enwwr` multi-pick fan-out enumerates the selections;
@@ -79,6 +87,16 @@ pub(crate) fn play_hidden_daggers(
         });
     }
     EffectResult::Resolved
+}
+
+/// [`spawn_hidden_dagger_shivs`] as a Sly-loop follow-up; `upgraded` is 0 or 1.
+fn spawn_hidden_dagger_shivs_packed(state: &mut CombatState, upgraded: u32) {
+    let shivs = sts2_core::PostChoiceEffect::SpawnInHand {
+        card_id: CardId::Shiv,
+        count: 2,
+        upgraded: upgraded != 0,
+    };
+    spawn_hidden_dagger_shivs(state, shivs);
 }
 
 /// Spawn HiddenDaggers' Shivs inline (no discard choice was opened).

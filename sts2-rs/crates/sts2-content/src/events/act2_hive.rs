@@ -810,10 +810,10 @@ pub const FIELD_OF_MAN_SIZED_HOLES: EventSpec = EventSpec {
 pub const JUNGLE_MAZE_SOLO_DAMAGE: i32 = 18;
 /// `SoloGold` base before the per-event RNG swing (C# DynamicVar
 /// `BaseValue = 150m`).
-const JUNGLE_MAZE_SOLO_GOLD_BASE: f64 = 150.0;
+const JUNGLE_MAZE_SOLO_GOLD_BASE: i128 = 150;
 /// `JoinForcesGold` base before the per-event RNG swing (C# DynamicVar
 /// `BaseValue = 50m`).
-const JUNGLE_MAZE_JOIN_GOLD_BASE: f64 = 50.0;
+const JUNGLE_MAZE_JOIN_GOLD_BASE: i128 = 50;
 
 /// Roll `(solo_gold, join_forces_gold)` off the per-event RNG, faithful
 /// to C# `JungleMazeAdventure.CalculateVars` (`JungleMazeAdventure.cs`)
@@ -840,13 +840,45 @@ const JUNGLE_MAZE_JOIN_GOLD_BASE: f64 = 50.0;
 /// int — C# rolls a float on the event's own stream. Surfaced by the
 /// run-RNG lockstep (seed 1: C# +148 vs Rust +150).
 fn jungle_maze_gold(rs: &RunState) -> (i32, i32) {
+    let ((solo_n, solo_d), (join_n, join_d)) = jungle_maze_gold_exact(rs);
+    // Add-then-truncate matches `(int)(150m + decimal_swing)` (the swing can
+    // be negative, so the truncation must follow the addition).
+    (
+        i32::try_from(solo_n / solo_d).unwrap_or(i32::MAX),
+        i32::try_from(join_n / join_d).unwrap_or(i32::MAX),
+    )
+}
+
+/// The exact C# `decimal` `(SoloGold, JoinForcesGold)` as `numer / denom`
+/// pairs. `PlayerCmd.GainGold` applies Bowler Hat to this decimal and
+/// truncates once, so the grant must not go through the truncated ints of
+/// [`jungle_maze_gold`].
+fn jungle_maze_gold_exact(rs: &RunState) -> ((i128, i128), (i128, i128)) {
     let mut rng = rs.rng.named("JUNGLE_MAZE_ADVENTURE");
-    // `as f32` mirrors C#'s `(float)` cast; add-then-truncate matches
-    // `(int)(150m + decimal_swing)` (the swing can be negative, so the
-    // truncation must follow the addition, not precede it).
-    let solo = JUNGLE_MAZE_SOLO_GOLD_BASE + f64::from(rng.next_float_range(-15.0, 15.0) as f32);
-    let join = JUNGLE_MAZE_JOIN_GOLD_BASE + f64::from(rng.next_float_range(-15.0, 15.0) as f32);
-    (solo as i32, join as i32)
+    // `as f32` mirrors C#'s `(float)` NextFloat result; `(decimal)` of that
+    // float keeps 7 significant digits.
+    let solo = csharp_decimal_from_f32(rng.next_float_range(-15.0, 15.0) as f32);
+    let join = csharp_decimal_from_f32(rng.next_float_range(-15.0, 15.0) as f32);
+    let add = |base: i128, (n, d): (i128, i128)| (base * d + n, d);
+    (
+        add(JUNGLE_MAZE_SOLO_GOLD_BASE, solo),
+        add(JUNGLE_MAZE_JOIN_GOLD_BASE, join),
+    )
+}
+
+/// C# `(decimal)someFloat` as an exact `numer / denom`: the conversion
+/// rounds to 7 significant digits (`System.Decimal(float)`).
+fn csharp_decimal_from_f32(x: f32) -> (i128, i128) {
+    let s = format!("{x:.6e}");
+    let (mant, exp) = s.split_once('e').expect("{:e} has an exponent");
+    let exp: i32 = exp.parse().expect("integer exponent");
+    let digits: i128 = mant.replace('.', "").parse().expect("7 signed digits");
+    let shift = exp - 6;
+    if shift >= 0 {
+        (digits * 10i128.pow(shift.unsigned_abs()), 1)
+    } else {
+        (digits, 10i128.pow(shift.unsigned_abs()))
+    }
 }
 
 fn jungle_maze_generate_options(state: &RunState, _spec: &EventSpec) -> Vec<EventOptionInfo> {
@@ -875,14 +907,16 @@ fn jungle_maze_generate_options(state: &RunState, _spec: &EventSpec) -> Vec<Even
 
 fn jungle_maze_solo(state: &mut RunState) -> EventOutcome {
     let (solo_gold, _join) = jungle_maze_gold(state);
+    let ((numer, denom), _join) = jungle_maze_gold_exact(state);
     let lost = state.lose_hp(JUNGLE_MAZE_SOLO_DAMAGE);
-    state.gain_gold(solo_gold);
+    state.gain_gold_decimal(numer, denom);
     EventOutcome::finished(format!("Took {lost} damage, gained {solo_gold} gold."))
 }
 
 fn jungle_maze_join(state: &mut RunState) -> EventOutcome {
     let (_solo, join_gold) = jungle_maze_gold(state);
-    state.gain_gold(join_gold);
+    let (_solo, (numer, denom)) = jungle_maze_gold_exact(state);
+    state.gain_gold_decimal(numer, denom);
     EventOutcome::finished(format!("Gained {join_gold} gold."))
 }
 
@@ -1785,6 +1819,48 @@ mod tests {
         assert!(outcome.finished);
         assert_eq!(rs.current_hp, hp_before);
         assert_eq!(rs.gold, gold_before + join_gold);
+    }
+
+    #[test]
+    fn csharp_decimal_from_f32_keeps_seven_significant_digits() {
+        let same = |x: f32, (wn, wd): (i128, i128)| {
+            let (n, d) = csharp_decimal_from_f32(x);
+            assert_eq!(n * wd, wn * d, "{x} -> {n}/{d}, want {wn}/{wd}");
+        };
+        same(0.0, (0, 1));
+        same(10.0, (10, 1));
+        same(-12.4, (-124, 10));
+        // 1/3 as f32 is 0.3333333432..., which C# converts to 0.3333333.
+        same(1.0 / 3.0, (3_333_333, 10_000_000));
+        // 14.999999 as f32 rounds to 7 digits: 15.00000, not 14.99999.
+        same(14.999_999, (15, 1));
+    }
+
+    /// C# `PlayerCmd.GainGold` multiplies the DECIMAL `SoloGold` by Bowler
+    /// Hat's 1.25 and truncates once. Truncating the roll first loses a gold
+    /// whenever the fraction carries the product over an integer.
+    #[test]
+    fn jungle_maze_bowler_hat_truncates_the_decimal_once() {
+        let mut saw_double_truncation_gap = false;
+        for seed in 0..64 {
+            for opt in 0..2 {
+                let mut rs = RunState::new();
+                rs.rng = sts2_core::run_rng_set::RunRngSet::new(seed);
+                rs.relics.push(RelicId::BowlerHat);
+                let (solo, join) = jungle_maze_gold_exact(&rs);
+                let (n, d) = if opt == 0 { solo } else { join };
+                let want = i32::try_from(n * 5 / (d * 4)).unwrap();
+                let truncated_first = i32::try_from(n / d).unwrap() * 5 / 4;
+                saw_double_truncation_gap |= want != truncated_first;
+                let before = rs.gold;
+                let _ = (JUNGLE_MAZE_ADVENTURE.options[opt].handler)(&mut rs);
+                assert_eq!(rs.gold - before, want, "seed {seed} option {opt}");
+            }
+        }
+        assert!(
+            saw_double_truncation_gap,
+            "the sweep must cover a carry case"
+        );
     }
 
     #[test]

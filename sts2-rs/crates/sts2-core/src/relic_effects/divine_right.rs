@@ -14,16 +14,9 @@ pub(crate) fn on_after_side_turn_start_divine_right(
     if !player_owns_relic(state, crate::RelicKind::DivineRight) {
         return EffectResult::NotImplemented;
     }
-    state.player.stars = state.player.stars.saturating_add(3);
-    // Bead `sts2-rs-x646`: DivineRight is a `gain_stars(owner, 3)`
-    // call in Python (`starter.py:155-157`) that flows through
-    // `combat.gain_stars` and bumps `_stars_gained_this_turn` by 3
-    // (`combat.py:1453`). The Rust port short-circuits the runtime
-    // call (no `gain_stars` wrapper exists in `sts2-core` yet — the
-    // helper lives in `sts2-content::cards::regent`), so mirror the
-    // tally side-effect here so `Radiate` and other consumers see
-    // the relic's contribution.
-    state.player.stars_gained_this_turn = state.player.stars_gained_this_turn.saturating_add(3);
+    // `PlayerCmd.GainStars`: tallies `stars_gained_this_turn` (Radiate) and
+    // fires `Hook.AfterStarsGained` (Black Hole).
+    state.gain_stars(3);
     EffectResult::Resolved
 }
 

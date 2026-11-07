@@ -213,6 +213,22 @@ _WORLD_ERROR_SAMPLE_MAX = 20
 # Same bound, for the opt-in `watch_stderr` retention.
 _STDERR_WATCH_MAX = 200
 
+#: Seconds to wait for the C# process to answer one command before treating it
+#: as hung. Some harness handlers run async game code synchronously
+#: (``GetAwaiter().GetResult()``); when that code waits on work only the blocked
+#: thread could run, the process sits at 0% CPU forever (round-3 Orrery shop
+#: entry, round-4 Ironclad-8084-a0-act2#b1, which stalled a sweep 21 minutes).
+#: ``0`` disables the deadline.
+REPLY_TIMEOUT_ENV = "STS2_CS_REPLY_TIMEOUT"
+DEFAULT_REPLY_TIMEOUT = 300.0
+
+
+def reply_timeout() -> float:
+    """The per-command reply deadline in seconds; ``0`` means none."""
+    raw = os.environ.get(REPLY_TIMEOUT_ENV, "").strip()
+    return float(raw) if raw else DEFAULT_REPLY_TIMEOUT
+
+
 # Default search locations for game DLLs (used only when ``lib/`` does not
 # already contain ``sts2.dll``; the C# binary walks up looking for it).
 _GAME_DIR_CANDIDATES = (
@@ -231,6 +247,15 @@ LIB_DIR = lib_dir()
 
 class OracleUnavailable(RuntimeError):
     """The C# oracle cannot run here: no game assembly to link against."""
+
+
+class OracleHang(RuntimeError):
+    """The C# process did not answer a command within :func:`reply_timeout`.
+
+    The process has been killed. The message starts with ``EOF from game
+    process`` so callers that match the dead-process message still classify it
+    as one, and it names the command that hung.
+    """
 
 
 def oracle_available(version: str | None = None) -> bool:
@@ -482,6 +507,9 @@ class Game:
         )
         self._lock = threading.Lock()
         self.step = 0
+        self._reply_timeout = reply_timeout()
+        #: Set by the watchdog when it kills a hung process: what was pending.
+        self._hung: str | None = None
 
         # Tally of drained stderr lines that indicate the WORLD threw. Written
         # by the drain thread, read by whoever owns the Game — see
@@ -527,7 +555,7 @@ class Game:
         self._drain_thread = threading.Thread(target=_drain, daemon=True)
         self._drain_thread.start()
 
-        ready = self._read()
+        ready = self._read_deadline("startup")
         if ready.get("type") != "ready":
             raise RuntimeError(f"Expected ready, got: {ready}")
         # Builds before GH #789 do not report a version; they are all v0.107.1.
@@ -607,18 +635,54 @@ class Game:
         while True:
             line = self.proc.stdout.readline().strip()
             if not line:
+                if self._hung is not None:
+                    raise OracleHang(
+                        f"EOF from game process: no reply to {self._hung} within "
+                        f"{self._reply_timeout:g}s (C# deadlock?); process killed "
+                        f"({REPLY_TIMEOUT_ENV} sets the limit)"
+                    )
                 raise RuntimeError("EOF from game process")
             if line.startswith("{"):
                 return json.loads(line)
 
+    def _read_deadline(self, pending: str) -> dict[str, Any]:
+        """:meth:`_read` under the reply watchdog.
+
+        A timer kills the process if no reply arrives in time; the kill EOFs
+        stdout, so the blocked ``readline`` returns and :meth:`_read` raises
+        :class:`OracleHang`. Killing is the only portable way to unblock a
+        buffered text-pipe ``readline``.
+        """
+        if self._reply_timeout <= 0:
+            return self._read()
+
+        def _fire() -> None:
+            self._hung = pending
+            self.proc.kill()
+
+        timer = threading.Timer(self._reply_timeout, _fire)
+        timer.daemon = True
+        timer.start()
+        try:
+            return self._read()
+        finally:
+            timer.cancel()
+
     def send(self, cmd: dict[str, Any]) -> dict[str, Any]:
-        """Send a raw command and return the response."""
+        """Send a raw command and return the response.
+
+        Raises:
+            OracleHang: the process gave no reply within :func:`reply_timeout`.
+        """
         with self._lock:
             assert self.proc.stdin is not None
             self.step += 1
             self.proc.stdin.write(json.dumps(cmd) + "\n")
             self.proc.stdin.flush()
-            return self._read()
+            what = cmd.get("cmd", "?")
+            if cmd.get("action") is not None:
+                what = f"{what} {cmd['action']}"
+            return self._read_deadline(f"step {self.step} ({what})")
 
     # ── High-level commands ──────────────────────────────────────────────────
 

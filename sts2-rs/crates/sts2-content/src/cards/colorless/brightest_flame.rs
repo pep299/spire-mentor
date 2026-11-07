@@ -15,15 +15,24 @@ pub(crate) fn play_brightest_flame(
     let upgraded = current_upgraded(state);
     let draws = if upgraded { 3 } else { 2 };
     let energy = if upgraded { 3 } else { 2 };
-    let _ = sts2_core::cards::draw_via_state(state, draws);
+    // C# order (BrightestFlame.cs:27-32, both builds): GainEnergy, then the
+    // awaited Draw, then LoseMaxHp. A draw that suspends on a Stratagem
+    // reshuffle select parks the max-HP loss until the draw finishes.
     state.gain_energy(energy);
+    let _ = sts2_core::cards::draw_via_state(state, draws);
+    // v0.111.0: MaxHp loss 1 -> 2 (decomp BrightestFlame.cs:15).
+    let max_hp_loss = if crate::cards::v0111::is_v0111(state.game_version) {
+        2
+    } else {
+        1
+    };
+    if state.pending_choice.is_some() {
+        if let Some(pdr) = state.pending_draw_resume.as_mut() {
+            pdr.then_lose_max_hp_from_card += max_hp_loss;
+            return EffectResult::Resolved;
+        }
+    }
     if let Some(player_uid) = state.player.creature_uid {
-        // v0.111.0: MaxHp loss 1 -> 2 (decomp BrightestFlame.cs:15).
-        let max_hp_loss = if crate::cards::v0111::is_v0111(state.game_version) {
-            2
-        } else {
-            1
-        };
         let _ = state.creature_lose_max_hp_from(player_uid, max_hp_loss, true);
     }
     EffectResult::Resolved

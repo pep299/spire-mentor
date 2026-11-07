@@ -26,7 +26,15 @@ pub(crate) fn play_malaise(state: &mut CombatState, target: Option<CreatureUid>)
         // C# `Malaise.cs:40-41`: Strength(-X) is applied BEFORE Weak(X).
         // Order is observable when the target has Artifact (it negates
         // the first debuff applied), so Strength must drain first.
-        apply_power_signed_to_creature(state, t, PowerKind::Strength, -amt);
+        // A card-sourced drain: Unsettling Lamp sees (and doubles) it, see
+        // `fold_player_card_signed_apply`.
+        let drain = sts2_core::card_effects::fold_player_card_signed_apply(
+            state,
+            t,
+            PowerKind::Strength,
+            -amt,
+        );
+        apply_power_signed_to_creature(state, t, PowerKind::Strength, drain);
         apply_power_to_enemy(state, t, PowerKind::Weak, amt);
     }
     EffectResult::Resolved

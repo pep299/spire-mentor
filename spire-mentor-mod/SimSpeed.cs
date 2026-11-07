@@ -66,10 +66,10 @@ public static class SimSpeed
         }
     }
 
-    /// <summary>Adjust the game speed by a delta (hotkeys / console). Steps
-    /// from the DESIRED speed, not from Engine.TimeScale -- pressing F10
-    /// during a hit-stop would otherwise step up from 0.1x.</summary>
-    public static void Nudge(double offset) => Apply(Desired + offset);
+    /// <summary>One whole speed up or down (F9 / F10, the toolbar's -/+;
+    /// SpeedSteps). Steps from the DESIRED speed, not from Engine.TimeScale --
+    /// pressing F10 during a hit-stop would otherwise step up from 0.1x.</summary>
+    public static void Step(int direction) => Apply(SpeedSteps.Step(Desired, direction));
 
     private static void ApplyOnMainThread(double value, bool showVfx)
     {

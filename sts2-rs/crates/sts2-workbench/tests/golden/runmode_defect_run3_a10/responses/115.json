@@ -1,147 +1,49 @@
 {
  "debug": {
-  "action": "Play Sunder → Cubex Construct",
+  "action": "End turn",
   "combat_search": {
    "actions": [
-    {
-     "action": {
-      "action": "play",
-      "card_index": 1,
-      "target_index": 0
-     },
-     "bucket": "likely-win",
-     "hp_n": 7,
-     "hp_sd": 3.6422,
-     "is_best": true,
-     "losses": 1,
-     "low_confidence": false,
-     "mean_final_hp": 7.8571,
-     "p_loss": 0.1429,
-     "p_tie": 0.0,
-     "p_win": 0.8571,
-     "q": 0.7172,
-     "q_saturated": false,
-     "ties": 0,
-     "value": 0.7143,
-     "value_sum": 5.0203,
-     "visits": 7,
-     "wins": 6
-    },
-    {
-     "action": {
-      "action": "play",
-      "card_index": 3,
-      "target_index": 0
-     },
-     "bucket": "even",
-     "hp_n": 2,
-     "hp_sd": 5.0,
-     "is_best": false,
-     "losses": 1,
-     "low_confidence": false,
-     "mean_final_hp": 5.0,
-     "p_loss": 0.5,
-     "p_tie": 0.0,
-     "p_win": 0.5,
-     "q": -0.1236,
-     "q_saturated": false,
-     "ties": 0,
-     "value": 0.0,
-     "value_sum": -0.2472,
-     "visits": 2,
-     "wins": 1
-    },
-    {
-     "action": {
-      "action": "drink_potion",
-      "slot": 0,
-      "target_index": null
-     },
-     "bucket": "likely-loss",
-     "hp_n": 1,
-     "hp_sd": 0.0,
-     "is_best": false,
-     "losses": 1,
-     "low_confidence": false,
-     "mean_final_hp": 0.0,
-     "p_loss": 1.0,
-     "p_tie": 0.0,
-     "p_win": 0.0,
-     "q": -1.2039,
-     "q_saturated": false,
-     "ties": 0,
-     "value": -1.0,
-     "value_sum": -1.2039,
-     "visits": 1,
-     "wins": 0
-    },
-    {
-     "action": {
-      "action": "play",
-      "card_index": 0,
-      "target_index": null
-     },
-     "bucket": "likely-loss",
-     "hp_n": 1,
-     "hp_sd": 0.0,
-     "is_best": false,
-     "losses": 1,
-     "low_confidence": false,
-     "mean_final_hp": 0.0,
-     "p_loss": 1.0,
-     "p_tie": 0.0,
-     "p_win": 0.0,
-     "q": -1.2071,
-     "q_saturated": false,
-     "ties": 0,
-     "value": -1.0,
-     "value_sum": -1.2071,
-     "visits": 1,
-     "wins": 0
-    },
     {
      "action": {
       "action": "end_turn"
      },
      "bucket": "likely-loss",
-     "hp_n": 1,
-     "hp_sd": 0.0,
-     "is_best": false,
-     "losses": 1,
+     "hp_n": 0,
+     "hp_sd": null,
+     "is_best": true,
+     "losses": 0,
      "low_confidence": false,
-     "mean_final_hp": 0.0,
-     "p_loss": 1.0,
+     "mean_final_hp": null,
+     "p_loss": 0.0,
      "p_tie": 0.0,
      "p_win": 0.0,
-     "q": -1.2243,
+     "q": 0.0,
      "q_saturated": false,
      "ties": 0,
-     "value": -1.0,
-     "value_sum": -1.2243,
-     "visits": 1,
+     "value": 0.0,
+     "value_sum": 0.0,
+     "visits": 0,
      "wins": 0
     }
    ],
    "recommended": {
-    "action": "play",
-    "card_index": 1,
-    "target_index": 0
+    "action": "end_turn"
    }
   },
   "is_combat": true,
   "phase": "combat",
   "result": "Advanced",
-  "summary": "combat MCTS → Play Sunder → Cubex Construct"
+  "summary": "combat MCTS → End turn"
  },
  "done": false,
  "error": null,
  "over": false,
  "search": {
-  "action": "Play Sunder → Cubex Construct",
+  "action": "End turn",
   "enemies": [
    {
     "block": 0,
-    "hp": 70,
+    "hp": 46,
     "index": 0,
     "intents": [
      {
@@ -166,102 +68,22 @@
   ],
   "scores": [
    {
-    "action": "Sunder",
-    "hp_n": 7,
-    "hp_sd": 3.6422,
+    "action": "end turn",
+    "hp_n": 0,
+    "hp_sd": null,
     "in_band": false,
     "is_best": true,
-    "losses": 1,
+    "losses": 0,
     "low_confidence": false,
-    "mean_final_hp": 7.8571,
+    "mean_final_hp": null,
     "pick_rank": null,
     "pick_reason": null,
-    "q": 0.7172,
-    "q_saturated": false,
-    "stable_idx": 1,
-    "target_index": 0,
-    "ties": 0,
-    "visits": 7,
-    "win_prob": 0.8571,
-    "wins": 6
-   },
-   {
-    "action": "Barrage",
-    "hp_n": 2,
-    "hp_sd": 5.0,
-    "in_band": false,
-    "is_best": false,
-    "losses": 1,
-    "low_confidence": false,
-    "mean_final_hp": 5.0,
-    "pick_rank": null,
-    "pick_reason": null,
-    "q": -0.1236,
-    "q_saturated": false,
-    "stable_idx": 3,
-    "target_index": 0,
-    "ties": 0,
-    "visits": 2,
-    "win_prob": 0.5,
-    "wins": 1
-   },
-   {
-    "action": "drink Block Potion",
-    "hp_n": 1,
-    "hp_sd": 0.0,
-    "in_band": false,
-    "is_best": false,
-    "losses": 1,
-    "low_confidence": false,
-    "mean_final_hp": 0.0,
-    "pick_rank": null,
-    "pick_reason": null,
-    "q": -1.2039,
-    "q_saturated": false,
-    "stable_idx": -100,
-    "target_index": null,
-    "ties": 0,
-    "visits": 1,
-    "win_prob": 0.0,
-    "wins": 0
-   },
-   {
-    "action": "Defend",
-    "hp_n": 1,
-    "hp_sd": 0.0,
-    "in_band": false,
-    "is_best": false,
-    "losses": 1,
-    "low_confidence": false,
-    "mean_final_hp": 0.0,
-    "pick_rank": null,
-    "pick_reason": null,
-    "q": -1.2071,
-    "q_saturated": false,
-    "stable_idx": 0,
-    "target_index": null,
-    "ties": 0,
-    "visits": 1,
-    "win_prob": 0.0,
-    "wins": 0
-   },
-   {
-    "action": "end turn",
-    "hp_n": 1,
-    "hp_sd": 0.0,
-    "in_band": false,
-    "is_best": false,
-    "losses": 1,
-    "low_confidence": false,
-    "mean_final_hp": 0.0,
-    "pick_rank": null,
-    "pick_reason": null,
-    "q": -1.2243,
+    "q": 0.0,
     "q_saturated": false,
     "stable_idx": -1,
     "target_index": null,
     "ties": 0,
-    "visits": 1,
+    "visits": 0,
     "win_prob": 0.0,
     "wins": 0
    }
@@ -281,7 +103,7 @@
    "bg_seed": 3,
    "floor": 6,
    "step_no": 0,
-   "turn": 1
+   "turn": 2
   },
   "pv": null,
   "scores": [],
@@ -314,27 +136,24 @@
      "target_type": "None",
      "type": "Attack",
      "upgraded": false
-    }
-   ],
-   "discard_pile_count": 1,
-   "draw_pile": [
+    },
     {
      "base_cost": 1,
      "can_play": false,
      "color": "blue",
      "cost": 1,
-     "description": "Deal 6 damage.\nChannel 1 Frost.",
-     "description_rich": "Deal 6 damage.\n[gold]Channel[/gold] 1 [gold]Frost[/gold].",
-     "id": "COLD_SNAP",
-     "image": "https://assets.test/card_atlas/defect/cold_snap.png",
+     "description": "Gain 5 Block.",
+     "description_rich": "Gain 5 [gold]Block[/gold].",
+     "id": "DEFEND_DEFECT",
+     "image": "https://assets.test/card_atlas/defect/defend_defect.png",
      "index": -1,
-     "name": "Cold Snap",
-     "rarity": "Common",
+     "name": "Defend",
+     "rarity": "Basic",
      "stats": {
-      "damage": 6
+      "block": 5
      },
      "target_type": "None",
-     "type": "Attack",
+     "type": "Skill",
      "upgraded": false
     },
     {
@@ -356,6 +175,29 @@
      "type": "Skill",
      "upgraded": false
     },
+    {
+     "base_cost": 1,
+     "calculated_value": 1,
+     "can_play": false,
+     "color": "blue",
+     "cost": 1,
+     "description": "Deal 5 damage for each Channeled Orb.\n(Hits 1 time)",
+     "description_rich": "Deal 5 damage for each [gold]Channeled[/gold] Orb.\n(Hits 1 time)",
+     "id": "BARRAGE",
+     "image": "https://assets.test/card_atlas/defect/barrage.png",
+     "index": -1,
+     "name": "Barrage",
+     "rarity": "Common",
+     "stats": {
+      "damage": 5
+     },
+     "target_type": "None",
+     "type": "Attack",
+     "upgraded": false
+    }
+   ],
+   "discard_pile_count": 4,
+   "draw_pile": [
     {
      "base_cost": 1,
      "can_play": false,
@@ -390,61 +232,6 @@
      "stats": {},
      "target_type": "None",
      "type": "Skill",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "blue",
-     "cost": 1,
-     "description": "Evoke your rightmost Orb twice.",
-     "description_rich": "[gold]Evoke[/gold] your rightmost Orb twice.",
-     "id": "DUALCAST",
-     "image": "https://assets.test/card_atlas/defect/dualcast.png",
-     "index": -1,
-     "name": "Dualcast",
-     "rarity": "Basic",
-     "stats": {},
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "blue",
-     "cost": 1,
-     "description": "Deal 6 damage.",
-     "description_rich": "Deal 6 damage.",
-     "id": "STRIKE_DEFECT",
-     "image": "https://assets.test/card_atlas/defect/strike_defect.png",
-     "index": -1,
-     "name": "Strike",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 6
-     },
-     "target_type": "None",
-     "type": "Attack",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "blue",
-     "cost": 1,
-     "description": "Deal 6 damage.",
-     "description_rich": "Deal 6 damage.",
-     "id": "STRIKE_DEFECT",
-     "image": "https://assets.test/card_atlas/defect/strike_defect.png",
-     "index": -1,
-     "name": "Strike",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 6
-     },
-     "target_type": "None",
-     "type": "Attack",
      "upgraded": false
     },
     {
@@ -503,23 +290,34 @@
      "upgraded": false
     }
    ],
-   "draw_pile_count": 10,
+   "draw_pile_count": 5,
    "enemies": [
     {
      "block": 0,
-     "hp": 46,
+     "hp": 43,
      "image": "https://assets.test/monsters/cubex_construct.png",
      "index": 0,
      "intents": [
       {
-       "damage": 2,
-       "intent_image": "https://assets.test/intent_atlas/intent_buff.png",
-       "type": "Buff"
+       "base_damage": 8,
+       "damage": 10,
+       "intent_image": "https://assets.test/intent_atlas/attack/intent_attack_3.png",
+       "modifiers": [
+        {
+         "add": 2,
+         "image": "https://assets.test/power_atlas/strength_power.png",
+         "kind": "power",
+         "name": "STRENGTH",
+         "side": "enemy",
+         "title": "Strength"
+        }
+       ],
+       "type": "Attack"
       }
      ],
      "kind": "CubexConstruct",
      "max_hp": 70,
-     "move_state": "CHARGE_UP",
+     "move_state": "REPEATER",
      "name": "Cubex Construct",
      "powers": [
       {
@@ -529,6 +327,14 @@
        "image": "https://assets.test/power_atlas/artifact_power.png",
        "image_big": "https://assets.test/power_big/artifact_power.png",
        "name": "Artifact"
+      },
+      {
+       "amount": 2,
+       "display_amount": 2,
+       "id": "STRENGTH",
+       "image": "https://assets.test/power_atlas/strength_power.png",
+       "image_big": "https://assets.test/power_big/strength_power.png",
+       "name": "Strength"
       }
      ],
      "rig": "https://assets.test/monster_rigs/cubex_construct/cubex_construct",
@@ -538,35 +344,55 @@
      "uid": 2
     }
    ],
-   "energy": 0,
+   "energy": 3,
    "energy_image": "https://assets.test/sprite_fonts/defect_energy_icon.png",
-   "exhaust_pile": [],
-   "exhaust_pile_count": 0,
+   "exhaust_pile": [
+    {
+     "base_cost": -1,
+     "can_play": false,
+     "color": "curse",
+     "cost": 0,
+     "description": "Unplayable.\nEthereal.\nEternal.",
+     "description_rich": "[gold]Unplayable[/gold].\n[gold]Ethereal[/gold].\n[gold]Eternal[/gold].",
+     "id": "ASCENDERS_BANE",
+     "image": "https://assets.test/card_atlas/curse/ascenders_bane.png",
+     "index": -1,
+     "name": "Ascender's Bane",
+     "rarity": "Curse",
+     "stats": {},
+     "target_type": "None",
+     "type": "Curse",
+     "upgraded": false
+    }
+   ],
+   "exhaust_pile_count": 1,
    "floor": 6,
    "hand": [
     {
      "base_cost": 1,
-     "can_play": false,
+     "can_play": true,
      "color": "blue",
      "cost": 1,
-     "description": "Gain 5 Block.",
-     "description_rich": "Gain 5 [gold]Block[/gold].",
-     "id": "DEFEND_DEFECT",
-     "image": "https://assets.test/card_atlas/defect/defend_defect.png",
+     "damage_preview": {
+      "0": 6
+     },
+     "description": "Deal 6 damage.",
+     "description_rich": "Deal 6 damage.",
+     "id": "STRIKE_DEFECT",
+     "image": "https://assets.test/card_atlas/defect/strike_defect.png",
      "index": 0,
-     "name": "Defend",
+     "name": "Strike",
      "rarity": "Basic",
      "stats": {
-      "block": 5
+      "damage": 6
      },
-     "target_type": "None",
-     "type": "Skill",
-     "unplayable_reason": "cost",
+     "target_type": "AnyEnemy",
+     "type": "Attack",
      "upgraded": false
     },
     {
      "base_cost": 1,
-     "can_play": false,
+     "can_play": true,
      "color": "blue",
      "cost": 1,
      "description": "Gain 5 Block.",
@@ -581,49 +407,67 @@
      },
      "target_type": "None",
      "type": "Skill",
-     "unplayable_reason": "cost",
      "upgraded": false
     },
     {
      "base_cost": 1,
-     "calculated_value": 1,
-     "can_play": false,
+     "can_play": true,
      "color": "blue",
      "cost": 1,
      "damage_preview": {
-      "0": 5
+      "0": 6
      },
-     "description": "Deal 5 damage for each Channeled Orb.\n(Hits 1 time)",
-     "description_rich": "Deal 5 damage for each [gold]Channeled[/gold] Orb.\n(Hits 1 time)",
-     "id": "BARRAGE",
-     "image": "https://assets.test/card_atlas/defect/barrage.png",
+     "description": "Deal 6 damage.",
+     "description_rich": "Deal 6 damage.",
+     "id": "STRIKE_DEFECT",
+     "image": "https://assets.test/card_atlas/defect/strike_defect.png",
      "index": 2,
-     "name": "Barrage",
-     "rarity": "Common",
+     "name": "Strike",
+     "rarity": "Basic",
      "stats": {
-      "damage": 5
+      "damage": 6
      },
-     "target_type": "None",
+     "target_type": "AnyEnemy",
      "type": "Attack",
-     "unplayable_reason": "cost",
      "upgraded": false
     },
     {
-     "base_cost": -1,
-     "can_play": false,
-     "color": "curse",
-     "cost": 0,
-     "description": "Unplayable.\nEthereal.\nEternal.",
-     "description_rich": "[gold]Unplayable[/gold].\n[gold]Ethereal[/gold].\n[gold]Eternal[/gold].",
-     "id": "ASCENDERS_BANE",
-     "image": "https://assets.test/card_atlas/curse/ascenders_bane.png",
+     "base_cost": 1,
+     "can_play": true,
+     "color": "blue",
+     "cost": 1,
+     "description": "Evoke your rightmost Orb twice.",
+     "description_rich": "[gold]Evoke[/gold] your rightmost Orb twice.",
+     "id": "DUALCAST",
+     "image": "https://assets.test/card_atlas/defect/dualcast.png",
      "index": 3,
-     "name": "Ascender's Bane",
-     "rarity": "Curse",
+     "name": "Dualcast",
+     "rarity": "Basic",
      "stats": {},
      "target_type": "None",
-     "type": "Curse",
-     "unplayable_reason": "blocked",
+     "type": "Skill",
+     "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": true,
+     "color": "blue",
+     "cost": 1,
+     "damage_preview": {
+      "0": 6
+     },
+     "description": "Deal 6 damage.\nChannel 1 Frost.",
+     "description_rich": "Deal 6 damage.\n[gold]Channel[/gold] 1 [gold]Frost[/gold].",
+     "id": "COLD_SNAP",
+     "image": "https://assets.test/card_atlas/defect/cold_snap.png",
+     "index": 4,
+     "name": "Cold Snap",
+     "rarity": "Common",
+     "stats": {
+      "damage": 6
+     },
+     "target_type": "AnyEnemy",
+     "type": "Attack",
      "upgraded": false
     }
    ],
@@ -632,127 +476,29 @@
     "actions": [
      {
       "action": {
-       "action": "play",
-       "card_index": 1,
-       "target_index": 0
-      },
-      "bucket": "likely-win",
-      "hp_n": 7,
-      "hp_sd": 3.6422,
-      "is_best": true,
-      "losses": 1,
-      "low_confidence": false,
-      "mean_final_hp": 7.8571,
-      "p_loss": 0.1429,
-      "p_tie": 0.0,
-      "p_win": 0.8571,
-      "q": 0.7172,
-      "q_saturated": false,
-      "ties": 0,
-      "value": 0.7143,
-      "value_sum": 5.0203,
-      "visits": 7,
-      "wins": 6
-     },
-     {
-      "action": {
-       "action": "play",
-       "card_index": 3,
-       "target_index": 0
-      },
-      "bucket": "even",
-      "hp_n": 2,
-      "hp_sd": 5.0,
-      "is_best": false,
-      "losses": 1,
-      "low_confidence": false,
-      "mean_final_hp": 5.0,
-      "p_loss": 0.5,
-      "p_tie": 0.0,
-      "p_win": 0.5,
-      "q": -0.1236,
-      "q_saturated": false,
-      "ties": 0,
-      "value": 0.0,
-      "value_sum": -0.2472,
-      "visits": 2,
-      "wins": 1
-     },
-     {
-      "action": {
-       "action": "drink_potion",
-       "slot": 0,
-       "target_index": null
-      },
-      "bucket": "likely-loss",
-      "hp_n": 1,
-      "hp_sd": 0.0,
-      "is_best": false,
-      "losses": 1,
-      "low_confidence": false,
-      "mean_final_hp": 0.0,
-      "p_loss": 1.0,
-      "p_tie": 0.0,
-      "p_win": 0.0,
-      "q": -1.2039,
-      "q_saturated": false,
-      "ties": 0,
-      "value": -1.0,
-      "value_sum": -1.2039,
-      "visits": 1,
-      "wins": 0
-     },
-     {
-      "action": {
-       "action": "play",
-       "card_index": 0,
-       "target_index": null
-      },
-      "bucket": "likely-loss",
-      "hp_n": 1,
-      "hp_sd": 0.0,
-      "is_best": false,
-      "losses": 1,
-      "low_confidence": false,
-      "mean_final_hp": 0.0,
-      "p_loss": 1.0,
-      "p_tie": 0.0,
-      "p_win": 0.0,
-      "q": -1.2071,
-      "q_saturated": false,
-      "ties": 0,
-      "value": -1.0,
-      "value_sum": -1.2071,
-      "visits": 1,
-      "wins": 0
-     },
-     {
-      "action": {
        "action": "end_turn"
       },
       "bucket": "likely-loss",
-      "hp_n": 1,
-      "hp_sd": 0.0,
-      "is_best": false,
-      "losses": 1,
+      "hp_n": 0,
+      "hp_sd": null,
+      "is_best": true,
+      "losses": 0,
       "low_confidence": false,
-      "mean_final_hp": 0.0,
-      "p_loss": 1.0,
+      "mean_final_hp": null,
+      "p_loss": 0.0,
       "p_tie": 0.0,
       "p_win": 0.0,
-      "q": -1.2243,
+      "q": 0.0,
       "q_saturated": false,
       "ties": 0,
-      "value": -1.0,
-      "value_sum": -1.2243,
-      "visits": 1,
+      "value": 0.0,
+      "value_sum": 0.0,
+      "visits": 0,
       "wins": 0
      }
     ],
     "recommended": {
-     "action": "play",
-     "card_index": 1,
-     "target_index": 0
+     "action": "end_turn"
     }
    },
    "options": [],
@@ -972,14 +718,7 @@
     "max_hp": 75,
     "name": "Defect",
     "potion_slots": 2,
-    "potions": [
-     {
-      "description": "Gain 12 Block.",
-      "id": "BLOCK_POTION",
-      "image": "https://assets.test/potion_atlas/block_potion.png",
-      "name": "Block Potion"
-     }
-    ],
+    "potions": [],
     "relics": [
      {
       "description": "At the start of each combat, Channel 1 Lightning.",
@@ -1000,9 +739,9 @@
     "rig_scale": 0.125
    },
    "player_powers": [],
-   "round": 1
+   "round": 2
   }
  },
- "steps": 1,
+ "steps": 2,
  "victory": false
 }

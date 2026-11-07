@@ -281,6 +281,37 @@ internal sealed class SimAdvisor
     private string _pausedKey = "";
     private string _resumedKey = "";
 
+    /// <summary>
+    /// Autobattle (Shift+F7, Autobattle.cs): autoplay stays armed but only
+    /// plays the fights; every run-level decision is held for the player,
+    /// and the player's own pick resumes it. Cleared by every disarm
+    /// (<see cref="SetAutoPlay"/>).
+    /// </summary>
+    private bool _autobattle;
+
+    /// <summary>The run at the last autobattle stop (null before the first),
+    /// what the next stop's chip is diffed against.</summary>
+    private AutobattleSnapshot? _autobattleLastStop;
+
+    /// <summary>The stop on screen now: one decision, however many advice
+    /// replies it gets, shows its chip once.</summary>
+    private string _autobattleStopKey = "";
+
+    /// <summary>Decisions the AI played since the last stop.</summary>
+    private int _autobattleAutoplayed;
+
+    private int _autobattleStops;
+
+    /// <summary>Autobattle raised the speed from 1x as it turned on, so
+    /// turning it off may put 1x back (SpeedSteps).</summary>
+    private bool _autobattleRaisedSpeed;
+
+    /// <summary>The diff chip on screen, withdrawn once the AI plays on.</summary>
+    private string _autobattleChipId = "";
+
+    /// <summary>Autobattle is on (the toolbar's label).</summary>
+    public bool AutobattleOn => _autobattle;
+
     // Runaway guard. A screen choice that does not change the screen is not
     // idempotent in general: on the deck-select screens each repeat SELECTS
     // ANOTHER CARD, and a broken confirm turned that into 59 consecutive
@@ -1313,7 +1344,8 @@ internal sealed class SimAdvisor
                 SimHud.Instance.ShowAdvice(screen.LocalAdvice, null);
                 RenderLatchedPeek();
             }
-            if (_autoPlay && !PauseForPlayer(screen, screen.HandBack) && _lastBest != null)
+            if (_autoPlay && !HoldForAutobattle(screen, isCombat: false) &&
+                !PauseForPlayer(screen, screen.HandBack) && _lastBest != null)
             {
                 ScheduleAutoPlay();
             }
@@ -1505,7 +1537,8 @@ internal sealed class SimAdvisor
                                                  ReferenceEquals(_lastScreen.Screen, forScreen)
                     ? _lastScreen
                     : null;
-                if (_autoPlay && !PauseForPlayer(forDecision, advice.HandBack ?? forDecision?.HandBack) &&
+                if (_autoPlay && !HoldForAutobattle(forDecision, isCombat) &&
+                    !PauseForPlayer(forDecision, advice.HandBack ?? forDecision?.HandBack) &&
                     _lastBest != null)
                 {
                     // Small grace so the human can see the recommendation
@@ -2220,6 +2253,146 @@ internal sealed class SimAdvisor
     {
         _autoPlay = value;
         SimRuntime.AdvisorAutoplayArmed = value;
+        if (!value)
+        {
+            // Every reason autoplay stops (F7, the runaway guard, game over,
+            // leaving Advisor mode) stops the autobattle with it.
+            _autobattle = false;
+            if (_autobattleChipId.Length > 0)
+            {
+                SimCoachChip.Instance.Withdraw(new[] { _autobattleChipId });
+                _autobattleChipId = "";
+            }
+            // Put back the 1x autobattle raised, unless the player has
+            // changed the speed since (SpeedSteps).
+            if (_autobattleRaisedSpeed)
+            {
+                _autobattleRaisedSpeed = false;
+                if (SpeedSteps.RestoreOnOff(SimSpeed.Desired))
+                {
+                    SimSpeed.Apply(1.0);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Shift+F7 / the toolbar's Autobattle button (Autobattle.cs): the AI
+    /// plays the fights, you make every run-level decision. Toggled; from
+    /// plain autoplay (F7) it switches to autobattle.
+    /// </summary>
+    public void ToggleAutobattle()
+    {
+        if (_autobattle)
+        {
+            SetAutoPlay(false);
+            Logger.Log("[SimAdvisor] Autobattle off");
+            SimActionLog.Note("Autobattle off");
+            return;
+        }
+        SetAutoPlay(true);
+        _autobattle = true;
+        _autobattleLastStop = null;
+        _autobattleStopKey = "";
+        _autobattleAutoplayed = 0;
+        _recentScreenChoices.Clear();
+        _resumedKey = "";
+        string on = "Autobattle ON: the AI fights, you make every run-level decision (Shift+F7 to stop)";
+        // 1x is watching every fight at normal speed: raise it to 2x. Any
+        // other speed is the player's choice and stays (SpeedSteps).
+        if (SpeedSteps.AutobattleOn(SimSpeed.Desired) is { } fast)
+        {
+            SimSpeed.Apply(fast);
+            _autobattleRaisedSpeed = true;
+            on += $"; speed {SpeedSteps.Label(fast)}";
+        }
+        Logger.Log($"[SimAdvisor] {on}");
+        SimActionLog.Note(on);
+        // Never execute the standing recommendation here: it may be the very
+        // card reward the player is meant to pick. Fresh advice goes through
+        // the hold below like every other decision.
+        ScheduleAdvice();
+    }
+
+    /// <summary>
+    /// Autobattle: hold a run-level decision for the player instead of
+    /// playing it (autoplay stays armed; the next decision after the
+    /// player's pick plays on). The first time a stop comes up it shows the
+    /// "since your last stop" chip. Returns true when it holds. Main thread.
+    /// <paramref name="screen"/> is null for combat, and for a screen reply
+    /// whose screen has gone -- held, since it cannot be classified.
+    /// </summary>
+    private bool HoldForAutobattle(SimScreenDecision? screen, bool isCombat)
+    {
+        if (!_autobattle)
+        {
+            return false;
+        }
+        if (screen == null)
+        {
+            return !isCombat;
+        }
+        if (!Autobattle.IsStop(screen.AdviceFor, screen.Local, CombatManager.Instance.IsInProgress))
+        {
+            return false;
+        }
+        ulong node = screen.Screen is { } s && GodotObject.IsInstanceValid(s) ? s.GetInstanceId() : 0UL;
+        string key = $"{screen.AdviceFor}|{node}|{screen.SignatureOrDefault}";
+        if (key == _autobattleStopKey)
+        {
+            return true;
+        }
+        _autobattleStopKey = key;
+
+        AutobattleSnapshot? now = ReadAutobattleSnapshot();
+        // A new stop where nothing moved -- the next page of an event, a
+        // card ticked on a deck screen -- keeps the chip that is up: it still
+        // says what changed since the AI last played.
+        if (now != null && (_autobattleLastStop == null || _autobattleAutoplayed > 0 ||
+                            Autobattle.Moved(_autobattleLastStop, now)))
+        {
+            string id = $"{Autobattle.ChipKind}:{++_autobattleStops}";
+            ChipText chip = Autobattle.Chip(id, _autobattleLastStop, now, _autobattleAutoplayed);
+            Logger.Log($"[SimAdvisor] Autobattle stop on {screen.ScreenName}: {string.Join(" | ", chip.Lines)}");
+            SimCoachChip.Instance.Show(chip, inCombat: false);
+            _autobattleChipId = id;
+            _autobattleLastStop = now;
+            _autobattleAutoplayed = 0;
+        }
+        string note = $"Autobattle: {AutoplayPause.Pretty(screen.AdviceFor)} — your call";
+        SimActionLog.Note(note);
+        SimToolbar.Instance.SetNote(note);
+        return true;
+    }
+
+    /// <summary>The run as an autobattle stop sees it, or null without a
+    /// run. Never throws.</summary>
+    private static AutobattleSnapshot? ReadAutobattleSnapshot()
+    {
+        try
+        {
+            RunState? runState = RunManager.Instance.DebugOnlyGetState();
+            Player? me = LocalContext.GetMe(runState);
+            if (runState == null || me == null)
+            {
+                return null;
+            }
+            return new AutobattleSnapshot(
+                runState.TotalFloor,
+                me.Creature?.CurrentHp,
+                me.Creature?.MaxHp,
+                me.Gold,
+                // The bare title: Title appends "+", and the diff folds an
+                // upgrade from the flag instead.
+                me.Deck.Cards.Select(c => (c.TitleLocString.GetFormattedText(), c.IsUpgraded)).ToList(),
+                me.Relics.Select(r => r.Title.GetFormattedText()).ToList(),
+                me.PotionSlots.Where(p => p != null).Select(p => p!.Title.GetFormattedText()).ToList());
+        }
+        catch (Exception ex)
+        {
+            Logger.Log($"[SimAdvisor] Autobattle snapshot: {ex.Message}");
+            return null;
+        }
     }
 
     /// <summary>
@@ -2254,6 +2427,21 @@ internal sealed class SimAdvisor
             return false;
         }
         _pausedKey = key;
+        if (_autobattle)
+        {
+            // Autobattle holds instead of disarming: the player's move is
+            // what resumes it, as at every run-level stop.
+            if (key != _autobattleStopKey)
+            {
+                _autobattleStopKey = key;
+                string held = $"{AutoplayPause.Pretty(eventId ?? adviceFor)}: {reason} — your call; " +
+                              "the AI carries on after your move.";
+                Logger.Log($"[SimAdvisor] Autobattle held {screen?.ScreenName ?? "combat"}: {reason}");
+                SimActionLog.Note(held);
+                SimToolbar.Instance.SetNote(held);
+            }
+            return true;
+        }
         SetAutoPlay(false);
         string toast = AutoplayPause.Toast(AutoplayPause.Pretty(eventId ?? adviceFor), reason);
         Logger.Log($"[SimAdvisor] Paused for the player on {screen?.ScreenName ?? "combat"}: {reason}");
@@ -2332,6 +2520,18 @@ internal sealed class SimAdvisor
             {
                 if (gen == _autoPlayGen && _autoPlay && SimRuntime.Mode == SimMode.Advisor)
                 {
+                    if (_autobattle)
+                    {
+                        // The AI plays on: the stop is over, and its chip
+                        // with it.
+                        _autobattleAutoplayed++;
+                        _autobattleStopKey = "";
+                        if (_autobattleChipId.Length > 0)
+                        {
+                            SimCoachChip.Instance.Withdraw(new[] { _autobattleChipId });
+                            _autobattleChipId = "";
+                        }
+                    }
                     ExecuteBestOnce();
                 }
             }));
@@ -2644,6 +2844,12 @@ internal sealed class SimAdvisor
                 SimCoachPanel.Instance.Withdraw(ids);
                 return;
             }
+            if (kind == "recap" && _autobattle)
+            {
+                // The AI fought it; the next stop's chip carries the HP.
+                Logger.Log("[SimAdvisor] Coach recap not shown: autobattle played the fight.");
+                return;
+            }
             if (kind is "recap" or "autopsy")
             {
                 PanelText? panel = CoachPanelText.Format(rec);
@@ -2660,7 +2866,10 @@ internal sealed class SimAdvisor
                 Logger.Log("[SimAdvisor] Coach: turn record arrived after the next turn started; not shown.");
                 return;
             }
-            ChipText? text = CoachChipText.Format(rec, SpireMentorModConfig.CoachShowGoodTurns);
+            // Autobattle is a drill on exactly these choices, so its verdict
+            // shows a match too, as the workbench's does.
+            bool showGood = SpireMentorModConfig.CoachShowGoodTurns || (_autobattle && kind == "choice");
+            ChipText? text = CoachChipText.Format(rec, showGood);
             if (text == null)
             {
                 return;

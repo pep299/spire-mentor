@@ -30,32 +30,20 @@ pub(crate) fn drink_shackling_potion(state: &mut CombatState, _target: Option<u8
         // applied the `-Strength` UNCONDITIONALLY via the non-Artifact-aware
         // signed-power path, so an Artifact enemy kept the `-Strength` even
         // though Artifact consumed the ShacklingPotion power (fuzz seed 2483:
-        // RS Strength -7 on a CHOMPER with Artifact vs C# none). Mirror the
-        // Mangle pattern: snapshot Artifact BEFORE the (Artifact-aware)
-        // ShacklingPotion apply consumes a charge, and apply the `-Strength`
-        // leg only when the target had NO Artifact to absorb it. Bead
+        // RS Strength -7 on a CHOMPER with Artifact vs C# none). Bead
         // `sts2-rs-xk9yo`.
-        let absorbed_by_artifact = creature_has_active_artifact(state, t);
-        apply_power_to_creature(state, t, PowerKind::ShacklingPotion, 7);
-        if !absorbed_by_artifact {
-            apply_power_signed_to_creature(state, t, PowerKind::Strength, -7);
-        }
+        //
+        // `BeforeApplied` runs BEFORE the power lands (PowerCmd.cs:132-135
+        // v0.111.0): the `-Strength` goes first, and its
+        // `AfterPowerAmountChanged` reactors can kill the target (Sleight of
+        // Flesh); a Parafright killed so keeps only its Strength -7 (loadout
+        // Necrobinder 1189 v0.111.0 act2).
+        sts2_core::card_effects::apply_temporary_strength_debuff(
+            state,
+            t,
+            PowerKind::ShacklingPotion,
+            7,
+        );
     }
     EffectResult::Resolved
-}
-
-/// True if `target` currently has an active Artifact stack (`amount > 0`) that
-/// will absorb the ShacklingPotion debuff — mirrors the gate in
-/// `sts2_core::card_effects::try_consume_artifact_for_debuff` (and the
-/// `target_has_active_artifact` helper in `cards/ironclad/mangle.rs`).
-fn creature_has_active_artifact(state: &CombatState, target: sts2_core::CreatureUid) -> bool {
-    let Some(creature) = state.creatures.iter().find(|c| c.id == target.0) else {
-        return false;
-    };
-    creature.powers.iter().any(|uid| {
-        state
-            .powers
-            .iter()
-            .any(|p| p.id == uid.0 && p.kind == PowerKind::Artifact && p.amount > 0)
-    })
 }

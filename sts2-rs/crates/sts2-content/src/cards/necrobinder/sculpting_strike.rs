@@ -44,10 +44,16 @@ pub(crate) fn play_sculpting_strike(
         .copied()
         .filter(|uid| {
             let idx = uid.0.get() as usize - 1;
-            state
-                .cards
-                .get(idx)
-                .is_some_and(|c| !card_effects::card_ethereal_inst(c))
+            // C# filters on the card's LOCAL keywords
+            // (`GetKeywordsWithSources(KeywordSources.Local)`), which include
+            // an Ethereal another effect applied with `CardCmd.ApplyKeyword` —
+            // Music Box's Ethereal clone (MusicBox.cs:78-79) and Ghost Seed,
+            // both carried as `VarKey::EtherealThisCombat` (loadout
+            // Necrobinder 1040: Rust offered the Music Box Fisticuffs).
+            state.cards.get(idx).is_some_and(|c| {
+                !card_effects::card_ethereal_inst(c)
+                    && c.combat_var(sts2_core::cards::VarKey::EtherealThisCombat) == 0
+            })
         })
         .collect();
     match candidates.as_slice() {

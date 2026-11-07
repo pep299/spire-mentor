@@ -384,6 +384,40 @@ fn disintegration_follows_parrying_shield() {
     }
 }
 
+/// `ConsumingShadowPower.AfterSideTurnEnd` (ConsumingShadowPower.cs:18-28,
+/// both builds) is a player power, so it runs before the player's relics in
+/// `IterateHookListeners` (CombatState.cs:115-131): the Frost evoke's 5 Block
+/// lifts 8 to 13 BEFORE Parrying Shield tests `Block >= 10`. Rust evoked after
+/// the relic bus (Defect random-loadout v0.111.0 seeds 1001/1021).
+#[test]
+#[serial_test::serial(global_registry)]
+fn consuming_shadow_evokes_before_parrying_shield() {
+    for version in VERSIONS {
+        let mut state = fresh(version, 50);
+        state.player.character = Some(CharacterId::Defect);
+        state.player.orbs = sts2_core::orbs::OrbSlots::with_capacity(3);
+        state.player.orbs.channel(sts2_core::orbs::Orb::frost());
+        state.round = 2;
+        state.phase = CombatPhase::PlayerEndTurnPhaseOne;
+        state.player.block = 8;
+        add_relic(&mut state, RelicKind::ParryingShield);
+        give_player_power(&mut state, PowerKind::ConsumingShadow, 1);
+        let _ = sts2_core::combat_loop::end_player_turn_phase_two(&mut state);
+        assert_eq!(state.player.block, 13, "{version:?}: Frost evoke 5");
+        let enemy = state.enemy_uids[0];
+        let enemy_hp = state
+            .creatures
+            .iter()
+            .find(|c| c.id == enemy.0)
+            .map(|c| c.current_hp);
+        assert_eq!(
+            enemy_hp,
+            Some(44),
+            "{version:?}: Parrying Shield saw the evoked Block and hit for 6"
+        );
+    }
+}
+
 // ── Item 7: combat-start relic hooks run in equip order ───────────────────
 
 /// `Hook.BeforeCombatStart(runState, combatState)` (CombatManager.cs:405)

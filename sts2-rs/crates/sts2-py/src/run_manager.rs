@@ -1024,6 +1024,79 @@ impl PyRunManager {
         self.inner.debug_set_player(hp, max_hp, gold);
     }
 
+    /// Debug/coverage override mirroring the C# headless `set_player`
+    /// `deck` / `relics` keys: REPLACE the master deck and the relic list,
+    /// silently. Unlike [`Self::force_add_relic`] it fires no `after_obtained`
+    /// (so no RNG draw and no on-obtain effect), because C# `set_player`
+    /// doesn't either, and an asymmetry here would diverge the streams of a
+    /// lockstep run. Relics do leave the grab bags, on both engines. Deck entries are `ID` or `ID+1`, as in the C# command.
+    /// Used by `act23_state_parity.py --random-loadout`. Never call on a
+    /// trace-recorded run.
+    #[pyo3(signature = (deck = None, relics = None))]
+    fn debug_set_loadout(
+        &mut self,
+        deck: Option<Vec<String>>,
+        relics: Option<Vec<String>>,
+    ) -> PyResult<()> {
+        // Build each card for the run's game build, as every real deck add
+        // does (`build_card_for_version`): the unversioned factory minted
+        // v0.107.1 PODs, so a grafted v0.111.0 Outbreak stayed a Power in the
+        // master deck and WarPaint's Skill filter skipped it (loadout Silent
+        // v0.111.0 2028: one fewer `Rng.Niche` read, wrong Axebot HP).
+        let version = self.inner.run_state.game_version;
+        let deck = deck
+            .map(|names| {
+                names
+                    .iter()
+                    .map(|name| {
+                        let (base, upgraded) = match name.strip_suffix("+1") {
+                            Some(base) => (base, true),
+                            None => (name.as_str(), false),
+                        };
+                        sts2_core::build_card_for_version(
+                            card_id_from_str(base)?,
+                            upgraded,
+                            version,
+                        )
+                        .ok_or_else(|| PyValueError::new_err(format!("no card spec for {name:?}")))
+                    })
+                    .collect::<PyResult<Vec<_>>>()
+            })
+            .transpose()?;
+        let relics = relics
+            .map(|names| {
+                names
+                    .iter()
+                    .map(|name| {
+                        let stripped = name.strip_prefix("RELIC.").unwrap_or(name);
+                        // The parser's roster omits `RelicId::V0111_ONLY`, but a
+                        // v0.111 run can already own one (Neow's Sacrifice).
+                        sts2_content::names::relic_id_from_str(stripped)
+                            .or_else(|| {
+                                let owned = self.inner.run_state.relics.iter();
+                                owned.copied().find(|r| r.to_python_name() == stripped)
+                            })
+                            .ok_or_else(|| {
+                                PyValueError::new_err(format!("unknown relic id {name:?}"))
+                            })
+                    })
+                    .collect::<PyResult<Vec<_>>>()
+            })
+            .transpose()?;
+        // Parsed in full first: a bad id must not leave half a loadout.
+        let rs = &mut self.inner.run_state;
+        if let Some(deck) = deck {
+            rs.master_deck = deck.into_iter().collect();
+        }
+        if let Some(relics) = relics {
+            for &relic in &relics {
+                rs.remove_relic_from_grab_bags(relic);
+            }
+            rs.relics = relics.into_iter().collect();
+        }
+        Ok(())
+    }
+
     /// Install `state` (e.g. from `build_scenario_state`) as this run's live
     /// fight in a `room_type` room ("monster" / "elite" / "boss"), so a run
     /// agent (`MctsCombatAgent.step`) plays it with the deployed combat
@@ -1991,6 +2064,26 @@ mod reseed_tests {
             seed: 7,
             record_card_plays: false,
             record_combat_log: false,
+        }
+    }
+
+    /// `debug_set_loadout` builds each deck card for the run's build: Outbreak
+    /// is a Power on v0.107.1 and a Skill on v0.111.0 (Outbreak.cs:23), and
+    /// WarPaint's Skill filter keys on it (loadout Silent v0.111.0 2028).
+    #[test]
+    fn debug_set_loadout_builds_cards_for_the_run_game_version() {
+        sts2_content::cards::dispatch::ensure_installed();
+        sts2_content::relics::dispatch::ensure_installed();
+        for (version, ty) in [
+            (GameVersion::V0_107_1, sts2_core::cards::CardType::Power),
+            (GameVersion::V0_111_0, sts2_core::cards::CardType::Skill),
+        ] {
+            let mut rm = rm_on(version);
+            rm.debug_set_loadout(Some(vec!["OUTBREAK_CARD".to_owned()]), None)
+                .expect("loadout");
+            let deck = &rm.inner.run_state.master_deck;
+            assert_eq!(deck.len(), 1, "{version:?}");
+            assert_eq!(deck[0].card_type, ty, "{version:?}");
         }
     }
 

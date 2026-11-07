@@ -217,6 +217,12 @@ def _observable_key(s: sts2_rs.CombatState) -> str:
         if isinstance(pile, list)
     }
     rest = {k: v for k, v in d.items() if k not in ("deck", "rng", "rng_counters")}
+    player = rest.get("player", {})
+    tags: dict[int, int] = {}
+    if "block_gained_card_plays_this_turn" in player:
+        player["block_gained_card_plays_this_turn"] = [
+            tags.setdefault(tag, len(tags)) for tag in player["block_gained_card_plays_this_turn"]
+        ]
     return json.dumps([piles, rest], sort_keys=True, default=str)
 
 

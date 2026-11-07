@@ -58,10 +58,7 @@ pub(crate) fn play_uproar(state: &mut CombatState, target: Option<CreatureUid>) 
         let cmp = |a: sts2_core::CardUid, b: sts2_core::CardUid| {
             let ca = &state.cards[a.0.get() as usize - 1];
             let cb = &state.cards[b.0.get() as usize - 1];
-            ca.card_id
-                .to_python_name()
-                .cmp(cb.card_id.to_python_name())
-                .then_with(|| u8::from(ca.upgraded).cmp(&u8::from(cb.upgraded)))
+            sts2_core::cards::card_model_compare(ca, cb)
         };
         state
             .run_rng

@@ -1,0 +1,54 @@
+{
+ "config": {
+  "c_puct": 2.5,
+  "depth": 200,
+  "draw_widening_c": 2.0,
+  "hidden_info": "beliefdraw",
+  "seed": 1,
+  "sims": 48,
+  "threads": 1
+ },
+ "pv": null,
+ "scores": [
+  {
+   "action": "Cloak of Stars",
+   "hp_n": 25,
+   "hp_sd": 1.2998,
+   "in_band": true,
+   "is_best": true,
+   "losses": 0,
+   "low_confidence": false,
+   "mean_final_hp": 55.48,
+   "pick_rank": 0,
+   "pick_reason": "the highest value",
+   "q": 1.198,
+   "q_saturated": false,
+   "stable_idx": 0,
+   "target_index": null,
+   "ties": 0,
+   "visits": 25,
+   "win_prob": 1.0,
+   "wins": 25
+  },
+  {
+   "action": "end turn",
+   "hp_n": 23,
+   "hp_sd": 1.5124,
+   "in_band": false,
+   "is_best": false,
+   "losses": 0,
+   "low_confidence": false,
+   "mean_final_hp": 48.1304,
+   "pick_rank": 1,
+   "pick_reason": null,
+   "q": 1.1718,
+   "q_saturated": false,
+   "stable_idx": -1,
+   "target_index": null,
+   "ties": 0,
+   "visits": 23,
+   "win_prob": 1.0,
+   "wins": 23
+  }
+ ]
+}

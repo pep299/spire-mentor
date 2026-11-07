@@ -920,6 +920,14 @@ fn drive(input: &FuzzInput) -> Digest {
                     input.character, input.seed
                 );
             }
+            // `legal_actions` never offers a play the engine refuses (GH #1122).
+            StepResult::IllegalPlay => {
+                panic!(
+                    "IllegalPlay on a legal_actions-derived action: action={action:?} \
+                     character={:?} seed={} step={steps}",
+                    input.character, input.seed
+                );
+            }
         }
         check_post_step(&pre, &state, "post-step").unwrap();
         check_combat_invariants(&state, "post-step").unwrap();

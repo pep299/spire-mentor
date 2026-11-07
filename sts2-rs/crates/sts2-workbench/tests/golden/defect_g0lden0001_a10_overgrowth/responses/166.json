@@ -1,0 +1,88 @@
+{
+ "assumptions": {
+  "energy": 3,
+  "hand": 5,
+  "samples": 200
+ },
+ "block": {
+  "per_turn": 8.0,
+  "scaling_cards": []
+ },
+ "composition": {
+  "by_rarity": {
+   "Basic": 9,
+   "Common": 5,
+   "Curse": 1,
+   "Quest": 1,
+   "Uncommon": 1
+  },
+  "by_type": {
+   "Attack": 7,
+   "Curse": 1,
+   "Quest": 1,
+   "Skill": 8
+  },
+  "dead_cards": 1,
+  "energy_curve": {
+   "0": 4,
+   "1": 11,
+   "X": 1
+  },
+  "unupgraded_basics": 8
+ },
+ "damage": {
+  "aoe_attacks": [
+   "Sweeping Beam"
+  ],
+  "attack_count": 7,
+  "per_turn": 16.3,
+  "scaling_cards": [
+   "Zap"
+  ],
+  "single_target": 14.5,
+  "vs_group": 18.1
+ },
+ "deck_size": 17,
+ "lenses": {
+  "boss": 28.1,
+  "hallway": 30.2,
+  "scaling": 26.9
+ },
+ "scores": {
+  "block": 32.9,
+  "damage": 33.5,
+  "velocity": 17.6,
+  "volume": 26.9
+ },
+ "velocity": {
+  "bottleneck": "draw",
+  "cards_per_turn": 4.2,
+  "dilution": 0.88,
+  "draw_limited_turns": 2.7,
+  "energy_limited_turns": 2.6,
+  "engine_cards": 2,
+  "extra_per_turn": 0.2,
+  "tags": {
+   "draw": 1,
+   "energy": 1
+  }
+ },
+ "warnings": [
+  {
+   "severity": "warn",
+   "text": "Thin on block and no block engine — big hits will land in Act 2+."
+  },
+  {
+   "severity": "info",
+   "text": "Low velocity — few draw/energy cards; you'll often draw the wrong hand."
+  },
+  {
+   "severity": "info",
+   "text": "Draw-limited — hand empties with energy to spare; add card draw, not energy."
+  },
+  {
+   "severity": "warn",
+   "text": "Deck clogged with basics/curses — prioritise removals."
+  }
+ ]
+}

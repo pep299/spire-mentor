@@ -57,6 +57,7 @@ internal sealed class SimToolbar
     private Button? _peek;
     private Button? _aiOnce;
     private Button? _aiAuto;
+    private Button? _autobattle;
     private Label? _speedLabel;
     private Label? _statusLabel;
     private Label? _hintLabel;
@@ -282,13 +283,19 @@ internal sealed class SimToolbar
                 () => SimActions.ToggleAutoplay("The AI-auto button"), SetHint);
             buttons.AddChild(_aiAuto);
 
-            buttons.AddChild(SimUiKit.MakeButton("-", "Game speed down 0.1x (F9)",
-                () => SimActions.NudgeSpeed(-0.1), SetHint));
+            _autobattle = SimUiKit.MakeButton("Autobattle",
+                "The AI plays the fights, you make every run-level decision -- card rewards, map, " +
+                "shops, rest sites, events -- with a note on what changed since your last one (Shift+F7)",
+                () => SimActions.ToggleAutobattle("The Autobattle button"), SetHint);
+            buttons.AddChild(_autobattle);
+
+            buttons.AddChild(SimUiKit.MakeButton("-", "Game speed down: 4x, 3x, 2x, 1x (F9)",
+                () => SimActions.StepSpeed(-1), SetHint));
             _speedLabel = SimUiKit.SmallLabel("1.0x", Colors.White);
             _speedLabel.VerticalAlignment = VerticalAlignment.Center;
             buttons.AddChild(_speedLabel);
-            buttons.AddChild(SimUiKit.MakeButton("+", "Game speed up 0.1x (F10)",
-                () => SimActions.NudgeSpeed(0.1), SetHint));
+            buttons.AddChild(SimUiKit.MakeButton("+", "Game speed up: 1x, 2x, 3x, 4x (F10)",
+                () => SimActions.StepSpeed(1), SetHint));
 
             // Everything past the live controls is a one-shot verb, grouped
             // by job into three dropdowns (same shape as the workbench's top
@@ -536,6 +543,10 @@ internal sealed class SimToolbar
         {
             _aiAuto.Disabled = !takeoverEnabled;
         }
+        if (_autobattle != null && GodotObject.IsInstanceValid(_autobattle))
+        {
+            _autobattle.Disabled = !takeoverEnabled;
+        }
 
         RefreshLiveLabels();
         RefreshStatusLine();
@@ -587,7 +598,7 @@ internal sealed class SimToolbar
         }
         if (_speedLabel != null && GodotObject.IsInstanceValid(_speedLabel))
         {
-            string speed = $"{SimSpeed.Desired:0.0}x";
+            string speed = SpeedSteps.Label(SimSpeed.Desired);
             if (_speedLabel.Text != speed)
             {
                 _speedLabel.Text = speed;
@@ -599,6 +610,14 @@ internal sealed class SimToolbar
             if (_aiAuto.Text != label)
             {
                 _aiAuto.Text = label;
+            }
+        }
+        if (_autobattle != null && GodotObject.IsInstanceValid(_autobattle))
+        {
+            string label = SimAdvisor.Instance.AutobattleOn ? "Stop battle" : "Autobattle";
+            if (_autobattle.Text != label)
+            {
+                _autobattle.Text = label;
             }
         }
     }

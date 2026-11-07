@@ -60,10 +60,7 @@ pub(crate) fn play_beat_down(state: &mut CombatState, _t: Option<CreatureUid>) -
     let cmp = |a: CardUid, b: CardUid| {
         let ca = &state.cards[a.0.get() as usize - 1];
         let cb = &state.cards[b.0.get() as usize - 1];
-        ca.card_id
-            .to_python_name()
-            .cmp(cb.card_id.to_python_name())
-            .then_with(|| u8::from(ca.upgraded).cmp(&u8::from(cb.upgraded)))
+        sts2_core::cards::card_model_compare(ca, cb)
     };
     state
         .run_rng
@@ -105,16 +102,16 @@ fn beat_down_run(state: &mut CombatState, cards: &[CardUid], force_exhaust: bool
         // buses fire), then routed to its natural pile (back to discard,
         // or exhaust if it self-exhausts). The `AnyEnemy` target roll
         // happens inside `resolve_auto_played_card`.
-        // v0.111.0: BeatDown rolls an `AnyEnemy` card's target itself, BEFORE
-        // `CardCmd.AutoPlay` (decomp Cards/BeatDown.cs:32-35), so the
-        // `CombatTargets` read happens even when a `ShouldPlay` veto
-        // (ChainsOfBinding's Bound) then skips the play. Parity fuzz Regent
-        // seed 272 (GH #798). v0.107.1 keeps the resolver-side roll.
-        let target = if state.game_version >= sts2_core::GameVersion::V0_111_0
-            && sts2_core::cards::effective_target_type(
-                state,
-                &state.cards[uid.0.get() as usize - 1],
-            ) == TargetType::Enemy
+        // BeatDown rolls an `AnyEnemy` card's target itself, BEFORE
+        // `CardCmd.AutoPlay` (decomp Cards/BeatDown.cs:32-35, identical in
+        // v0.107.1 and v0.111.0), so the `CombatTargets` read happens even
+        // when a `ShouldPlay` veto (ChainsOfBinding's Bound, Ringing, Sloth)
+        // then skips the play. Parity fuzz Regent seed 272 (GH #798);
+        // random-loadout Ironclad v0.107.1 seeds 1027 / 1120.
+        let target = if sts2_core::cards::effective_target_type(
+            state,
+            &state.cards[uid.0.get() as usize - 1],
+        ) == TargetType::Enemy
         {
             state.get_random_enemy()
         } else {
@@ -135,6 +132,7 @@ fn beat_down_run(state: &mut CombatState, cards: &[CardUid], force_exhaust: bool
                 iters: 0,
                 uids: cards[i + 1..].iter().copied().collect(),
                 force_exhaust,
+                then: None,
             });
             return;
         }
@@ -142,10 +140,9 @@ fn beat_down_run(state: &mut CombatState, cards: &[CardUid], force_exhaust: bool
 }
 
 /// Resume entry point stored on [`sts2_core::AutoPlayLoopCont`]: play the
-/// remaining captured BeatDown discard cards. The `iters` slot is unused by
-/// this fixed-list loop. Bead `sts2-rs-cata-suspend`.
-fn beat_down_resume(state: &mut CombatState, _iters: u32, uids: &[CardUid], force_exhaust: bool) {
-    beat_down_run(state, uids, force_exhaust);
+/// remaining captured BeatDown discard cards. Bead `sts2-rs-cata-suspend`.
+fn beat_down_resume(state: &mut CombatState, cont: &sts2_core::AutoPlayLoopCont) {
+    beat_down_run(state, &cont.uids, cont.force_exhaust);
 }
 
 #[must_use]

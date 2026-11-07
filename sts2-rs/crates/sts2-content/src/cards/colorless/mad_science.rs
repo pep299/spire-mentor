@@ -60,10 +60,22 @@ pub(crate) fn play_mad_science(
             } else {
                 1
             };
+            // v0.107.1 issues one `DamageCmd.Attack` PER hit
+            // (`MadScience.cs:216-225`), so each hit is its own command:
+            // Vigor/Gigantification boost the first and are spent by its
+            // `AfterAttack` before the next. v0.111.0 issues one command
+            // `.WithHitCount(hits)`, boosting every hit.
+            let per_hit_commands = state.game_version < sts2_core::GameVersion::V0_111_0;
+            let card = sts2_core::card_effects::resolving_card_uid(state);
             if let Some(t) = target {
                 let damage = current_damage(state);
                 for _ in 0..hits {
                     let _ = deal_damage_player_to_enemy(state, t, damage);
+                    if per_hit_commands {
+                        if let Some(card) = card {
+                            sts2_core::hooks::end_player_attack_command(state, card);
+                        }
+                    }
                 }
             }
         }

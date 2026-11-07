@@ -190,6 +190,13 @@ internal sealed class SimCoachPanel
         _scroll = scroll;
         _body = body;
         Place();
+        if (!panel.IsInsideTree())
+        {
+            // A new layer joins the tree deferred (EnsureLayer); a call
+            // deferred now runs after that add, so the panel is placed in
+            // the same frame rather than one ticker period late.
+            Callable.From(() => Guard(Place)).CallDeferred();
+        }
     }
 
     private Control BuildSection(PanelSection section, string? logName)
@@ -241,7 +248,11 @@ internal sealed class SimCoachPanel
     /// (every tick: the viewport and the toolbar can move).</summary>
     private void Place()
     {
-        if (_panel == null || !GodotObject.IsInstanceValid(_panel))
+        // Not in the tree yet on the first recap: EnsureLayer adds the layer
+        // deferred, and Build places the panel straight away. Measuring the
+        // viewport then is a Godot error (GH #1140); the ticker places it a
+        // moment later, once it is in.
+        if (_panel == null || !GodotObject.IsInstanceValid(_panel) || !_panel.IsInsideTree())
         {
             return;
         }

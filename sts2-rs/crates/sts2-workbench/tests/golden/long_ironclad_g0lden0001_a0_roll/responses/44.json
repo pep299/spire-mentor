@@ -1,10 +1,10 @@
 {
  "details": [
-  "Play Strike",
-  "Nibbit HP 23→17 (−6)"
+  "You Block 10→0",
+  "Nibbit Block 0→5"
  ],
  "error": null,
- "label": "Play Strike → Nibbit",
+ "label": "End turn",
  "step": {
   "action_label": "",
   "assets_base": "https://assets.test",
@@ -19,7 +19,7 @@
    "bg_seed": 1772253313,
    "floor": 5,
    "step_no": 0,
-   "turn": 2
+   "turn": 3
   },
   "pv": null,
   "scores": [],
@@ -33,21 +33,23 @@
    "bg_row": 4,
    "bg_seed": 1772253313,
    "decision": "combat_play",
-   "discard_pile": [
+   "discard_pile": [],
+   "discard_pile_count": 0,
+   "draw_pile": [
     {
      "base_cost": 1,
      "can_play": false,
      "color": "red",
      "cost": 1,
-     "description": "Gain 7 Block.\nExhaust 1 card at random.",
-     "description_rich": "Gain 7 [gold]Block[/gold].\n[gold]Exhaust[/gold] 1 card at random.",
-     "id": "TRUE_GRIT",
-     "image": "https://assets.test/card_atlas/ironclad/true_grit.png",
+     "description": "Gain 5 Block.",
+     "description_rich": "Gain 5 [gold]Block[/gold].",
+     "id": "DEFEND_IRONCLAD",
+     "image": "https://assets.test/card_atlas/ironclad/defend_ironclad.png",
      "index": -1,
-     "name": "True Grit",
-     "rarity": "Common",
+     "name": "Defend",
+     "rarity": "Basic",
      "stats": {
-      "block": 7
+      "block": 5
      },
      "target_type": "None",
      "type": "Skill",
@@ -67,6 +69,82 @@
      "rarity": "Basic",
      "stats": {
       "block": 5
+     },
+     "target_type": "None",
+     "type": "Skill",
+     "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "red",
+     "cost": 1,
+     "description": "Gain 5 Block.",
+     "description_rich": "Gain 5 [gold]Block[/gold].",
+     "id": "DEFEND_IRONCLAD",
+     "image": "https://assets.test/card_atlas/ironclad/defend_ironclad.png",
+     "index": -1,
+     "name": "Defend",
+     "rarity": "Basic",
+     "stats": {
+      "block": 5
+     },
+     "target_type": "None",
+     "type": "Skill",
+     "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "red",
+     "cost": 1,
+     "description": "Deal 6 damage.",
+     "description_rich": "Deal 6 damage.",
+     "id": "STRIKE_IRONCLAD",
+     "image": "https://assets.test/card_atlas/ironclad/strike_ironclad.png",
+     "index": -1,
+     "name": "Strike",
+     "rarity": "Basic",
+     "stats": {
+      "damage": 6
+     },
+     "target_type": "None",
+     "type": "Attack",
+     "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "red",
+     "cost": 1,
+     "description": "Deal 6 damage.",
+     "description_rich": "Deal 6 damage.",
+     "id": "STRIKE_IRONCLAD",
+     "image": "https://assets.test/card_atlas/ironclad/strike_ironclad.png",
+     "index": -1,
+     "name": "Strike",
+     "rarity": "Basic",
+     "stats": {
+      "damage": 6
+     },
+     "target_type": "None",
+     "type": "Attack",
+     "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "red",
+     "cost": 1,
+     "description": "Gain 7 Block.\nExhaust 1 card at random.",
+     "description_rich": "Gain 7 [gold]Block[/gold].\n[gold]Exhaust[/gold] 1 card at random.",
+     "id": "TRUE_GRIT",
+     "image": "https://assets.test/card_atlas/ironclad/true_grit.png",
+     "index": -1,
+     "name": "True Grit",
+     "rarity": "Common",
+     "stats": {
+      "block": 7
      },
      "target_type": "None",
      "type": "Skill",
@@ -90,197 +168,25 @@
      "target_type": "None",
      "type": "Attack",
      "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "red",
-     "cost": 1,
-     "description": "Gain 5 Block.",
-     "description_rich": "Gain 5 [gold]Block[/gold].",
-     "id": "DEFEND_IRONCLAD",
-     "image": "https://assets.test/card_atlas/ironclad/defend_ironclad.png",
-     "index": -1,
-     "name": "Defend",
-     "rarity": "Basic",
-     "stats": {
-      "block": 5
-     },
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "red",
-     "cost": 1,
-     "description": "Gain 5 Block.",
-     "description_rich": "Gain 5 [gold]Block[/gold].",
-     "id": "DEFEND_IRONCLAD",
-     "image": "https://assets.test/card_atlas/ironclad/defend_ironclad.png",
-     "index": -1,
-     "name": "Defend",
-     "rarity": "Basic",
-     "stats": {
-      "block": 5
-     },
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "red",
-     "cost": 1,
-     "description": "Gain 5 Block.",
-     "description_rich": "Gain 5 [gold]Block[/gold].",
-     "id": "DEFEND_IRONCLAD",
-     "image": "https://assets.test/card_atlas/ironclad/defend_ironclad.png",
-     "index": -1,
-     "name": "Defend",
-     "rarity": "Basic",
-     "stats": {
-      "block": 5
-     },
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "red",
-     "cost": 1,
-     "description": "Deal 6 damage.",
-     "description_rich": "Deal 6 damage.",
-     "id": "STRIKE_IRONCLAD",
-     "image": "https://assets.test/card_atlas/ironclad/strike_ironclad.png",
-     "index": -1,
-     "name": "Strike",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 6
-     },
-     "target_type": "None",
-     "type": "Attack",
-     "upgraded": false
-    },
-    {
-     "base_cost": 0,
-     "can_play": false,
-     "color": "red",
-     "cost": 0,
-     "description": "Lose 3 HP.\nGain Energy.",
-     "description_rich": "Lose 3 HP.\nGain Energy.",
-     "id": "BLOODLETTING",
-     "image": "https://assets.test/card_atlas/ironclad/bloodletting.png",
-     "index": -1,
-     "name": "Bloodletting",
-     "rarity": "Common",
-     "stats": {},
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "red",
-     "cost": 1,
-     "description": "Deal 6 damage.",
-     "description_rich": "Deal 6 damage.",
-     "id": "STRIKE_IRONCLAD",
-     "image": "https://assets.test/card_atlas/ironclad/strike_ironclad.png",
-     "index": -1,
-     "name": "Strike",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 6
-     },
-     "target_type": "None",
-     "type": "Attack",
-     "upgraded": false
     }
    ],
-   "discard_pile_count": 9,
-   "draw_pile": [
-    {
-     "base_cost": 2,
-     "can_play": false,
-     "color": "red",
-     "cost": 2,
-     "description": "Deal 8 damage.\nApply 2 Vulnerable.",
-     "description_rich": "Deal 8 damage.\nApply 2 [gold]Vulnerable[/gold].",
-     "id": "BASH",
-     "image": "https://assets.test/card_atlas/ironclad/bash.png",
-     "index": -1,
-     "name": "Bash",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 8
-     },
-     "target_type": "None",
-     "type": "Attack",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "red",
-     "cost": 1,
-     "description": "Deal 6 damage.",
-     "description_rich": "Deal 6 damage.",
-     "id": "STRIKE_IRONCLAD",
-     "image": "https://assets.test/card_atlas/ironclad/strike_ironclad.png",
-     "index": -1,
-     "name": "Strike",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 6
-     },
-     "target_type": "None",
-     "type": "Attack",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "red",
-     "cost": 1,
-     "description": "Deal 6 damage.",
-     "description_rich": "Deal 6 damage.",
-     "id": "STRIKE_IRONCLAD",
-     "image": "https://assets.test/card_atlas/ironclad/strike_ironclad.png",
-     "index": -1,
-     "name": "Strike",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 6
-     },
-     "target_type": "None",
-     "type": "Attack",
-     "upgraded": false
-    }
-   ],
-   "draw_pile_count": 3,
+   "draw_pile_count": 7,
    "enemies": [
     {
-     "block": 0,
+     "block": 5,
      "hp": 17,
      "image": "https://assets.test/monsters/nibbit.png",
      "index": 0,
      "intents": [
       {
-       "damage": 6,
-       "intent_image": "https://assets.test/intent_atlas/attack/intent_attack_2.png",
-       "type": "Attack"
+       "damage": 2,
+       "intent_image": "https://assets.test/intent_atlas/intent_buff.png",
+       "type": "Buff"
       }
      ],
      "kind": "Nibbit",
      "max_hp": 43,
-     "move_state": "SLICE",
+     "move_state": "HISS",
      "name": "Nibbit",
      "powers": [],
      "rig": "https://assets.test/monster_rigs/nibbit/nibbit",
@@ -290,7 +196,7 @@
      "uid": 2
     }
    ],
-   "energy": 1,
+   "energy": 3,
    "energy_image": "https://assets.test/sprite_fonts/ironclad_energy_icon.png",
    "exhaust_pile": [
     {
@@ -315,11 +221,114 @@
    ],
    "exhaust_pile_count": 1,
    "floor": 5,
-   "hand": [],
+   "hand": [
+    {
+     "base_cost": 1,
+     "can_play": true,
+     "color": "red",
+     "cost": 1,
+     "damage_preview": {
+      "0": 6
+     },
+     "description": "Deal 6 damage.",
+     "description_rich": "Deal 6 damage.",
+     "id": "STRIKE_IRONCLAD",
+     "image": "https://assets.test/card_atlas/ironclad/strike_ironclad.png",
+     "index": 0,
+     "name": "Strike",
+     "rarity": "Basic",
+     "stats": {
+      "damage": 6
+     },
+     "target_type": "AnyEnemy",
+     "type": "Attack",
+     "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": true,
+     "color": "red",
+     "cost": 1,
+     "damage_preview": {
+      "0": 6
+     },
+     "description": "Deal 6 damage.",
+     "description_rich": "Deal 6 damage.",
+     "id": "STRIKE_IRONCLAD",
+     "image": "https://assets.test/card_atlas/ironclad/strike_ironclad.png",
+     "index": 1,
+     "name": "Strike",
+     "rarity": "Basic",
+     "stats": {
+      "damage": 6
+     },
+     "target_type": "AnyEnemy",
+     "type": "Attack",
+     "upgraded": false
+    },
+    {
+     "base_cost": 2,
+     "can_play": true,
+     "color": "red",
+     "cost": 2,
+     "damage_preview": {
+      "0": 8
+     },
+     "description": "Deal 8 damage.\nApply 2 Vulnerable.",
+     "description_rich": "Deal 8 damage.\nApply 2 [gold]Vulnerable[/gold].",
+     "id": "BASH",
+     "image": "https://assets.test/card_atlas/ironclad/bash.png",
+     "index": 2,
+     "name": "Bash",
+     "rarity": "Basic",
+     "stats": {
+      "damage": 8
+     },
+     "target_type": "AnyEnemy",
+     "type": "Attack",
+     "upgraded": false
+    },
+    {
+     "base_cost": 0,
+     "can_play": true,
+     "color": "red",
+     "cost": 0,
+     "description": "Lose 3 HP.\nGain Energy.",
+     "description_rich": "Lose 3 HP.\nGain Energy.",
+     "id": "BLOODLETTING",
+     "image": "https://assets.test/card_atlas/ironclad/bloodletting.png",
+     "index": 3,
+     "name": "Bloodletting",
+     "rarity": "Common",
+     "stats": {},
+     "target_type": "None",
+     "type": "Skill",
+     "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": true,
+     "color": "red",
+     "cost": 1,
+     "description": "Gain 5 Block.",
+     "description_rich": "Gain 5 [gold]Block[/gold].",
+     "id": "DEFEND_IRONCLAD",
+     "image": "https://assets.test/card_atlas/ironclad/defend_ironclad.png",
+     "index": 4,
+     "name": "Defend",
+     "rarity": "Basic",
+     "stats": {
+      "block": 5
+     },
+     "target_type": "None",
+     "type": "Skill",
+     "upgraded": false
+    }
+   ],
    "max_energy": 3,
    "options": [],
    "player": {
-    "block": 10,
+    "block": 0,
     "deck": [
      {
       "color": "red",
@@ -518,7 +527,7 @@
     "rig_scale": 0.28
    },
    "player_powers": [],
-   "round": 2
+   "round": 3
   }
  }
 }

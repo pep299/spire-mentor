@@ -129,6 +129,9 @@ impl Orb {
     }
 }
 
+/// C# `OrbCmd.AddSlots` cap on the orb belt (`Math.Min(10 - Capacity, amount)`).
+pub const MAX_ORB_SLOTS: usize = 10;
+
 /// Per-player orb slot collection. Inline-sized to [`ORB_SLOTS_INLINE`]
 /// so the common 3..6 slot range avoids the heap.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -211,9 +214,12 @@ impl OrbSlots {
     }
 
     /// Add `n` extra empty slots. Mirrors `Capacitor`'s "gain N orb
-    /// slots" power-on-play effect.
+    /// slots" power-on-play effect. C# `OrbCmd.AddSlots` clamps
+    /// `amount = Min(10 - Capacity, amount)` (v0.107.1/v0.111.0
+    /// `OrbCmd.cs:29`), so the belt never grows past [`MAX_ORB_SLOTS`].
     pub fn add_slots(&mut self, n: usize) {
         self.sized = true;
+        let n = n.min(MAX_ORB_SLOTS.saturating_sub(usize::from(self.capacity)));
         for _ in 0..n {
             self.slots.push(Orb::Empty);
         }
@@ -361,14 +367,14 @@ fn frost_block(state: &mut CombatState, amount: i32) {
 ///
 /// C# `MegaCrit.Sts2.Core.Models.Relics/InfusedCore.cs:50-60`
 /// (`ModifyOrbValue`): for a `LightningOrb` owned by the relic owner,
-/// `value + ExtraDamage.BaseValue` (`ExtraDamage = 1`). Modelled as a
-/// raise of the orb's base value before the Focus clamp — for the
-/// in-game (non-negative Focus) case this is identical to C#'s separate
-/// `ModifyOrbValue` hook running alongside `FocusPower.ModifyOrbValue`.
-/// Bead `sts2-rs-v0107-content-port-wb8lk.9` (§7).
+/// `value + ExtraDamage.BaseValue` (`ExtraDamage = 1`). `Hook.ModifyOrbValue`
+/// walks powers before relics, so `FocusPower`'s `Max(value + Focus, 0)`
+/// clamp runs first and this +1 lands on top of it: callers add it AFTER
+/// [`focus_scaled`] (Focus -6: Lightning passive 1, evoke 3; loadout Defect
+/// v0.107.1 2002/2009). Bead `sts2-rs-v0107-content-port-wb8lk.9` (§7).
 #[inline]
 #[must_use]
-fn lightning_orb_bonus(state: &CombatState) -> i32 {
+pub fn lightning_orb_bonus(state: &CombatState) -> i32 {
     i32::from(crate::relic_effects::helpers::player_owns_relic(
         state,
         crate::RelicKind::InfusedCore,
@@ -629,7 +635,7 @@ fn resolve_evoke(state: &mut CombatState, orb: Orb) -> SmallVec<[CreatureUid; 4]
     let mut targets: SmallVec<[CreatureUid; 4]> = SmallVec::new();
     match orb {
         Orb::Lightning => {
-            let dmg = focus_scaled(8 + lightning_orb_bonus(state), focus);
+            let dmg = focus_scaled(8, focus) + lightning_orb_bonus(state);
             if let Some(target) = random_alive_enemy(state) {
                 // C# `LightningOrb.ApplyLightningDamage`: `CreatureCmd.Damage(
                 // targets, value, ValueProp.Unpowered, Owner.Creature)` — orb
@@ -749,7 +755,7 @@ pub fn trigger_orb_passive_at(state: &mut CombatState, idx: usize) {
     let _trace = crate::damage_trace::push_source(orb_trace_label(orb, "passive"));
     match orb {
         Orb::Lightning => {
-            let dmg = focus_scaled(3 + lightning_orb_bonus(state), focus);
+            let dmg = focus_scaled(3, focus) + lightning_orb_bonus(state);
             if let Some(target) = random_alive_enemy(state) {
                 // C# `LightningOrb.ApplyLightningDamage`: `ValueProp.Unpowered`,
                 // no card source — orb zaps don't scale with Strength and, as
@@ -824,7 +830,7 @@ pub fn trigger_first_orb_passive_n(state: &mut CombatState, times: u32) {
     for _ in 0..times {
         match orb {
             Orb::Lightning => {
-                let dmg = focus_scaled(3 + lightning_orb_bonus(state), focus);
+                let dmg = focus_scaled(3, focus) + lightning_orb_bonus(state);
                 if let Some(target) = random_alive_enemy(state) {
                     // UNPOWERED, no card source — see `trigger_first_orb_passive`
                     // (bead `sts2-rs-u2y5w`): orb zaps are not powered
@@ -907,11 +913,22 @@ pub fn passive_tick(state: &mut CombatState) {
         .enumerate()
         .map(|(i, o)| (i, *o))
         .collect();
+    // C# `GoldPlatedCables.ModifyOrbPassiveTriggerCounts` (GoldPlatedCables.cs,
+    // both builds) gives the FRONT orb (`OrbQueue.Orbs[0]`) one extra trigger
+    // inside `OrbQueue.BeforeTurnEnd` (OrbQueue.cs:81-102): its passives run
+    // back to back, before the next orb's, after the `BeforeTurnEnd` hooks and
+    // win check. Plasma's turn-end trigger is inert (its +1 is the turn-start
+    // arm, see `plasma_turn_start_passive`).
+    let cables_front = if state.relics.owns(crate::RelicKind::GoldPlatedCables) {
+        state.player.orbs.slots.iter().position(|o| !o.is_empty())
+    } else {
+        None
+    };
     for (idx, orb) in snapshot {
         let _trace = crate::damage_trace::push_source(orb_trace_label(orb, "passive"));
         match orb {
             Orb::Lightning => {
-                let dmg = focus_scaled(3 + lightning_orb_bonus(state), focus);
+                let dmg = focus_scaled(3, focus) + lightning_orb_bonus(state);
                 if let Some(target) = random_alive_enemy(state) {
                     // C# `LightningOrb.ApplyLightningDamage`:
                     // `CreatureCmd.Damage(targets, value,
@@ -952,6 +969,10 @@ pub fn passive_tick(state: &mut CombatState) {
                 }
             }
             Orb::Plasma | Orb::Empty => {}
+        }
+        // The extra trigger re-reads the slot, so Dark/Glass compound.
+        if cables_front == Some(idx) && !matches!(orb, Orb::Plasma) {
+            trigger_orb_passive_at(state, idx);
         }
     }
 }
@@ -1164,6 +1185,20 @@ mod tests {
         assert_eq!(state.player.orbs.slots[0], Orb::Lightning);
     }
 
+    /// C# `OrbCmd.AddSlots` clamps to 10 total slots (Defect random-loadout
+    /// v0.107.1 seed 1039: a second Capacitor past 10 slots).
+    #[test]
+    fn add_slots_caps_capacity_at_ten() {
+        let mut s = OrbSlots::with_default_capacity();
+        s.add_slots(5);
+        s.add_slots(5);
+        assert_eq!(s.capacity(), 10);
+        assert_eq!(s.slots.len(), 10);
+        s.add_slots(1);
+        assert_eq!(s.capacity(), 10);
+        assert_eq!(s.slots.len(), 10);
+    }
+
     #[test]
     fn add_slots_grows_capacity_with_empty_cells() {
         let mut s = OrbSlots::with_default_capacity();
@@ -1182,6 +1217,28 @@ mod tests {
         assert_eq!(state.creatures[0].current_hp, 90, "8 + 2 focus = 10");
         // Slot was consumed.
         assert_eq!(state.player.orbs.filled_len(), 0);
+    }
+
+    /// `Hook.ModifyOrbValue` runs FocusPower (`Max(value + Focus, 0)`) before
+    /// InfusedCore's relic +1, so at Focus -6 a Lightning passive deals 0+1 and
+    /// an evoke 2+1 — not `Max(3+1-6, 0) = 0` / `Max(8+1-6, 0) = 3` (loadout
+    /// Defect v0.107.1 2002/2009).
+    #[test]
+    fn infused_core_bonus_lands_after_the_focus_clamp() {
+        let mut state = make_state(50, &[100]);
+        state.relics.push(crate::Relic {
+            id: NonZeroU32::new(1).expect("nz"),
+            kind: crate::RelicKind::InfusedCore,
+            counter: 0,
+            is_wax: false,
+            is_melted: false,
+        });
+        channel_orb(&mut state, Orb::lightning());
+        give_focus(&mut state, -6);
+        trigger_orb_passive_at(&mut state, 0);
+        assert_eq!(state.creatures[0].current_hp, 99, "passive: max(3-6,0)+1");
+        evoke_front(&mut state);
+        assert_eq!(state.creatures[0].current_hp, 96, "evoke: max(8-6,0)+1");
     }
 
     #[test]

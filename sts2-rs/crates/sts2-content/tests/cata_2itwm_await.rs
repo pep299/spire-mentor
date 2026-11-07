@@ -219,7 +219,8 @@ fn history_course_dupe_replay_awaits_its_nested_auto_play() {
     // The second dispatch used to run with `autoplay_inline_resolve` already
     // restored, so the ARMAMENTS suspended and sat on Play ABOVE the dupe —
     // and the disposal's blind `play.pop()` dropped the ARMAMENTS and left the
-    // HAVOC dupe stranded.
+    // HAVOC dupe stranded. Now the ARMAMENTS select prompts the player (GH
+    // #1131), and the turn-start tail waits for the answer.
     let relics = vec![Relic {
         id: std::num::NonZeroU32::new(1).expect("non-zero"),
         kind: RelicKind::HistoryCourse,
@@ -243,10 +244,16 @@ fn history_course_dupe_replay_awaits_its_nested_auto_play() {
     state.round = 2;
 
     let res = start_player_turn(&mut state);
-    assert!(
-        matches!(res, StepResult::Advanced | StepResult::PendingChoice),
-        "turn start completes or surfaces a decision, never panics: {res:?}"
+    assert_eq!(
+        res,
+        StepResult::PendingChoice,
+        "the ARMAMENTS select prompts"
     );
+    assert!(state.pending_play_phase_tail, "the turn-start tail waits");
+    assert!(state.player.play.contains(&armaments));
+    let _ = answer_choice(&mut state);
+    assert!(state.pending_choice.is_none());
+    assert!(!state.pending_play_phase_tail, "the tail ran");
     assert!(
         state.player.play.is_empty(),
         "neither the dupe nor its nested auto-plays may be left on the Play \
@@ -255,8 +262,8 @@ fn history_course_dupe_replay_awaits_its_nested_auto_play() {
     );
     assert!(
         state.pending_autoplay_resume.is_none(),
-        "the dupe's nested auto-play drains inline (C# awaits it inside the \
-         one `AutoPlay(dupe)`), so nothing stays parked"
+        "the answer finishes the ARMAMENTS and the dupe, so nothing stays \
+         parked"
     );
     assert!(
         !state.player.draw.contains(&armaments),

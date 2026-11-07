@@ -1,9 +1,0 @@
-{
- "action": "select_map_node",
- "args": {
-  "col": 2,
-  "row": 8
- },
- "fallback": true,
- "policy": "ppo"
-}

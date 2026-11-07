@@ -288,8 +288,7 @@ def diff_maps(cs: dict | None, rs: dict | None) -> list[str]:
 def rust_finalize_atomic_select(r: Any, rs_view: dict[str, Any]) -> Any:
     """Finalize a Rust ``card_select`` that the C# headless resolved atomically.
 
-    In combat the headless sets ``AutoResolveInline`` and takes the option-0
-    prefix ``[0, max(min_select, 1))`` (``HeadlessCardSelector.GetSelectedCards``).
+    In combat the C# option-0 drain takes the prefix ``[0, max(min_select, 1))``.
     ``skip_select`` finalizes Rust with no pick, which matches only while the
     select is optional. A mandatory one (Tools of the Trade's discard,
     ``min_select`` 1) needs the same prefix, or the hands split (GH #1054,

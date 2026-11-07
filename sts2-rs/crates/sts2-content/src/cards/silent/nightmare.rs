@@ -72,7 +72,7 @@ pub(crate) fn play_nightmare(state: &mut CombatState, _t: Option<CreatureUid>) -
         // inline — apply the power and stash the card uid, no prompt.
         &[uid] => {
             apply_power_to_player(state, PowerKind::Nightmare, 3);
-            stash_nightmare_card(state, uid);
+            state.set_nightmare_selected_card(uid);
         }
         // 2+ hand cards: open a single-pick choice in hand order (C# `FromHand`
         // passes the hand with NO OrderBy) and defer the `Apply` onto it. The
@@ -110,19 +110,6 @@ pub(crate) fn play_nightmare(state: &mut CombatState, _t: Option<CreatureUid>) -
         }
     }
     EffectResult::Resolved
-}
-
-/// Stash `uid` into the most-recently-applied `PowerKind::Nightmare` instance's
-/// `counter` — the Rust analog of C# `NightmarePower.SetSelectedCard`. `CardUid`
-/// is `NonZeroU32`, so `counter == 0` encodes "not set".
-fn stash_nightmare_card(state: &mut CombatState, uid: sts2_core::CardUid) {
-    let stash = i32::try_from(uid.0.get()).unwrap_or(i32::MAX);
-    for power in state.powers.iter_mut().rev() {
-        if power.kind == PowerKind::Nightmare {
-            power.counter = stash;
-            break;
-        }
-    }
 }
 
 #[must_use]

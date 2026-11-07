@@ -7,12 +7,23 @@ use super::prelude::*;
 /// — character-lock enforced upstream. Uses the same `card_from_spec`
 /// + `spawn_card_into_pile(Hand)` plumbing the `cards::status::spawn_*`
 /// helpers ship.
+///
+/// C# `Soul.CreateInHand` ends in `AddGeneratedCardsToCombat(souls, Hand,
+/// creator ?? owner)` (`Soul.cs`, both builds), so the Souls are
+/// player-created even though the drink leaves the Play pile empty: spawn
+/// with an explicit `added_by_player = true` rather than the play-pile
+/// heuristic, or Regalite / Arsenal / the Supermassive tally miss them.
 pub(crate) fn drink_pot_of_ghouls(state: &mut CombatState, _target: Option<u8>) -> EffectResult {
     use crate::cards::status::card_from_spec;
     use crate::cards::status_specs_generated as specs;
-    use sts2_core::card_effects::{spawn_card_into_pile, PileKind};
+    use sts2_core::card_effects::{spawn_card_into_pile_with_origin, PileKind};
     for _ in 0..2 {
-        let _ = spawn_card_into_pile(state, card_from_spec(&specs::soul()), PileKind::Hand);
+        let _ = spawn_card_into_pile_with_origin(
+            state,
+            card_from_spec(&specs::soul()),
+            PileKind::Hand,
+            true,
+        );
     }
     EffectResult::Resolved
 }

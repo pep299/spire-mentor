@@ -46,11 +46,7 @@ pub(crate) fn play_bone_shards(
     // OstyDamage.BaseValue: 9 base, +3 on upgrade. BlockVar: 9 base, +3 on
     // upgrade (both OnUpgrade UpgradeValueBy(3m)). Magnitudes are computed in
     // the handler, so the upgrade bumps are gated on current_card_upgraded.
-    let (dmg, block) = if current_card_upgraded(state) {
-        (12, 12)
-    } else {
-        (9, 9)
-    };
+    let dmg = if current_card_upgraded(state) { 12 } else { 9 };
 
     // C# `DamageCmd.Attack(dmg).FromOsty(Owner.Osty, this).TargetingAllOpponents(...)`
     // — the Osty is the dealer for the AoE hit (Osty-side modifiers apply;
@@ -59,6 +55,11 @@ pub(crate) fn play_bone_shards(
     deal_damage_from_osty_to_all_alive_enemies(state, dmg);
 
     // C# `CreatureCmd.GainBlock(Owner.Creature, Block, cardPlay)` — player block.
+    // `Block` is read only now, after the attack: a hit that kills the
+    // MagiKnight drops its Dampen (`DampenPower.AfterDeath` -> `AfterRemoved`
+    // re-upgrades this very card), so the block is the upgraded 12 (loadout
+    // Necrobinder 1159-v0.107.1: C# 6 -> 18, Rust granted the downgraded 9).
+    let block = if current_card_upgraded(state) { 12 } else { 9 };
     gain_block_player(state, block);
 
     // C# `if (Owner.IsOstyAlive) CreatureCmd.Kill(Owner.Osty)` — sacrifice the

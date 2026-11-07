@@ -252,9 +252,8 @@ fn seeker_strike_stable_shuffle_key_is_entry_upgraded_not_uid() {
     sorted.sort_by(|&a, &b| {
         let ca = &state_ref.cards[a.0.get() as usize - 1];
         let cb = &state_ref.cards[b.0.get() as usize - 1];
-        ca.card_id
-            .to_python_name()
-            .cmp(cb.card_id.to_python_name())
+        sts2_core::cards::card_model_entry(ca.card_id)
+            .cmp(sts2_core::cards::card_model_entry(cb.card_id))
             .then_with(|| ca.upgraded.cmp(&cb.upgraded))
     });
     let mut rng = state_ref.run_rng.combat_card_selection.clone();
@@ -272,8 +271,8 @@ fn seeker_strike_stable_shuffle_key_is_entry_upgraded_not_uid() {
                     cb.card_id,
                 ))
                 .then_with(|| {
-                    crate::cards::spec_index::card_csharp_entry(ca.card_id)
-                        .cmp(&crate::cards::spec_index::card_csharp_entry(cb.card_id))
+                    sts2_core::cards::card_model_entry(ca.card_id)
+                        .cmp(sts2_core::cards::card_model_entry(cb.card_id))
                 })
         });
     };
@@ -463,7 +462,7 @@ fn entropy_transforms_the_ball_off_the_colorless_pool_v0111() {
 /// GH #1054 item 7: a **Curse** original transforms off the CurseCardPool
 /// (C# `CardFactory.GetDefaultTransformationOptions` -> `original.Pool`; no
 /// rarity filter for Status/Curse; `CanBeGeneratedInCombat` drops only
-/// AscendersBane). The prior port returned `None` for any curse, so Entropy
+/// AscendersBane, and only in v0.111.0). The prior port returned `None` for any curse, so Entropy
 /// left a hand SPORE_MIND untouched and skipped the `CombatCardSelection`
 /// read (Regent seed 1008, THE_KIN_BOSS: C# rolled DECAY).
 #[test]
@@ -495,16 +494,63 @@ fn entropy_transforms_curse_original_off_the_curse_pool() {
         .unwrap()
         .card_id;
     assert_ne!(new_id, CardId::SporeMind, "original id is excluded");
-    assert_ne!(
-        new_id,
-        CardId::AscendersBane,
-        "AscendersBane is not combat-generatable"
-    );
     assert_eq!(
         crate::cards::spec_index::rarity_for_card_id(new_id),
         Some(CardRarity::Curse),
         "curse original must transform into another curse, got {new_id:?}",
     );
+}
+
+/// Transform `original` in hand under `version` across 300 RNG seeds and
+/// return every replacement id rolled.
+fn transform_results(original: CardId, version: sts2_core::GameVersion) -> Vec<CardId> {
+    use super::helpers::transform_card_to_random_for_hook;
+    (0..300)
+        .map(|seed| {
+            let (mut state, _euid) = fresh_state(original, 10, 0);
+            state.game_version = version;
+            state.run_rng = sts2_core::run_rng_set::RunRngSet::new(seed);
+            state.player.character = Some(sts2_core::potions::CharacterId::Ironclad);
+            let uid = sts2_core::CardUid(NonZeroU32::new(1).expect("nz"));
+            state.player.play.clear();
+            state.player.hand.push(uid);
+            let new_uid = transform_card_to_random_for_hook(&mut state, uid).expect("transforms");
+            state
+                .cards
+                .iter()
+                .find(|c| c.uid == new_uid)
+                .unwrap()
+                .card_id
+        })
+        .collect()
+}
+
+/// AscendersBane overrides `CanBeGeneratedInCombat => false` only in v0.111.0
+/// (AscendersBane.cs:10); in v0.107.1 it heads the in-combat curse pool
+/// (random-loadout v0.107.1 seeds 1008 / 1163).
+#[test]
+fn in_combat_curse_pool_keeps_ascenders_bane_only_in_v0107() {
+    let v107 = transform_results(CardId::SporeMind, sts2_core::GameVersion::V0_107_1);
+    assert!(v107.contains(&CardId::AscendersBane), "{v107:?}");
+    let v111 = transform_results(CardId::SporeMind, sts2_core::GameVersion::V0_111_0);
+    assert!(!v111.contains(&CardId::AscendersBane), "{v111:?}");
+}
+
+/// A Quest-type original (SPOILS_MAP) transforms off the colorless pool
+/// (CardFactory.cs:173 `Type != Quest ? Pool : ColorlessCardPool`), in both
+/// builds (random-loadout v0.107.1 seed 1198: C# FINESSE).
+#[test]
+fn entropy_transforms_quest_original_off_the_colorless_pool() {
+    use super::helpers::colorless_combat_generatable_card_ids;
+    let pool = colorless_combat_generatable_card_ids();
+    for version in [
+        sts2_core::GameVersion::V0_107_1,
+        sts2_core::GameVersion::V0_111_0,
+    ] {
+        for id in transform_results(CardId::SpoilsMap, version) {
+            assert!(pool.contains(&id), "{version:?}: {id:?} is not colorless");
+        }
+    }
 }
 
 /// Bead `sts2-rs-isooo` (cross-character pool fix): a transform-to-random
@@ -696,6 +742,53 @@ fn catastrophe_any_ally_exhaust_card_routes_to_exhaust_not_discard() {
     );
 }
 
+/// Catastrophe's AnyAlly pick with no ally is EXHAUSTED through the real
+/// exhaust path (C# `CardCmd.MoveToResultPileWithoutPlaying` →
+/// `CardModel.MoveToResultPileWithoutPlaying` → `CardCmd.Exhaust`), so
+/// `AfterCardExhausted` listeners fire: Feel No Pain grants its block.
+/// Random-loadout Ironclad v0.107.1 1055 / v0.111.0 1131 (Dark Embrace).
+#[test]
+fn catastrophe_any_ally_exhaust_fires_exhaust_hooks() {
+    crate::cards::dispatch::ensure_installed();
+    let (mut state, _euid) = fresh_state(CardId::Catastrophe, 0, 0);
+    add_player_creature(&mut state);
+    let player = state.player.creature_uid.expect("player");
+    sts2_core::card_effects::apply_power_to_creature(&mut state, player, PowerKind::FeelNoPain, 3);
+    let demonic = push_draw_card_id(&mut state, CardId::DemonicShield);
+    let _ = lookup(CardId::Catastrophe).expect("registered")(&mut state, None);
+    assert!(state.player.exhaust.contains(&demonic));
+    assert_eq!(state.player.block, 3, "Feel No Pain fired on the exhaust");
+}
+
+/// C# `Catastrophe.OnPlay`'s `for` re-reads `DynamicVars.Cards` before each
+/// iteration (Catastrophe.cs:23), so a base Catastrophe upgraded mid-play runs
+/// 3 auto-plays, not 2. Here the only playable draw card is an Apotheosis,
+/// which upgrades the Catastrophe in the Play pile; the next two iterations
+/// fall back to the unplayable Wounds — all three Wounds would need a 4th.
+#[test]
+fn catastrophe_rereads_its_card_count_each_iteration() {
+    install_pool();
+    let (mut state, _euid) = fresh_state(CardId::Catastrophe, 0, 0);
+    add_player_creature(&mut state);
+    state.player.current_hp = 80;
+    let apo = push_draw_card_id(&mut state, CardId::Apotheosis);
+    let wounds: Vec<_> = (0..3)
+        .map(|_| push_draw_card_id(&mut state, CardId::Wound))
+        .collect();
+    sts2_core::card_effects::register_card_unplayable(CardId::Wound);
+    let _ = lookup(CardId::Catastrophe).expect("registered")(&mut state, None);
+    assert!(
+        state.cards[0].upgraded,
+        "Apotheosis upgraded the Catastrophe"
+    );
+    assert!(!state.player.draw.contains(&apo));
+    let left = wounds
+        .iter()
+        .filter(|w| state.player.draw.contains(w))
+        .count();
+    assert_eq!(left, 1, "3 iterations: Apotheosis + 2 Wounds");
+}
+
 /// Catastrophe (cata-suspend): an auto-played card that opens a *surfacing*
 /// card-select (SecretTechnique fetching a Skill when several Skills sit in
 /// the draw pile) must SUSPEND Catastrophe's loop until that select resolves,
@@ -745,7 +838,12 @@ fn catastrophe_suspends_across_secret_technique_select() {
         .as_ref()
         .expect("loop suspended");
     let cont = resume.continuation.as_ref().expect("continuation recorded");
-    assert_eq!(cont.iters, 1, "one Catastrophe iteration still owed");
+    assert_eq!(cont.iters, 1, "one Catastrophe iteration already run");
+    assert_eq!(
+        cont.uids.as_slice(),
+        &[state.cards[0].uid],
+        "bound by Catastrophe"
+    );
     assert_eq!(
         state.run_rng.shuffle.counter(),
         0,
@@ -1808,6 +1906,39 @@ fn play_mad_science_violence_hits_thrice() {
     assert_eq!(enemy_hp(&state, enemy), 100 - 36, "Violence = 3 x 12");
 }
 
+/// Violence under Vigor 5: v0.107.1 issues one `DamageCmd.Attack` per hit
+/// (`MadScience.cs:216-225`), so `VigorPower.AfterAttack` spends the Vigor
+/// after the FIRST hit (17 + 12 + 12); v0.111.0 issues one command with
+/// `WithHitCount(3)`, so every hit carries it (3 x 17). Silent loadout
+/// v0.107.1 seed 1038.
+#[test]
+fn play_mad_science_violence_vigor_per_command_v0107_vs_v0111() {
+    install_pool();
+    for (version, expected_dmg, vigor_left) in [
+        (sts2_core::GameVersion::V0_107_1, 17 + 12 + 12, 0),
+        (sts2_core::GameVersion::V0_111_0, 3 * 17, 5),
+    ] {
+        let (mut state, enemy) = fresh_state(CardId::MadScience, 12, 0);
+        state.game_version = version;
+        let player = push_player(&mut state);
+        set_mad_science_variant(
+            &mut state.cards[0],
+            CardType::Attack,
+            TinkerTimeRider::Violence,
+        );
+        apply_power_to_creature(&mut state, player, PowerKind::Vigor, 5);
+        let f = lookup(CardId::MadScience).expect("registered");
+        f(&mut state, Some(enemy));
+        assert_eq!(enemy_hp(&state, enemy), 100 - expected_dmg, "{version:?}");
+        // v0.111.0 spends the Vigor at the card's after_card_played.
+        assert_eq!(
+            creature_power(&state, player, PowerKind::Vigor),
+            vigor_left,
+            "{version:?}"
+        );
+    }
+}
+
 /// Attack + Sapping rider → 12 dmg then Weak 2 + Vulnerable 2 on target.
 #[test]
 fn play_mad_science_sapping_applies_weak_and_vulnerable() {
@@ -1947,6 +2078,52 @@ fn metamorphosis_generated_attacks_are_free_this_combat() {
             assert_ne!(c.combat_var(sts2_core::cards::VarKey::CostAbsolutelySet), 0);
         }
     }
+}
+
+/// Metamorphosis.cs:31 / Distraction.cs:31 add each generated card through
+/// `CardPileCmd.AddGeneratedCardToCombat(.., Owner)`, which raises
+/// `Hook.AfterCardGeneratedForCombat` per card: Pillar of Creation grants its
+/// block once per generated card. The hand-rolled bodies skipped it.
+#[test]
+fn metamorphosis_and_distraction_fire_card_generation_listeners() {
+    use sts2_core::card_effects::apply_power_to_creature;
+    use sts2_core::potions::CharacterId;
+    install_pool();
+    for (card, generated) in [(CardId::Metamorphosis, 3), (CardId::Distraction, 1)] {
+        let (mut state, _enemy) = fresh_state(card, 0, 0);
+        let player = push_player(&mut state);
+        state.player.character = Some(CharacterId::Ironclad);
+        apply_power_to_creature(&mut state, player, PowerKind::PillarOfCreation, 2);
+        lookup(card).expect("registered")(&mut state, None);
+        assert_eq!(state.player.block, 2 * generated, "{card:?}");
+        assert_eq!(
+            state.count_player_generated_cards_this_combat(),
+            generated as u32,
+            "{card:?} counts each card once for Supermassive"
+        );
+    }
+}
+
+/// Distraction.cs:30 `SetToFreeThisTurn()` on the generated Skill.
+#[test]
+fn distraction_generated_skill_is_free_this_turn() {
+    use sts2_core::potions::CharacterId;
+    install_pool();
+    let (mut state, _enemy) = fresh_state(CardId::Distraction, 0, 0);
+    let _ = push_player(&mut state);
+    state.player.character = Some(CharacterId::Ironclad);
+    let hand_before = state.player.hand.clone();
+    lookup(CardId::Distraction).expect("registered")(&mut state, None);
+    let new: Vec<_> = state
+        .player
+        .hand
+        .iter()
+        .filter(|u| !hand_before.contains(u))
+        .copied()
+        .collect();
+    assert_eq!(new.len(), 1);
+    let c = &state.cards[new[0].0.get() as usize - 1];
+    assert_eq!(c.combat_var(sts2_core::cards::VarKey::FreeThisTurn), 1);
 }
 
 /// `sts2-rs-k2rzs`: Base Metamorphosis still adds 3 (C# `CardsVar(3)`).
@@ -2344,6 +2521,31 @@ fn play_secret_technique_moves_a_skill_from_draw_to_hand() {
     );
 }
 
+/// C# `SecretTechnique.cs:22` filters `c.Type == CardType.Skill`, and the
+/// Quest cards are `CardType.Quest` (`Dowsing.cs:45`, v0.107.1
+/// `ByrdonisEgg.cs:15`, `LanternKey.cs:17`). Rust models them as Skills, so
+/// the fetch must skip `is_quest()` cards: a draw pile holding only quest
+/// cards moves nothing (Ironclad:6174 @775 moved DOWSING to hand).
+#[test]
+fn secret_technique_skips_quest_cards_in_draw() {
+    install_pool();
+    let (mut state, _euid) = fresh_state(CardId::SecretTechnique, 0, 0);
+    state.player.draw.clear();
+    for id in [
+        CardId::Dowsing,
+        CardId::ByrdonisEgg,
+        CardId::LanternKey,
+        CardId::SpoilsMap,
+    ] {
+        push_draw_card_id(&mut state, id);
+    }
+    let hand_before = state.player.hand.len();
+    let _ = lookup(CardId::SecretTechnique).expect("registered")(&mut state, None);
+    assert_eq!(state.player.draw.len(), 4, "no quest card leaves the draw");
+    assert_eq!(state.player.hand.len(), hand_before, "nothing reaches hand");
+    assert!(state.pending_choice.is_none(), "no select prompt opens");
+}
+
 #[test]
 fn play_secret_technique_with_no_skills_is_noop() {
     use sts2_core::cards::{Card, CardType, TargetType};
@@ -2450,6 +2652,23 @@ fn play_wish_single_candidate_uses_the_normal_hand_limit() {
     assert!(state.player.draw.is_empty());
     assert_eq!(state.player.hand.len(), sts2_core::cards::HAND_LIMIT);
     assert_eq!(state.player.discard.as_slice(), &[chosen]);
+}
+
+/// The Wish grid's `c.Id` tiebreak compares `ModelId.Entry` ordinally, and
+/// `Entry` is the SLUGIFIED class name (`ModelDb.GetEntry` =
+/// `StringHelper.Slugify(type.Name)`): `BLOODLETTING` < `BLOOD_WALL` because
+/// `'L'` (0x4C) < `'_'` (0x5F). The PascalCase class names sort the other way
+/// (`BloodWall` < `Bloodletting`), which the port used to key on.
+#[test]
+fn play_wish_orders_same_rarity_cards_by_slugified_entry() {
+    install_pool();
+    let (mut state, _euid) = fresh_state(CardId::Wish, 0, 0);
+    let wall = push_draw_card_id(&mut state, CardId::BloodWall);
+    let letting = push_draw_card_id(&mut state, CardId::Bloodletting);
+    lookup(CardId::Wish).expect("registered")(&mut state, None);
+    let pc = state.pending_choice.clone().expect("Wish opens a select");
+    let order: Vec<_> = pc.options.iter().map(|o| o.card_uid).collect();
+    assert_eq!(order, vec![Some(letting), Some(wall)]);
 }
 
 /// A single draw-pile card is taken without a screen (`FromCombatPile`'s
@@ -2621,6 +2840,7 @@ fn calamity_generates_one_attack_into_hand_on_attack_played() {
         card_type: Some(CardType::Attack),
         ..Default::default()
     };
+    sts2_core::hooks::dispatch_before_card_played_powers(&mut state, 1, false);
     sts2_core::hooks::dispatch_after_card_played(&mut state, &ctx);
     assert_eq!(
         state.player.hand.len(),
@@ -2632,6 +2852,37 @@ fn calamity_generates_one_attack_into_hand_on_attack_played() {
         gen_before + 1,
         "GetForCombat with-replacement amount=1 ⇒ exactly 1 combat_card_generation read"
     );
+}
+
+/// C# `CalamityPower` records the Attack at `BeforeCardPlayed` and conjures
+/// only if `AfterCardPlayed` can remove it (CalamityPower.cs:23-54).
+/// `Hook.BeforeCardPlayed` is skipped once the combat `IsOverOrEnding`, the
+/// after hook is not — so a play whose Before never fired (a replay after the
+/// last enemy died) conjures nothing (Defect random-loadout v0.107.1 seed 1025).
+#[test]
+fn calamity_conjures_nothing_when_before_card_played_was_skipped() {
+    use sts2_core::card_effects::apply_power_to_creature;
+    crate::cards::dispatch::ensure_installed();
+    let mut state = CombatState {
+        rng: sts2_core::dotnet_rng::Rng::new(0_i32),
+        ..Default::default()
+    };
+    add_player_creature(&mut state);
+    state.player.character = Some(sts2_core::CharacterId::Ironclad);
+    let puid = state.player.creature_uid.expect("player mirror");
+    apply_power_to_creature(&mut state, puid, sts2_core::powers::PowerKind::Calamity, 1);
+    let ctx = sts2_core::hooks::CardCtx {
+        card_type: Some(CardType::Attack),
+        ..Default::default()
+    };
+    // Armed play conjures once; the next play's Before is skipped.
+    sts2_core::hooks::dispatch_before_card_played_powers(&mut state, 1, false);
+    sts2_core::hooks::dispatch_after_card_played(&mut state, &ctx);
+    let hand_after_first = state.player.hand.len();
+    let gen = state.run_rng.combat_card_generation.counter();
+    sts2_core::hooks::dispatch_after_card_played(&mut state, &ctx);
+    assert_eq!(state.player.hand.len(), hand_after_first);
+    assert_eq!(state.run_rng.combat_card_generation.counter(), gen);
 }
 
 /// C# `Hook.AfterCardPlayed` walks `CombatState.IterateHookListeners`
@@ -2668,10 +2919,12 @@ fn calamity_card_lands_before_withering_presence_wither() {
         card_type: Some(CardType::Attack),
         ..Default::default()
     };
+    sts2_core::hooks::dispatch_before_card_played_powers(&mut state, 1, false);
     // The card-play pipeline order (`combat_loop::dispatch_after_card_played_buses`
     // minus the relic bus, which holds no relics here).
     sts2_core::hooks::dispatch_after_card_played_ordered_enemy_hits(&mut state, &ctx);
-    sts2_core::hooks::dispatch_after_card_played_rest(&mut state, &ctx);
+    sts2_core::hooks::dispatch_after_card_played_player_lanes(&mut state, &ctx);
+    sts2_core::hooks::dispatch_after_card_played_other_creatures(&mut state, &ctx);
     let added: Vec<_> = state.player.hand[hand_before..]
         .iter()
         .map(|uid| {
@@ -4870,6 +5123,27 @@ fn play_hidden_gem_upgraded_increments_replay_count_by_three() {
     );
 }
 
+/// HiddenGem skips a card whose `GetEnchantedReplayCount()` is already >= 1
+/// (HiddenGem.cs:45, both builds): an unused Glam adds its play to the
+/// count (`Glam.EnchantPlayCount`), so a lone Glam Strike gets no Replay.
+/// Random-loadout Ironclad v0.107.1 seed 1183 (Silken Tress Glam cards).
+#[test]
+fn hidden_gem_skips_an_unused_glam_card() {
+    install_pool();
+    let (mut state, _) = fresh_state(CardId::HiddenGem, 0, 0);
+    let spec = crate::cards::ironclad::strike_ironclad::spec();
+    let raw = u32::try_from(state.cards.len() + 1).expect("fits");
+    let uid = CardUid::new(raw).expect("nz");
+    let mut card = card_from_spec(&spec);
+    card.uid = uid;
+    card.set_enchantment(sts2_core::cards::EnchantmentId::Glam, 1);
+    state.cards.push(card);
+    state.player.draw.push(uid);
+    let f = lookup(CardId::HiddenGem).expect("registered");
+    assert_eq!(f(&mut state, None), EffectResult::Resolved);
+    assert_eq!(state.cards[uid.0.get() as usize - 1].base_replay_count, 0);
+}
+
 /// HiddenGem with only a playable Status (FranticEscape) in the draw pile.
 /// Returns that card's `base_replay_count` after the play.
 fn hidden_gem_on_lone_frantic_escape(version: sts2_core::GameVersion) -> i32 {
@@ -5198,6 +5472,59 @@ fn play_enlightenment_cap_reverts_at_turn_start() {
     assert_eq!(state.cards[idx].cost, 1, "capped this turn");
     state.restore_snecko_costs_for_turn_start();
     assert_eq!(state.cards[idx].cost, 3, "the cap expires at turn end");
+}
+
+/// An earlier `AddUntilPlayed(-1)` (a retained Reap) folds BEFORE
+/// Enlightenment's reduce-only Absolute(1) (`CardEnergyCost.cs:110-115`), so
+/// a 3-cost card at 2 reads `min(2, 1) = 1`, not `1 - 1 = 0`. Past turn end
+/// the plain cap drops and the until-played reduction shows again (2); on
+/// play both drop (3). Enlightenment+'s combat cap keeps 1 throughout.
+/// Loadout Necrobinder v0.107.1 1386: Reap C# 1, Rust 0.
+#[test]
+fn play_enlightenment_cap_absorbs_an_earlier_until_played_reduction() {
+    install_pool();
+    for upgraded in [false, true] {
+        let (mut state, _) = fresh_state(CardId::Enlightenment, 0, 0);
+        state.cards[0].upgraded = upgraded;
+        let mut idxs = Vec::new();
+        for _ in 0..2 {
+            let raw = u32::try_from(state.cards.len() + 1).expect("fits");
+            let uid = CardUid::new(raw).expect("nz");
+            let mut card = card_from_spec(&crate::cards::ironclad::strike_ironclad::spec());
+            card.uid = uid;
+            card.cost = 3;
+            card.add_cost_reduction_until_played(1);
+            state.cards.push(card);
+            state.player.hand.push(uid);
+            idxs.push(uid.0.get() as usize - 1);
+        }
+        let f = lookup(CardId::Enlightenment).expect("registered");
+        assert_eq!(f(&mut state, None), EffectResult::Resolved);
+        for &idx in &idxs {
+            assert_eq!(
+                sts2_core::hooks::local_card_cost(&state, &state.cards[idx]),
+                1,
+                "min(3 - 1, 1) (upgraded={upgraded})"
+            );
+        }
+        // Card 0 is played: every WhenPlayed modifier drops.
+        state.cards[idxs[0]].expire_snecko_roll();
+        state.cards[idxs[0]]
+            .combat_vars
+            .zero(sts2_core::cards::VarKey::CostReductionUntilPlayed);
+        assert_eq!(
+            sts2_core::hooks::local_card_cost(&state, &state.cards[idxs[0]]),
+            if upgraded { 1 } else { 3 },
+            "after the play (upgraded={upgraded})"
+        );
+        // Card 1 is held past turn end: only the EndOfTurn cap drops.
+        state.restore_snecko_costs_for_turn_start();
+        assert_eq!(
+            sts2_core::hooks::local_card_cost(&state, &state.cards[idxs[1]]),
+            if upgraded { 1 } else { 2 },
+            "past turn end (upgraded={upgraded})"
+        );
+    }
 }
 
 /// Plain Enlightenment then Enlightenment+: C# appends
@@ -6082,8 +6409,7 @@ fn push_hand_card_id(state: &mut CombatState, card_id: CardId) -> CardUid {
 /// Parity bug `combat_select_ironclad` (supersedes the prior y1fic
 /// inline-drain expectation): the FIRST surfacing card-select an auto-played
 /// card opens must SURFACE, not drain inline. C#'s headless `ICardSelector`
-/// auto-resolves inline only for `count==0`, `count==1 && min>=1`, or while
-/// `AutoResolveInline` is set during a RESUME (`RunSimulator.cs:4804-4836`).
+/// auto-resolves inline only for `count==0` or `count==1 && min>=1`.
 /// Purity's `ExhaustFromHand` over 2 hand cards (count==2) is NOT one of those,
 /// so the auto-played Purity leaves a `pending_choice` and the engine surfaces
 /// a `card_select`. Resolving that choice (the harness/MCTS first-legal pick,
@@ -6106,7 +6432,7 @@ fn auto_played_purity_surfaces_exhaust_choice() {
     // suspended, and NOTHING has been exhausted yet.
     assert!(
         state.pending_choice.is_some(),
-        "auto-played Purity must SURFACE its exhaust choice (C# AutoResolveInline=false on initial pump)"
+        "auto-played Purity must SURFACE its exhaust choice"
     );
     assert!(
         state.pending_autoplay_resume.is_some(),
@@ -6177,11 +6503,11 @@ fn auto_played_purity_surfaces_exhaust_choice() {
 /// where the FIRST collected card opens a surfacing choice, the auto-play
 /// SUSPENDS on that first choice (the second card is stashed as remaining).
 /// Resolving the first choice finishes the first card's tail then plays the
-/// second card — whose own choice now drains INLINE (the resume runs with the
-/// C# `AutoResolveInline` mirror raised). Net: each Purity exhausts one hand
-/// card, matching C#'s single `DoSelectCards` resume.
+/// second card, whose own choice surfaces too: C# awaits each `CardCmd.AutoPlay`
+/// and `FromHand` prompts the player for each (GH #1131). Net: each Purity
+/// exhausts one hand card.
 #[test]
-fn two_auto_played_purities_surface_both_selections() {
+fn two_auto_played_purities_each_surface_their_choice() {
     install_pool();
     let (mut state, _euid) = fresh_state(CardId::Finesse, 0, 0);
     add_player_creature(&mut state);
@@ -6214,31 +6540,32 @@ fn two_auto_played_purities_surface_both_selections() {
     // Resolve the surfaced choice under the SEQUENTIAL decomposition (bead
     // `sts2-rs-sopgf`): the first Purity's `min0/max3` exhaust takes one
     // incremental `[0]` pick (re-opens, no effect) then FINALIZE `[]` (exhaust
-    // 1, finish the first Purity). Its sibling then opens its own selection.
-    let pick0: smallvec::SmallVec<[u8; 4]> = [0u8].into_iter().collect();
-    let _ = sts2_core::apply(
-        &mut state,
-        sts2_core::Action::ResolveChoice { selection: pick0 },
-    );
-    assert!(
-        state.pending_choice.is_some(),
-        "first Purity's multi-pick re-opens after one incremental pick"
-    );
-    let finalize: smallvec::SmallVec<[u8; 4]> = smallvec::SmallVec::new();
-    let _ = sts2_core::apply(
-        &mut state,
-        sts2_core::Action::ResolveChoice {
-            selection: finalize,
-        },
-    );
-
-    assert!(
-        state.pending_choice.is_some(),
-        "the second Purity awaits its own choice"
-    );
-    assert!(state.pending_autoplay_resume.is_some());
-    for selection in [[0u8].into_iter().collect(), smallvec::SmallVec::new()] {
-        let _ = sts2_core::apply(&mut state, sts2_core::Action::ResolveChoice { selection });
+    // 1, finish the first Purity). The resume then plays the second Purity,
+    // whose choice surfaces the same way.
+    for purity in ["first", "second"] {
+        let pick0: smallvec::SmallVec<[u8; 4]> = [0u8].into_iter().collect();
+        let _ = sts2_core::apply(
+            &mut state,
+            sts2_core::Action::ResolveChoice { selection: pick0 },
+        );
+        assert!(
+            state.pending_choice.is_some(),
+            "{purity} Purity's multi-pick re-opens after one incremental pick"
+        );
+        let finalize: smallvec::SmallVec<[u8; 4]> = smallvec::SmallVec::new();
+        let _ = sts2_core::apply(
+            &mut state,
+            sts2_core::Action::ResolveChoice {
+                selection: finalize,
+            },
+        );
+        if purity == "first" {
+            assert_eq!(state.player.hand.len(), hand_before - 1);
+            assert!(
+                state.pending_choice.is_some(),
+                "the second Purity surfaces its own exhaust choice"
+            );
+        }
     }
 
     assert!(
@@ -6249,7 +6576,7 @@ fn two_auto_played_purities_surface_both_selections() {
         state.pending_autoplay_resume.is_none(),
         "the suspended two-card auto-play resumed and finished"
     );
-    // Each independently answered Purity exhausts one hand card.
+    // Each Purity exhausts one hand card, so two total.
     assert_eq!(
         state.player.hand.len(),
         hand_before - 2,

@@ -1,7 +1,7 @@
 {
  "details": [
   "Play Strike",
-  "Nibbit HP 26→20 (−6)"
+  "Nibbit HP 20→14 (−6)"
  ],
  "error": null,
  "label": "Play Strike → Nibbit",
@@ -181,9 +181,28 @@
      "target_type": "None",
      "type": "Attack",
      "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "blue",
+     "cost": 1,
+     "description": "Deal 6 damage.",
+     "description_rich": "Deal 6 damage.",
+     "id": "STRIKE_DEFECT",
+     "image": "https://assets.test/card_atlas/defect/strike_defect.png",
+     "index": -1,
+     "name": "Strike",
+     "rarity": "Basic",
+     "stats": {
+      "damage": 6
+     },
+     "target_type": "None",
+     "type": "Attack",
+     "upgraded": false
     }
    ],
-   "discard_pile_count": 8,
+   "discard_pile_count": 9,
    "draw_pile": [
     {
      "base_cost": 1,
@@ -247,7 +266,7 @@
    "enemies": [
     {
      "block": 0,
-     "hp": 20,
+     "hp": 14,
      "image": "https://assets.test/monsters/nibbit.png",
      "index": 0,
      "intents": [
@@ -269,34 +288,12 @@
      "uid": 2
     }
    ],
-   "energy": 1,
+   "energy": 0,
    "energy_image": "https://assets.test/sprite_fonts/defect_energy_icon.png",
    "exhaust_pile": [],
    "exhaust_pile_count": 0,
    "floor": 5,
    "hand": [
-    {
-     "base_cost": 1,
-     "can_play": true,
-     "color": "blue",
-     "cost": 1,
-     "damage_preview": {
-      "0": 6
-     },
-     "description": "Deal 6 damage.",
-     "description_rich": "Deal 6 damage.",
-     "id": "STRIKE_DEFECT",
-     "image": "https://assets.test/card_atlas/defect/strike_defect.png",
-     "index": 0,
-     "name": "Strike",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 6
-     },
-     "target_type": "AnyEnemy",
-     "type": "Attack",
-     "upgraded": false
-    },
     {
      "base_cost": 0,
      "can_play": true,
@@ -306,7 +303,7 @@
      "description_rich": "Gain Energy.\nAdd a [gold]Void[/gold] into your [gold]Discard Pile[/gold].",
      "id": "TURBO",
      "image": "https://assets.test/card_atlas/defect/turbo.png",
-     "index": 1,
+     "index": 0,
      "name": "TURBO",
      "rarity": "Common",
      "stats": {},
@@ -316,19 +313,20 @@
     },
     {
      "base_cost": 1,
-     "can_play": true,
+     "can_play": false,
      "color": "blue",
      "cost": 1,
      "description": "Evoke your rightmost Orb twice.",
      "description_rich": "[gold]Evoke[/gold] your rightmost Orb twice.",
      "id": "DUALCAST",
      "image": "https://assets.test/card_atlas/defect/dualcast.png",
-     "index": 2,
+     "index": 1,
      "name": "Dualcast",
      "rarity": "Basic",
      "stats": {},
      "target_type": "None",
      "type": "Skill",
+     "unplayable_reason": "cost",
      "upgraded": false
     }
    ],

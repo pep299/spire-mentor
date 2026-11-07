@@ -244,11 +244,11 @@ fn listener_silken_tress_card_reward(rs: &mut RunState, cards: &mut Vec<Card>) -
     let pool = crate::names::deck_card_spec_pool();
     let version = rs.game_version;
     for card in cards.iter_mut() {
-        let Some(spec) = pool.iter().find(|s| s.id == card.card_id) else {
+        let Some(spec) = crate::names::find_deck_card_spec(&pool, card.card_id) else {
             continue;
         };
         // `glam.CanEnchant(card)` (`SilkenTress.cs:65`).
-        if crate::enchantments::can_enchant_card(spec, card, EnchantmentId::Glam, version) {
+        if crate::enchantments::can_enchant_card(&spec, card, EnchantmentId::Glam, version) {
             // `CardCmd.Enchant<Glam>(card, 1m)` (`SilkenTress.cs:68`).
             let _ = crate::enchantments::apply_static_enchantment(card, EnchantmentId::Glam, 1);
         }

@@ -232,6 +232,35 @@ fn oblivion_dooms_owner_each_card_and_self_removes_at_player_turn_end() {
     );
 }
 
+/// GlobeHead's spawn-applied Galvanic sits before a later Oblivion in its power
+/// list, and `Hook.AfterCardPlayed` walks a creature's powers in list order
+/// (`CombatState.IterateHookListeners`): playing a Power card takes Galvanic's
+/// 6 self-damage FIRST, then Oblivion's Doom fires Shroud. Rust ran Oblivion
+/// first, so Shroud's fresh block soaked the hit (loadout Necrobinder
+/// 1122-v0.107.1: C# block 3 -> 0 / HP -3 -> Shroud 3; Rust block 0, HP kept).
+#[test]
+fn galvanic_self_damage_lands_before_oblivion_shroud_block() {
+    let mut state = CombatState::default();
+    state.player.current_hp = 50;
+    state.player.max_hp = 50;
+    let _ = state.init_player_creature();
+    // Spawning applies GlobeHead's Galvanic(6); Oblivion lands after it.
+    let globe = state.spawn_enemy(MonsterKind::GlobeHead);
+    attach_enemy_power(&mut state, globe, PowerKind::Oblivion, 4);
+    push_player_power(&mut state, PowerKind::Shroud, 3);
+    state.player.block = 3;
+
+    hooks::dispatch_before_card_played_powers(&mut state, 0, false);
+    let ctx = CardCtx {
+        card_type: Some(CardType::Power),
+        ..CardCtx::default()
+    };
+    hooks::dispatch_after_card_played(&mut state, &ctx);
+    assert_eq!(doom_on_creature(&state, globe), 4, "Oblivion fired");
+    assert_eq!(state.player.current_hp, 47, "3 of Galvanic's 6 got through");
+    assert_eq!(state.player.block, 3, "Shroud's block lands after the hit");
+}
+
 /// Regression (`sts2-rs-oblivion-snapshot`): a 2nd Oblivion played while the
 /// first is armed stacks the live `Amount` during its OnPlay (3 → 6), but the
 /// Doom granted for THAT play must be the pre-OnPlay SNAPSHOT (3), not the
@@ -633,6 +662,65 @@ fn veilpiercer_decrements_on_ethereal_play_and_removes_at_zero() {
     );
 }
 
+/// C# `DanseMacabrePower.BeforeCardPlayed` reads `EnergyCost.GetResolved()`
+/// live. A Veilpiercer listed BEFORE it that this Ethereal play strips of its
+/// last charge is already gone, so DanseMacabre sees the card's real cost 3
+/// (>= 2) and grants block, though the play itself was free (loadout
+/// Necrobinder 1309-v0.107.1: REAP, C# block 6, Rust 0).
+#[test]
+fn danse_macabre_reads_live_cost_after_veilpiercer_runs_out() {
+    let mut state = CombatState::default();
+    state.player.current_hp = 50;
+    state.player.max_hp = 50;
+    let _ = state.init_player_creature();
+    let eth = push_ethereal_card(&mut state);
+    state.cards[0].cost = 3;
+    push_player_power(&mut state, PowerKind::Veilpiercer, 1);
+    push_player_power(&mut state, PowerKind::DanseMacabre, 6);
+    assert_eq!(
+        hooks::effective_card_cost(&state, eth),
+        0,
+        "free under Veilpiercer"
+    );
+
+    hooks::dispatch_before_card_played_powers_for_card(&mut state, 0, true, Some(eth));
+    assert!(
+        !state
+            .powers
+            .iter()
+            .any(|p| p.kind == PowerKind::Veilpiercer),
+        "the last charge is consumed"
+    );
+    assert_eq!(
+        state.player.block, 6,
+        "DanseMacabre sees the restored cost 3"
+    );
+}
+
+/// The mirror order: a DanseMacabre listed BEFORE the Veilpiercer runs while
+/// the card still costs 0, so it grants nothing.
+#[test]
+fn danse_macabre_before_veilpiercer_sees_the_free_cost() {
+    let mut state = CombatState::default();
+    state.player.current_hp = 50;
+    state.player.max_hp = 50;
+    let _ = state.init_player_creature();
+    let eth = push_ethereal_card(&mut state);
+    state.cards[0].cost = 3;
+    push_player_power(&mut state, PowerKind::DanseMacabre, 6);
+    push_player_power(&mut state, PowerKind::Veilpiercer, 1);
+
+    hooks::dispatch_before_card_played_powers_for_card(&mut state, 0, true, Some(eth));
+    assert!(!state
+        .powers
+        .iter()
+        .any(|p| p.kind == PowerKind::Veilpiercer));
+    assert_eq!(
+        state.player.block, 0,
+        "DanseMacabre ran while the card was free"
+    );
+}
+
 /// Push an Ethereal card POD and append its uid to the draw pile (front-drawn).
 fn push_ethereal_into_draw(state: &mut CombatState) -> CardUid {
     let uid = push_ethereal_card(state);
@@ -663,6 +751,48 @@ fn pagestorm_cascades_ethereal_draws() {
         "Pagestorm cascades all 3 Ethereal"
     );
     assert_eq!(moved, 1, "draw_into_hand reports only its own direct draw");
+}
+
+/// C# `CardPileCmd.Draw` runs `Hook.AfterCardDrawn` per card, so
+/// `PagestormPower`'s nested `Draw` (fromHandDraw = false) lands BEFORE the
+/// outer hand draw's next card. With 8 cards in hand, a 2-card hand draw that
+/// opens on an Ethereal card fills the hand with the Pagestorm draw — the
+/// outer second draw then fails on the 10-card cap. One card was drawn by
+/// effect (DeathMarch's count); the batch path drew both hand cards first and
+/// the Pagestorm draw failed instead (loadout Necrobinder 1001/1012).
+#[test]
+fn pagestorm_draw_interleaves_before_the_next_hand_draw() {
+    let mut state = CombatState::default();
+    state.player.current_hp = 80;
+    push_player_power(&mut state, PowerKind::Pagestorm, 1);
+    for _ in 0..8 {
+        let uid = CardUid::new(state.cards.len() as u32 + 1).expect("nonzero");
+        state.cards.push(Card {
+            uid,
+            ..Card::pod_defaults()
+        });
+        state.player.hand.push(uid);
+    }
+    let eth = push_ethereal_into_draw(&mut state);
+    let mut plain = Vec::new();
+    for _ in 0..2 {
+        let uid = CardUid::new(state.cards.len() as u32 + 1).expect("nonzero");
+        state.cards.push(Card {
+            uid,
+            ..Card::pod_defaults()
+        });
+        state.player.draw.push(uid);
+        plain.push(uid);
+    }
+
+    let moved = state.draw_into_hand(2);
+    assert_eq!(moved, 1, "the outer second draw hits the hand cap");
+    assert_eq!(state.player.hand.len(), 10);
+    assert_eq!(&state.player.hand[8..], &[eth, plain[0]]);
+    assert_eq!(
+        state.combat_log.cards_drawn_by_effect_this_turn, 1,
+        "the Pagestorm draw (fromHandDraw = false) succeeded"
+    );
 }
 
 /// Without Pagestorm, drawing one Ethereal card draws exactly one — no rider.
@@ -824,6 +954,50 @@ fn reaper_form_killing_blow_still_arms_deaths_door() {
         doom_on_creature(&state, enemy),
         0,
         "the death strip removes the Doom again (seed 959: Illusion corpse)"
+    );
+}
+
+/// With an Osty summoned, its `DieForYou` answers `ShouldAllowHitting` with
+/// `creature.IsAlive` for EVERY creature (`DieForYouPower.cs:35`), so a corpse
+/// cannot receive powers (`Creature.CanReceivePowers`, `PowerCmd.Apply`):
+/// Reaper Form's killing-blow Doom never lands, Shroud grants no block and
+/// Death's Door is not armed (loadout Necrobinder 1073/1078/1092/1114/1122/
+/// 1035/1109: Rust gained Shroud's block on the kill, C# did not).
+#[test]
+fn reaper_form_killing_blow_is_dropped_while_die_for_you_is_live() {
+    let run = |die_for_you: bool| {
+        let mut state = CombatState::default();
+        state.player.current_hp = 50;
+        state.player.max_hp = 50;
+        let _ = state.init_player_creature();
+        let enemy = state.spawn_enemy(MonsterKind::Nibbit);
+        let osty = state.spawn_enemy(MonsterKind::Nibbit);
+        if die_for_you {
+            attach_enemy_power(&mut state, osty, PowerKind::DieForYou, 1);
+        }
+        push_player_power(&mut state, PowerKind::ReaperForm, 1);
+        push_player_power(&mut state, PowerKind::Shroud, 3);
+        state.combat_log.doom_applied_by_player_this_turn = false;
+        if let Some(c) = state.creatures.iter_mut().find(|c| c.id == enemy.0) {
+            c.current_hp = 0;
+        }
+        let ctx = DamageCtx {
+            card_source: None,
+            dealer: CreatureRef::Player,
+            target: CreatureRef::Enemy(enemy),
+            props: ValueProps::MOVE,
+        };
+        hooks::dispatch_after_damage_given(&mut state, &ctx, 11, 11, false);
+        (
+            state.player.block,
+            state.combat_log.doom_applied_by_player_this_turn,
+        )
+    };
+    assert_eq!(run(false), (3, true), "no Osty: the corpse takes the Doom");
+    assert_eq!(
+        run(true),
+        (0, false),
+        "DieForYou live: no Doom on the corpse, so no Shroud block"
     );
 }
 
@@ -1031,6 +1205,50 @@ fn sleight_of_flesh_ignores_buffs_and_self_debuffs() {
     );
 }
 
+/// C# `DoubleDamagePower.ModifyDamageMultiplicative` gates the dealer on
+/// `dealer == Owner || Owner.Pets.Contains(dealer)`: a card-sourced powered
+/// Osty hit doubles too, not just the player's own (loadout Necrobinder 1019).
+#[test]
+fn double_damage_doubles_the_owners_osty_hits() {
+    let mut state = CombatState::default();
+    state.player.current_hp = 60;
+    state.player.max_hp = 60;
+    let _ = state.init_player_creature();
+    let enemy = state.spawn_enemy(MonsterKind::Nibbit);
+    let pet = state.summon_osty(8).expect("Osty summoned");
+    let dd = push_player_power(&mut state, PowerKind::DoubleDamage, 1);
+    // A card mid-resolution stands in for C#'s non-null `cardSource`.
+    let cuid = CardUid::new(state.cards.len() as u32 + 1).expect("nonzero");
+    state.cards.push(Card {
+        uid: cuid,
+        ..Card::pod_defaults()
+    });
+    state.player.play.push(cuid);
+
+    let osty_hit = DamageCtx {
+        card_source: None,
+        dealer: CreatureRef::Enemy(pet),
+        target: CreatureRef::Enemy(enemy),
+        props: ValueProps::MOVE,
+    };
+    assert_eq!(
+        hooks::modify_damage_multiplicative(&state, ListenerRef::Power(dd), &osty_hit),
+        DamageMul::DOUBLE,
+        "the owner's pet's powered card hit is doubled"
+    );
+    let enemy_hit = DamageCtx {
+        card_source: None,
+        dealer: CreatureRef::Enemy(enemy),
+        target: CreatureRef::Player,
+        props: ValueProps::MOVE,
+    };
+    assert_eq!(
+        hooks::modify_damage_multiplicative(&state, ListenerRef::Power(dd), &enemy_hit),
+        DamageMul::ONE,
+        "a non-pet enemy's hit is not doubled"
+    );
+}
+
 /// Regression (Necrobinder fuzz seed 443): a DIRECT Osty kill via
 /// [`CombatState::kill_osty`] (SACRIFICE / BONE_SHARDS) must fire
 /// `Hook.AfterCurrentHpChanged(Osty, -currentHp)` just like the damage-redirect
@@ -1111,4 +1329,132 @@ fn killing_osty_without_necro_mastery_reflects_nothing() {
         hp0,
         "no NecroMastery means a direct Osty kill deals no reflected damage"
     );
+}
+
+/// Draw pile `[A, B, Ethereal, V, C]` drawn 4 by the hand draw under
+/// Pagestorm(1) + ChainsOfBinding(3), the powers applied in `order`. Returns
+/// which of `[A, B, Ethereal, V, C]` ended up `Bound`.
+fn bound_after_pagestorm_chains_draw(order: [PowerKind; 2]) -> [bool; 5] {
+    let mut state = CombatState::default();
+    state.player.current_hp = 80;
+    push_player_power(
+        &mut state,
+        order[0],
+        if order[0] == PowerKind::Pagestorm {
+            1
+        } else {
+            3
+        },
+    );
+    push_player_power(
+        &mut state,
+        order[1],
+        if order[1] == PowerKind::Pagestorm {
+            1
+        } else {
+            3
+        },
+    );
+    let mut plain = || {
+        let uid = CardUid::new(state.cards.len() as u32 + 1).expect("nonzero");
+        state.cards.push(Card {
+            uid,
+            ..Card::pod_defaults()
+        });
+        state.player.draw.push(uid);
+        uid
+    };
+    let (a, b) = (plain(), plain());
+    let eth = push_ethereal_into_draw(&mut state);
+    let mut plain = || {
+        let uid = CardUid::new(state.cards.len() as u32 + 1).expect("nonzero");
+        state.cards.push(Card {
+            uid,
+            ..Card::pod_defaults()
+        });
+        state.player.draw.push(uid);
+        uid
+    };
+    let (v, c) = (plain(), plain());
+
+    state.draw_into_hand(4);
+    assert_eq!(state.player.hand.as_slice(), &[a, b, eth, v, c]);
+    [a, b, eth, v, c].map(|uid| {
+        state.cards[uid.get() as usize - 1]
+            .affliction
+            .is_some_and(|af| af.kind == sts2_core::card_afflictions::CardAfflictionKind::Bound)
+    })
+}
+
+/// C# `Hook.AfterCardDrawn` awaits each listener in power-list (application)
+/// order. With Pagestorm applied BEFORE Chains of Binding, Pagestorm's nested
+/// draw (PagestormPower.cs:19-26) runs to completion — the drawn V takes the
+/// third `Bound` — before `ChainsOfBindingPower.AfterCardDrawn` sees the
+/// Ethereal card, whose history count is then at the cap
+/// (ChainsOfBindingPower.cs:37-47). Rust bound the Ethereal card and left V
+/// free, so a later Bound play was vetoed in Rust only (loadout Necrobinder
+/// v0.107.1 1244: Defile vs Volley).
+#[test]
+fn pagestorm_applied_before_chains_binds_its_nested_draw_first() {
+    assert_eq!(
+        bound_after_pagestorm_chains_draw([PowerKind::Pagestorm, PowerKind::ChainsOfBinding]),
+        [true, true, false, true, false],
+    );
+}
+
+/// The other application order: Chains listens first, so the Ethereal card is
+/// Bound before Pagestorm draws, and the nested draw finds the cap reached.
+#[test]
+fn chains_applied_before_pagestorm_binds_the_ethereal_card() {
+    assert_eq!(
+        bound_after_pagestorm_chains_draw([PowerKind::ChainsOfBinding, PowerKind::Pagestorm]),
+        [true, true, true, false, false],
+    );
+}
+
+/// Application order is the power's id, not where its uid sits in the
+/// player's lists: a monster-applied Chains of Binding (the Queen's) can sit
+/// after a Pagestorm the player applied later (loadout Necrobinder v0.107.1
+/// 1019). Chains (id 1) listed after Pagestorm (id 2) still goes first.
+#[test]
+fn chains_applied_first_goes_first_wherever_its_uid_is_listed() {
+    let mut state = CombatState::default();
+    state.player.current_hp = 80;
+    for (id, kind, amount) in [
+        (1, PowerKind::ChainsOfBinding, 3),
+        (2, PowerKind::Pagestorm, 1),
+    ] {
+        state.powers.push(Power {
+            id: std::num::NonZeroU32::new(id).expect("nz"),
+            kind,
+            amount,
+            counter: 0,
+            applier: None,
+            skip_next_tick: false,
+        });
+    }
+    // Listed Pagestorm first.
+    state.player.powers.push(PowerUid::new(2).expect("nz"));
+    state.player.powers.push(PowerUid::new(1).expect("nz"));
+    let plain = |state: &mut CombatState| {
+        let uid = CardUid::new(state.cards.len() as u32 + 1).expect("nonzero");
+        state.cards.push(Card {
+            uid,
+            ..Card::pod_defaults()
+        });
+        state.player.draw.push(uid);
+        uid
+    };
+    let (a, b) = (plain(&mut state), plain(&mut state));
+    let eth = push_ethereal_into_draw(&mut state);
+    let (v, c) = (plain(&mut state), plain(&mut state));
+
+    state.draw_into_hand(4);
+    assert_eq!(state.player.hand.as_slice(), &[a, b, eth, v, c]);
+    let bound = [a, b, eth, v, c].map(|uid| {
+        state.cards[uid.get() as usize - 1]
+            .affliction
+            .is_some_and(|af| af.kind == sts2_core::card_afflictions::CardAfflictionKind::Bound)
+    });
+    assert_eq!(bound, [true, true, true, false, false]);
 }

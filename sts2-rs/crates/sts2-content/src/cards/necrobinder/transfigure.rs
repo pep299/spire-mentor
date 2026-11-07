@@ -75,13 +75,7 @@ pub(crate) fn play_transfigure(state: &mut CombatState, _t: Option<CreatureUid>)
 /// used by the auto-apply (≤1 hand card) fast path and the
 /// [`sts2_core::ChoiceKind::TransfigureCardInHand`] resolver.
 fn apply_transfigure_to(state: &mut CombatState, uid: sts2_core::CardUid) {
-    let idx = uid.0.get() as usize - 1;
-    if let Some(card) = state.cards.get_mut(idx) {
-        if !card.is_x_cost() && card.cost >= 0 {
-            card.add_combat_cost(1);
-        }
-        card.base_replay_count = card.base_replay_count.saturating_add(1);
-    }
+    sts2_core::apply_transfigure(state, uid);
 }
 
 #[must_use]
@@ -207,6 +201,32 @@ mod tests {
             "lone card cost bumped +1"
         );
         assert_eq!(state.cards[a.0.get() as usize - 1].base_replay_count, 1);
+    }
+
+    /// C# folds local modifiers in order: a Discovery-made free card
+    /// (`SetThisTurnOrUntilPlayed(0)`) then Transfigure's `AddThisCombat(1)`
+    /// reads 1, and base + 1 once the free rider expires. Rust read 0
+    /// (Necrobinder random-loadout: Transfigured Delay cs=1 rs=0).
+    #[test]
+    fn transfigure_adds_on_top_of_a_free_this_turn_card() {
+        use sts2_core::cards::VarKey;
+        let mut state = CombatState::default();
+        let a = mint(&mut state, CardId::StrikeNecrobinder);
+        let base = state.cards[a.0.get() as usize - 1].cost;
+        state.cards[a.0.get() as usize - 1].set_combat_var(VarKey::FreeThisTurn, 1);
+        state.player.hand.push(a);
+        assert_eq!(sts2_core::hooks::effective_card_cost(&state, a), 0);
+        let trans = mint(&mut state, CardId::Transfigure);
+        state.player.play.push(trans);
+
+        let _ = play_transfigure(&mut state, None);
+        assert_eq!(sts2_core::hooks::effective_card_cost(&state, a), 1);
+
+        state.cards[a.0.get() as usize - 1].set_combat_var(VarKey::FreeThisTurn, 0);
+        assert_eq!(
+            sts2_core::hooks::effective_card_cost(&state, a),
+            i32::from(base) + 1
+        );
     }
 
     /// Empty hand: FirstOrDefault() == null → no-op, no choice.

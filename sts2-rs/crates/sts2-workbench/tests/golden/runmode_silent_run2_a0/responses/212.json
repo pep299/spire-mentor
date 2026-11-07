@@ -1,0 +1,89 @@
+{
+ "assumptions": {
+  "energy": 3,
+  "hand": 5,
+  "samples": 200
+ },
+ "block": {
+  "per_turn": 7.1,
+  "scaling_cards": []
+ },
+ "composition": {
+  "by_rarity": {
+   "Basic": 12,
+   "Common": 3,
+   "Uncommon": 2
+  },
+  "by_type": {
+   "Attack": 8,
+   "Skill": 9
+  },
+  "dead_cards": 0,
+  "energy_curve": {
+   "0": 1,
+   "1": 14,
+   "2": 1,
+   "3": 1
+  },
+  "unupgraded_basics": 10
+ },
+ "damage": {
+  "aoe_attacks": [],
+  "attack_count": 8,
+  "per_turn": 11.2,
+  "scaling_cards": [
+   "Neutralize",
+   "Snakebite",
+   "Poisoned Stab",
+   "Piercing Wail"
+  ],
+  "single_target": 11.3,
+  "vs_group": 11.0
+ },
+ "deck_size": 17,
+ "lenses": {
+  "boss": 18.6,
+  "hallway": 20.8,
+  "scaling": 17.4
+ },
+ "scores": {
+  "block": 29.9,
+  "damage": 24.3,
+  "velocity": 1.4,
+  "volume": 10.1
+ },
+ "velocity": {
+  "bottleneck": "energy",
+  "cards_per_turn": 2.7,
+  "dilution": 0.88,
+  "draw_limited_turns": 0.0,
+  "energy_limited_turns": 7.0,
+  "engine_cards": 1,
+  "extra_per_turn": 0.0,
+  "tags": {
+   "draw": 1
+  }
+ },
+ "warnings": [
+  {
+   "severity": "warn",
+   "text": "Thin on block and no block engine — big hits will land in Act 2+."
+  },
+  {
+   "severity": "info",
+   "text": "No AOE — multi-enemy fights (Gremlins, hallways) will be slow."
+  },
+  {
+   "severity": "info",
+   "text": "Low velocity — few draw/energy cards; you'll often draw the wrong hand."
+  },
+  {
+   "severity": "info",
+   "text": "Energy-limited — cards stranded in hand; more energy helps, more draw won't."
+  },
+  {
+   "severity": "warn",
+   "text": "Deck clogged with basics/curses — prioritise removals."
+  }
+ ]
+}

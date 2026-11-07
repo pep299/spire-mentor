@@ -26,8 +26,7 @@ use std::collections::BTreeMap;
 
 use smallvec::smallvec;
 use sts2_core::monster_ai::{
-    ConditionFn, ConditionalBranch, ConditionalBranchState, MonsterAi, MonsterState,
-    MoveRepeatType, MoveState, RandomBranchState, WeightedBranch,
+    MonsterAi, MonsterState, MoveRepeatType, MoveState, RandomBranchState, WeightedBranch,
 };
 use sts2_core::monsters::Intent;
 use sts2_core::powers::PowerKind;
@@ -392,7 +391,7 @@ fn tracker_ruby_raider_track_effect(state: &mut CombatState, _owner: CreatureUid
 /// at pin `01c094d`). NOTE: the C# move uses a generic `BuffIntent()` and the
 /// applied power is **PlowPower**, not Strength — the prior Rust intent
 /// metadata (`Strength,2`) was a fabrication. The PLOW power gates phase 2
-/// of the boss state machine via `PLOW_CHECK` (`ceremonial_beast_plow_depleted`).
+/// of the boss state machine through its damage hook (`plow_after_damage`).
 fn ceremonial_beast_stamp_effect(state: &mut CombatState, owner: CreatureUid) {
     let amount = crate::ascension_scaling::scaled_buff(
         state.ascension,
@@ -1368,37 +1367,6 @@ pub fn create_vantom_ai() -> MonsterAi {
     MonsterAi::new(s, "INK_BLOT")
 }
 
-/// Owner-aware predicate: the CeremonialBeast's current HP has dropped to
-/// `<= its PLOW power amount` — the C# trigger for the stun phase.
-///
-/// C# `PlowPower.AfterDamageReceived`
-/// (`../sts2-wiki/decompiled/v0.103.2/MegaCrit.Sts2.Core.Models.Powers/PlowPower.cs`)
-/// stuns the beast when `target.CurrentHp <= base.Amount` (PlowAmount =
-/// 150). PLOW does NOT tick down — the prior Rust model gated on
-/// `PLOW <= 0`, which never happened, so the beast never entered phase 2.
-/// Returns `false` once PLOW has been removed (the STUN move's effect
-/// strips it), keeping the beast in its phase-2 BEAST_CRY/STOMP/CRUSH
-/// cycle. Beads `sts2-rs-msi1`, `sts2-rs-plow-stun`.
-fn ceremonial_beast_hp_at_plow_threshold(
-    combat: &sts2_core::CombatState,
-    owner: CreatureUid,
-) -> bool {
-    let Some(creature) = combat.creatures.iter().find(|c| c.id == owner.0) else {
-        return false;
-    };
-    // No PLOW power → already stunned (or never stamped); do not re-enter.
-    let Some(plow_amount) = creature.powers.iter().find_map(|puid| {
-        combat
-            .powers
-            .iter()
-            .find(|p| p.id == puid.0 && p.kind == PowerKind::Plow)
-            .map(|p| p.amount)
-    }) else {
-        return false;
-    };
-    creature.current_hp <= plow_amount
-}
-
 /// C# `PlowPower.AfterDamageReceived` on-stun cleanup: when the beast
 /// enters its stun phase it loses all Strength and the PLOW power is
 /// removed (`PowerCmd.Remove<StrengthPower>` + `PowerCmd.Remove(this)`).
@@ -1527,11 +1495,8 @@ fn ceremonial_beast_stun_effect(state: &mut CombatState, owner: CreatureUid) {
     // `monsters[0].powers.len` cs=1 [Strength] rs=0 — Rust dropped the post-
     // stun Strength one enemy turn later).
     //
-    // The Plow strip is kept as a defensive phase-gate fallback: in the normal
-    // path `plow_after_damage` already removed it (so this is a no-op), but if
-    // the beast ever reached the threshold without a damage-received event the
-    // gate (`ceremonial_beast_hp_at_plow_threshold`) still needs Plow gone to
-    // stay in phase 2. Beads `sts2-rs-plow-stun`, `sts2-rs-1opt9`
+    // The Plow strip is a defensive no-op: STUN is only reached through
+    // `plow_after_damage`, which already removed Plow. Beads `sts2-rs-plow-stun`, `sts2-rs-1opt9`
     // (Strength-retention fix).
     let pids: smallvec::SmallVec<[std::num::NonZeroU32; 4]> = state
         .creatures
@@ -1559,32 +1524,16 @@ fn ceremonial_beast_stun_effect(state: &mut CombatState, owner: CreatureUid) {
     }
 }
 
-/// `CeremonialBeast` — STAMP → PLOW → PLOW_CHECK (STUN if PLOW power
-/// depleted, else PLOW) → STUN once → BEAST_CRY → STOMP → CRUSH →
-/// BEAST_CRY …
+/// `CeremonialBeast` — STAMP → PLOW → PLOW … (self-loop), and on the
+/// Plow break STUN once → BEAST_CRY → STOMP → CRUSH → BEAST_CRY …
 ///
-/// `PLOW_CHECK` is a `ConditionalBranchState` whose first branch fires
-/// when the beast's HP has dropped to `<= its PLOW amount` (C#
-/// `PlowPower.AfterDamageReceived`'s `CurrentHp <= base.Amount`); the
-/// fallthrough always-true branch loops back to `PLOW`. The PLOW power
-/// stays at 150 the whole time — it is a *threshold*, not a counter. So
-/// the beast self-loops PLOW (18 dmg + Strength) until the player drops
-/// it to ≤150 HP, then phase 2 (STUN → BEAST_CRY → STOMP → CRUSH) begins;
-/// the STUN move strips the beast's Strength + PLOW on entry.
-///
-/// Bead `sts2-rs-msi1`: PLOW_CHECK is wired via the owner-aware
-/// `ConditionFn::OwnerAware` variant, threaded through
-/// [`MonsterAi::owner_uid`]. The combat loop sets the owner before
-/// each `roll_move_with_combat` (`combat_loop.rs:end_enemy_turn`) so
-/// the predicate reads the boss's actual HP + PLOW stack. AI-only unit
-/// tests that don't go through the combat loop see `owner_uid = None`
-/// and the predicate degrades to `false`, keeping the PLOW self-loop.
-///
-/// Bead `sts2-rs-plow-stun`: switched the gate from the never-true
-/// `PLOW <= 0` (PLOW never depleted, so the beast never stunned) to the
-/// C#-faithful HP threshold. The one-beast-turn lag (the already-
-/// telegraphed PLOW resolves before STUN) is a minor divergence from
-/// C#'s immediate `CreatureCmd.Stun` interrupt.
+/// Mirrors C# `CeremonialBeast.GenerateMoveStateMachine`: PLOW's follow-up is
+/// PLOW itself. Phase 2 is entered ONLY by `PlowPower.AfterDamageReceived`
+/// (unblocked damage leaving HP `<= Amount`), which strips Strength + Plow and
+/// `CreatureCmd.Stun`s the beast into STUN_MOVE → BEAST_CRY; Rust mirrors that
+/// in `plow_after_damage` (`Effect::ForceMonsterMove { state_id: "STUN" }`).
+/// There is no roll-time HP check: a beast already under the threshold when
+/// STAMP applies Plow keeps plowing until its next unblocked hit.
 pub fn create_ceremonial_beast_ai() -> MonsterAi {
     // Install the plow_after_damage handler once.
     use std::sync::OnceLock;
@@ -1618,25 +1567,15 @@ pub fn create_ceremonial_beast_ai() -> MonsterAi {
                     amount: 2
                 }
             ],
-            "PLOW_CHECK",
+            // C# `moveState2.FollowUpState = moveState2` (CeremonialBeast.cs):
+            // PLOW self-loops unconditionally. Phase 2 starts ONLY from
+            // `PlowPower.AfterDamageReceived` (`plow_after_damage` ->
+            // `ForceMonsterMove STUN`), never from an HP check at roll time: a
+            // beast already <= 150 HP when STAMP lands keeps plowing until it
+            // takes unblocked damage (random-loadout Regent v0.107.1 2014).
+            "PLOW",
             ceremonial_beast_plow_effect,
         ),
-    );
-    s.insert(
-        "PLOW_CHECK",
-        MonsterState::ConditionalBranch(ConditionalBranchState {
-            id: "PLOW_CHECK",
-            branches: smallvec![
-                ConditionalBranch {
-                    condition: ConditionFn::OwnerAware(ceremonial_beast_hp_at_plow_threshold),
-                    state_id: "STUN",
-                },
-                ConditionalBranch {
-                    condition: ConditionFn::Stateless(|_| true),
-                    state_id: "PLOW",
-                },
-            ],
-        }),
     );
     s.insert(
         "STUN",
@@ -2415,10 +2354,8 @@ mod tests {
 
     #[test]
     fn ceremonial_beast_stamp_then_plow_self_loops() {
-        // Bead sts2-rs-msi1: in the no-combat AI path (no owner uid set)
-        // the OwnerAware PLOW_CHECK branch resolves to `false` and the
-        // always-true fallthrough fires — PLOW self-loops, matching the
-        // dominant Python case until external power-decrement kicks in.
+        // C# `PLOW.FollowUpState = PLOW`: only `plow_after_damage` leaves
+        // the loop, so without a damage event PLOW self-loops.
         let mut ai = create_ceremonial_beast_ai();
         assert_eq!(run_three_moves(&mut ai), vec!["STAMP", "PLOW", "PLOW"]);
         for seed in 0..10 {
@@ -2824,36 +2761,22 @@ mod tests {
         (combat, CreatureUid(owner))
     }
 
-    /// Bead `sts2-rs-plow-stun`: PLOW_CHECK transitions to STUN once the
-    /// beast's HP has dropped to `<= its PLOW amount` (the C# trigger),
-    /// and stays on PLOW while HP is above the threshold.
+    /// PLOW self-loops even with HP already at/under the PLOW threshold: C#
+    /// has no roll-time HP check (`PLOW.FollowUpState = PLOW`); only
+    /// `PlowPower.AfterDamageReceived` stuns. Random-loadout Regent v0.107.1
+    /// 2014: a beast burst to 112 HP before STAMP kept plowing in C#.
     #[test]
-    fn ceremonial_beast_stuns_when_hp_reaches_plow_threshold() {
-        // HP above threshold (200 > 150) → keeps plowing.
-        let (above, owner) = beast_combat(200, 150, 0);
+    fn ceremonial_beast_keeps_plowing_below_threshold_without_damage() {
+        let (below, owner) = beast_combat(100, 150, 0);
         let mut ai = create_ceremonial_beast_ai();
         ai.set_owner(owner);
-        assert_eq!(ai.current_move().id, "STAMP");
-        ai.on_move_performed();
-        assert_eq!(ai.roll_move_with_combat_seeded(0, &above).id, "PLOW");
+        ai.on_move_performed(); // STAMP
+        assert_eq!(ai.roll_move_with_combat_seeded(0, &below).id, "PLOW");
         ai.on_move_performed();
         assert_eq!(
-            ai.roll_move_with_combat_seeded(0, &above).id,
+            ai.roll_move_with_combat_seeded(0, &below).id,
             "PLOW",
-            "HP above PLOW threshold should keep self-looping PLOW"
-        );
-
-        // HP at/under threshold (100 <= 150) → enters STUN phase.
-        let (below, owner2) = beast_combat(100, 150, 0);
-        let mut ai2 = create_ceremonial_beast_ai();
-        ai2.set_owner(owner2);
-        ai2.on_move_performed(); // STAMP
-        assert_eq!(ai2.roll_move_with_combat_seeded(0, &below).id, "PLOW");
-        ai2.on_move_performed();
-        assert_eq!(
-            ai2.roll_move_with_combat_seeded(0, &below).id,
-            "STUN",
-            "HP at/under the PLOW threshold should route PLOW_CHECK to STUN"
+            "no damage event -> no stun, even at HP <= PLOW"
         );
     }
 
@@ -2886,9 +2809,6 @@ mod tests {
             "Strength must be RETAINED by the STUN move (C# StunnedMove is a power no-op)"
         );
         assert!(!has(&combat, PowerKind::Plow), "PLOW removed on stun");
-        // The threshold predicate now returns false (no PLOW) so the beast
-        // does not re-enter STUN from its phase-2 cycle.
-        assert!(!ceremonial_beast_hp_at_plow_threshold(&combat, owner));
     }
 
     /// Bead `sts2-rs-plow-stun` (Strength-retention fix): the on-damage
@@ -3529,59 +3449,6 @@ mod tests {
             state.player.powers.len(),
             1,
             "no duplicate PowerUid stacked onto the legacy surface",
-        );
-    }
-
-    /// `ceremonial_beast_hp_at_plow_threshold` finds the beast's PLOW amount via
-    /// `p.id == puid.0 && p.kind == Plow` (1398). Mutating `&&`→`||` makes the
-    /// predicate match the FIRST power on the creature regardless of kind, so a
-    /// non-Plow leading power would supply a bogus amount. Seed Strength FIRST
-    /// (lower id) then Plow: with `&&` the real Plow(150) amount governs; with
-    /// `||` the Strength(1) amount governs and the threshold flips.
-    #[test]
-    fn ceremonial_beast_hp_threshold_uses_plow_power_not_first_power() {
-        use std::num::NonZeroU32;
-        let mut combat = CombatState::default();
-        let owner = NonZeroU32::new(1).expect("nz");
-
-        // Strength(1) gets the lower id so it sorts first in the creature's
-        // power list; Plow(150) is the real threshold.
-        let str_id = NonZeroU32::new(2).expect("nz");
-        let plow_id = NonZeroU32::new(3).expect("nz");
-        combat.powers.push(sts2_core::Power {
-            id: str_id,
-            kind: PowerKind::Strength,
-            amount: 1,
-            counter: 0,
-            applier: None,
-            skip_next_tick: false,
-        });
-        combat.powers.push(sts2_core::Power {
-            id: plow_id,
-            kind: PowerKind::Plow,
-            amount: 150,
-            counter: 0,
-            applier: None,
-            skip_next_tick: false,
-        });
-        combat.creatures.push(sts2_core::Creature {
-            id: owner,
-            current_hp: 100,
-            max_hp: 252,
-            block: 0,
-            powers: smallvec::smallvec![sts2_core::PowerUid(str_id), sts2_core::PowerUid(plow_id)],
-            species: Some(MonsterKind::CeremonialBeast),
-            monster_id: sts2_core::MonsterId("CeremonialBeast"),
-            intent: None,
-            intent_history: sts2_core::IntentHistory::default(),
-            ai: None,
-        });
-
-        // HP 100: <= Plow(150) → true (at threshold), but > Strength(1) → false.
-        // The `&&` predicate must select Plow(150).
-        assert!(
-            ceremonial_beast_hp_at_plow_threshold(&combat, CreatureUid(owner)),
-            "HP 100 <= Plow 150 → at threshold; predicate must read the Plow amount",
         );
     }
 
