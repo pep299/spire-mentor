@@ -24,9 +24,31 @@ pub(crate) fn play_catastrophe(state: &mut CombatState, _t: Option<CreatureUid>)
     // draw when none are playable (matches C#'s null-fallback branch).
     // Bead `sts2-rs-zqxkw`: C# `Catastrophe.cs` `CardsVar(2)` with `OnUpgrade
     // UpgradeValueBy(1m)` → 2 base / 3 upgraded. Prior body hardcoded 2.
-    let cards: u32 = if current_upgraded(state) { 3 } else { 2 };
-    catastrophe_run(state, cards);
+    //
+    // The count is re-read every iteration (see [`catastrophe_cards`]), so the
+    // loop is keyed on the Catastrophe instance, not on a count taken here.
+    let Some(catastrophe) = sts2_core::card_effects::resolving_card_uid(state) else {
+        return EffectResult::Resolved;
+    };
+    catastrophe_run(state, catastrophe, 0);
     EffectResult::Resolved
+}
+
+/// C# `base.DynamicVars.Cards.IntValue`: 2, or 3 once upgraded. `OnPlay`'s
+/// `for` condition re-reads it before EVERY iteration (Catastrophe.cs:23, both
+/// builds), so an upgrade that lands mid-play — a Dampen re-upgrading the card
+/// when its caster dies to an auto-played attack, an auto-played Apotheosis —
+/// adds an iteration (v0.111.0 random-loadout 1028).
+fn catastrophe_cards(state: &CombatState, catastrophe: CardUid) -> u32 {
+    let upgraded = state
+        .cards
+        .get(catastrophe.0.get() as usize - 1)
+        .is_some_and(|c| c.upgraded);
+    if upgraded {
+        3
+    } else {
+        2
+    }
 }
 
 /// Run `iters` Catastrophe draw-pile auto-play iterations (each: filter +
@@ -43,12 +65,16 @@ pub(crate) fn play_catastrophe(state: &mut CombatState, _t: Option<CreatureUid>)
 /// live draw, so the remainder can NOT be a fixed card list). The resolver
 /// (`resolve_choice_action`) then re-enters [`catastrophe_resume`] once the
 /// pick lands, replaying the remaining iterations against the updated draw
-/// pile under `autoplay_inline_resolve`. Without the suspend, iteration 2 read
+/// pile. Without the suspend, iteration 2 read
 /// a draw pile that still contained the to-be-fetched Skill (+1 phantom card →
 /// +1 `shuffle` read and a divergent `StableShuffle` pick: seed 1490
 /// `PILE_COUNT|CATASTROPHE`, shuffle cs=45 rs=46). Bead `sts2-rs-cata-suspend`.
-fn catastrophe_run(state: &mut CombatState, iters: u32) {
-    for n in 0..iters {
+///
+/// `done` is the number of iterations already run; the loop bound is
+/// [`catastrophe_cards`], re-read before each one.
+fn catastrophe_run(state: &mut CombatState, catastrophe: CardUid, done: u32) {
+    let mut n = done;
+    while n < catastrophe_cards(state, catastrophe) {
         // C# `Draw.Where(!Unplayable).ToList().StableShuffle(Rng.Shuffle)
         // .FirstOrDefault()`, with a null-fallback to the full draw pile.
         let mut pool: SmallVec<[CardUid; 16]> = state
@@ -84,58 +110,20 @@ fn catastrophe_run(state: &mut CombatState, iters: u32) {
         let cmp = |a: CardUid, b: CardUid| {
             let ca = &state.cards[a.0.get() as usize - 1];
             let cb = &state.cards[b.0.get() as usize - 1];
-            ca.card_id
-                .to_python_name()
-                .cmp(cb.card_id.to_python_name())
-                .then_with(|| u8::from(ca.upgraded).cmp(&u8::from(cb.upgraded)))
+            sts2_core::cards::card_model_compare(ca, cb)
         };
         state
             .run_rng
             .shuffle
             .stable_shuffle_by(pool.as_mut_slice(), &cmp);
         let chosen = pool[0];
-        // C# `CardCmd.AutoPlay` (`CardCmd.cs:68-79`): when a card has
-        // `TargetType.AnyAlly`, it looks for alive player-allies that are
-        // NOT the card owner. In single-player there are none, so
-        // `NextItem(empty)` returns null WITHOUT reading CombatTargets RNG,
-        // and `MoveToResultPileWithoutPlaying` is called — the card goes to
-        // discard WITHOUT its effect firing. Rust collapses AnyAlly → Self_,
-        // so without this guard `play_coordinate_card` falls back to the
-        // player uid and wrongly applies Strength+Coordinate. Bead
-        // `sts2-rs-dbgym`. `card_is_any_ally` lists all 8 v0.103.2 AnyAlly
-        // cards (BelieveInYou, Coordinate, DemonicShield, Ignition, Intercept,
-        // Largesse, Lift, Mimic).
-        let chosen_id = state.cards[chosen.0.get() as usize - 1].card_id;
-        if sts2_core::card_effects::card_is_any_ally(chosen_id) {
-            // No allies → card is disposed WITHOUT its effect firing. C#
-            // `CardModel.MoveToResultPileWithoutPlaying` (`CardModel.cs:1621`)
-            // routes by keyword, NOT unconditionally to Discard:
-            //   IsDupe                          -> RemoveFromCombat
-            //   ExhaustOnNextPlay || Exhaust kw -> Exhaust
-            //   else                            -> Discard
-            // DEMONIC_SHIELD is AnyAlly + intrinsic Exhaust, so it must land
-            // in the EXHAUST pile, not Discard (seed-2126 divergence:
-            // discard cs=9 rs=10, exhaust cs=1 rs=0). The IsDupe branch is
-            // unreachable here: Catastrophe picks a fresh, non-dupe draw-pile
-            // card (dupes only arise from EchoForm/OneTwoPunch replays, which
-            // never feed this path), so only the Exhaust / Discard cases are
-            // live. `card_exhausts_inst` honors the per-instance
-            // `keyword_override` (upgrade-aware ExhaustOnNextPlay/Exhaust).
-            // Bead `sts2-rs-hsfw7`.
-            let chosen_idx = chosen.0.get() as usize - 1;
-            let dest = if sts2_core::card_effects::card_exhausts_inst(&state.cards[chosen_idx]) {
-                sts2_core::cards::PileKind::Exhaust
-            } else {
-                sts2_core::cards::PileKind::Discard
-            };
-            let _ = sts2_core::cards::move_card(
-                &mut state.player,
-                chosen,
-                sts2_core::cards::PileKind::Draw,
-                dest,
-            );
-            continue;
-        }
+        // An AnyAlly pick with no living ally (single-player) is NOT special-
+        // cased here: `CardCmd.AutoPlay` (`CardCmd.cs:68-79`) sends it through
+        // `MoveToResultPileWithoutPlaying`, i.e. onto Play and then
+        // `CardCmd.Exhaust` (firing AfterCardExhausted: Dark Embrace, Forgotten
+        // Soul, …) for DemonicShield, else Discard. The auto-play resolver's
+        // AnyAlly guard does exactly that; the old inline `move_card` skipped
+        // the exhaust hooks (random-loadout v0.107.1 1055, v0.111.0 1131).
         // C# `Catastrophe.cs` calls `CardCmd.AutoPlay` on the picked
         // card — it resolves and routes to its natural pile (discard /
         // self-exhaust), it is NOT moved to hand. Bead `sts2-rs-q6bix`.
@@ -146,28 +134,28 @@ fn catastrophe_run(state: &mut CombatState, iters: u32) {
         // Suspend Catastrophe's loop too: record how many iterations are still
         // owed so `resolve_choice_action` replays them — against the updated
         // draw pile — once the pick resolves. Bead `sts2-rs-cata-suspend`.
+        n += 1;
         if let Some(resume) = state.pending_autoplay_resume.as_mut() {
+            // `iters` carries the iterations already run and `uids[0]` the
+            // Catastrophe whose count bounds the rest.
             resume.continuation = Some(sts2_core::AutoPlayLoopCont {
                 resume_fn: catastrophe_resume,
-                iters: iters - n - 1,
-                uids: SmallVec::new(),
+                iters: n,
+                uids: smallvec::smallvec![catastrophe],
                 force_exhaust: false,
+                then: None,
             });
             return;
         }
     }
 }
 
-/// Resume entry point stored on [`sts2_core::AutoPlayLoopCont`]: re-run the
-/// remaining Catastrophe iterations. The `uids` / `force_exhaust` slots are
-/// unused by this count-driven loop. Bead `sts2-rs-cata-suspend`.
-fn catastrophe_resume(
-    state: &mut CombatState,
-    iters: u32,
-    _uids: &[CardUid],
-    _force_exhaust: bool,
-) {
-    catastrophe_run(state, iters);
+/// Resume entry point stored on [`sts2_core::AutoPlayLoopCont`]: run the
+/// Catastrophe iterations still owed. Bead `sts2-rs-cata-suspend`.
+fn catastrophe_resume(state: &mut CombatState, cont: &sts2_core::AutoPlayLoopCont) {
+    if let Some(&catastrophe) = cont.uids.first() {
+        catastrophe_run(state, catastrophe, cont.iters);
+    }
 }
 
 #[must_use]

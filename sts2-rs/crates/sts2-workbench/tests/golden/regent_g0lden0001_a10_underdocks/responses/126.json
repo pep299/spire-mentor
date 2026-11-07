@@ -1,81 +1,12 @@
 {
- "assumptions": {
-  "energy": 3,
-  "hand": 5,
-  "samples": 200
- },
- "block": {
-  "per_turn": 11.2,
-  "scaling_cards": []
- },
- "composition": {
-  "by_rarity": {
-   "Basic": 10,
-   "Common": 4,
-   "Curse": 1,
-   "Uncommon": 1
-  },
-  "by_type": {
-   "Attack": 7,
-   "Curse": 1,
-   "Skill": 8
-  },
-  "dead_cards": 1,
-  "energy_curve": {
-   "0": 2,
-   "1": 13
-  },
-  "unupgraded_basics": 10
- },
- "damage": {
-  "aoe_attacks": [],
-  "attack_count": 7,
-  "per_turn": 17.9,
-  "scaling_cards": [],
-  "single_target": 17.8,
-  "vs_group": 17.9
- },
- "deck_size": 16,
- "lenses": {
-  "boss": 36.5,
-  "hallway": 36.3,
-  "scaling": 36.5
- },
- "scores": {
-  "block": 42.8,
-  "damage": 36.1,
-  "velocity": 30.5,
-  "volume": 36.1
- },
- "velocity": {
-  "bottleneck": "energy",
-  "cards_per_turn": 3.7,
-  "dilution": 0.94,
-  "draw_limited_turns": 0.1,
-  "energy_limited_turns": 5.8,
-  "engine_cards": 2,
-  "extra_per_turn": 0.1,
-  "tags": {
-   "energy": 1,
-   "tutor": 1
-  }
- },
- "warnings": [
-  {
-   "severity": "warn",
-   "text": "No damage scaling — you may stall out against high-HP bosses."
-  },
-  {
-   "severity": "info",
-   "text": "No AOE — multi-enemy fights (Gremlins, hallways) will be slow."
-  },
-  {
-   "severity": "info",
-   "text": "Energy-limited — cards stranded in hand; more energy helps, more draw won't."
-  },
-  {
-   "severity": "warn",
-   "text": "Deck clogged with basics/curses — prioritise removals."
-  }
- ]
+ "available": false,
+ "caveats": [
+  "The outlook score is the AI's shaped-return estimate of the run — a relative signal, not a win percentage.",
+  "A swing mixes your choice with the luck revealed after it (what the shop stocked, what the reward offered, how the fight rolled) — use “verify” to check whether the choice itself mattered.",
+  "Judgments are relative to the AI's own play style; a line that is weak for the AI may still be fine for a human plan."
+ ],
+ "points": [],
+ "reason": "this run log has no recorded value data — play it in the workbench (rust backend + PPO checkpoint) to record a value curve",
+ "summary": {},
+ "turning_points": []
 }

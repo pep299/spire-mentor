@@ -389,3 +389,73 @@ def test_stale_cs_select_pick_matches_the_rust_finalize_prefix() -> None:
     assert a23._stale_cs_select_pick(view) == ("select_cards", {"indices": "0,1"})
     view["min_select"] = 0
     assert a23._stale_cs_select_pick(view) == ("skip_select", {})
+
+
+# --------------------------------------------------------------------------- #
+# --random-loadout
+# --------------------------------------------------------------------------- #
+class _Rm:
+    def max_potion_slots(self) -> int:
+        return 2
+
+
+class _Side:
+    """A backend whose ``set_player`` echoes what it took, minus ``drop``."""
+
+    def __init__(self, drop: str | None = None) -> None:
+        self.rm = _Rm()
+        self.drop = drop
+        self.kw: dict = {}
+
+    def set_player(self, **kw: object) -> dict:
+        self.kw = kw
+        deck = [{"id": c.removesuffix("+1"), "upgraded": c.endswith("+1")} for c in kw["deck"]]
+        return {
+            "player": {
+                "deck": [c for c in deck if c["id"] != self.drop],
+                "relics": [{"id": x} for x in kw["relics"]],
+                "potions": [{"id": x} for x in kw["potions"]],
+                "gold": kw["gold"],
+            }
+        }
+
+
+LOADOUT = a23.Loadout(
+    deck=("BASH+1", "ANGER"),
+    relics=("BURNING_BLOOD", "ANCHOR"),
+    potions=("FIRE_POTION", "BLOCK_POTION", "ATTACK_POTION"),
+    gold=77,
+)
+RS_VIEW = {"player": {"relics": [{"id": "RELIC.BURNING_BLOOD"}]}}
+
+
+def test_graft_keeps_owned_relics_and_fits_the_belt() -> None:
+    g, r = _Side(), _Side()
+    assert a23._graft_loadout(g, r, LOADOUT, RS_VIEW) == []
+    assert r.kw["relics"] == ["BURNING_BLOOD", "ANCHOR"]
+    assert r.kw["potions"] == ["FIRE_POTION", "BLOCK_POTION"]
+    assert g.kw["relics"] == r.kw["relics"]
+
+
+def test_graft_strips_rust_card_suffix_for_csharp_only() -> None:
+    lo = a23.Loadout(deck=("BARRICADE_CARD+1",), relics=(), potions=(), gold=0)
+    g, r = _Side(), _Side()
+    a23._graft_loadout(g, r, lo, RS_VIEW)
+    assert g.kw["deck"] == ["BARRICADE+1"]
+    assert r.kw["deck"] == ["BARRICADE_CARD+1"]
+
+
+def test_graft_reports_a_card_the_oracle_skipped() -> None:
+    # C# skips an unknown id silently; that must not reach the lockstep diff
+    # as an engine divergence.
+    problems = a23._graft_loadout(_Side(drop="ANGER"), _Side(), LOADOUT, RS_VIEW)
+    assert any("cs deck_size 1 != loadout 2" in p for p in problems)
+
+
+def test_graft_reports_an_engine_refusal() -> None:
+    class Refuses(_Side):
+        def set_player(self, **kw: object) -> dict:
+            return {"type": "error", "message": "unknown relic"}
+
+    problems = a23._graft_loadout(_Side(), Refuses(), LOADOUT, RS_VIEW)
+    assert problems == ["Rust set_player failed: 'unknown relic'"]

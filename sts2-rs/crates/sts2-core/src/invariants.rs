@@ -171,6 +171,51 @@ pub fn check_combat_invariants(state: &CombatState, ctx: &str) -> Result<(), Str
         state.resolving_card
     );
 
+    // 1a'. Nothing waits on a choice that isn't open (GH #1129). Every resume
+    // slot below is resumed only by the `ResolveChoice` that answers the open
+    // choice, so one left parked with no choice open never runs: the turn
+    // hangs with only a no-op `EndTurn` legal. A finished combat drops them.
+    if state.pending_choice.is_none() && !state.is_over {
+        let parked = [
+            (
+                "pending_autoplay_resume",
+                state.pending_autoplay_resume.is_some(),
+            ),
+            ("pending_draw_resume", state.pending_draw_resume.is_some()),
+            (
+                "pending_collect_resume",
+                state.pending_collect_resume.is_some(),
+            ),
+            (
+                "pending_cluster_resume",
+                state.pending_cluster_resume.is_some(),
+            ),
+            (
+                "pending_potion_hook_resume",
+                state.pending_potion_hook_resume.is_some(),
+            ),
+            (
+                "pending_end_turn_resume",
+                state.pending_end_turn_resume.is_some(),
+            ),
+            (
+                "pending_enemy_exec_resume",
+                state.pending_enemy_exec_resume.is_some(),
+            ),
+            ("pending_turn_setup_resume", state.pending_turn_setup_resume),
+            ("pending_play_phase_tail", state.pending_play_phase_tail),
+            ("enemy_side_capture", state.enemy_side_capture.is_some()),
+            ("enemy_side_replay", state.enemy_side_replay.is_some()),
+            (
+                "parked_hook_choices",
+                state.combat_log.parked_hook_choices.is_some(),
+            ),
+        ];
+        for (slot, set) in parked {
+            ensure!(!set, "{slot} parked with no choice open ({ctx})");
+        }
+    }
+
     // 1b. Creature HP / block bounds.
     for c in &state.creatures {
         ensure!(

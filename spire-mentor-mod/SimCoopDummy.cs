@@ -10,6 +10,10 @@
 // A host only embarks once the whole party is in the lobby
 // (`--spire-mentor-coop-players N`, default 2): with fewer, the run would
 // start without the players still joining.
+//
+// The AI-partner lane (tools/ai_partner_test.ps1) uses it too: one instance
+// hosts with `--spire-mentor-ai-partners N` (SimAiPartnerSession) instead of
+// `--fastmp`, and this embarks once the partners are in.
 
 using System;
 using System.Collections;
@@ -36,7 +40,7 @@ internal static class SimCoopDummy
 
     public static void InstallIfRequested()
     {
-        if (!SimMp.FastMpLaunch || !SimMp.AutoplayOverride)
+        if (!(SimMp.FastMpLaunch || SimMp.AiPartnersOverride > 0) || !SimMp.AutoplayOverride)
         {
             return;
         }
@@ -148,6 +152,6 @@ internal static class SimCoopDummy
     /// <summary>The lobby's player count. Read by reflection: the element
     /// type is LobbyPlayer in v0.107.1 and StartRunLobbyPlayer in v0.111.0,
     /// so the property's signature differs between the builds.</summary>
-    private static int LobbyPlayerCount(StartRunLobby lobby) =>
+    internal static int LobbyPlayerCount(StartRunLobby lobby) =>
         lobby.GetType().GetProperty("Players")?.GetValue(lobby) is ICollection players ? players.Count : 0;
 }

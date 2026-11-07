@@ -105,11 +105,30 @@ internal static class SimActionLog
 
     private static SimLogPanel? _panel;
 
-    /// <summary>Panel placement/collapse, remembered across Ctrl+L toggles so the
-    /// window comes back where the player put it.</summary>
-    internal static Vector2? PanelPosition;
+    /// <summary>Panel size/collapse, remembered across Ctrl+L toggles.</summary>
     internal static Vector2? PanelSize;
     internal static bool PanelCollapsed;
+
+    /// <summary>
+    /// Where the player dragged the panel, or null while it follows the
+    /// advice column (LogPanelPlacement). Persisted in the mod config, so it
+    /// also survives a relaunch.
+    /// </summary>
+    internal static Vector2? DraggedPosition
+    {
+        get => LogPanelPlacement.TryParse(SpireMentorModConfig.LogPanelPosition, out float x, out float y)
+            ? new Vector2(x, y)
+            : null;
+        set
+        {
+            string text = value is { } p ? LogPanelPlacement.Format(p.X, p.Y) : "";
+            if (text != SpireMentorModConfig.LogPanelPosition)
+            {
+                SpireMentorModConfig.LogPanelPosition = text;
+                SpireMentorModConfig.SaveSoon();
+            }
+        }
+    }
 
     /// <summary>Append an entry. Safe from any thread; never throws.</summary>
     public static void Record(SimActionLogEntry entry)
@@ -242,11 +261,17 @@ internal sealed class SimLogPanel
         // 62% of the screen starting at x=55%, i.e. squarely over the enemies
         // (reported 2026-08-06) -- and being over them mattered because the
         // panel also ate the clicks, see the MouseFilter notes below.
+        // Undragged, it sits under the advice column and follows it
+        // (LogPanelPlacement, FollowColumn); a fixed 30% down the left edge
+        // put the coach chips on top of it.
         Vector2 viewport = tree.Root.GetVisibleRect().Size;
         _expandedSize = SimActionLog.PanelSize
             ?? new Vector2(viewport.X * 0.30f, viewport.Y * 0.42f);
-        Vector2 position = SimActionLog.PanelPosition
-            ?? new Vector2(viewport.X * 0.012f, viewport.Y * 0.30f);
+        Vector2 position = SimActionLog.DraggedPosition is { } dragged
+            // A position saved at another resolution may be off this screen.
+            ? new Vector2(Math.Clamp(dragged.X, -_expandedSize.X + 80f, Math.Max(0f, viewport.X - 80f)),
+                          Math.Clamp(dragged.Y, 0f, Math.Max(0f, viewport.Y - 30f)))
+            : new Vector2(viewport.X * 0.012f, viewport.Y * 0.30f);
 
         var panel = new PanelContainer
         {
@@ -352,6 +377,7 @@ internal sealed class SimLogPanel
 
         tree.Root.AddChild(_layer);
         ApplyCollapsed(SimActionLog.PanelCollapsed);
+        FollowColumn();
         Rebuild();
     }
 
@@ -370,7 +396,6 @@ internal sealed class SimLogPanel
         {
             return;
         }
-        SimActionLog.PanelPosition = _panel.Position;
         SimActionLog.PanelSize = _expandedSize;
         SimActionLog.PanelCollapsed = _collapsed;
     }
@@ -383,6 +408,14 @@ internal sealed class SimLogPanel
     {
         try
         {
+            // Right-click: back under the advice column, following it again.
+            if (ev is InputEventMouseButton rb && rb.ButtonIndex == MouseButton.Right && rb.Pressed)
+            {
+                SimActionLog.DraggedPosition = null;
+                FollowColumn();
+                return;
+            }
+
             if (ev is InputEventMouseButton mb && mb.ButtonIndex == MouseButton.Left)
             {
                 if (mb.Pressed)
@@ -395,7 +428,12 @@ internal sealed class SimLogPanel
                 else if (_pressed)
                 {
                     _pressed = false;
-                    if (!_dragging)
+                    if (_dragging)
+                    {
+                        // Put here on purpose: it stays, across launches too.
+                        SimActionLog.DraggedPosition = _panel.Position;
+                    }
+                    else
                     {
                         ApplyCollapsed(!_collapsed);
                     }
@@ -451,10 +489,44 @@ internal sealed class SimLogPanel
         SimActionLog.PanelCollapsed = collapsed;
     }
 
+    /// <summary>
+    /// Until the player drags it: keep the panel under the advice column
+    /// (SimHud.ColumnBottom), shortened when the column leaves too little
+    /// room below it (LogPanelPlacement.BelowColumn). Runs every tick, as
+    /// the column grows and shrinks with the advice and the chips.
+    /// </summary>
+    private void FollowColumn()
+    {
+        try
+        {
+            if (_pressed || SimActionLog.DraggedPosition != null || !GodotObject.IsInstanceValid(_panel))
+            {
+                return;
+            }
+            (float left, float bottom) = SimHud.Instance.ColumnBottom();
+            float viewHeight = _panel.GetViewportRect().Size.Y;
+            (float top, float height) = LogPanelPlacement.BelowColumn(bottom, _expandedSize.Y, viewHeight);
+            var want = new Vector2(left, top);
+            if (_panel.Position.DistanceTo(want) > 0.5f)
+            {
+                _panel.Position = want;
+            }
+            if (!_collapsed && Math.Abs(_panel.Size.Y - height) > 0.5f)
+            {
+                _panel.Size = new Vector2(_expandedSize.X, height);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Log($"[SimActionLog] Follow column failed: {ex.Message}");
+        }
+    }
+
     private void OnTick()
     {
         try
         {
+            FollowColumn();
             bool dirty = SimActionLog.ConsumeDirty();
             if (!dirty && !_filterChanged)
             {

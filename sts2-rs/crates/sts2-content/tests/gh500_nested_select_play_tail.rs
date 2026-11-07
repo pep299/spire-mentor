@@ -44,8 +44,8 @@ fn push_card(state: &mut CombatState, id: CardId, card_type: CardType) -> sts2_c
 /// CATASTROPHE auto-plays two ARMAMENTS off the draw pile. The first one's
 /// upgrade select SURFACES (3 upgradable hand cards) and parks both the
 /// auto-play tail and CATASTROPHE's own play tail; resolving it resumes the
-/// ループの再開後、2枚目のARMAMENTSも選択を公開する。
-/// 両方の選択を終えるまでCATASTROPHEを廃棄しない。
+/// Resuming the loop surfaces the second ARMAMENTS' select too.
+/// CATASTROPHE stays on Play until both selects are answered.
 #[test]
 fn catastrophe_discards_after_the_auto_plays_it_is_still_awaiting() {
     two_select_batch(CardId::Catastrophe, None);
@@ -140,7 +140,7 @@ fn two_select_batch(parent: CardId, inner: Option<CardId>) {
     let _ = sts2_core::apply(&mut state, Action::ResolveChoice { selection });
     assert!(
         state.pending_choice.is_none(),
-        "両方のARMAMENTSの選択が完了した"
+        "both ARMAMENTS selects are answered"
     );
     assert!(
         state.pending_play.is_none(),

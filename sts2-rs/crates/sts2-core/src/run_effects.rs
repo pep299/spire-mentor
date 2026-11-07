@@ -803,8 +803,7 @@ pub fn dispatch_on_card_added_to_deck(
 // `RunState::offer_rest_site_rewards`. Listeners mutate the rewards
 // vector in place. Python: `Relic.modify_rest_site_heal_rewards(owner,
 // rewards, run_state) -> list[object]`. `DreamCatcher` appends a
-// `CardReward` for each `_procs_left` rest-site visit
-// (`shop_event.py:1207-1209`).
+// `CardReward` on every rest-site heal, uncapped (C# `DreamCatcher.cs`).
 run_hook_channel!(
     ModifyRestSiteHealRewardsRunFn,
     HOOK_MODIFY_REST_SITE_HEAL_REWARDS_RUN,
@@ -1070,6 +1069,14 @@ run_hook_channel!(
 /// Dispatch the run-side `modify_card_reward_options_late` channel.
 /// Listeners may mutate `cards` in place. Same accumulation
 /// convention as [`dispatch_after_obtained`].
+///
+/// Order matters here: C# `Hook.TryModifyCardRewardOptions` (Hook.cs:1598-1620,
+/// both builds) walks `RunState.IterateHookListeners`, i.e. the player's
+/// non-melted relics in OBTAIN order (`RunState.cs:148`). Glitter Glams every
+/// option it can, so a WingCharm that runs after it finds nothing to Swift and
+/// skips its `Rng.Niche` draw, and vice versa. So this walks
+/// [`RunState::active_relics`] (once per distinct id) and looks each handler
+/// up, instead of the registry's `RelicId` order.
 pub fn dispatch_modify_card_reward_options_late(
     run_state: &mut RunState,
     cards: &mut Vec<Card>,
@@ -1077,7 +1084,16 @@ pub fn dispatch_modify_card_reward_options_late(
     if is_empty_modify_card_reward_options_late() {
         return EffectResult::NotImplemented;
     }
-    let listeners = listeners_modify_card_reward_options_late();
+    let mut order: Vec<RelicId> = Vec::new();
+    for &id in run_state.active_relics().iter() {
+        if !order.contains(&id) {
+            order.push(id);
+        }
+    }
+    let listeners: Vec<(RelicId, ModifyCardRewardOptionsLateRunFn)> = order
+        .into_iter()
+        .filter_map(|id| lookup_modify_card_reward_options_late(id).map(|f| (id, f)))
+        .collect();
     let mut any_resolved = false;
     for (_id, f) in listeners {
         if f(run_state, cards) == EffectResult::Resolved {
@@ -2411,6 +2427,9 @@ mod tests {
             h_card_reward_late as ModifyCardRewardOptionsLateRunFn,
         );
         let mut rs = RunState::new();
+        // The channel dispatches in the owner's relic order, so the relic the
+        // sentinel is registered under has to be owned.
+        rs.relics.push(RelicId::FresnelLens);
         let mut cards: Vec<Card> = Vec::new();
         let result = dispatch_modify_card_reward_options_late(&mut rs, &mut cards);
         assert_eq!(result, EffectResult::Resolved);

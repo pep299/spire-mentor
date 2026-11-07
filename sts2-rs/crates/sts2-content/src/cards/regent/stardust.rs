@@ -38,7 +38,7 @@ pub(crate) fn play_stardust(state: &mut CombatState, _t: Option<CreatureUid>) ->
     let star_x = card_idx
         .and_then(|idx| state.cards.get(idx))
         .map_or(0, |c| c.combat_var(sts2_core::cards::VarKey::AutoPlayStarX));
-    let hits = if star_x > 0 {
+    let last_stars_spent = if star_x > 0 {
         star_x - 1
     } else {
         let spent = state.spend_stars(i32::from(state.player.stars));
@@ -47,6 +47,11 @@ pub(crate) fn play_stardust(state: &mut CombatState, _t: Option<CreatureUid>) ->
         }
         spent
     };
+    // `ResolveStarXValue` = `Hook.ModifyXValue(LastStarsSpent)`
+    // (CardModel.cs:1139-1145, both builds): Chemical X adds its +2 to the
+    // star X too, so Stardust hits twice even at 0 stars (random-loadout
+    // v0.107.1 seed 1142).
+    let hits = sts2_core::relic_effects::dispatch_modify_x_value(state, last_stars_spent);
     if hits <= 0 {
         return EffectResult::Resolved;
     }

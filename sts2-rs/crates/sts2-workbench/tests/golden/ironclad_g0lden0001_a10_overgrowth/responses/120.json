@@ -1,0 +1,91 @@
+{
+ "assumptions": {
+  "energy": 3,
+  "hand": 5,
+  "samples": 200
+ },
+ "block": {
+  "per_turn": 8.6,
+  "scaling_cards": []
+ },
+ "composition": {
+  "by_rarity": {
+   "Basic": 10,
+   "Common": 3,
+   "Curse": 1,
+   "Quest": 1,
+   "Uncommon": 1
+  },
+  "by_type": {
+   "Attack": 7,
+   "Curse": 1,
+   "Quest": 1,
+   "Skill": 7
+  },
+  "dead_cards": 1,
+  "energy_curve": {
+   "0": 1,
+   "1": 12,
+   "2": 1,
+   "X": 1
+  },
+  "unupgraded_basics": 10
+ },
+ "damage": {
+  "aoe_attacks": [],
+  "attack_count": 7,
+  "per_turn": 15.1,
+  "scaling_cards": [
+   "Bash"
+  ],
+  "single_target": 15.1,
+  "vs_group": 15.1
+ },
+ "deck_size": 16,
+ "lenses": {
+  "boss": 29.2,
+  "hallway": 30.1,
+  "scaling": 28.7
+ },
+ "scores": {
+  "block": 35.0,
+  "damage": 31.4,
+  "velocity": 21.1,
+  "volume": 28.5
+ },
+ "velocity": {
+  "bottleneck": "energy",
+  "cards_per_turn": 3.3,
+  "dilution": 0.94,
+  "draw_limited_turns": 2.0,
+  "energy_limited_turns": 4.3,
+  "engine_cards": 2,
+  "extra_per_turn": 0.3,
+  "tags": {
+   "energy": 1,
+   "exhaust_synergy": 1
+  }
+ },
+ "warnings": [
+  {
+   "severity": "warn",
+   "text": "Thin on block and no block engine — big hits will land in Act 2+."
+  },
+  {
+   "severity": "info",
+   "text": "No AOE — multi-enemy fights (Gremlins, hallways) will be slow."
+  },
+  {
+   "severity": "info",
+   "text": "Low velocity — few draw/energy cards; you'll often draw the wrong hand."
+  },
+  {
+   "severity": "info",
+   "text": "Energy-limited — cards stranded in hand; more energy helps, more draw won't."
+  },
+  {
+   "severity": "warn",
+   "text": "Deck clogged with basics/curses — prioritise removals."
+  }
+ ]
+}

@@ -169,10 +169,11 @@ internal static class SimHelp
         Row(sb, "F5", "Coach: peek at the AI's pick for just the next decision (also the toolbar's Peek button)");
         Row(sb, "F6", "let the AI take just this one decision");
         Row(sb, "F7", "let the AI keep playing until you stop it (press again to stop)");
+        Row(sb, "Shift+F7", "autobattle: the AI plays the fights, you make every run-level decision, with a note on what changed since your last one; 1x becomes 2x (again to stop)");
         Row(sb, "F4", "show / hide the HUD");
-        Row(sb, "Ctrl+L", "action log — what was played, and what was advised at the time");
+        Row(sb, "Ctrl+L", "action log — what was played, and what was advised at the time (drag its header to move it; right-click it to put it back under the advice)");
         Row(sb, "Ctrl+H", "hide everything but the toolbar pill for a quick look; again (or click the pill) to show it");
-        Row(sb, "F9 / F10", $"game speed down / up 0.1x  (now {SimSpeed.Desired:0.0}x)");
+        Row(sb, "F9 / F10", $"game speed down / up, 1x-4x  (now {SpeedSteps.Label(SimSpeed.Desired)})");
         Row(sb, "Ctrl+Z", "undo to the start of this combat turn");
         Row(sb, "Ctrl+Shift+Z", "rewind to the start of this room");
         Row(sb, "Ctrl+Shift+C", "copy this position — paste it into the workbench to explore it");

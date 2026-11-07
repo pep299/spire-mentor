@@ -108,6 +108,7 @@ fn eidolon_run(state: &mut CombatState, cards: &[sts2_core::CardUid]) {
                 iters: 0,
                 uids: cards[i + 1..].iter().copied().collect(),
                 force_exhaust: false,
+                then: None,
             });
             return;
         }
@@ -116,11 +117,6 @@ fn eidolon_run(state: &mut CombatState, cards: &[sts2_core::CardUid]) {
 
 /// Resume entry point stored on [`sts2_core::AutoPlayLoopCont`]: play the
 /// remaining captured Eidolon cards.
-fn eidolon_resume(
-    state: &mut CombatState,
-    _iters: u32,
-    uids: &[sts2_core::CardUid],
-    _force_exhaust: bool,
-) {
-    eidolon_run(state, uids);
+fn eidolon_resume(state: &mut CombatState, cont: &sts2_core::AutoPlayLoopCont) {
+    eidolon_run(state, &cont.uids);
 }

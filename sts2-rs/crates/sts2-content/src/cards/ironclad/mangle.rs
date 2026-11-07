@@ -30,30 +30,10 @@ pub(crate) fn play_mangle(state: &mut CombatState, target: Option<CreatureUid>) 
     // `AfterPowerAmountChanged` with the same delta, :139-143). So the Strength
     // leg equals the ManglePower amount that actually LANDED: 0 under Artifact,
     // twice the base under the Lamp (whose `HasDoubledTemporaryPowerSource`
-    // skips the inner Strength, UnsettlingLamp.cs:169). Drain that delta.
-    let before = mangle_power_amount(state, t);
-    apply_power_to_enemy(state, t, PowerKind::ManglePower, amt);
-    let landed = mangle_power_amount(state, t) - before;
-    if landed > 0 {
-        // Signed apply, since `apply_power_to_enemy` rejects non-positive
-        // amounts.
-        apply_power_signed_to_creature(state, t, PowerKind::Strength, -landed);
-    }
+    // skips the inner Strength, UnsettlingLamp.cs:169). A fresh power drains
+    // BEFORE it lands, a stack after.
+    sts2_core::card_effects::apply_temporary_strength_debuff(state, t, PowerKind::ManglePower, amt);
     EffectResult::Resolved
-}
-
-/// The target's current ManglePower amount (0 when absent).
-fn mangle_power_amount(state: &CombatState, target: CreatureUid) -> i32 {
-    let Some(creature) = state.creatures.iter().find(|c| c.id == target.0) else {
-        return 0;
-    };
-    creature
-        .powers
-        .iter()
-        .filter_map(|uid| state.powers.get_by_id(uid.0))
-        .filter(|p| p.kind == PowerKind::ManglePower)
-        .map(|p| p.amount)
-        .sum()
 }
 
 #[must_use]

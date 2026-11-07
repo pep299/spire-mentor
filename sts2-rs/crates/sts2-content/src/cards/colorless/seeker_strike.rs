@@ -55,10 +55,7 @@ pub(crate) fn play_seeker_strike(
     let cmp = |a: CardUid, b: CardUid| {
         let ca = &state.cards[a.0.get() as usize - 1];
         let cb = &state.cards[b.0.get() as usize - 1];
-        ca.card_id
-            .to_python_name()
-            .cmp(cb.card_id.to_python_name())
-            .then_with(|| ca.upgraded.cmp(&cb.upgraded))
+        sts2_core::cards::card_model_compare(ca, cb)
     };
     state
         .run_rng
@@ -100,16 +97,17 @@ pub(crate) fn play_seeker_strike(
         let ca = &state.cards[a.0.get() as usize - 1];
         let cb = &state.cards[b.0.get() as usize - 1];
         // C# `orderby c.Rarity, c.Id` — `Id` is the `ModelId`, ordinal-compared
-        // by its PascalCase `Entry`. python-name underscores/`_CARD` suffix
-        // break that ordinal order, so key on the reconstructed C# Entry.
+        // by its `Entry`, the SLUGIFIED class name (`ModelDb.GetEntry` =
+        // `StringHelper.Slugify(type.Name)`, `ModelId.CompareTo`): `IRON_WAVE`,
+        // not `IronWave` — `'_'` (0x5F) sorts after every capital letter.
         crate::cards::spec_index::card_rarity_rank_csharp_in(ca.card_id, state.game_version)
             .cmp(&crate::cards::spec_index::card_rarity_rank_csharp_in(
                 cb.card_id,
                 state.game_version,
             ))
             .then_with(|| {
-                crate::cards::spec_index::card_csharp_entry(ca.card_id)
-                    .cmp(&crate::cards::spec_index::card_csharp_entry(cb.card_id))
+                sts2_core::cards::card_model_entry(ca.card_id)
+                    .cmp(sts2_core::cards::card_model_entry(cb.card_id))
             })
     });
     // C# `FromCombatPile` skips the prompt when the offered count is

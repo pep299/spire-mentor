@@ -3184,12 +3184,31 @@ mod tests {
         // `Noisebot.NoiseMove` = `StatusIntent(2)` → 1 Dazed into Discard
         // + 1 Dazed into Draw. Bead `sts2-rs-bm1u5`.
         use sts2_core::cards::CardId;
+        use sts2_core::{Creature, IntentHistory, MonsterId, MonsterKind};
+        let owner = CreatureUid::new(1).expect("nz");
         let mut state = CombatState::default();
+        // A live player and Noisebot: `CardPileCmd.Add` drops combat-pile
+        // adds once `IsEnding` (no primary enemy alive / pending loss).
+        state.player.current_hp = 70;
+        state.player.max_hp = 70;
+        state.creatures.push(Creature {
+            id: owner.0,
+            current_hp: 40,
+            max_hp: 40,
+            block: 0,
+            powers: smallvec::SmallVec::new(),
+            species: Some(MonsterKind::Noisebot),
+            intent: None,
+            intent_history: IntentHistory::default(),
+            monster_id: MonsterId("Noisebot"),
+            ai: None,
+        });
+        state.enemy_uids.push(owner);
         let pre_discard = state.player.discard.len();
         let pre_draw = state.player.draw.len();
         let pre_shuffle = state.run_rng.shuffle.counter();
 
-        noisebot_noise_effect(&mut state, CreatureUid::new(1).expect("nz"));
+        noisebot_noise_effect(&mut state, owner);
 
         assert_eq!(
             state.player.discard.len(),

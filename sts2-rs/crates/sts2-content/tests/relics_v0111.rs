@@ -374,3 +374,66 @@ fn hand_drill_fires_on_expose_strip_v0111() {
         assert_eq!(enemy_vulnerable(&state), expect, "{version}");
     }
 }
+
+/// v0.107.1 Pendulum ticks on the `AfterPlayerTurnStart` relic walk
+/// (decomp v0.107.1 Pendulum.cs:75-86). `Hook.cs` checks `IsOverOrEnding`
+/// only when that walk starts, so a Rolling Boulder (an earlier listener in
+/// the same walk) that kills the last enemy still ticks the counter; the draw
+/// is skipped because `CardPileCmd.Draw` returns early once the combat is
+/// ending (CardPileCmd.cs:822). Rust used to tick on `AfterSideTurnStart`,
+/// which never runs on an ending combat, and fell a turn behind.
+#[test]
+fn pendulum_ticks_when_an_earlier_turn_start_listener_wins_v0107() {
+    let mut state = fresh(GameVersion::V0_107_1, &[RelicKind::Pendulum]);
+    state.relics[0].counter = 2;
+    state.creatures[0].current_hp = 1;
+    state.phase = CombatPhase::PlayerTurnStart;
+    for _ in 0..8 {
+        push_hand_card(&mut state, CardId::StrikeIronclad, CardType::Attack);
+    }
+    state.player.draw = std::mem::take(&mut state.player.hand).into_iter().collect();
+    let puid = sts2_core::PowerUid(NonZeroU32::new(1).expect("nz"));
+    state.powers.push(sts2_core::Power {
+        id: puid.0,
+        kind: sts2_core::PowerKind::RollingBoulder,
+        amount: 10,
+        counter: 0,
+        applier: None,
+        skip_next_tick: false,
+    });
+    state.player.powers.push(puid);
+
+    let _ = sts2_core::combat_loop::start_player_turn(&mut state);
+
+    assert_eq!(
+        state.creatures[0].current_hp, 0,
+        "the boulder won the fight"
+    );
+    assert_eq!(
+        state.relics[0].counter, 0,
+        "TurnsSeen 2 -> 0: the walk that started before the kill still ticks"
+    );
+    assert_eq!(
+        state.player.hand.len(),
+        5,
+        "no Pendulum card: the draw is a no-op once the combat is ending"
+    );
+}
+
+/// v0.107.1 Pendulum on a live turn: 3rd turn start draws one card after the
+/// hand draw, from the `AfterPlayerTurnStart` relic walk.
+#[test]
+fn pendulum_draws_on_third_turn_start_v0107() {
+    let mut state = fresh(GameVersion::V0_107_1, &[RelicKind::Pendulum]);
+    state.relics[0].counter = 2;
+    state.phase = CombatPhase::PlayerTurnStart;
+    for _ in 0..8 {
+        push_hand_card(&mut state, CardId::StrikeIronclad, CardType::Attack);
+    }
+    state.player.draw = std::mem::take(&mut state.player.hand).into_iter().collect();
+
+    let _ = sts2_core::combat_loop::start_player_turn(&mut state);
+
+    assert_eq!(state.relics[0].counter, 0);
+    assert_eq!(state.player.hand.len(), 6, "5 hand draw + 1 Pendulum card");
+}

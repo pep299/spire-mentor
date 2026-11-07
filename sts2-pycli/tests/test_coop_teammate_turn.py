@@ -269,6 +269,21 @@ def test_a_teammates_whole_seat_rides_from_the_mod_to_the_engine() -> None:
     assert "draw_pile" not in old and "relics" not in old
 
 
+def test_a_teammate_relic_the_engine_lacks_is_dropped_not_fatal() -> None:
+    """A teammate's relic the engine does not implement (Neow's Sacrifice) is
+    soft-dropped like one of our own, not an error for the whole board: it
+    used to fail every combat request of the human's advisor once an AI
+    partner took that relic at Neow (2026-11-06, the run stalled)."""
+    board = _board()
+    relic = json.loads(FIXTURE.read_text(encoding="utf-8"))["state"]["run_state"]["relics"][0]
+    board["allies"][0]["relics"] = [
+        dict(relic, id="RING_OF_THE_SNAKE", name="Ring of the Snake"),
+        dict(relic, id="NEOWS_SACRIFICE", name="Neow's Sacrifice"),
+    ]
+    ally = translate(to_headless_combat_play(board))["allies"][0]
+    assert [r["id"] for r in ally["relics"]] == ["RING_OF_THE_SNAKE"]
+
+
 def _whole_seat_board(*, seat_index: int | None = None) -> dict[str, Any]:
     """``_board`` with the rest of the teammate's seat, as a current mod sends it."""
     board = _board()

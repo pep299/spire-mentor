@@ -17,9 +17,11 @@
 //   F5  Coach style: peek at the AI's pick for the next decision only
 //   F6  AI takes this decision (advisor mode, combat)
 //   F7  AI plays until I stop (toggle)
+//   Shift+F7 autobattle (toggle): the AI plays the fights, I make every
+//       run-level decision (Autobattle.cs)
 //   F8  AI on / off in the current style (from Autopilot: stop the AI and take over)
-//   F9  game speed down 0.1x
-//   F10 game speed up 0.1x
+//   F9  game speed down to the next whole speed (1x-4x)
+//   F10 game speed up to the next whole speed (1x-4x)
 //   Ctrl+Shift+B report a bug (SimBugReport): B is unbound in the game's
 //       keyboard map (NInputManager: E S D X A M, digits, arrows, space).
 //
@@ -56,6 +58,7 @@ public static class SimHotkeys
     private const string ActionPeek = "spirementor_peek";
     private const string ActionAiOnce = "spirementor_ai_once";
     private const string ActionAiAuto = "spirementor_ai_auto";
+    private const string ActionAutobattle = "spirementor_autobattle";
     private const string ActionToggleAdvisor = "spirementor_toggle_advisor";
     private const string ActionSpeedDown = "spirementor_speed_down";
     private const string ActionSpeedUp = "spirementor_speed_up";
@@ -98,6 +101,7 @@ public static class SimHotkeys
             RegisterAction(ActionPeek, Key.F5);
             RegisterAction(ActionAiOnce, Key.F6);
             RegisterAction(ActionAiAuto, Key.F7);
+            RegisterAction(ActionAutobattle, Key.F7, shift: true);
             RegisterAction(ActionToggleAdvisor, Key.F8);
             RegisterAction(ActionSpeedDown, Key.F9);
             RegisterAction(ActionSpeedUp, Key.F10);
@@ -114,7 +118,7 @@ public static class SimHotkeys
             BindActions(manager);
 
             _installed = true;
-            GD.Print("[SpireMentor] Hotkeys installed: F1=help, F4=HUD, Ctrl+L=log, Ctrl+H=hide all, F5=peek (Coach), F6=AI once, F7=AI auto, F8=AI on/off, F9/F10=speed -/+, Ctrl+Z=undo turn, Ctrl+Shift+Z=restart room, Ctrl+Shift+C=copy state, Ctrl+Shift+B=report a bug");
+            GD.Print("[SpireMentor] Hotkeys installed: F1=help, F4=HUD, Ctrl+L=log, Ctrl+H=hide all, F5=peek (Coach), F6=AI once, F7=AI auto, Shift+F7=autobattle, F8=AI on/off, F9/F10=speed -/+, Ctrl+Z=undo turn, Ctrl+Shift+Z=restart room, Ctrl+Shift+C=copy state, Ctrl+Shift+B=report a bug");
         }
         catch (Exception ex)
         {
@@ -148,10 +152,20 @@ public static class SimHotkeys
         manager.PushHotkeyPressedBinding(ActionHideAll, SimActions.ToggleHideAll);
         manager.PushHotkeyPressedBinding(ActionPeek, SimActions.Peek);
         manager.PushHotkeyPressedBinding(ActionAiOnce, () => SimActions.AiOnce("F6 (AI takes this decision)"));
-        manager.PushHotkeyPressedBinding(ActionAiAuto, () => SimActions.ToggleAutoplay("F7 (AI plays until you stop)"));
+        // Godot matches an action's modifiers non-exactly, so Shift+F7 also
+        // presses the plain-F7 action; leave that one to autobattle.
+        manager.PushHotkeyPressedBinding(ActionAiAuto, () =>
+        {
+            if (!Input.IsKeyPressed(Key.Shift))
+            {
+                SimActions.ToggleAutoplay("F7 (AI plays until you stop)");
+            }
+        });
+        manager.PushHotkeyPressedBinding(ActionAutobattle, () =>
+            SimActions.ToggleAutobattle("Shift+F7 (autobattle: the AI fights, you decide the run)"));
         manager.PushHotkeyPressedBinding(ActionToggleAdvisor, SimActions.ToggleAdvisor);
-        manager.PushHotkeyPressedBinding(ActionSpeedDown, () => SimActions.NudgeSpeed(-0.1));
-        manager.PushHotkeyPressedBinding(ActionSpeedUp, () => SimActions.NudgeSpeed(0.1));
+        manager.PushHotkeyPressedBinding(ActionSpeedDown, () => SimActions.StepSpeed(-1));
+        manager.PushHotkeyPressedBinding(ActionSpeedUp, () => SimActions.StepSpeed(1));
         manager.PushHotkeyPressedBinding(ActionUndoTurn, SimActions.UndoTurn);
         manager.PushHotkeyPressedBinding(ActionRestartRoom, SimActions.RestartRoom);
         manager.PushHotkeyPressedBinding(ActionCopyState, SimActions.CopyState);

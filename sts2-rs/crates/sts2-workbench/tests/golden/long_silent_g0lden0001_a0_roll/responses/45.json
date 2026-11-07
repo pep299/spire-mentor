@@ -1,15 +1,17 @@
 {
  "details": [
-  "You HP 69→60 (−9)",
-  "Shrinker Beetle −Weak"
+  "Play Ultimate Strike",
+  "Shrinker Beetle HP 5→0  ☠ defeated",
+  "You −Shrink",
+  "Gold 110→125"
  ],
  "error": null,
- "label": "End turn",
+ "label": "Play Ultimate Strike → Shrinker Beetle",
  "step": {
   "action_label": "",
   "assets_base": "https://assets.test",
   "chosen_action": null,
-  "decision": "combat_play",
+  "decision": "card_reward",
   "idx": 0,
   "meta": {
    "act": 1,
@@ -19,7 +21,7 @@
    "bg_seed": 1772253313,
    "floor": 3,
    "step_no": 0,
-   "turn": 4
+   "turn": null
   },
   "pv": null,
   "scores": [],
@@ -32,319 +34,79 @@
    "bg_col": 2,
    "bg_row": 2,
    "bg_seed": 1772253313,
-   "decision": "combat_play",
-   "discard_pile": [
+   "can_skip": true,
+   "cards": [
     {
-     "base_cost": 1,
-     "can_play": false,
      "color": "green",
      "cost": 1,
-     "description": "Deal 6 damage.",
-     "description_rich": "Deal 6 damage.",
-     "id": "STRIKE_SILENT",
-     "image": "https://assets.test/card_atlas/silent/strike_silent.png",
-     "index": -1,
-     "name": "Strike",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 6
-     },
-     "target_type": "None",
-     "type": "Attack",
-     "upgraded": false
+     "description": "Deal 8 damage.\nApply 1 Weak.",
+     "description_rich": "Deal 8 damage.\nApply 1 Weak.",
+     "id": "SUCKER_PUNCH",
+     "image": "https://assets.test/card_atlas/silent/sucker_punch.png",
+     "index": 0,
+     "name": "Sucker Punch",
+     "rarity": "Common",
+     "type": "Attack"
     },
     {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "green",
-     "cost": 1,
-     "description": "Deal 6 damage.",
-     "description_rich": "Deal 6 damage.",
-     "id": "STRIKE_SILENT",
-     "image": "https://assets.test/card_atlas/silent/strike_silent.png",
-     "index": -1,
-     "name": "Strike",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 6
-     },
-     "target_type": "None",
-     "type": "Attack",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "green",
-     "cost": 1,
-     "description": "Deal 6 damage.",
-     "description_rich": "Deal 6 damage.",
-     "id": "STRIKE_SILENT",
-     "image": "https://assets.test/card_atlas/silent/strike_silent.png",
-     "index": -1,
-     "name": "Strike",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 6
-     },
-     "target_type": "None",
-     "type": "Attack",
-     "upgraded": false
-    },
-    {
-     "base_cost": 0,
-     "can_play": false,
      "color": "green",
      "cost": 0,
-     "description": "Deal 3 damage.\nApply 1 Weak.",
-     "description_rich": "Deal 3 damage.\nApply 1 [gold]Weak[/gold].",
-     "id": "NEUTRALIZE",
-     "image": "https://assets.test/card_atlas/silent/neutralize.png",
-     "index": -1,
-     "name": "Neutralize",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 3
-     },
-     "target_type": "None",
-     "type": "Attack",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "green",
-     "cost": 1,
-     "description": "Deal 6 damage.",
-     "description_rich": "Deal 6 damage.",
-     "id": "STRIKE_SILENT",
-     "image": "https://assets.test/card_atlas/silent/strike_silent.png",
-     "index": -1,
-     "name": "Strike",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 6
-     },
-     "target_type": "None",
-     "type": "Attack",
-     "upgraded": false
-    }
-   ],
-   "discard_pile_count": 5,
-   "draw_pile": [
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "green",
-     "cost": 1,
-     "description": "Gain 6 Block.\nAdd 1 Shiv into your Hand.",
-     "description_rich": "Gain 6 [gold]Block[/gold].\nAdd 1 [gold]Shiv[/gold] into your [gold]Hand[/gold].",
-     "id": "CLOAK_AND_DAGGER",
-     "image": "https://assets.test/card_atlas/silent/cloak_and_dagger.png",
-     "index": -1,
-     "name": "Cloak and Dagger",
-     "rarity": "Common",
-     "stats": {
-      "block": 6
-     },
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "green",
-     "cost": 1,
-     "description": "Gain 5 Block.",
-     "description_rich": "Gain 5 [gold]Block[/gold].",
-     "id": "DEFEND_SILENT",
-     "image": "https://assets.test/card_atlas/silent/defend_silent.png",
-     "index": -1,
-     "name": "Defend",
-     "rarity": "Basic",
-     "stats": {
-      "block": 5
-     },
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "green",
-     "cost": 1,
-     "description": "Gain 5 Block.",
-     "description_rich": "Gain 5 [gold]Block[/gold].",
-     "id": "DEFEND_SILENT",
-     "image": "https://assets.test/card_atlas/silent/defend_silent.png",
-     "index": -1,
-     "name": "Defend",
-     "rarity": "Basic",
-     "stats": {
-      "block": 5
-     },
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": false,
-     "color": "green",
-     "cost": 1,
-     "description": "Gain 5 Block.",
-     "description_rich": "Gain 5 [gold]Block[/gold].",
-     "id": "DEFEND_SILENT",
-     "image": "https://assets.test/card_atlas/silent/defend_silent.png",
-     "index": -1,
-     "name": "Defend",
-     "rarity": "Basic",
-     "stats": {
-      "block": 5
-     },
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    }
-   ],
-   "draw_pile_count": 4,
-   "enemies": [
-    {
-     "block": 0,
-     "hp": 5,
-     "image": "https://assets.test/monsters/shrinker_beetle.png",
-     "index": 0,
-     "intents": [
-      {
-       "damage": 7,
-       "intent_image": "https://assets.test/intent_atlas/attack/intent_attack_2.png",
-       "type": "Attack"
-      }
-     ],
-     "kind": "ShrinkerBeetle",
-     "max_hp": 40,
-     "move_state": "CHOMP",
-     "name": "Shrinker Beetle",
-     "powers": [],
-     "rig": "https://assets.test/monster_rigs/shrinker_beetle/shrinker_beetle",
-     "rig_bounds_h": 161.0,
-     "rig_bounds_w": 240.0,
-     "rig_scale": 0.25,
-     "uid": 2
-    }
-   ],
-   "energy": 3,
-   "energy_image": "https://assets.test/sprite_fonts/silent_energy_icon.png",
-   "exhaust_pile": [],
-   "exhaust_pile_count": 0,
-   "floor": 3,
-   "hand": [
-    {
-     "base_cost": 1,
-     "can_play": true,
-     "color": "green",
-     "cost": 1,
-     "description": "Gain 8 Block.\nDiscard 1 card.",
-     "description_rich": "Gain 8 [gold]Block[/gold].\nDiscard 1 card.",
-     "id": "SURVIVOR",
-     "image": "https://assets.test/card_atlas/silent/survivor.png",
-     "index": 0,
-     "name": "Survivor",
-     "rarity": "Basic",
-     "stats": {
-      "block": 8
-     },
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": true,
-     "color": "green",
-     "cost": 1,
-     "description": "Gain 5 Block.",
-     "description_rich": "Gain 5 [gold]Block[/gold].",
-     "id": "DEFEND_SILENT",
-     "image": "https://assets.test/card_atlas/silent/defend_silent.png",
+     "description": "Discard 2 cards.\nAdd 2 Shivs into your Hand.",
+     "description_rich": "Discard 2 cards.\nAdd 2 Shivs into your Hand.",
+     "id": "HIDDEN_DAGGERS",
+     "image": "https://assets.test/card_atlas/silent/hidden_daggers.png",
      "index": 1,
-     "name": "Defend",
-     "rarity": "Basic",
-     "stats": {
-      "block": 5
-     },
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": true,
-     "color": "green",
-     "cost": 1,
-     "damage_preview": {
-      "0": 4
-     },
-     "description": "Deal 6 damage.",
-     "description_rich": "Deal 6 damage.",
-     "id": "STRIKE_SILENT",
-     "image": "https://assets.test/card_atlas/silent/strike_silent.png",
-     "index": 2,
-     "name": "Strike",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 6
-     },
-     "target_type": "AnyEnemy",
-     "type": "Attack",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": true,
-     "color": "colorless",
-     "cost": 1,
-     "damage_preview": {
-      "0": 9
-     },
-     "description": "Deal 14 damage.",
-     "description_rich": "Deal 14 damage.",
-     "id": "ULTIMATE_STRIKE",
-     "image": "https://assets.test/card_atlas/colorless/ultimate_strike.png",
-     "index": 3,
-     "name": "Ultimate Strike",
+     "name": "Hidden Daggers",
      "rarity": "Uncommon",
-     "stats": {
-      "damage": 14
-     },
-     "target_type": "AnyEnemy",
-     "type": "Attack",
-     "upgraded": false
+     "type": "Skill"
     },
     {
-     "base_cost": 1,
-     "can_play": true,
      "color": "green",
      "cost": 1,
-     "description": "Gain 5 Block.",
-     "description_rich": "Gain 5 [gold]Block[/gold].",
-     "id": "DEFEND_SILENT",
-     "image": "https://assets.test/card_atlas/silent/defend_silent.png",
-     "index": 4,
-     "name": "Defend",
-     "rarity": "Basic",
-     "stats": {
-      "block": 5
-     },
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
+     "description": "Add 3 Shivs into your Hand.\nExhaust.",
+     "description_rich": "Add 3 Shivs into your Hand.\n[gold]Exhaust[/gold].",
+     "id": "BLADE_DANCE",
+     "image": "https://assets.test/card_atlas/silent/blade_dance.png",
+     "index": 2,
+     "name": "Blade Dance",
+     "rarity": "Common",
+     "type": "Skill"
     }
    ],
-   "max_energy": 3,
-   "options": [],
+   "decision": "card_reward",
+   "floor": 3,
+   "options": [
+    {
+     "action": "select_card_reward",
+     "args": {
+      "card_index": 0
+     },
+     "enabled": true,
+     "label": "SUCKER_PUNCH.title"
+    },
+    {
+     "action": "select_card_reward",
+     "args": {
+      "card_index": 1
+     },
+     "enabled": true,
+     "label": "HIDDEN_DAGGERS.title"
+    },
+    {
+     "action": "select_card_reward",
+     "args": {
+      "card_index": 2
+     },
+     "enabled": true,
+     "label": "BLADE_DANCE.title"
+    },
+    {
+     "action": "skip_card_reward",
+     "args": {},
+     "enabled": true,
+     "label": "Skip"
+    }
+   ],
    "player": {
     "block": 0,
     "deck": [
@@ -531,9 +293,8 @@
       "upgraded": false
      }
     ],
-    "gold": 110,
+    "gold": 125,
     "hp": 60,
-    "image": "https://assets.test/character_sprites/silent.png",
     "max_hp": 70,
     "name": "Silent",
     "potion_slots": 3,
@@ -551,23 +312,8 @@
       "image": "https://assets.test/relic_atlas/lead_paperweight.png",
       "name": "Lead Paperweight"
      }
-    ],
-    "rig": "https://assets.test/character_rigs/silent/silent",
-    "rig_bounds_h": 244.0,
-    "rig_bounds_w": 244.0,
-    "rig_scale": 0.29
-   },
-   "player_powers": [
-    {
-     "amount": -1,
-     "display_amount": -1,
-     "id": "SHRINK",
-     "image": "https://assets.test/power_atlas/shrink_power.png",
-     "image_big": "https://assets.test/power_big/shrink_power.png",
-     "name": "Shrink"
-    }
-   ],
-   "round": 4
+    ]
+   }
   }
  }
 }

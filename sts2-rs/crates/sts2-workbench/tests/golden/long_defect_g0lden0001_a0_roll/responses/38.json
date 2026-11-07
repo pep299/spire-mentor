@@ -1,7 +1,7 @@
 {
  "details": [
   "Play Defend",
-  "You Block 6→11"
+  "You Block 11→16"
  ],
  "error": null,
  "label": "Play Defend",
@@ -88,9 +88,28 @@
      "target_type": "None",
      "type": "Skill",
      "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "blue",
+     "cost": 1,
+     "description": "Gain 5 Block.",
+     "description_rich": "Gain 5 [gold]Block[/gold].",
+     "id": "DEFEND_DEFECT",
+     "image": "https://assets.test/card_atlas/defect/defend_defect.png",
+     "index": -1,
+     "name": "Defend",
+     "rarity": "Basic",
+     "stats": {
+      "block": 5
+     },
+     "target_type": "None",
+     "type": "Skill",
+     "upgraded": false
     }
    ],
-   "discard_pile_count": 3,
+   "discard_pile_count": 4,
    "draw_pile": [
     {
      "base_cost": 1,
@@ -267,7 +286,7 @@
      "uid": 2
     }
    ],
-   "energy": 2,
+   "energy": 1,
    "energy_image": "https://assets.test/sprite_fonts/defect_energy_icon.png",
    "exhaust_pile": [],
    "exhaust_pile_count": 0,
@@ -293,25 +312,6 @@
     {
      "base_cost": 1,
      "can_play": true,
-     "color": "blue",
-     "cost": 1,
-     "description": "Gain 5 Block.",
-     "description_rich": "Gain 5 [gold]Block[/gold].",
-     "id": "DEFEND_DEFECT",
-     "image": "https://assets.test/card_atlas/defect/defend_defect.png",
-     "index": 1,
-     "name": "Defend",
-     "rarity": "Basic",
-     "stats": {
-      "block": 5
-     },
-     "target_type": "None",
-     "type": "Skill",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": true,
      "color": "colorless",
      "cost": 1,
      "damage_preview": {
@@ -321,7 +321,7 @@
      "description_rich": "Deal 14 damage.",
      "id": "ULTIMATE_STRIKE",
      "image": "https://assets.test/card_atlas/colorless/ultimate_strike.png",
-     "index": 2,
+     "index": 1,
      "name": "Ultimate Strike",
      "rarity": "Uncommon",
      "stats": {
@@ -346,7 +346,7 @@
     }
    ],
    "player": {
-    "block": 11,
+    "block": 16,
     "deck": [
      {
       "color": "blue",

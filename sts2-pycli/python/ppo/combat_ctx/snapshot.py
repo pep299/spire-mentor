@@ -72,6 +72,7 @@ RELIC_COUNTER_DISPLAY: dict[str, Callable[[int], int | None] | None] = {
     "GIRYA": lambda c: c,  # TimesLifted
     "PUMPKIN_CANDLE": lambda c: c,  # KindleCount
     "VELVET_CHOKER": lambda c: c,  # _cardsPlayedThisTurn
+    "PENDULUM": lambda c: c,  # TurnsSeen, stored already wrapped at Turns (3)
     "EMBER_TEA": lambda c: max(0, c),  # Math.Max(0, CombatsLeft)
     # ShowCounter: CardsPlayedThisTurn < Cards (5).
     "BRILLIANT_SCARF": lambda c: c if c < 5 else None,
@@ -83,7 +84,6 @@ RELIC_COUNTER_DISPLAY: dict[str, Callable[[int], int | None] | None] = {
     "TUNING_FORK": _mod(10),  # SkillsPlayed, wrapped at Cards (10)
     "GALACTIC_DUST": _mod(10),  # StarsSpent % Stars (10)
     "HAPPY_FLOWER": _mod(3),  # TurnsSeen = (TurnsSeen + 1) % Turns (3)
-    "PENDULUM": _mod(3),  # TurnsSeen = (TurnsSeen + 1) % Turns (3)
     "FAKE_HAPPY_FLOWER": _mod(5),  # TurnsSeen = (TurnsSeen + 1) % Turns (5)
     "POLLINOUS_CORE": _mod(4),  # TurnsSeen, reset to 0 by the turn-4 draw
     "IRON_CLUB": _mod(4),  # CardsPlayed % Cards (4)

@@ -39,11 +39,10 @@ pub(crate) fn play_metamorphosis(state: &mut CombatState, _t: Option<CreatureUid
         } else {
             card.set_combat_var(sts2_core::cards::VarKey::StarCostFreeThisCombat, 1);
         }
-        state.player.generated_cards_this_combat =
-            state.player.generated_cards_this_combat.saturating_add(1);
-        let len = state.player.draw.len();
-        let insert_at = state.run_rng.shuffle.next_int(0, len as i32) as usize;
-        state.player.draw.insert(insert_at, uid);
+        // Metamorphosis.cs:31 `AddGeneratedCardToCombat(item, Draw, Owner,
+        // Random)`: one `Shuffle` read for the slot, then the generation
+        // listeners (Regalite, Pillar of Creation, the Supermassive tally).
+        sts2_core::card_effects::add_generated_card_to_draw_random(state, uid, true);
     }
     EffectResult::Resolved
 }

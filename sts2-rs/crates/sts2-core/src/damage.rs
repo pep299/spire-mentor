@@ -777,6 +777,12 @@ fn apply_damage_with_final_impl(
         };
     }
 
+    // Inside a multi-target `CreatureCmd.Damage` this hit's after-hit hooks
+    // wait for every target's HP loss (see `with_deferred_enemy_deaths`).
+    // The batch is held aside while this hit's first stage runs, so damage a
+    // hook deals in between (a Thorns reflect) resolves whole, inline.
+    let tail_batch = state.combat_log.deferred_hit_tails.take();
+
     // Step 2: before-damage-received event hook. Bead sts2-rs-3to (P2-2b)
     // promoted the dispatcher to `(state: &mut CombatState, ...)`: listeners
     // produce deferred-effect queue entries (Thorns: reflective
@@ -1003,9 +1009,6 @@ fn apply_damage_with_final_impl(
             q.push(target);
         }
     }
-    if just_died && !defer_death {
-        kill_before_death(state, target);
-    }
     // Bead `sts2-rs-q6bix` (ConstrictPower.AfterDeath): when the creature
     // that APPLIED a Constrict dies, the Constrict drops off its target.
     // C# `MegaCrit.Sts2.Core.Models.Powers/ConstrictPower.cs:24-31`:
@@ -1028,9 +1031,6 @@ fn apply_damage_with_final_impl(
     } else {
         crate::Side::Player
     };
-    if just_died && !defer_death {
-        kill_after_death_powers(state, target, dead_side);
-    }
 
     // Bead `sts2-rs-c7ak`: record per-target hit into the in-flight
     // [`ActiveAttack`] frame (if any). `HandDrill` reads
@@ -1060,17 +1060,6 @@ fn apply_damage_with_final_impl(
     } else {
         false
     };
-    if was_block_broken {
-        let breaker = dealer.to_creature_uid(state);
-        hooks::dispatch_after_block_broken(
-            state,
-            &hooks::AfterBlockBrokenCtx {
-                broken: target,
-                breaker,
-            },
-        );
-    }
-
     // Bead `sts2-rs-jm6e` (ozy.4-rider): tally a player-as-dealer
     // powered hit for `BeatIntoShape`'s `forge_per_hit` rider
     // (`sts2-rl-agent@01c094d:sts2_env/cards/regent.py:599-607`).
@@ -1161,10 +1150,121 @@ fn apply_damage_with_final_impl(
     // on the faithful flag (a 0-damage attack on a 0-block enemy is NOT fully
     // blocked).
     let was_fully_blocked = target_fully_blocked_arm && modified_hp_loss == 0;
-    // `target_ref` is always `CreatureRef::Enemy`, so the enemy-target
-    // dispatches skip the player-target lanes' kinds in their liveness test
-    // (J06).
-    hooks::dispatch_after_damage_received_enemy_target(state, &ctx, hp_loss);
+    let tail = HitTail {
+        card_source: ctx.card_source,
+        dealer,
+        target,
+        props,
+        final_damage,
+        unblocked,
+        blocked,
+        hp_loss,
+        was_block_broken,
+        was_fully_blocked,
+        run_kill: just_died && !defer_death,
+        dead_side,
+    };
+    // C# `CreatureCmd.Damage` runs every target's HP loss first, then the
+    // after-hit hooks per result (CreatureCmd.cs:394-430; v0.107.1 :359-408).
+    // Inside a multi-target call the tail waits for the batch flush.
+    state.combat_log.deferred_hit_tails = tail_batch;
+    if let Some(q) = state.combat_log.deferred_hit_tails.as_mut() {
+        q.push(tail);
+    } else {
+        finish_hit_tail(state, &tail);
+    }
+
+    // C# `DamageResult` split (`DamageResult.cs`): `UnblockedDamage` is the
+    // clamped HP loss, `OverkillDamage` is the residual beyond it on a lethal
+    // hit. `modified_hp_loss` is the unclamped post-block, post-`modify_hp_lost`
+    // damage that reached HP (= `UnblockedDamage + OverkillDamage`), so the
+    // overkill portion is `modified_hp_loss - hp_loss`.
+    //
+    // Gate it on `just_died`: C# `Creature.LoseHpInternal` (Creature.cs:377-385)
+    // sets `OverkillDamage = flag ? max(num - currentHp, 0) : 0` where
+    // `flag = CurrentHp > 0 && amount >= CurrentHp` — overkill is reported ONLY
+    // when the hit KILLS a LIVING target. Rust's `just_died`
+    // (`pre_hp > 0 && current_hp <= 0`) is that exact predicate. Without the
+    // gate, a hit on an already-0-HP corpse (Rust retains dead enemies in the
+    // array, unlike C#) reported `overkill = modified_hp_loss` (full damage),
+    // since `hp_loss` clamps to 0 — which Fisticuffs / Omnislice
+    // (`block`/`splash = total_damage + overkill`) turned into an over-grant of
+    // the full hit. Bead `sts2-rs-xch4i`.
+    let overkill = if just_died {
+        (modified_hp_loss - hp_loss).max(0)
+    } else {
+        0
+    };
+    DamageOutcome {
+        hp_loss,
+        blocked,
+        overkill,
+        // C# `DamageResult.TotalDamage` (`DamageResult.cs:17`:
+        // `TotalDamage => BlockedDamage + UnblockedDamage`).
+        total_damage: blocked.saturating_add(hp_loss),
+        // C# `DamageResult.WasTargetKilled` (`Creature.cs:447`): `just_died`
+        // is the same `CurrentHp > 0 && amount >= CurrentHp` predicate, read
+        // at the HP write, before any death interrupt revives the target.
+        was_target_killed: just_died,
+    }
+}
+
+/// The after-hit stage of one `CreatureCmd.Damage` result (C# loop 2,
+/// CreatureCmd.cs:394-430; v0.107.1 :359-408): `AfterBlockBroken`, then the
+/// received/given hooks, then (outside a batch) the kill's relic `AfterDeath`
+/// walk and death-power tail. A multi-target call runs every target's HP loss
+/// before any of these (see [`with_deferred_enemy_deaths`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HitTail {
+    card_source: Option<crate::CardUid>,
+    dealer: CreatureRef,
+    target: CreatureUid,
+    props: ValueProps,
+    final_damage: i32,
+    unblocked: i32,
+    blocked: i32,
+    hp_loss: i32,
+    was_block_broken: bool,
+    was_fully_blocked: bool,
+    /// The hit killed its target outside a deferred-death batch, so the kill
+    /// tail (relic `AfterDeath`, the death power) is this hit's to run.
+    run_kill: bool,
+    dead_side: crate::Side,
+}
+
+fn finish_hit_tail(state: &mut CombatState, tail: &HitTail) {
+    let HitTail {
+        card_source,
+        dealer,
+        target,
+        props,
+        final_damage,
+        unblocked,
+        blocked,
+        hp_loss,
+        was_block_broken,
+        was_fully_blocked,
+        run_kill,
+        dead_side,
+    } = *tail;
+    let target_ref = CreatureRef::Enemy(target);
+    let ctx = DamageCtx {
+        card_source,
+        dealer,
+        target: target_ref,
+        props,
+    };
+    // AfterBlockBroken precedes the received/given hooks (C# result loop).
+    if was_block_broken {
+        let breaker = dealer.to_creature_uid(state);
+        hooks::dispatch_after_block_broken(
+            state,
+            &hooks::AfterBlockBrokenCtx {
+                broken: target,
+                breaker,
+            },
+        );
+    }
     // Bead `sts2-rs-ybtmu`: pass the post-block `unblocked` residual (not
     // pre-block `final_damage`) so the Envenom / PaperCuts arms gate on C#'s
     // `UnblockedDamage > 0` — a fully-blocked powered hit triggers neither.
@@ -1235,6 +1335,15 @@ fn apply_damage_with_final_impl(
         }
     }
 
+    // C# `CreatureCmd.Damage` fires `Hook.AfterDamageGiven` BEFORE
+    // `Hook.AfterDamageReceived` for each result (CreatureCmd.cs:388-395, both
+    // builds): MonarchsGaze's Strength-down lands before PlowPower's
+    // AfterDamageReceived strips the TemporaryStrength family (loadout Regent
+    // v0.107.1 2014). `target_ref` is always `CreatureRef::Enemy`, so the
+    // enemy-target dispatch skips the player-target lanes' kinds in its
+    // liveness test (J06).
+    hooks::dispatch_after_damage_received_enemy_target(state, &ctx, hp_loss);
+
     // GH #806: HardenedShell's `AfterDamageReceived` tally runs after the
     // given-side hooks above, as in C# (`Hook.AfterDamageGiven` precedes
     // `Hook.AfterDamageReceived`, CreatureCmd.cs:388-393). A hit nested in
@@ -1252,7 +1361,16 @@ fn apply_damage_with_final_impl(
     // The death power whose `AfterDeath` handler fires here; its kill tail
     // (`enemy_death_effects::finish_kill`) follows.
     let mut death_power_fired: Option<crate::PowerKind> = None;
-    if just_died && !defer_death {
+    if run_kill {
+        // The whole `Kill` follows this hit's AfterDamageGiven hooks
+        // (CreatureCmd.cs:388-409), its BeforeDeath and power teardown
+        // included — the same order the deferred multi-target path keeps
+        // (`with_deferred_enemy_deaths`). A dying Illusion's Debuffs are
+        // stripped only then, so a killing Osty hit on a SicEm-marked
+        // Parafright still summons (SicEmPower.AfterDamageGiven; loadout
+        // Necrobinder 1148: Osty 10 in C#, 7 in Rust).
+        kill_before_death(state, target);
+        kill_after_death_powers(state, target, dead_side);
         kill_relic_after_death(state, target, dead_side);
         death_power_fired = kill_dying_enemy_after_death(state, target, dead_side);
     }
@@ -1267,40 +1385,6 @@ fn apply_damage_with_final_impl(
     // still there to be stripped (the Waterfall Giant's revive, #830).
     if let Some(kind) = death_power_fired {
         crate::enemy_death_effects::finish_kill(state, target, kind);
-    }
-
-    // C# `DamageResult` split (`DamageResult.cs`): `UnblockedDamage` is the
-    // clamped HP loss, `OverkillDamage` is the residual beyond it on a lethal
-    // hit. `modified_hp_loss` is the unclamped post-block, post-`modify_hp_lost`
-    // damage that reached HP (= `UnblockedDamage + OverkillDamage`), so the
-    // overkill portion is `modified_hp_loss - hp_loss`.
-    //
-    // Gate it on `just_died`: C# `Creature.LoseHpInternal` (Creature.cs:377-385)
-    // sets `OverkillDamage = flag ? max(num - currentHp, 0) : 0` where
-    // `flag = CurrentHp > 0 && amount >= CurrentHp` — overkill is reported ONLY
-    // when the hit KILLS a LIVING target. Rust's `just_died`
-    // (`pre_hp > 0 && current_hp <= 0`) is that exact predicate. Without the
-    // gate, a hit on an already-0-HP corpse (Rust retains dead enemies in the
-    // array, unlike C#) reported `overkill = modified_hp_loss` (full damage),
-    // since `hp_loss` clamps to 0 — which Fisticuffs / Omnislice
-    // (`block`/`splash = total_damage + overkill`) turned into an over-grant of
-    // the full hit. Bead `sts2-rs-xch4i`.
-    let overkill = if just_died {
-        (modified_hp_loss - hp_loss).max(0)
-    } else {
-        0
-    };
-    DamageOutcome {
-        hp_loss,
-        blocked,
-        overkill,
-        // C# `DamageResult.TotalDamage` (`DamageResult.cs:17`:
-        // `TotalDamage => BlockedDamage + UnblockedDamage`).
-        total_damage: blocked.saturating_add(hp_loss),
-        // C# `DamageResult.WasTargetKilled` (`Creature.cs:447`): `just_died`
-        // is the same `CurrentHp > 0 && amount >= CurrentHp` predicate, read
-        // at the HP write, before any death interrupt revives the target.
-        was_target_killed: just_died,
     }
 }
 
@@ -1435,33 +1519,55 @@ fn kill_dying_enemy_after_death(
 /// The relic-side `AfterDeath` bus for a killed creature, then the player's
 /// cards (Melancholy), which follow the relics in each player's listener list
 /// (`CombatState.cs:128-160`).
+///
+/// C# runs every `AfterDeath` listener under a `HookPlayerChoiceContext`
+/// (Hook.cs:594-606, both builds), so a select one opens (Gremlin Horn's draw
+/// reshuffling into a Stratagem pick) does not halt the kill: it is parked
+/// until the surrounding flow is done (see [`crate::ParkedHookChoice`]).
 fn kill_relic_after_death(state: &mut CombatState, target: CreatureUid, dead_side: crate::Side) {
     let ctx = hooks::AfterDeathCtx {
         dead: target,
         dead_side,
     };
-    let _ = crate::relic_effects::dispatch_after_death(state, &ctx);
-    crate::coop::seat_pass(state, &ctx, |state, ctx| {
-        let _ = crate::relic_effects::dispatch_after_death(state, ctx);
+    crate::run_nonblocking_hook(state, |state| {
+        let _ = crate::relic_effects::dispatch_after_death(state, &ctx);
+        crate::coop::seat_pass(state, &ctx, |state, ctx| {
+            let _ = crate::relic_effects::dispatch_after_death(state, ctx);
+        });
+        hooks::dispatch_after_death_cards(state, &ctx);
     });
-    hooks::dispatch_after_death_cards(state, &ctx);
 }
 
-/// Run `body` — the hits of ONE multi-target `CreatureCmd.Damage` — with
-/// enemy deaths deferred to the end, then kill every enemy it felled in hit
-/// order. C# applies all the HP loss, runs the per-result hooks, and only
-/// then calls `Kill(killedCreatures)` (CreatureCmd.cs:351-409), so an AoE
-/// that kills one crab hits its sibling before `CrabRagePower` reacts to the
-/// death (Regent act23 seed 1010). Nested calls join the outer batch.
+/// Run `body` — the hits of ONE multi-target `CreatureCmd.Damage` — as C#
+/// does (CreatureCmd.cs:394-431; v0.107.1 :359-409): every target loses its
+/// HP first, then each result's after-hit hooks run in hit order, and only
+/// then does `Kill(killedCreatures)` kill every enemy it felled. So an AoE that
+/// kills one crab hits its sibling before `CrabRagePower` reacts to the death
+/// (Regent act23 seed 1010), and Envenom's Poison on the first target (and an
+/// Outbreak it sets off) waits for the last target's HP loss (Silent loadout
+/// 1000, 1037). A nested call flushes its own hooks; its kills join the outer
+/// batch's.
 pub fn with_deferred_enemy_deaths<R>(
     state: &mut CombatState,
     body: impl FnOnce(&mut CombatState) -> R,
 ) -> R {
-    if state.combat_log.deferred_enemy_deaths.is_some() {
-        return body(state);
+    let outer_tails = state
+        .combat_log
+        .deferred_hit_tails
+        .replace(smallvec::SmallVec::new());
+    let own_deaths = state.combat_log.deferred_enemy_deaths.is_none();
+    if own_deaths {
+        state.combat_log.deferred_enemy_deaths = Some(smallvec::SmallVec::new());
     }
-    state.combat_log.deferred_enemy_deaths = Some(smallvec::SmallVec::new());
     let out = body(state);
+    let tails = std::mem::replace(&mut state.combat_log.deferred_hit_tails, outer_tails)
+        .unwrap_or_default();
+    for tail in &tails {
+        finish_hit_tail(state, tail);
+    }
+    if !own_deaths {
+        return out;
+    }
     let killed = state
         .combat_log
         .deferred_enemy_deaths

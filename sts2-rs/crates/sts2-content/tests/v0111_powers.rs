@@ -374,6 +374,48 @@ fn juggling_clones_before_play_v0111() {
     assert_eq!(juggled_fiend_fire(GameVersion::V0_111_0), (0, 4));
 }
 
+/// Strike as the turn's 3rd Attack under Juggling(1) and Calamity(1), the two
+/// powers applied in `juggling_first` order. Returns the hand's card ids.
+fn juggled_with_calamity(juggling_first: bool) -> Vec<CardId> {
+    let (mut state, _) = fresh(GameVersion::V0_107_1);
+    let p = player_uid(&state);
+    if juggling_first {
+        give(&mut state, p, PowerKind::Juggling, 1);
+        give(&mut state, p, PowerKind::Calamity, 1);
+    } else {
+        give(&mut state, p, PowerKind::Calamity, 1);
+        give(&mut state, p, PowerKind::Juggling, 1);
+    }
+    for pid in state.player_power_uids() {
+        if let Some(pw) = state.powers.get_mut_by_id(pid.0) {
+            if pw.kind == PowerKind::Juggling {
+                pw.counter = 2;
+            }
+        }
+    }
+    add_to_hand(&mut state, CardId::StrikeIronclad);
+    let _ = sts2_core::combat_loop::play_card(&mut state, 0, Some(0));
+    state
+        .player
+        .hand
+        .iter()
+        .filter_map(|u| sts2_core::card_by_uid(&state.cards, *u).map(|c| c.card_id))
+        .collect()
+}
+
+/// C# `Hook.AfterCardPlayed` walks the owner's powers in application order
+/// (`CombatState.IterateHookListeners`), so in v0.107.1 Juggling's clone and
+/// Calamity's conjured Attack land in the order the powers were applied.
+#[test]
+fn juggling_and_calamity_add_to_hand_in_application_order_v0107() {
+    let hand = juggled_with_calamity(true);
+    assert_eq!(hand.len(), 2);
+    assert_eq!(hand[0], CardId::StrikeIronclad, "{hand:?}");
+    let hand = juggled_with_calamity(false);
+    assert_eq!(hand.len(), 2);
+    assert_eq!(hand[1], CardId::StrikeIronclad, "{hand:?}");
+}
+
 // ── PaleBlueDotPower rework ───────────────────────────────────────────────
 
 /// Play `n` Defends under PaleBlueDot(1); returns the DrawCardsNextTurn stack.
@@ -496,6 +538,38 @@ fn feral_slot_goes_to_the_outer_card_of_a_nested_auto_play() {
     );
     assert!(state.player.discard.contains(&ftl), "FTL discarded");
     assert!(!state.player.hand.contains(&ftl), "FTL not returned");
+}
+
+/// Feral returns the card to (Hand, Top); with a full hand `CardPileCmd.Add`
+/// sends it to Discard at that same Top position (index 0,
+/// CardPileCmd.cs:420-424/511-516), not the bottom (loadout Defect v0.107.1
+/// 2008). Flash of Steel draws the tenth card first.
+#[test]
+fn feral_return_to_a_full_hand_lands_on_discard_top() {
+    for version in [GameVersion::V0_107_1, GameVersion::V0_111_0] {
+        let (mut state, _) = fresh(version);
+        let p = player_uid(&state);
+        give(&mut state, p, PowerKind::Feral, 1);
+        let flash = add_zero_cost_to_hand(&mut state, CardId::FlashOfSteel);
+        for _ in 0..9 {
+            let _ = add_to_hand(&mut state, CardId::DefendIronclad);
+        }
+        let drawn = add_to_hand(&mut state, CardId::DefendIronclad);
+        let old = add_to_hand(&mut state, CardId::DefendIronclad);
+        state.player.hand.retain(|u| *u != drawn && *u != old);
+        state.player.draw.push(drawn);
+        state.player.discard.push(old);
+        assert_eq!(state.player.hand.len(), 10);
+
+        let _ = sts2_core::combat_loop::play_card(&mut state, 0, Some(0));
+
+        assert_eq!(state.player.hand.len(), 10, "{version:?}: hand full");
+        assert_eq!(
+            state.player.discard.as_slice(),
+            &[flash, old],
+            "{version:?}: Feral's Top overflow goes to discard[0]"
+        );
+    }
 }
 
 /// `FeralPower.cs:60-66`: once Feral is on, `zeroCostAttacksPlayed` only moves

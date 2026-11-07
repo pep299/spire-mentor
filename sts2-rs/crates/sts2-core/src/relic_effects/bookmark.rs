@@ -8,41 +8,40 @@ use super::prelude::*;
 ///
 /// [decompiled C# omitted — see the cited path]
 ///
-/// The Rust relic `after_turn_end` dispatch runs AFTER the end-of-turn
-/// flush (`combat_loop::end_player_turn_phase_two_flush_tail` Step 5 moves
-/// non-retained cards to discard before the Step 7 `after_turn_end` walk),
-/// so the player's `hand` at this point is exactly the C# `retainedCards`
-/// set. Selection now uses the `CombatCardSelection` RNG (`NextItem` ==
-/// `NextInt(0, count)`), replacing the prior Python-pin first-card pick.
+/// C# runs `Hook.AfterFlush` inside `FlushPlayerHand` (CombatManager.cs:1347,
+/// both builds) right after the non-retained cards go to the discard and
+/// BEFORE `EndOfTurnCleanup` (:1349) drops the this-turn cost modifiers. So it
+/// is not an `AfterTurnEnd` listener: `combat_loop::end_player_turn_phase_two_flush_tail`
+/// calls [`after_flush_bookmark`] between the flush and
+/// `clear_per_turn_card_vars`, where the hand is exactly C#'s `retainedCards`
+/// and a free-this-turn card still has local cost 0 (loadout Necrobinder
+/// v0.107.1 2032: Rust ran it after the cleanup, so a retained FreeThisTurn
+/// card was eligible and the pick rolled over a different list).
+/// Selection uses the `CombatCardSelection` RNG (`NextItem` ==
+/// `NextInt(0, count)`).
 ///
-/// `c.cost` is the local (non-global-modifier) cost, matching
-/// `GetWithModifiers(CostModifiers.Local)`. Bead `sts2-rs-gsda` (initial) /
-/// `…wb8lk.9` (v0.107.1 AfterFlush + random pick).
-pub(crate) fn on_after_turn_end_bookmark(state: &mut CombatState, side: Side) -> EffectResult {
-    if side != Side::Player {
-        return EffectResult::NotImplemented;
-    }
+/// The −1 is C#'s `AddUntilPlayed(-1)` — a `Relative`, `WhenPlayed` local
+/// modifier — so it banks in [`crate::cards::VarKey::CostReductionUntilPlayed`],
+/// which the play-time cleanup retires; a permanent `card.cost` decrement kept
+/// the discount through every later redraw. The filter's local cost is
+/// [`crate::hooks::local_card_cost`] (`GetWithModifiers(CostModifiers.Local)`).
+/// Bead `sts2-rs-gsda` (initial) / `…wb8lk.9` (v0.107.1 AfterFlush + random pick).
+pub(crate) fn after_flush_bookmark(state: &mut CombatState) {
     if !player_owns_relic(state, crate::RelicKind::Bookmark) {
-        return EffectResult::NotImplemented;
+        return;
     }
-    // Eligible = retained (post-flush hand) cards that still cost energy:
-    // local cost > 0, non-X, not freed this turn.
     let eligible: Vec<crate::CardUid> = state
         .player
         .hand
         .iter()
         .copied()
         .filter(|uid| {
-            crate::card_by_uid(&state.cards, *uid).is_some_and(|c| {
-                i32::from(c.cost) - c.combat_var(crate::cards::VarKey::CostReductionUntilPlayed) > 0
-                    && !c.is_x_cost()
-                    && (c.local_energy_cost.is_some()
-                        || c.combat_var(crate::cards::VarKey::FreeThisTurn) == 0)
-            })
+            crate::card_by_uid(&state.cards, *uid)
+                .is_some_and(|c| !c.is_x_cost() && crate::hooks::local_card_cost(state, c) > 0)
         })
         .collect();
     if eligible.is_empty() {
-        return EffectResult::Resolved;
+        return;
     }
     // C# `CombatCardSelection.NextItem(list)` — one roll, even on a
     // single-element list (`NextInt(0, 1) == 0`).
@@ -53,13 +52,8 @@ pub(crate) fn on_after_turn_end_bookmark(state: &mut CombatState, side: Side) ->
     if let Some(card) = crate::card_by_uid_mut(&mut state.cards, chosen) {
         card.add_cost_reduction_until_played(1);
     }
-    EffectResult::Resolved
 }
 
-pub(crate) fn install() {
-    register_owned_after_turn_end(
-        RelicId::Bookmark,
-        crate::RelicKind::Bookmark,
-        on_after_turn_end_bookmark as AfterTurnEndFn,
-    );
-}
+/// No channel listener: Bookmark is called from the flush (see
+/// [`after_flush_bookmark`]).
+pub(crate) fn install() {}

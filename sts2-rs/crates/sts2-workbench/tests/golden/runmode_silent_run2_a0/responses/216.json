@@ -1,89 +1,84 @@
 {
- "assumptions": {
-  "energy": 3,
-  "hand": 5,
-  "samples": 200
+ "config": {
+  "c_puct": 2.5,
+  "depth": 200,
+  "draw_widening_c": 2.0,
+  "hidden_info": "beliefdraw",
+  "seed": 1,
+  "sims": 48,
+  "threads": 1
  },
- "block": {
-  "per_turn": 7.1,
-  "scaling_cards": []
- },
- "composition": {
-  "by_rarity": {
-   "Basic": 12,
-   "Common": 3,
-   "Uncommon": 2
-  },
-  "by_type": {
-   "Attack": 8,
-   "Skill": 9
-  },
-  "dead_cards": 0,
-  "energy_curve": {
-   "0": 1,
-   "1": 14,
-   "2": 1,
-   "3": 1
-  },
-  "unupgraded_basics": 10
- },
- "damage": {
-  "aoe_attacks": [],
-  "attack_count": 8,
-  "per_turn": 11.2,
-  "scaling_cards": [
-   "Neutralize",
-   "Snakebite",
-   "Poisoned Stab",
-   "Piercing Wail"
-  ],
-  "single_target": 11.3,
-  "vs_group": 11.0
- },
- "deck_size": 17,
- "lenses": {
-  "boss": 18.6,
-  "hallway": 20.8,
-  "scaling": 17.4
- },
- "scores": {
-  "block": 29.9,
-  "damage": 24.3,
-  "velocity": 1.4,
-  "volume": 10.1
- },
- "velocity": {
-  "bottleneck": "energy",
-  "cards_per_turn": 2.7,
-  "dilution": 0.88,
-  "draw_limited_turns": 0.0,
-  "energy_limited_turns": 7.0,
-  "engine_cards": 1,
-  "extra_per_turn": 0.0,
-  "tags": {
-   "draw": 1
-  }
- },
- "warnings": [
+ "pv": null,
+ "scores": [
   {
-   "severity": "warn",
-   "text": "Thin on block and no block engine — big hits will land in Act 2+."
+   "action": "NEUTRALIZE.title",
+   "hp_n": 0,
+   "hp_sd": null,
+   "is_best": true,
+   "low_confidence": false,
+   "mean_final_hp": null,
+   "q": 1.2403,
+   "q_saturated": false,
+   "stable_idx": 2,
+   "target_index": null,
+   "visits": 6,
+   "win_prob": 1.0
   },
   {
-   "severity": "info",
-   "text": "No AOE — multi-enemy fights (Gremlins, hallways) will be slow."
+   "action": "STRIKE_SILENT.title",
+   "hp_n": 0,
+   "hp_sd": null,
+   "is_best": false,
+   "low_confidence": false,
+   "mean_final_hp": null,
+   "q": 1.2403,
+   "q_saturated": false,
+   "stable_idx": 0,
+   "target_index": null,
+   "visits": 6,
+   "win_prob": 1.0
   },
   {
-   "severity": "info",
-   "text": "Low velocity — few draw/energy cards; you'll often draw the wrong hand."
+   "action": "DEFEND_SILENT.title",
+   "hp_n": 0,
+   "hp_sd": null,
+   "is_best": false,
+   "low_confidence": false,
+   "mean_final_hp": null,
+   "q": 1.2377,
+   "q_saturated": false,
+   "stable_idx": 1,
+   "target_index": null,
+   "visits": 5,
+   "win_prob": 1.0
   },
   {
-   "severity": "info",
-   "text": "Energy-limited — cards stranded in hand; more energy helps, more draw won't."
+   "action": "SURVIVOR.title",
+   "hp_n": 0,
+   "hp_sd": null,
+   "is_best": false,
+   "low_confidence": false,
+   "mean_final_hp": null,
+   "q": 1.2355,
+   "q_saturated": false,
+   "stable_idx": 4,
+   "target_index": null,
+   "visits": 5,
+   "win_prob": 1.0
   },
   {
-   "severity": "warn",
-   "text": "Deck clogged with basics/curses — prioritise removals."
+   "action": "end turn",
+   "hp_n": 0,
+   "hp_sd": null,
+   "is_best": false,
+   "low_confidence": false,
+   "mean_final_hp": null,
+   "q": 1.2019,
+   "q_saturated": false,
+   "stable_idx": -1,
+   "target_index": null,
+   "visits": 5,
+   "win_prob": 1.0
   }
  ]
 }

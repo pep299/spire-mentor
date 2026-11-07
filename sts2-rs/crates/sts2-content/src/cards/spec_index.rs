@@ -2049,38 +2049,6 @@ pub fn card_pod_from_id(card_id: CardId, upgraded: bool) -> Option<sts2_core::ca
 /// cards in a live draw pile. Registered with
 /// [`sts2_core::register_card_rarity_rank`] by
 /// `cards::dispatch::install_default_registry`. Bead `sts2-rs-63mew`.
-/// Reconstruct a card's C# `ModelId.Entry` (the PascalCase class name, e.g.
-/// `SeekerStrike`, `IronWave`, `Vicious`, `Thunderclap`) from its Rust
-/// python-name (`SCREAMING_SNAKE`, e.g. `SEEKER_STRIKE`, `IRON_WAVE`,
-/// `VICIOUS_CARD`, `THUNDERCLAP`).
-///
-/// C# `CardSelectCmd` Draw-pile selects order options by `(Rarity, Id)` where
-/// `Id` is the `ModelId`, compared ordinally by `Entry`
-/// (`ModelId.CompareTo` → `string.Compare(Entry, …, Ordinal)`,
-/// `CardSelectCmd.cs:407`). The python-name's `_` separators (byte 0x5F) and
-/// the `_CARD` disambiguation suffix (absent in C#) break that ordinal order
-/// versus PascalCase, so a raw python-name sort picks the wrong option for some
-/// draw piles. The transform — drop a trailing `_CARD`, then PascalCase each
-/// `_`-token — reproduces the decomp class name for 576/580 cards (the 4
-/// residual placeholders are curses/statuses that never surface in a select).
-#[must_use]
-pub fn card_csharp_entry(card_id: CardId) -> String {
-    let name = card_id.to_python_name();
-    let base = name.strip_suffix("_CARD").unwrap_or(name);
-    base.split('_')
-        .filter(|tok| !tok.is_empty())
-        .map(|tok| {
-            let mut out = String::with_capacity(tok.len());
-            let mut chars = tok.chars();
-            if let Some(first) = chars.next() {
-                out.push(first.to_ascii_uppercase());
-                out.extend(chars.map(|c| c.to_ascii_lowercase()));
-            }
-            out
-        })
-        .collect()
-}
-
 #[must_use]
 pub fn card_rarity_rank_csharp(card_id: CardId) -> u8 {
     card_rarity_rank_csharp_in(card_id, sts2_core::GameVersion::V0_107_1)
@@ -4083,6 +4051,8 @@ mod tests {
             },
         );
         let mut rs = RunState::new();
+        // Dispatch walks the owned relics, so own the sentinel's slot.
+        rs.relics.push(sts2_core::RelicId::FresnelLens);
         let opts = sts2_core::runstate::CardRewardGenerationOptions::default();
         let cards = roll_card_reward_cards(&mut rs, opts, CharacterId::Ironclad);
         assert!(!cards.is_empty());

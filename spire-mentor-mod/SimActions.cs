@@ -20,7 +20,9 @@ internal static class SimActions
     /// all back (Ctrl+H / the pill / Panels menu).</summary>
     public static void ToggleHideAll() => SimUiHide.Toggle();
 
-    public static void NudgeSpeed(double offset) => SimSpeed.Nudge(offset);
+    /// <summary>F9 / F10 and the toolbar -/+: one whole speed down / up
+    /// (SpeedSteps).</summary>
+    public static void StepSpeed(int direction) => SimSpeed.Step(direction);
 
     /// <summary>Copy this position to the clipboard for the workbench's
     /// live-state import (SimStateCopy).</summary>
@@ -74,6 +76,11 @@ internal static class SimActions
     /// <summary>AI plays until stopped (F7 / toolbar), toggled.</summary>
     public static void ToggleAutoplay(string surface) =>
         RequireAdvisor(surface, () => SimAdvisor.Instance.ToggleAutoPlay());
+
+    /// <summary>Autobattle (Shift+F7 / toolbar), toggled: the AI plays the
+    /// fights, you make every run-level decision (Autobattle.cs).</summary>
+    public static void ToggleAutobattle(string surface) =>
+        RequireAdvisor(surface, () => SimAdvisor.Instance.ToggleAutobattle());
 
     /// <summary>
     /// F8 / the on-off button: AI off &lt;-&gt; on in the current style

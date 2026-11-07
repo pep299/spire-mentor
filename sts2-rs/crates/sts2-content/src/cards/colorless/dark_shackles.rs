@@ -22,21 +22,18 @@ pub(crate) fn play_dark_shackles(
     let t = target.expect("DarkShackles: Enemy-targeted");
     // C# DarkShackles.cs OnUpgrade bumps StrengthLoss 9->15. Bead `sts2-rs-0otgm`.
     let amt = if current_upgraded(state) { 15 } else { 9 };
-    // Apply DarkShackles first; if Artifact (or another ModifyPowerAmountReceived
-    // listener) blocks it, the amount on the creature will NOT increase and we
-    // must NOT apply the Strength drain (C# BeforeApplied receives 0 → no-op).
-    let before = power_amount_on_creature(state, t, PowerKind::DarkShackles);
-    apply_power_to_creature(state, t, PowerKind::DarkShackles, amt);
-    let after = power_amount_on_creature(state, t, PowerKind::DarkShackles);
-    if after > before {
-        // TemporaryStrengthPower.BeforeApplied (TemporaryStrengthPower.cs:134-136
-        // v0.111.0): `PowerCmd.Apply<StrengthPower>(target, Sign * amount, ...)`
-        // with Sign = -1 for IsPositive=false, where `amount` is the MODIFIED
-        // amount (PowerCmd.cs:129-136): twice the base under Unsettling Lamp,
-        // whose `HasDoubledTemporaryPowerSource` skips the inner Strength
-        // (UnsettlingLamp.cs:169). Drain what landed, not the base.
-        apply_power_signed_to_creature(state, t, PowerKind::Strength, -(after - before));
-    }
+    // TemporaryStrengthPower.BeforeApplied (TemporaryStrengthPower.cs:134-136
+    // v0.111.0) drains `Sign * amount` Strength with the MODIFIED amount
+    // (PowerCmd.cs:129-136): nothing under Artifact, twice the base under
+    // Unsettling Lamp, and BEFORE the power lands, so a target the drain's
+    // Sleight of Flesh kills gets no DarkShackles (loadout Necrobinder 1189
+    // v0.111.0 act2).
+    sts2_core::card_effects::apply_temporary_strength_debuff(
+        state,
+        t,
+        PowerKind::DarkShackles,
+        amt,
+    );
     EffectResult::Resolved
 }
 

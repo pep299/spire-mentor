@@ -603,6 +603,29 @@ pub fn deck_card_spec_pool() -> Vec<crate::cards::CardSpec> {
         .collect()
 }
 
+/// Look `card_id` up in a [`deck_card_spec_pool`] snapshot, falling back to
+/// the v0.111.0-only cards ([`crate::cards::spec_index::V0111_ONLY_SPECS`]).
+///
+/// Those cards are kept out of the pool on purpose (it feeds the CLI
+/// random-deck samplers), but a v0.111.0 run can still hold one — Abundance
+/// via the Dowsing quest — and every deck-card eligibility scan must see it
+/// (C# `BeautifulBracelet.AfterObtained` filters the whole Deck pile by
+/// `swift.CanEnchant`, BeautifulBracelet.cs:31-44). Same fallback shape as
+/// [`resolve_card_name`]. The fallback is only reached on a pool miss, so it
+/// cannot change a v0.107.1 result.
+#[must_use]
+pub fn find_deck_card_spec(
+    pool: &[crate::cards::CardSpec],
+    card_id: CardId,
+) -> Option<crate::cards::CardSpec> {
+    pool.iter().find(|s| s.id == card_id).copied().or_else(|| {
+        crate::cards::spec_index::V0111_ONLY_SPECS
+            .iter()
+            .map(|f| f())
+            .find(|spec| spec.id == card_id)
+    })
+}
+
 /// Class-filtered view of [`deck_card_spec_pool`]. Used by the CLI
 /// `--deck-preset random` path (bead `sts2-rs-9yoh` / cliext F4) to
 /// avoid mixing Ironclad and Silent cards in a single random deck.

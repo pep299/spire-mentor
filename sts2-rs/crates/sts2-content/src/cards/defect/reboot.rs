@@ -19,11 +19,10 @@ pub(crate) fn play_reboot(state: &mut CombatState, _t: Option<CreatureUid>) -> E
     for uid in hand_uids {
         state.player.draw.push(uid);
     }
-    state.shuffle_draw_pile();
     // C# `Reboot.cs` `CardsVar(4)` with `OnUpgrade UpgradeValueBy(2m)`
     // → draw 4 base / draw 6 upgraded.
     let draws = if current_card_upgraded(state) { 6 } else { 4 };
-    let _ = sts2_core::cards::draw_via_state(state, draws);
+    state.shuffle_then_draw(draws);
     EffectResult::Resolved
 }
 

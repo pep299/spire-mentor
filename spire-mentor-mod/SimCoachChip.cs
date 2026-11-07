@@ -6,7 +6,10 @@
 //
 // Behaviour:
 //   * one chip at a time; a new chip replaces an unpinned one, a pinned chip
-//     stays and the new one stacks below it (max 2);
+//     stays and the new one stacks below it (max 2) -- except that
+//     autobattle's "since your last stop" chip (Autobattle.cs) only replaces
+//     its own kind, so it shows next to the verdict on the last pick, and
+//     stays until SimAdvisor withdraws it;
 //   * click the chip to pin it (gold border), click again to unpin; the small
 //     x closes it;
 //   * a chip stays long enough to read -- a turn chip 20 s (it outlives the
@@ -77,7 +80,11 @@ internal sealed class SimCoachChip
             {
                 Remove(same, fade: false);
             }
-            foreach (Chip unpinned in _chips.Where(c => !c.Pinned).ToList())
+            // A new chip replaces the unpinned one of its own group: the
+            // coach's verdict on the last pick and autobattle's "since your
+            // last stop" for this one (Autobattle.cs) show side by side.
+            bool autobattle = text.Kind == Autobattle.ChipKind;
+            foreach (Chip unpinned in _chips.Where(c => !c.Pinned && (c.Kind == Autobattle.ChipKind) == autobattle).ToList())
             {
                 Remove(unpinned, fade: false);
             }
@@ -93,7 +100,14 @@ internal sealed class SimCoachChip
                 ShownAtMs = Time.GetTicksMsec(),
                 // The enemy turn alone is too short to read a chip in, so a
                 // turn chip is not tied to the next turn start.
-                Seconds = text.Kind == "turn" ? TurnChipSeconds : ChoiceChipSeconds,
+                // An autobattle chip stays up while the player decides;
+                // SimAdvisor withdraws it once the AI plays on.
+                Seconds = text.Kind switch
+                {
+                    "turn" => TurnChipSeconds,
+                    Autobattle.ChipKind => double.PositiveInfinity,
+                    _ => ChoiceChipSeconds,
+                },
             };
             Build(chip, text);
             _chips.Add(chip);
@@ -233,7 +247,7 @@ internal sealed class SimCoachChip
             ulong now = Time.GetTicksMsec();
             foreach (Chip c in _chips.Where(c => !c.Pinned && !c.Leaving).ToList())
             {
-                if (now - c.ShownAtMs > (ulong)(c.Seconds * 1000))
+                if (!double.IsPositiveInfinity(c.Seconds) && now - c.ShownAtMs > (ulong)(c.Seconds * 1000))
                 {
                     Remove(c, fade: true);
                 }

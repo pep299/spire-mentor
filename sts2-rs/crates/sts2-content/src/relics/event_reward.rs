@@ -109,7 +109,7 @@
 //!
 //! Several event-reward relics carry per-instance counters
 //! (`BingBong._skip_next`, `BoneTea._combats_left`,
-//! `DreamCatcher._procs_left`, `HandDrill._dmg_buff_used`,
+//! `HandDrill._dmg_buff_used`,
 //! `HistoryCourse._uses_left`, `MawBank._spent`,
 //! `MrStruggles._purchases_left`, `WongosMysteryTicket._used`).
 //! Their per-instance counters will live on the runtime `Relic` POD
@@ -499,6 +499,12 @@ fn install_listeners() {
     register_modify_card_reward_options_late(
         RelicId::LavaLamp,
         listener_lava_lamp_card_reward as ModifyCardRewardOptionsLateRunFn,
+    );
+    // C# `LavaLamp.AfterRoomEntered` clears `TookDamageThisCombat` on
+    // every room entry (both builds), so the flag is per-combat.
+    register_after_room_entered(
+        RelicId::LavaLamp,
+        listener_lava_lamp_after_room_entered as AfterRoomEnteredRunFn,
     );
 
     // sts2-rs-v9zer — PaelsTooth: on pickup, stash up to 5
@@ -1066,10 +1072,6 @@ fn listener_history_course(state: &mut CombatState) -> EffectResult {
     // combat_targets draw C# never makes (Silent mid seed 1472, SEAPUNK_WEAK).
     // Same C# in v0.107.1 and v0.111.0, so both builds (GH #806).
     let dupe_target_type = sts2_core::cards::effective_target_type(state, &dupe);
-    // Captured before the dupe is moved into `state.cards` — needed to build
-    // the `after_card_played` contexts below (bead `sts2-rs-50un1` follow-up).
-    let dupe_card_type = dupe.card_type;
-    let dupe_tags = dupe.tags;
     // C# `CardCmd.AutoPlay` checks `Hook.ShouldPlay` BEFORE resolving the
     // target / playing (`CardCmd.cs:64-73`): a Ringing / Sloth / Bound-blocked
     // auto-play is rerouted via `MoveToResultPileWithoutPlaying` — the card is
@@ -1122,13 +1124,6 @@ fn listener_history_course(state: &mut CombatState) -> EffectResult {
         );
         return EffectResult::Resolved;
     }
-    // C# fires `Hook.BeforeCardPlayed` for the dupe auto-play too —
-    // `SurroundedPower.BeforeCardPlayed` re-faces the surrounded player
-    // toward the dupe's target, deciding which KaiserCrab arm back-attacks
-    // at 1.5x (sweep seeds 3998/5583). No-op without Surrounded.
-    if let Some(t) = target {
-        sts2_core::hooks::update_surrounded_facing(state, t);
-    }
     let new_uid = sts2_core::CardUid(
         std::num::NonZeroU32::new(u32::try_from(state.cards.len() + 1).unwrap_or(u32::MAX))
             .expect("non-zero"),
@@ -1139,414 +1134,29 @@ fn listener_history_course(state: &mut CombatState) -> EffectResult {
     // flag (MemberwiseClone; sweep seed 5192). The instance-clone above may
     // carry stale vars; force the flag regardless of source.
     dupe.set_combat_var(sts2_core::cards::VarKey::IsDupe, 1);
-    // Bead `sts2-rs-uh2mt`: an X-cost dupe (Whirlwind, etc.) resolves its
-    // X off `energy_spent` (the engine stamps this on a normal play; the dupe is
-    // synthesised fresh with `energy_spent = 0`). C# `CardModel.ResolveEnergyXValue`
-    // reads `EnergyCost.CapturedXValue`, which the auto-played dupe captures as the
-    // player's CURRENT energy (NOT spent — the dupe is free). So a HistoryCourse
-    // dupe of Whirlwind at turn start with 3 energy deals 5×3 to all enemies; the
-    // base-stat dupe dealt 5×0 = 0 (coverage seed 4708: LivingShield/Turret took
-    // 0 instead of 15). Stamp the captured X here for X-cost dupes.
-    let dupe_is_x = dupe.is_x_cost();
-    if dupe_is_x {
-        dupe.energy_spent = state.player.energy;
-    }
     state.cards.push(dupe);
-    state.player.play.push(new_uid);
-    // GH #741: a non-X auto-play's `EnergyValue` is
-    // `EnergyCost.GetAmountToSpend()` (`CardCmd.AutoPlay`), the dupe's
-    // modifier-resolved cost. Stamp it so RightHandHand / IvoryTile read this
-    // play, not a value the cloned card carried over.
-    if !dupe_is_x {
-        let cost = sts2_core::hooks::effective_card_cost(state, new_uid);
-        if let Some(c) = state.cards.last_mut() {
-            c.energy_spent = cost;
-        }
-    }
     // C# `CardCmd.AutoPlay` adds the freshly-`CreateDupe()`'d card (`Pile==null`)
     // to the Play pile via plain `CardPileCmd.Add` (`CardCmd.cs:115-117`), which
     // fires `Hook.AfterCardEnteredCombat(combatState, card)` (`CardPileCmd.cs:520`)
     // — the TWO-arg "entered combat" hook (no `creator`). It is NOT routed
     // through `AddGeneratedCardsToCombat`, so the THREE-arg
-    // `AfterCardGeneratedForCombat(card, creator)` hook does NOT fire. Regalite
-    // (and the other generation-only listeners Arsenal / Pillar / Smokestack /
-    // RocketPunch) override `AfterCardGeneratedForCombat`, so they must NOT
-    // grant block/Strength for a replayed HistoryCourse dupe. The Rust relic
-    // `after_card_entered_combat` channel currently hosts ONLY Regalite (a
-    // generation listener), so dispatching it here wrongly granted +2 Block
-    // for the dupe — Ironclad seed 3238: a HistoryCourse BattleTrance dupe at
-    // turn-2 start left player.block rs=2 vs cs=0 (`AfterCardGeneratedForCombat`
-    // never fires for the dupe in C#). The earlier comment / sweep-1db1 (seed
-    // 2418) misattributed Regalite's +2 to this dispatch; the +2 it observed
-    // came from a genuine card generation elsewhere, not the dupe. The monster
-    // powers DO override the two-arg `AfterCardEnteredCombat`, so keep their
-    // dispatch.
+    // `AfterCardGeneratedForCombat(card, creator)` hook does NOT fire: Regalite
+    // and the other generation-only listeners (Arsenal / Pillar / Smokestack /
+    // RocketPunch) grant nothing for the dupe (Ironclad seed 3238). The monster
+    // powers DO override the two-arg hook, so dispatch theirs.
+    state.player.play.push(new_uid);
     let _ = sts2_core::monster_power_effects::dispatch_after_card_entered_combat_on_monster_powers(
         state, new_uid,
     );
-    // Bead `sts2-rs-hc-stomp`: C# `CardModel.OnPlayWrapper` fires
-    // `Hook.BeforeCardPlayed` for the dupe too — `Stomp.BeforeCardPlayed`
-    // reduces every Stomp's cost by 1 when an Attack is played (including
-    // auto-plays). The auto-play path (`resolve_auto_played_card`) already
-    // mirrors this; this minimal dupe path did not, so a Stomp in hand kept
-    // full cost after a HistoryCourse attack dupe and `legal_actions` wrongly
-    // excluded a now-affordable Stomp (coverage seed 3460: STOMP cost rs=3 vs
-    // cs=2 at energy 2). Fire it BEFORE the dupe's OnPlay, matching C#'s
-    // BeforeCardPlayed→OnPlay order. Inert unless a Stomp with cost>0 exists.
-    if matches!(dupe_card_type, sts2_core::cards::CardType::Attack) {
-        state.discount_stomp_on_attack_played();
-    }
-    // C# `OnPlayWrapper` also fires `FreeAttackPower.BeforeCardPlayed` for the
-    // dupe — a free Attack/Skill/Power play decrements (and drops at 0) the
-    // matching Free* stack. The minimal dupe path skipped it, so a
-    // HistoryCourse-replayed Unrelenting added a fresh FreeAttack without
-    // consuming the existing one (sweep seed 945: FREE_ATTACK 2 vs C#'s 1).
-    // Fire it BEFORE the dupe's OnPlay, matching the normal play path
-    // (combat_loop `consume_free_card_power` at the BeforeCardPlayed slot).
-    let _ = sts2_core::combat_loop::consume_free_card_power(state, dupe_card_type);
-    // Bead `sts2-rs-ph5mx` follow-up: snapshot the powered-hit counter before
-    // the dupe's effect runs, exactly like `play_card` and
-    // `resolve_auto_played_card` do. The Vigor/Gigantification consume in
-    // `dispatch_after_card_played` gates on hits since this snapshot; without
-    // it the gate compared against a stale previous-play stamp and the dupe's
-    // powered Attack kept a Vigor that C# consumes (`VigorPower.cs:29-52,78-85`;
-    // sweep seed 5816).
-    state.player.powered_hits_at_card_play_start = state.player.powered_hits_this_turn;
-    state.combat_log.osty_attacks_at_card_play_start = state.combat_log.osty_attacks_this_turn;
-    sts2_core::hooks::latch_vigor_at_play_start(state, new_uid);
-    // Bead necro-player-misc B: C# `CardModel.OnPlayWrapper` fires
-    // `Hook.BeforeCardPlayed` for the dupe auto-play too (isAutoPlay=true,
-    // CardModel.cs:1930), so the played dupe must trigger the SAME
-    // before-card-played power reactions any auto-play does — DanseMacabre
-    // (resolved cost >= 2 → block), SpiritOfAsh (Ethereal → block) + Veilpiercer
-    // consume, TheSealedThrone stars, and the Afterimage/Strangle/SerpentForm/
-    // Oblivion/Monologue/Storm/Subroutine before-play AMOUNT snapshots (whose
-    // symmetric `dispatch_after_card_played` grants below then tick). The minimal
-    // dupe path hand-fired only Stomp-discount / FreeAttack / Surrounded; this
-    // dispatcher covers the rest (and does NOT double-fire those). `resolved_cost`
-    // mirrors the auto-play path (combat_loop.rs:7395-7399): X-cost dupe → the
-    // just-stamped `energy_spent`, else the modifier-resolved effective cost.
-    // Sweep seeds 1056/2409 (DanseMacabre/SpiritOfAsh block lost). A nested
-    // auto-play inside the dupe's OnPlay preserves this arming via
-    // `resolve_auto_played_card`'s own snapshot save/restore.
-    let dupe_idx_for_cost = new_uid.0.get() as usize - 1;
-    let dupe_resolved_cost = if state.cards[dupe_idx_for_cost].is_x_cost() {
-        state.cards[dupe_idx_for_cost].energy_spent
-    } else {
-        sts2_core::hooks::effective_card_cost(state, new_uid)
-    };
-    let dupe_is_ethereal =
-        sts2_core::combat_loop::card_is_ethereal_at_play(state, &state.cards[dupe_idx_for_cost]);
-    // The relic half of the same `Hook.BeforeCardPlayed` (IntimidatingHelmet,
-    // PenNib), with the auto-play's `EnergyValue` (CardCmd.cs:126).
-    let (parent_card_play, _) = sts2_core::combat_loop::start_card_play(state, dupe_card_type);
-    let before_played_ctx = sts2_core::relic_effects::CardEventCtx {
-        card_id,
-        card_uid: Some(new_uid),
-        target,
-        card_tags: dupe_tags,
-        energy_spent: 0,
-    };
-    sts2_core::combat_loop::dispatch_relic_before_card_played_replay(
-        state,
-        &before_played_ctx,
-        dupe_resolved_cost,
-    );
-    sts2_core::hooks::dispatch_before_card_played_powers(
-        state,
-        dupe_resolved_cost,
-        dupe_is_ethereal,
-    );
-    // v0.111.0: Juggling counts / clones in `BeforeCardPlayed` (decomp
-    // JugglingPower.cs:36). No-op before v0.111.0.
-    sts2_core::hooks::juggling_before_card_played_v0111(state, new_uid, dupe_card_type);
-    // The dupe's play is a first-in-series `CardPlayStarted` in C#, and its
-    // `GeneratePlayCount` asks EchoForm first (CardModel.cs:1896, :2019): the
-    // first card of a turn under EchoForm is this dupe, and it plays twice
-    // (Defect quick seed 530: HistoryCourse HOTFIX dupe → FOCUS 4 in C#).
-    let dupe_echoes = sts2_core::combat_loop::echo_form_would_echo(state);
-    sts2_core::combat_loop::count_first_in_series_play(state);
-    // Held across the dupe's whole `OnPlayWrapper` body (first `OnPlay`, the
-    // `after_card_played` buses, and the replay loop) — see the bead
-    // `sts2-rs-2itwm` note at the dispatch below. Restored just before disposal.
-    let prev_inline = state.autoplay_inline_resolve;
-    state.autoplay_inline_resolve = true;
-    // Bead `sts2-rs` (#181, seed 2385): the dupe can be an auto-play-hook
-    // card (Cascade/Havoc/Mayhem) whose OnPlay `AutoPlayFromDrawPile`s a
-    // batch — and one of THOSE auto-plays (e.g. an Armaments surfacing its
-    // upgrade-select) would otherwise SUSPEND, parking a
-    // `pending_autoplay_resume`. This minimal dupe path resolves the dupe
-    // synchronously and then unconditionally disposes it (pops the Play
-    // pile), so a suspend strands the inner card on Play and the pop
-    // corrupts the pile — dropping the surfacing card entirely (Armaments
-    // vanished: cs draw `[CASCADE, ARMAMENTS]` vs rust `[CASCADE]`). C#
-    // `await CardCmd.AutoPlay(dupe, null)` runs to completion before the
-    // OnPlayWrapper's disposal, with the headless ICardSelector resolving
-    // the nested select inline. Mirror that here (same fix shape as
-    // `sts2-rs-masterplanner-sly`, card_effects.rs): hold
-    // `autoplay_inline_resolve` so a nested surfacing select drains inline
-    // instead of suspending.
-    //
-    // Bead `sts2-rs-2itwm`: the guard must span the WHOLE `OnPlayWrapper`
-    // body — the first `OnPlay` AND every `GeneratePlayCount` replay below —
-    // because C# disposes the dupe only after the single `await
-    // CardCmd.AutoPlay(dupe, null)` that encloses all of them. It used to
-    // wrap this first dispatch alone, so a REPLAYED dupe
-    // (`BaseReplayCount`/HiddenGem, OneTwoPunch) ran its `OnPlay` with the
-    // flag already restored: a Catastrophe dupe replay auto-playing an
-    // Armaments surfaced its upgrade-select, parked a
-    // `pending_autoplay_resume`, and left Armaments on the Play pile ABOVE
-    // the dupe — whereupon the blind `play.pop()` disposal dropped
-    // ARMAMENTS and stranded the dupe on Play for the rest of combat
-    // (turn-boundary invariant #18; ~390 per 3M randomized combats, hunt
-    // seeds 22080 / 28780 / 55979 / 74899). The flag is now raised once
-    // above this block and restored after the replay loop, just before
-    // disposal.
-    let _ = sts2_core::card_effects::dispatch_for_auto_played_card(state, new_uid, card_id, target);
-    // `CreateDupe` keeps a copy of the enchantment (`DeepCloneFields`,
-    // CardModel.cs:1205-1210, both builds), and `OnPlayWrapper` runs
-    // `Enchantment.OnPlay` after the card's own `OnPlay` (:1940-1947) — so a
-    // Corrupted dupe hurts its owner, feeding Rupture (Ironclad seeds
-    // 4147/2118: hp off by 2, STRENGTH cs=8 rs=6). The dupe is cloned from the
-    // source instance above, so it carries the same enchantments.
-    sts2_core::enchantment_hooks::dispatch_on_card_played(state, new_uid);
-    // Bead `sts2-rs-evd6m`: C# `CardCmd.AutoPlay` runs the FULL `OnPlayWrapper`,
-    // which fires `Hook.AfterCardPlayed` for the dupe — so power listeners
-    // (Rage/Afterimage/Storm) and relic event-reward listeners react to the
-    // replayed card exactly as they do for any auto-play. This minimal dupe
-    // replay fired the effect + `after_card_entered_combat` but skipped the
-    // `after_card_played` buses, so those reactions were dropped. Mirror
-    // `resolve_auto_played_card` (combat_loop.rs:5385-5392): fire both buses
-    // while the dupe is still on the Play pile, then flush Rupture's deferred
-    // Strength. (last_attack_skill_played is deliberately NOT updated — the
-    // minimal path never routes through `play_card`, matching C#'s IsDupe
-    // self-exclusion.)
-    // v0.111.0: the dupe's `CardPlayFinished` entry is recorded before its
-    // `AfterCardPlayed` (decomp CardModel.cs:1961-1965), and PaleBlueDotPower
-    // counts every finished play this turn, dupes included (decomp
-    // PaleBlueDotPower.cs:27). v0.107.1 keeps its tally untouched.
-    state.combat_log.player_card_plays_this_combat = state
-        .combat_log
-        .player_card_plays_this_combat
-        .saturating_add(1);
-    bump_card_plays_finished_this_turn_v0111(state);
-    let played_ctx = sts2_core::relic_effects::CardEventCtx {
-        card_id,
-        card_uid: Some(new_uid),
-        target,
-        card_tags: dupe_tags,
-        energy_spent: 0,
-    };
-    let hook_played_ctx = sts2_core::hooks::CardCtx {
-        card_id: Some(card_id),
-        card_uid: Some(new_uid),
-        card_tags: dupe_tags,
-        card_type: Some(dupe_card_type),
-    };
-    // Per-type FINISHED tally before the after-played buses: C# records
-    // `CardPlayFinished` before `Hook.AfterCardPlayed` (GH #1054).
-    {
-        let idx = dupe_card_type.index();
-        state.player.cards_played_this_turn[idx] =
-            state.player.cards_played_this_turn[idx].saturating_add(1);
-    }
-    sts2_core::combat_loop::dispatch_after_card_played_buses(state, &played_ctx, &hook_played_ctx);
-    // The enchantment's `AfterCardPlayed` (first-play markers, Goopy growth),
-    // as after any auto-play.
-    sts2_core::enchantment_hooks::dispatch_after_card_played(state, new_uid);
-    // Bead `sts2-rs-50un1`: apply RupturePower's deferred Strength now that the
-    // dupe has fully resolved (its self-HP-loss — e.g. a replayed OFFERING —
-    // deferred +Strength onto the Rupture counter). Mirrors the hand-play /
-    // auto-play flushes (seed 2848: STR cs=2 rs=1).
-    sts2_core::combat_loop::flush_rupture_deferred_strength(state);
-    // C# `CardModel.OnPlayWrapper` records a `CardPlayFinished` history entry
-    // for the auto-played dupe (CardModel.cs:1523), just like any normal /
-    // auto-played card. `GoldAxe.CalculatedDamage` scales on
-    // `History.CardPlaysFinished.Count(owner)`, so the dupe MUST advance the
-    // combat-wide `player_card_plays_this_combat` counter — this minimal dupe
-    // path (unlike `play_card` / `resolve_auto_played_card`) never bumped it,
-    // so a HistoryCourse deck under-scaled GoldAxe by one per dupe (sweep seed
-    // 2761: GoldAxe damage rs short by the dupe count). Same minimal-path
-    // hook-coverage class as `sts2-rs-{uh2mt,ay8cl,evd6m}`; bump after the dupe
-    // fully resolves, mirroring C#'s end-of-OnPlayWrapper record.
-    // The dupe is also a STARTED + FINISHED play for the per-turn tallies:
-    // C# `History.CardPlays{Started,Finished}` include dupes (only scans
-    // that explicitly filter `!IsDupe`, like HistoryCourse itself, skip
-    // them). Conflagration's "attacks finished this turn" and the
-    // Ringing/Sloth ShouldPlay gates therefore count the round-start dupe
-    // (sweep seed 5645: C# Stampede CONFLAGRATION = 8 + 2x3 incl. the
-    // SPITE dupe, Rust counted 2). Skill tally feeds MakeItSo.
-    // (Per-type bucket bumped before the buses above — GH #1054.)
-    if dupe_card_type == sts2_core::cards::CardType::Skill {
-        state.player.skills_played_this_turn =
-            state.player.skills_played_this_turn.saturating_add(1);
-    }
-    // C# `Hook.AfterCardPlayed` ends with `AfterCardPlayedLate` (Hook.cs:431)
-    // for the dupe's auto-play too; fired after the tallies so MakeItSo sees
-    // this play counted, and once per replay below.
-    sts2_core::card_effects::fire_late_effects(state, &hook_played_ctx);
-    // C# `CardModel.OnPlayWrapper` computes `playCount = GeneratePlayCount(...)`
-    // (CardModel.cs:1896) and runs the WHOLE play body — `OnPlay` +
-    // `AfterCardPlayed` + the `CardPlayFinished` record — that many times, and
-    // the wrapper is shared by the HistoryCourse dupe (it auto-plays through
-    // the same `OnPlayWrapper`). `GeneratePlayCount` folds the card's
-    // `BaseReplayCount` (HiddenGem's `Replay` enchant) and
-    // `Hook.ModifyCardPlayCount` (OneTwoPunch / relic modifiers). The minimal
-    // dupe path dispatched the effect exactly ONCE, dropping every replay —
-    // Ironclad seed 2848: HiddenGem stamped `BaseReplayCount = 2` on
-    // ULTIMATE_DEFEND, so a HistoryCourse dupe of it plays 3× (3 × 8 Frail'd
-    // Block = 24 in C#) while Rust granted Block once (8). Mirror the auto-play
-    // replay loop (`finish_auto_played_card`, combat_loop.rs:7536): fold the
-    // extra-play count, fire `after_modifying_card_play_count` ONCE (routes the
-    // OneTwoPunch decrement/remove), then re-run the effect + both
-    // `after_card_played` buses + the Rupture flush + the play counters per
-    // replay. (A no-target Enemy dupe returned early above: it neither plays
-    // nor replays.)
-    let dupe_idx = new_uid.0.get() as usize - 1;
-    let base_replay = state
-        .cards
-        .get(dupe_idx)
-        .map_or(0, |c| c.base_replay_count.max(0));
-    let count_ctx = sts2_core::hooks::CardPlayCountCtx {
-        owner: sts2_core::hooks::CreatureRef::Player,
-        card_id: Some(card_id),
-        card_uid: Some(new_uid),
-        card_type: Some(dupe_card_type),
-        card_tags: dupe_tags,
-        target,
-    };
-    let power_extra = sts2_core::hooks::dispatch_modify_card_play_count(state, &count_ctx);
-    let relic_extra =
-        sts2_core::relic_effects::dispatch_relic_modify_card_play_count(state, &count_ctx);
-    // Fires once per card play (matches C# + the hand/auto-play paths):
-    // routes the OneTwoPunch decrement/remove deferred effects.
-    sts2_core::hooks::dispatch_after_modifying_card_play_count(state, &hook_played_ctx);
-    if dupe_echoes {
-        sts2_core::event_log::flash_player_power(state, sts2_core::PowerKind::EchoForm);
-    }
-    let total_extra = (base_replay + power_extra + relic_extra + i32::from(dupe_echoes)).max(0);
-    for _ in 0..total_extra {
-        if state.is_over {
-            break;
-        }
-        // The previous play's select (Scavenge's exhaust pick) must resolve
-        // before the next replay opens its own, or the replay overwrites it
-        // and only one pick ever lands. C# awaits each `OnPlay` in turn
-        // (CardModel.cs:1896-1965); drain it the headless way, as the
-        // auto-play replay loop does (Defect full seed 2076: a HiddenGem
-        // Replay-3 Scavenge dupe exhausts 4 cards).
-        sts2_core::combat_loop::resolve_inline_auto_play_choices(state);
-        // C# `OnPlayWrapper` fires `Hook.BeforeCardPlayed` per play
-        // iteration (CardModel.cs:1923) — the dupe's replays too.
-        let _ = sts2_core::combat_loop::start_card_play(state, dupe_card_type);
-        sts2_core::combat_loop::dispatch_relic_before_card_played_replay(
-            state,
-            &before_played_ctx,
-            dupe_resolved_cost,
-        );
-        sts2_core::hooks::dispatch_before_card_played_powers(
-            state,
-            dupe_resolved_cost,
-            dupe_is_ethereal,
-        );
-        sts2_core::hooks::juggling_before_card_played_v0111(state, new_uid, dupe_card_type);
-        // `FreeAttackPower.BeforeCardPlayed` decrements per play iteration,
-        // the dupe's replays included (the first play consumes above).
-        let _ = sts2_core::combat_loop::consume_free_card_power(state, dupe_card_type);
-        let _ =
-            sts2_core::card_effects::dispatch_for_auto_played_card(state, new_uid, card_id, target);
-        // `Enchantment.OnPlay` / `AfterCardPlayed` per iteration, as on the
-        // first play above.
-        sts2_core::enchantment_hooks::dispatch_on_card_played(state, new_uid);
-        state.combat_log.player_card_plays_this_combat = state
-            .combat_log
-            .player_card_plays_this_combat
-            .saturating_add(1);
-        bump_card_plays_finished_this_turn_v0111(state);
-        let idx = dupe_card_type.index();
-        state.player.cards_played_this_turn[idx] =
-            state.player.cards_played_this_turn[idx].saturating_add(1);
-        sts2_core::combat_loop::dispatch_after_card_played_buses(
-            state,
-            &played_ctx,
-            &hook_played_ctx,
-        );
-        sts2_core::enchantment_hooks::dispatch_after_card_played(state, new_uid);
-        sts2_core::combat_loop::flush_rupture_deferred_strength(state);
-        if dupe_card_type == sts2_core::cards::CardType::Skill {
-            state.player.skills_played_this_turn =
-                state.player.skills_played_this_turn.saturating_add(1);
-        }
-        sts2_core::card_effects::fire_late_effects(state, &hook_played_ctx);
-    }
-    state.autoplay_inline_resolve = prev_inline;
-    state.combat_log.current_card_play = parent_card_play;
-    // Dupe disposal: C# resolves the dupe's result pile through
-    // `Hook.ModifyCardPlayResultPileTypeAndPosition` (`CardModel.cs:1459`).
-    // `GetResultPileType()` returns `PileType.None` for a dupe
-    // (`CardModel.cs:1608-1616`) — but `CorruptionPower`'s override
-    // (`CorruptionPower.cs:27-38`) redirects ANY owner Skill to Exhaust, so
-    // a HistoryCourse dupe of a Skill under Corruption lands in the exhaust
-    // pile as a REAL card and fires the after-exhaust buses (FeelNoPain /
-    // DarkEmbrace). Sweep seeds 4473/4862: cs exhaust_count grew +1 per
-    // round while the Rust dupe vanished. Otherwise the transient dupe is
-    // simply removed (PileType.None — the dangling `state.cards` instance
-    // is unreferenced and harmless).
-    let corruption_exhausts_dupe = dupe_card_type == sts2_core::cards::CardType::Skill
-        && state.player_power_amount(sts2_core::PowerKind::Corruption) > 0;
-    if corruption_exhausts_dupe && !sts2_core::combat_loop::exhaust_may_begin(state) {
-        // The result pile is Exhaust, but `CardCmd.Exhaust` is refused once
-        // the combat is ending (`CardCmd.cs:239`): the dupe stays in Play,
-        // untouched, as the game leaves it (`CardModel.cs:1985`).
-    } else if corruption_exhausts_dupe {
-        let _ = sts2_core::cards::move_card(
-            &mut state.player,
-            new_uid,
-            sts2_core::cards::PileKind::Play,
-            sts2_core::cards::PileKind::Exhaust,
-        );
-        // Play-time / Corruption exhaust — not the end-of-turn ethereal
-        // sweep (DarkEmbrace draws immediately). Player powers before
-        // relics, as C# `Hook.AfterCardExhausted` walks them.
-        sts2_core::combat_loop::fire_after_card_exhausted(
-            state,
-            card_id,
-            new_uid,
-            None,
-            dupe_tags,
-            dupe_card_type,
-        );
-    } else {
-        // Remove the dupe BY UID. It is normally the Play-pile top, but a
-        // blind `pop()` is the mechanism that turned any pile shift during the
-        // dupe's `OnPlay` into a stranded card plus a dropped bystander (bead
-        // `sts2-rs-2itwm`). The inline guard above closes the known shift; this
-        // keeps the disposal correct-by-construction if another one appears,
-        // and the assert still flags it in debug builds.
-        let pos = state.player.play.iter().rposition(|&u| u == new_uid);
-        debug_assert_eq!(
-            pos,
-            state.player.play.len().checked_sub(1),
-            "HistoryCourse dupe play-pile imbalance"
-        );
-        if let Some(pos) = pos {
-            state.player.play.remove(pos);
-        }
-    }
+    // The rest is the ordinary auto-play: C# runs the dupe through the same
+    // `OnPlayWrapper` as any `CardCmd.AutoPlay` — `BeforeCardPlayed` (Stomp,
+    // FreeAttack, Surrounded, DanseMacabre, …), the X capture from current
+    // energy, EchoForm and `GeneratePlayCount` replays, the after-played buses
+    // and tallies, and the result pile (`None` for a dupe, Exhaust for a Skill
+    // under Corruption). A select it opens prompts the player and the dupe
+    // waits for it (GH #1131); `finish_turn_start_tail` waits too.
+    let _ = sts2_core::combat_loop::auto_play_card_on_play(state, new_uid, target);
     EffectResult::Resolved
-}
-
-/// v0.111.0: count a HistoryCourse dupe play in
-/// `card_plays_finished_this_turn`, which PaleBlueDotPower reads (C#
-/// `History.CardPlaysFinished` includes dupes; decomp PaleBlueDotPower.cs:27,
-/// CardModel.cs:1961). No-op before v0.111.0, whose tally stays as it was.
-fn bump_card_plays_finished_this_turn_v0111(state: &mut CombatState) {
-    if state.game_version >= sts2_core::GameVersion::V0_111_0 {
-        state.combat_log.card_plays_finished_this_turn = state
-            .combat_log
-            .card_plays_finished_this_turn
-            .saturating_add(1);
-    }
 }
 
 /// `FakeStrikeDummy::modify_damage_additive` — +1 when the originating
@@ -1801,7 +1411,13 @@ fn listener_hand_drill(state: &mut CombatState, ctx: &DamageGivenCtx) -> EffectR
     // DynamicVars.Vulnerable.BaseValue=2, ...)`. VulnerablePower is
     // StackType=Counter so this stacks additively with any existing
     // Vulnerable.
-    sts2_core::card_effects::apply_power_to_creature(state, ctx.target, PowerKind::Vulnerable, 2);
+    // Its `cardSource` is null, so Unsettling Lamp ignores it.
+    sts2_core::card_effects::apply_power_to_creature_cardless(
+        state,
+        ctx.target,
+        PowerKind::Vulnerable,
+        2,
+    );
     EffectResult::Resolved
 }
 
@@ -1918,7 +1534,6 @@ const FAKE_VENERABLE_TEA_SET_ENERGY: i32 = 1;
 /// (C# `Monsters/Byrdpip.cs` `MinInitialHp == MaxInitialHp == 9999`).
 /// Bead `sts2-rs-4x616`.
 const BYRDPIP_PET_HP: i32 = 9999;
-const DREAM_CATCHER_PROCS: i32 = 3;
 const FRESNEL_LENS_NIMBLE: i32 = 2;
 const WONGOS_COMBATS_NEEDED: i32 = 5;
 const WONGOS_RELICS: usize = 3;
@@ -1932,26 +1547,21 @@ const WONGOS_RELICS: usize = 3;
 // encoding is the canonical resolution.
 const WONGOS_GAVE_SENTINEL: i32 = -1;
 
-/// `DreamCatcher::modify_rest_site_heal_rewards` — push one
-/// `CardReward` per call until `_procs_left` hits zero
-/// (`shop_event.py:1207-1209`, `PROCS=3`). The `_procs_left` counter
-/// lives on `RunState.relic_counters[DreamCatcher]`, initialised
-/// lazily to [`DREAM_CATCHER_PROCS`] on first invocation.
-/// Ownership-gated so the dispatch is a no-op when the player doesn't
-/// carry the relic. Bead `sts2-rs-9wx7`.
+/// `DreamCatcher::modify_rest_site_heal_rewards` — push one `CardReward`
+/// on EVERY rest-site heal (real or mimicked, e.g. Dense Vegetation's
+/// Rest). C# `DreamCatcher.TryModifyRestSiteHealRewards` (identical in
+/// v0.107.1 and v0.111.0) has no counter and no cap. The old Python port's
+/// 3-proc cap kept its count in `relic_counters`, where the end-of-combat
+/// counter flush-back wrote the combat relic's 0 over it, switching the
+/// relic off after its first combat. The card is
+/// `CardReward(CardCreationOptions.ForRoom(player, RoomType.Monster), 3)`:
+/// an `Encounter`-source roll at RegularEncounter odds (pity, upgrade roll),
+/// not a base-odds non-combat one. Ownership-gated. Bead `sts2-rs-9wx7`.
 fn listener_dream_catcher(rs: &mut RunState, rewards: &mut Vec<Reward>) -> EffectResult {
     if !run_owns(rs, RelicId::DreamCatcher) {
         return EffectResult::NotImplemented;
     }
-    let entry = rs
-        .relic_counters
-        .entry(RelicId::DreamCatcher)
-        .or_insert(DREAM_CATCHER_PROCS);
-    if *entry <= 0 {
-        return EffectResult::NotImplemented;
-    }
-    *entry -= 1;
-    rewards.push(Reward::Card(CardReward::empty()));
+    rewards.push(Reward::Card(CardReward::for_room(RoomType::Monster)));
     EffectResult::Resolved
 }
 
@@ -1982,11 +1592,9 @@ fn listener_fresnel_lens_card_reward(rs: &mut RunState, cards: &mut Vec<Card>) -
 /// without this gate FresnelLens also stamped Nimble on added curses.
 fn nimble_can_enchant(card: &Card, version: sts2_core::GameVersion) -> bool {
     card.enchantments.is_empty()
-        && crate::names::deck_card_spec_pool()
-            .iter()
-            .find(|s| s.id == card.card_id)
+        && crate::names::find_deck_card_spec(&crate::names::deck_card_spec_pool(), card.card_id)
             .is_some_and(|spec| {
-                crate::enchantments::can_enchant_card(spec, card, EnchantmentId::Nimble, version)
+                crate::enchantments::can_enchant_card(&spec, card, EnchantmentId::Nimble, version)
             })
 }
 
@@ -2181,6 +1789,20 @@ fn listener_maw_bank_on_item_purchased(rs: &mut RunState, gold_spent: i32) -> Ef
 }
 
 // ── LavaLamp (bead `sts2-rs-67co3`) ──────────────────────────────────
+
+/// `LavaLamp::after_room_entered` — clear the took-damage flag. C#
+/// `LavaLamp.AfterRoomEntered` sets `TookDamageThisCombat = false` on
+/// every room entry, no room-type filter (`LavaLamp.cs`, v0.107.1 and
+/// v0.111.0). Without it the flag latched by one damaged fight rode the
+/// `enter_combat` seed / `exit_combat` write-back forever, denying the
+/// upgrade after every later clean fight (fuzz v0.111.0 seed 1159).
+fn listener_lava_lamp_after_room_entered(rs: &mut RunState, _rt: RoomType) -> EffectResult {
+    if !run_owns(rs, RelicId::LavaLamp) {
+        return EffectResult::NotImplemented;
+    }
+    rs.relic_counters.insert(RelicId::LavaLamp, 0);
+    EffectResult::Resolved
+}
 
 /// `LavaLamp::modify_card_reward_options_late` — upgrade every card
 /// on the post-combat reward screen iff the player took no damage
@@ -3780,6 +3402,40 @@ mod tests {
         );
     }
 
+    /// A HistoryCourse dupe auto-played under Hex is Ethereal when its play
+    /// finishes (`HexPower.AfterCardEnteredCombat` afflicts it Hexed, and
+    /// `CardPlayFinishedEntry.WasEthereal` reads the live keywords), so
+    /// Banshee's Cry in the draw pile drops by 2 (`BansheesCry.AfterCardPlayed`).
+    /// The auto-play tally read only the static keyword (loadout Necrobinder
+    /// 1067: a Hexed Sovereign Blade dupe, Banshee's Cry cs=7 rs=9).
+    #[test]
+    fn listener_history_course_hexed_dupe_discounts_banshees_cry() {
+        use sts2_core::cards::CardId;
+        crate::relics::dispatch::ensure_installed();
+        crate::cards::dispatch::install_default_registry();
+        let mut state = CombatState::default();
+        let _enemy = history_course_setup(&mut state, 2);
+        let player = state.player.creature_uid.expect("player");
+        sts2_core::card_effects::apply_power_to_creature(
+            &mut state,
+            player,
+            sts2_core::PowerKind::Hex,
+            2,
+        );
+        let mut banshee = crate::cards::spec_index::card_pod_from_id(CardId::BansheesCry, false)
+            .expect("banshee pod");
+        let buid = sts2_core::CardUid::new(u32::try_from(state.cards.len() + 1).expect("fits"))
+            .expect("nz");
+        banshee.uid = buid;
+        state.cards.push(banshee);
+        state.player.draw.push(buid);
+        state.combat_log.prev_round_last_attack_skill_played =
+            Some((CardId::StrikeIronclad, false, None));
+        let _ = sts2_core::relic_effects::dispatch_before_play_phase_start(&mut state);
+        assert_eq!(state.combat_log.ethereal_cards_played_this_combat, 1);
+        assert_eq!(sts2_core::hooks::effective_card_cost(&state, buid), 7);
+    }
+
     /// The HistoryCourse dupe records a `CardPlayFinished` in C#
     /// (`CardModel.cs:1523`), so it must advance the combat-wide
     /// `player_card_plays_this_combat` counter that `GoldAxe.CalculatedDamage`
@@ -3805,10 +3461,10 @@ mod tests {
     }
 
     /// A HiddenGem Replay-3 Scavenge dupe plays 4 times, and each play's
-    /// exhaust pick resolves before the next replay opens its own (C# awaits
+    /// exhaust pick prompts before the next replay opens its own (C# awaits
     /// every `OnPlay`, CardModel.cs:1896-1965). Before, each replay overwrote
     /// the open pick and only one card was exhausted (Defect full parity seed
-    /// 2076). The last pick stays open for the player.
+    /// 2076); later the first three were drained inline (GH #1131).
     #[test]
     fn listener_history_course_replayed_select_dupe_resolves_each_pick() {
         use sts2_core::cards::CardId;
@@ -3834,9 +3490,25 @@ mod tests {
         state.combat_log.prev_round_last_attack_skill_played =
             Some((CardId::Scavenge, false, Some(scavenge)));
         let _ = sts2_core::relic_effects::dispatch_before_play_phase_start(&mut state);
-        assert_eq!(state.player.exhaust.len(), 3, "three picks resolved inline");
-        assert!(state.pending_choice.is_some(), "the fourth pick surfaces");
-        assert_eq!(state.player.hand.len(), 2);
+        for picked in 0..4 {
+            assert!(
+                state.pending_choice.is_some(),
+                "pick {} prompts",
+                picked + 1
+            );
+            assert_eq!(state.player.exhaust.len(), picked);
+            let _ = sts2_core::apply(
+                &mut state,
+                sts2_core::Action::ResolveChoice {
+                    selection: smallvec::smallvec![0],
+                },
+            );
+        }
+        assert!(state.pending_choice.is_none());
+        assert!(state.pending_autoplay_resume.is_none());
+        assert_eq!(state.player.exhaust.len(), 4);
+        assert_eq!(state.player.hand.len(), 1);
+        assert!(state.player.play.is_empty(), "the dupe is gone");
     }
 
     /// The dupe's finished play on THIS turn, in the build's per-turn tally.
@@ -3856,12 +3528,14 @@ mod tests {
         state.combat_log.card_plays_finished_this_turn
     }
 
-    /// v0.107.1 keeps the dupe out of `card_plays_finished_this_turn`.
+    /// v0.107.1 counts the dupe too: `OnPlayWrapper` records its
+    /// `CardPlayFinishedEntry` with no `IsDupe` filter, and PaleBlueDot reads
+    /// last turn's entries (decomp v0.107.1 `PaleBlueDotPower.cs:31`).
     #[test]
     fn listener_history_course_dupe_turn_tally_v0107() {
         assert_eq!(
             history_course_dupe_turn_tally(sts2_core::GameVersion::V0_107_1),
-            0
+            1
         );
     }
 
@@ -3933,6 +3607,53 @@ mod tests {
         assert_eq!(
             cost, 2,
             "Stomp cost reduced by 1 — the attack dupe fired BeforeCardPlayed"
+        );
+    }
+
+    /// A HistoryCourse dupe of a HiddenGem Replay-2 Attack plays 3 times, and
+    /// C# `OnPlayWrapper` fires `Hook.BeforeCardPlayed` on EVERY play iteration
+    /// (CardModel.cs ~1926), so `Stomp.BeforeCardPlayed` (Stomp.cs:62-73)
+    /// shaves 1 per iteration: a cost-3 Stomp drops to 0. The dupe replay loop
+    /// shaved only on the first play (act23 Ironclad-8066 act 3 @1117: a
+    /// Replay-2 Whirlwind dupe left STOMP at cost cs=0 vs rs=2).
+    #[test]
+    fn listener_history_course_replayed_attack_dupe_shaves_stomp_per_play() {
+        use sts2_core::cards::{Card, CardId};
+        crate::relics::dispatch::ensure_installed();
+        crate::cards::dispatch::install_default_registry();
+        let mut state = CombatState::default();
+        let _enemy = history_course_setup(&mut state, 2);
+        let push = |state: &mut CombatState, id: CardId| {
+            let mut c = crate::cards::spec_index::card_pod_from_id(id, false).unwrap();
+            let uid =
+                sts2_core::CardUid::new(u32::try_from(state.cards.len() + 1).unwrap()).unwrap();
+            c.uid = uid;
+            state.cards.push(c);
+            uid
+        };
+        let strike = push(&mut state, CardId::StrikeIronclad);
+        state.cards[strike.0.get() as usize - 1].base_replay_count = 2;
+        state.player.discard.push(strike);
+        let suid = sts2_core::CardUid::new(u32::try_from(state.cards.len() + 1).expect("fits"))
+            .expect("nz");
+        let mut stomp = Card::pod_defaults();
+        stomp.uid = suid;
+        stomp.card_id = CardId::Stomp;
+        stomp.cost = 3;
+        state.cards.push(stomp);
+        state.player.hand.push(suid);
+        state.combat_log.prev_round_last_attack_skill_played =
+            Some((CardId::StrikeIronclad, false, Some(strike)));
+        let _ = sts2_core::relic_effects::dispatch_before_play_phase_start(&mut state);
+        let cost = state
+            .cards
+            .iter()
+            .find(|c| c.uid == suid)
+            .expect("stomp")
+            .cost;
+        assert_eq!(
+            cost, 0,
+            "one Stomp shave per play iteration (1 play + 2 replays)"
         );
     }
 
@@ -4312,23 +4033,25 @@ mod tests {
 
     // --- Wave 6 (sts2-rs-9wx7) reward-flow retrofits -----------------------
 
-    /// `DreamCatcher` pushes one `CardReward` per `_procs_left`
-    /// (initial 3), then becomes a no-op.
+    /// `DreamCatcher` pushes one `CardReward` on every rest heal, uncapped
+    /// (C# `DreamCatcher.TryModifyRestSiteHealRewards`), and keeps no
+    /// counter: a combat's counter flush-back (which writes the combat
+    /// relic's 0 into `relic_counters`) must not switch it off.
     #[test]
-    fn listener_dream_catcher_pushes_three_card_rewards() {
+    fn listener_dream_catcher_rewards_every_rest_heal() {
         crate::relics::dispatch::ensure_installed();
         let mut rs = RunState::new();
         rs.relics.push(RelicId::DreamCatcher);
-        for expected_len in 1..=3 {
+        for _ in 0..5 {
             let rewards = rs.offer_rest_site_rewards();
-            assert_eq!(rewards.len(), expected_len.min(1));
+            assert_eq!(rewards.len(), 1);
             assert!(matches!(rewards[0], Reward::Card(_)));
         }
-        // Fourth call: counter exhausted, listener is a no-op.
+        // What `exit_combat`'s counter flush-back leaves behind.
+        rs.relic_counters.insert(RelicId::DreamCatcher, 0);
         let rewards = rs.offer_rest_site_rewards();
-        assert!(rewards.is_empty());
-        // Counter latched at 0.
-        assert_eq!(rs.relic_counters[&RelicId::DreamCatcher], 0);
+        assert_eq!(rewards.len(), 1);
+        assert!(matches!(rewards[0], Reward::Card(_)));
     }
 
     /// `DreamCatcher` is a no-op when the player doesn't carry it.
@@ -4693,6 +4416,19 @@ mod tests {
             upgraded: false,
             ..sts2_core::cards::Card::pod_defaults()
         }
+    }
+
+    /// C# `LavaLamp.AfterRoomEntered` clears the took-damage flag on every
+    /// room entry, so a damaged fight does not deny the upgrade after the
+    /// next clean one (fuzz v0.111.0 seed 1159).
+    #[test]
+    fn lava_lamp_flag_resets_on_room_entry() {
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.relics.push(RelicId::LavaLamp);
+        rs.relic_counters.insert(RelicId::LavaLamp, 1);
+        rs.enter_room(sts2_core::runstate::Room::new(RoomType::Monster));
+        assert_eq!(rs.relic_counters[&RelicId::LavaLamp], 0);
     }
 
     /// LavaLamp upgrades every offered card when `relic_counters[LavaLamp]`
@@ -5788,10 +5524,8 @@ mod tests {
         );
     }
 
-    /// A `HistoryCourse` Skill dupe bumps `skills_played_this_turn`
-    /// (C# records the dupe as a finished play). Pins the
-    /// `dupe_card_type == Skill` gate (`== → !=` would skip the Skill
-    /// bump and instead bump on Attacks).
+    /// A `HistoryCourse` Skill dupe counts as a Skill played this turn (C#
+    /// records the dupe as a finished play, which MakeItSo and Pinpoint read).
     #[test]
     fn listener_history_course_skill_dupe_bumps_skill_tally() {
         use sts2_core::cards::CardId;
@@ -5799,13 +5533,14 @@ mod tests {
         crate::cards::dispatch::install_default_registry();
         let mut state = CombatState::default();
         let _enemy = history_course_setup(&mut state, 2);
-        let before = state.player.skills_played_this_turn;
+        let skill = sts2_core::cards::CardType::Skill.index();
+        let before = state.player.cards_played_this_turn[skill];
         // Defend is a Skill; its dupe must bump the skill tally by 1.
         state.combat_log.prev_round_last_attack_skill_played =
             Some((CardId::DefendIronclad, false, None));
         let _ = sts2_core::relic_effects::dispatch_before_play_phase_start(&mut state);
         assert_eq!(
-            state.player.skills_played_this_turn,
+            state.player.cards_played_this_turn[skill],
             before + 1,
             "Skill dupe counts toward skills_played_this_turn"
         );

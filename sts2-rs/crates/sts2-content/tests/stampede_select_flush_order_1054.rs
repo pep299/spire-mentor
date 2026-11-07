@@ -8,8 +8,8 @@
 //! hand cards.
 //!
 //! The trigger is a Headbutt that REPLAYS: its second put-back select opens
-//! while the resume of the first one is finishing the card, and drains inline
-//! (C# `AutoResolveInline`). That nested resolve took the end-turn resume arm
+//! while the resume of the first one is finishing the card, and drains inline.
+//! That nested resolve took the end-turn resume arm
 //! meant for a top-level resolve and ran the whole end-turn chain, hand flush
 //! included, from inside Headbutt's replay loop. Same pile contents, different
 //! order, which then feeds the next StableShuffle.

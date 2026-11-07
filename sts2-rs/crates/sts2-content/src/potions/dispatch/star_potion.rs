@@ -7,7 +7,7 @@ use super::prelude::*;
 /// (direct saturating_add on `state.player.stars` + tally). Bead
 /// `sts2-rs-7r28`.
 pub(crate) fn drink_star_potion(state: &mut CombatState, _target: Option<u8>) -> EffectResult {
-    state.player.stars = state.player.stars.saturating_add(3);
-    state.player.stars_gained_this_turn = state.player.stars_gained_this_turn.saturating_add(3);
+    // `PlayerCmd.GainStars` → `Hook.AfterStarsGained` (Black Hole).
+    state.gain_stars(3);
     EffectResult::Resolved
 }

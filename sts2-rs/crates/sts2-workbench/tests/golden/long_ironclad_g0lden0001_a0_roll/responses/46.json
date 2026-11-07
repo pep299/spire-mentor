@@ -1,10 +1,12 @@
 {
  "details": [
-  "Play Defend",
-  "You Block 0→5"
+  "Play Bash",
+  "Nibbit HP 17→14 (−3)",
+  "Nibbit Block 5→0",
+  "Nibbit +2 Vulnerable"
  ],
  "error": null,
- "label": "Play Defend",
+ "label": "Play Bash → Nibbit",
  "step": {
   "action_label": "",
   "assets_base": "https://assets.test",
@@ -52,9 +54,28 @@
      "target_type": "None",
      "type": "Skill",
      "upgraded": false
+    },
+    {
+     "base_cost": 2,
+     "can_play": false,
+     "color": "red",
+     "cost": 2,
+     "description": "Deal 8 damage.\nApply 2 Vulnerable.",
+     "description_rich": "Deal 8 damage.\nApply 2 [gold]Vulnerable[/gold].",
+     "id": "BASH",
+     "image": "https://assets.test/card_atlas/ironclad/bash.png",
+     "index": -1,
+     "name": "Bash",
+     "rarity": "Basic",
+     "stats": {
+      "damage": 8
+     },
+     "target_type": "None",
+     "type": "Attack",
+     "upgraded": false
     }
    ],
-   "discard_pile_count": 1,
+   "discard_pile_count": 2,
    "draw_pile": [
     {
      "base_cost": 1,
@@ -193,8 +214,8 @@
    "draw_pile_count": 7,
    "enemies": [
     {
-     "block": 5,
-     "hp": 17,
+     "block": 0,
+     "hp": 14,
      "image": "https://assets.test/monsters/nibbit.png",
      "index": 0,
      "intents": [
@@ -208,7 +229,16 @@
      "max_hp": 43,
      "move_state": "HISS",
      "name": "Nibbit",
-     "powers": [],
+     "powers": [
+      {
+       "amount": 2,
+       "display_amount": 2,
+       "id": "VULNERABLE",
+       "image": "https://assets.test/power_atlas/vulnerable_power.png",
+       "image_big": "https://assets.test/power_big/vulnerable_power.png",
+       "name": "Vulnerable"
+      }
+     ],
      "rig": "https://assets.test/monster_rigs/nibbit/nibbit",
      "rig_bounds_h": 146.0,
      "rig_bounds_w": 270.0,
@@ -216,7 +246,7 @@
      "uid": 2
     }
    ],
-   "energy": 2,
+   "energy": 0,
    "energy_image": "https://assets.test/sprite_fonts/ironclad_energy_icon.png",
    "exhaust_pile": [
     {
@@ -244,11 +274,11 @@
    "hand": [
     {
      "base_cost": 1,
-     "can_play": true,
+     "can_play": false,
      "color": "red",
      "cost": 1,
      "damage_preview": {
-      "0": 6
+      "0": 9
      },
      "description": "Deal 6 damage.",
      "description_rich": "Deal 6 damage.",
@@ -260,17 +290,18 @@
      "stats": {
       "damage": 6
      },
-     "target_type": "AnyEnemy",
+     "target_type": "None",
      "type": "Attack",
+     "unplayable_reason": "cost",
      "upgraded": false
     },
     {
      "base_cost": 1,
-     "can_play": true,
+     "can_play": false,
      "color": "red",
      "cost": 1,
      "damage_preview": {
-      "0": 6
+      "0": 9
      },
      "description": "Deal 6 damage.",
      "description_rich": "Deal 6 damage.",
@@ -282,30 +313,9 @@
      "stats": {
       "damage": 6
      },
-     "target_type": "AnyEnemy",
+     "target_type": "None",
      "type": "Attack",
-     "upgraded": false
-    },
-    {
-     "base_cost": 2,
-     "can_play": true,
-     "color": "red",
-     "cost": 2,
-     "damage_preview": {
-      "0": 8
-     },
-     "description": "Deal 8 damage.\nApply 2 Vulnerable.",
-     "description_rich": "Deal 8 damage.\nApply 2 [gold]Vulnerable[/gold].",
-     "id": "BASH",
-     "image": "https://assets.test/card_atlas/ironclad/bash.png",
-     "index": 2,
-     "name": "Bash",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 8
-     },
-     "target_type": "AnyEnemy",
-     "type": "Attack",
+     "unplayable_reason": "cost",
      "upgraded": false
     },
     {
@@ -317,7 +327,7 @@
      "description_rich": "Lose 3 HP.\nGain Energy.",
      "id": "BLOODLETTING",
      "image": "https://assets.test/card_atlas/ironclad/bloodletting.png",
-     "index": 3,
+     "index": 2,
      "name": "Bloodletting",
      "rarity": "Common",
      "stats": {},

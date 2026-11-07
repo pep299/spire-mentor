@@ -1,3 +1,7 @@
 {
- "detail": "no recommendation here"
+ "count": 119,
+ "resume": {
+  "kind": "run",
+  "reason": null
+ }
 }

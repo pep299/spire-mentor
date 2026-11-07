@@ -88,6 +88,30 @@ public class BridgeServer
     {
     }
 
+    /// <summary>
+    /// A second bridge in this process for an AI partner's own advisor
+    /// (SimAiPartnerAdvisor; docs/plans/2026-11-05-ai-coop-partners.md). It
+    /// carries the advice lane only: the coach and the rewind verbs
+    /// (snapshots, undo, restore) act on the human's game and are dropped.
+    /// Start it on port 0 for a free port (<see cref="Port"/> is then the
+    /// bound one), clear of the 9002+ range other game instances fall back
+    /// to.
+    /// </summary>
+    internal static BridgeServer CreateSecondary(string label) => new() { _secondaryLabel = label };
+
+    /// <summary>Non-null for a <see cref="CreateSecondary"/> bridge.</summary>
+    private string? _secondaryLabel;
+
+    private bool DropOnSecondary(string verb)
+    {
+        if (_secondaryLabel == null)
+        {
+            return false;
+        }
+        Logger.Log($"[BridgeServer] {_secondaryLabel}: ignored '{verb}' (advice lane only).");
+        return true;
+    }
+
     /// <summary>The port actually listened on (0 until Start succeeds, and
     /// again after Stop); the
     /// advisor is launched against this one.</summary>
@@ -140,8 +164,9 @@ public class BridgeServer
             throw;
         }
         _tcpListener = listener;
-        Port = port;
-        Logger.Log($"[BridgeServer] Listening on {IPAddress.Loopback}:{port}");
+        // The bound port: differs from the argument for port 0 (a secondary bridge).
+        Port = listener.LocalEndpoint is IPEndPoint bound ? bound.Port : port;
+        Logger.Log($"[BridgeServer] {(_secondaryLabel != null ? _secondaryLabel + ": " : "")}Listening on {IPAddress.Loopback}:{Port}");
 
         CancellationToken token = _cts.Token;
         _ = Task.Run(() => ServeClientsAsync(token));
@@ -577,12 +602,22 @@ public class BridgeServer
                 // PROTOCOL.md v5 "coach": after-the-fact feedback, answers no
                 // request. Routed here -- never to DeliverToPending, where an
                 // uncorrelated autopilot wait would swallow it as its reply.
-                DeliverCoach(root);
+                if (!DropOnSecondary(action))
+                {
+                    DeliverCoach(root);
+                }
                 return true;
             }
             if (Is(action, "list_snapshots"))
             {
-                SendSnapshotList();
+                if (!DropOnSecondary(action))
+                {
+                    SendSnapshotList();
+                }
+                return true;
+            }
+            if ((Is(action, "undo_turn") || Is(action, "restore_snapshot")) && DropOnSecondary(action))
+            {
                 return true;
             }
             if (Is(action, "undo_turn"))

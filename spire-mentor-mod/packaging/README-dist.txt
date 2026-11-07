@@ -64,10 +64,14 @@ KEYS  (press F1 in game for this list)
        Crystal Sphere) and hands them to you; press F7 to carry on. List
        events you always want to play yourself in "pause_on" in
        SpireMentor.conf, e.g. "pause_on": "unsupported, Neow".
+  Shift+F7  autobattle: the AI plays the fights, you make every run-level
+       decision (card rewards, map, shops, rest sites, events); a note at
+       each one says what changed since the last. Press again to stop.
+       At 1x it switches the game to 2x (and back when you stop).
   F4   show / hide the HUD
   F3   action log — what was played, and what was advised at the time
-  F9   game speed down 0.1x
-  F10  game speed up 0.1x
+  F9   game speed down (4x, 3x, 2x, 1x)
+  F10  game speed up (1x, 2x, 3x, 4x)
 
 The HUD draws a score on each card in hand, a ranked list of the moves the
 AI considered, a win-chance bar, and markers on the map for the route it

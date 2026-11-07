@@ -2,101 +2,9 @@
 #![allow(unused_imports)]
 use super::prelude::*;
 
-/// Signed-amount power application (mirrors silent.rs::apply_power_signed_to_creature).
-/// Used when a debuff must reduce a base stat (e.g. DarkShackles' -StrengthLoss).
-/// The shared `apply_power_to_creature` early-outs on `amount<=0`. Bead `sts2-rs-5aack`.
-pub(crate) fn apply_power_signed_to_creature(
-    state: &mut CombatState,
-    target_uid: CreatureUid,
-    kind: PowerKind,
-    amount: i32,
-) {
-    // A landed player drain fires SleightOfFlesh & co. (C#
-    // `Hook.AfterPowerAmountChanged` runs for silent applies too).
-    sts2_core::card_effects::signed_power_apply_with_reactors(
-        state,
-        target_uid,
-        kind,
-        amount,
-        |s| apply_power_signed_to_creature_raw(s, target_uid, kind, amount),
-    );
-}
-
-fn apply_power_signed_to_creature_raw(
-    state: &mut CombatState,
-    target_uid: CreatureUid,
-    kind: PowerKind,
-    amount: i32,
-) {
-    if amount == 0 {
-        return;
-    }
-    // C# `ArtifactPower` negates a Debuff-direction application (a negative
-    // attribute drain) and consumes a stack; the canonical affliction gate
-    // misses signed drains, so consult the signed-debuff gate (no-op for
-    // positive restores).
-    if amount < 0
-        && sts2_core::card_effects::try_consume_artifact_for_signed_debuff(
-            state, target_uid, amount,
-        )
-    {
-        return;
-    }
-    let Some(creature_idx) = state
-        .creatures
-        .iter()
-        .position(|c| c.id == target_uid.0 && c.current_hp > 0)
-    else {
-        return;
-    };
-    let existing_uid = state.creatures[creature_idx]
-        .powers
-        .iter()
-        .copied()
-        .find(|uid| state.powers.iter().any(|p| p.id == uid.0 && p.kind == kind));
-    if let Some(uid) = existing_uid {
-        let now_zero = if let Some(pow) = state.powers.get_mut_by_id(uid.0) {
-            pow.amount = pow.amount.saturating_add(amount);
-            pow.amount == 0
-        } else {
-            false
-        };
-        if now_zero {
-            // C# `PowerModel.ShouldRemoveDueToAmount` (PowerModel.cs:413) removes
-            // an `AllowNegative` attribute power (Strength/Dexterity/Focus) at
-            // EXACTLY 0 — a negative result keeps it. A signed drain bringing an
-            // existing instance to 0 must drop it, not leave a phantom `(0)`
-            // power. Mirrors the ironclad/necrobinder/silent signed-power helpers.
-            let pid = uid.0;
-            state.powers.retain(|p| p.id != pid);
-            state.creatures[creature_idx].powers.retain(|u| u.0 != pid);
-        }
-        return;
-    }
-    let next_id_raw = state
-        .powers
-        .iter()
-        .map(|p| p.id.get())
-        .max()
-        .map_or(1, |m| m.saturating_add(1));
-    let new_id = std::num::NonZeroU32::new(next_id_raw).expect("power id non-zero");
-    state.powers.push(Power {
-        id: new_id,
-        kind,
-        amount,
-        counter: 0,
-        applier: None,
-        skip_next_tick: false,
-    });
-    state.creatures[creature_idx]
-        .powers
-        .push(sts2_core::PowerUid(new_id));
-}
-
 /// Return the current `amount` of `kind` on `uid`'s power list, or 0 if the
-/// creature has no such power. Used to gate side-effects on whether a debuff
-/// stack actually grew (mirrors `PiercingWail`'s `now > prev` pattern in
-/// `silent/helpers.rs`). Bead `sts2-rs-bm34f`.
+/// creature has no such power. Bead `sts2-rs-bm34f`; only tests read it now.
+#[cfg(test)]
 pub(crate) fn power_amount_on_creature(
     state: &CombatState,
     uid: CreatureUid,
@@ -230,8 +138,11 @@ pub(crate) fn move_card_from_draw_to_hand_by_type(
         .iter()
         .copied()
         .filter(|uid| {
-            let idx = uid.0.get() as usize - 1;
-            state.cards[idx].card_type == kind
+            // C# filters `c.Type == kind`; the Quest cards are
+            // `CardType.Quest` (`Dowsing.cs:45`), which Rust models as
+            // Skills, so Secret Technique must not fetch them.
+            let card = &state.cards[uid.0.get() as usize - 1];
+            card.card_type == kind && !card.is_quest()
         })
         .collect();
     // Mirror C# `FromCombatPile`'s `OrderBy(Rarity).ThenBy(Id)` Draw-pile
@@ -956,11 +867,16 @@ pub fn transform_card_to_random_for_hook(
         .any(|f| f().id == original_id)
         || (state.game_version >= sts2_core::GameVersion::V0_111_0
             && original_id == CardId::TheBall);
-    // Event / Ancient / **Token** originals are FORCED onto the
+    // Quest / Event / Ancient / **Token** originals are FORCED onto the
     // ColorlessCardPool by C#
     // (`(Type != Quest && Rarity not in {Event,Ancient,Token}) ? Pool :
-    // ColorlessCardPool`; the Quest-TYPE arm of that condition has no Rust
-    // counterpart — no Quest-type card is modelled). The Token arm is the
+    // ColorlessCardPool`, CardFactory.cs:173). `CardType.Quest` has no Rust
+    // variant (Quest cards are modelled as Unplayable Skills), but every
+    // Quest-TYPE card (ByrdonisEgg, LanternKey, SpoilsMap, Dowsing) is also
+    // `CardRarity.Quest` and no other card is, so the rarity stands in for the
+    // type: Entropy on SPOILS_MAP rolls the colorless pool (random-loadout
+    // v0.107.1 seed 1198: C# FINESSE, not the character pool's DARK_EMBRACE).
+    // The Token arm is the
     // fix for bead `sts2-rs-p52dg`: the per-combat token cards (GiantRock,
     // Shiv, Soul, the Regent minion cards, …) were mis-tagged `Status` and
     // fell into the StatusCardPool branch below, so Entropy transformed a
@@ -973,7 +889,7 @@ pub fn transform_card_to_random_for_hook(
     let use_colorless_pool = is_colorless_original
         || matches!(
             rarity,
-            Some(CardRarity::Ancient | CardRarity::Event | CardRarity::Token)
+            Some(CardRarity::Quest | CardRarity::Ancient | CardRarity::Event | CardRarity::Token)
         );
     let pool: SmallVec<[CardSpec; 96]> = if matches!(rarity, Some(CardRarity::Status)) {
         use crate::cards::status_specs_generated as st;
@@ -1005,10 +921,16 @@ pub fn transform_card_to_random_for_hook(
         // C# `CurseCardPool.GenerateAllCards()` order (CurseCardPool.cs:20-40,
         // identical in v0.107.1 / v0.111.0). `GetFilteredTransformationOptions`
         // skips the rarity filter for Status/Curse (CardFactory.cs,
-        // `(uint)(rarity - 8) > 1u`) and `CanBeGeneratedInCombat` drops only
-        // AscendersBane (AscendersBane.cs overrides it to false); no curse has
-        // a multiplayer constraint. Minus the original id that leaves 16.
+        // `(uint)(rarity - 8) > 1u`) and keeps `CanBeGeneratedInCombat`; no
+        // curse has a multiplayer constraint. AscendersBane (listed first)
+        // overrides `CanBeGeneratedInCombat => false` only in v0.111.0
+        // (AscendersBane.cs:10); v0.107.1 overrides just
+        // `CanBeGeneratedByModifiers`, so it stays in the in-combat pool there
+        // (random-loadout v0.107.1 seeds 1008 / 1163). Minus the original id
+        // that leaves 17 (v0.107.1) / 16 (v0.111.0).
+        let keep_ascenders_bane = state.game_version < sts2_core::GameVersion::V0_111_0;
         [
+            st::ascenders_bane,
             st::bad_luck,
             st::clumsy,
             st::curse_of_the_bell,
@@ -1029,6 +951,7 @@ pub fn transform_card_to_random_for_hook(
         ]
         .iter()
         .map(|f| f())
+        .filter(|s| keep_ascenders_bane || s.id != CardId::AscendersBane)
         .filter(|s| s.id != original_id)
         .collect()
     } else if use_colorless_pool {

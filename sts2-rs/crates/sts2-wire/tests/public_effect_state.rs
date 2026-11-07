@@ -476,6 +476,69 @@ fn juggling_applied_mid_turn_counts_started_attacks_including_pending_parents() 
 }
 
 #[test]
+fn relative_combat_costs_keep_debt_and_later_absolute_overrides() {
+    for version in ["0.107.1", "0.111.0"] {
+        let mut value = fixture();
+        value["game_version"] = json!(version);
+        value["player"]["powers"] = json!([{"name":"BORROWED_TIME","amount":2}]);
+        value["player"]["relics"] = json!([]);
+        value["deck"]["hand"] = json!([
+            {"id":"DEFEND_IRONCLAD","kind":"card","stable_idx":4,"upgraded":false}
+        ]);
+        let mut state = rebuild(&value);
+        let uid = state.player.hand[0];
+        let idx = uid.get() as usize - 1;
+        state.cards[idx].add_cost_this_combat(-2);
+        assert_eq!(
+            sts2_core::hooks::local_card_cost(&state, &state.cards[idx]),
+            -1
+        );
+        assert_eq!(sts2_core::hooks::effective_card_cost(&state, uid), 0);
+        sts2_core::apply_transfigure(&mut state, uid);
+        assert_eq!(
+            sts2_core::hooks::local_card_cost(&state, &state.cards[idx]),
+            0
+        );
+        assert_eq!(sts2_core::hooks::effective_card_cost(&state, uid), 2);
+        state.cards[idx].set_cost_this_combat(3);
+        assert_eq!(
+            sts2_core::hooks::local_card_cost(&state, &state.cards[idx]),
+            3
+        );
+        assert_eq!(sts2_core::hooks::effective_card_cost(&state, uid), 5);
+    }
+}
+
+#[test]
+fn transfigure_adds_after_a_local_zero_without_surviving_its_expiration_twice() {
+    for version in ["0.107.1", "0.111.0"] {
+        let mut value = fixture();
+        value["game_version"] = json!(version);
+        value["player"]["powers"] = json!([]);
+        value["player"]["relics"] = json!([]);
+        value["deck"]["hand"] = json!([
+            {"id":"DEFEND_IRONCLAD","kind":"card","stable_idx":4,"upgraded":false}
+        ]);
+        let mut state = rebuild(&value);
+        let uid = state.player.hand[0];
+        let idx = uid.get() as usize - 1;
+        state.cards[idx].set_combat_var(sts2_core::cards::VarKey::FreeThisTurn, 1);
+        sts2_core::apply_transfigure(&mut state, uid);
+        assert_eq!(sts2_core::hooks::effective_card_cost(&state, uid), 1);
+        assert_eq!(
+            state.cards[idx].local_costs_after_expiration(),
+            [1, 2, 2, 2]
+        );
+        let emitted = combat_state_to_value(&state).unwrap();
+        let back = rebuild(&emitted);
+        assert_eq!(
+            sts2_core::hooks::effective_card_cost(&back, back.player.hand[0]),
+            1
+        );
+    }
+}
+
+#[test]
 fn ordered_cost_modifiers_roundtrip_without_losing_expiration_or_order() {
     let mut value = fixture();
     value["deck"]["hand"][0]["combat_vars"] = json!({});
@@ -687,7 +750,7 @@ fn bookmark_discount_survives_turn_end_but_not_the_next_play() {
     }]);
     let mut state = rebuild(&value);
     let uid = state.player.hand[0];
-    sts2_core::relic_effects::dispatch_after_turn_end(&mut state, sts2_core::Side::Player);
+    sts2_core::apply(&mut state, Action::EndTurn);
     assert_eq!(
         state.cards[uid.get() as usize - 1].local_costs_after_expiration(),
         [0, 0, 1, 1]
@@ -782,7 +845,7 @@ fn discovery_is_skippable_but_abundance_requires_a_selection() {
 }
 
 #[test]
-fn turn_cost_expiration_precedes_bookmark_after_flush_selection() {
+fn bookmark_after_flush_selection_precedes_turn_cost_expiration() {
     let mut value = fixture();
     value["player"]["powers"] = json!([]);
     value["player"]["relics"] = json!([{"id":"BOOKMARK","counter":0}]);
@@ -797,8 +860,8 @@ fn turn_cost_expiration_precedes_bookmark_after_flush_selection() {
     sts2_core::apply(&mut state, Action::EndTurn);
     assert_eq!(
         state.cards[uid.get() as usize - 1].local_costs_after_expiration(),
-        [1, 1, 2, 2],
-        "Bookmark sees the restored local cost after the turn modifier expires"
+        [2; 4],
+        "Bookmark skips a retained card whose local cost is still zero at AfterFlush"
     );
 }
 

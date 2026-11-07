@@ -15,6 +15,14 @@ pub(crate) fn play_photon_cut(
     let _ = deal_damage_player_to_enemy(state, t, current_damage(state));
     let draws = if current_card_upgraded(state) { 2 } else { 1 };
     let _ = sts2_core::cards::draw_via_state(state, draws);
+    // C# PhotonCut.OnPlay awaits the whole `CardPileCmd.Draw` (including a
+    // Stratagem `AfterShuffle` select) before `CardSelectCmd.FromHand`. A
+    // suspended Rust draw defers the put-back to the draw's resume, as in
+    // Glimmer / ThinkingAhead (Regent loadout v0.107.1 1016).
+    if let Some(pdr) = state.pending_draw_resume.as_mut() {
+        pdr.then_put_back_from_hand = true;
+        return EffectResult::Resolved;
+    }
     // Bead `sts2-rs-k2gai` (yc2d glimmer-mirror): pick a hand card,
     // push to top of draw. Same shape as play_glimmer at regent.rs:962:
     // build hand-pile ChoiceOption list, request_card_choice with

@@ -40,10 +40,7 @@ pub(crate) fn on_before_side_turn_start_power_cell(
         let ia = a.0.get() as usize - 1;
         let ib = b.0.get() as usize - 1;
         let (ca, cb) = (&state.cards[ia], &state.cards[ib]);
-        ca.card_id
-            .to_python_name()
-            .cmp(cb.card_id.to_python_name())
-            .then_with(|| u8::from(ca.upgraded).cmp(&u8::from(cb.upgraded)))
+        crate::cards::card_model_compare(ca, cb)
     };
     state
         .run_rng

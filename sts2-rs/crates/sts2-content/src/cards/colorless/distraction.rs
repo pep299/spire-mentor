@@ -8,9 +8,8 @@ use super::prelude::*;
 /// `sts2-rl-agent@01c094d:sts2_env/cards/status.py::distraction_effect`:
 /// `create_character_cards(character_id, rng, 1, card_type=SKILL,
 /// generation_context="modifier")` then `set_temporary_cost_for_turn(0)`
-/// + `move_card_to_hand`. The Rust port elides the temp-cost step
-/// (no per-card temporary-cost surface yet — Phase 7); the generated
-/// card lands in hand at its native cost. Bead `sts2-rs-dtrv`
+/// + `move_card_to_hand`. C# `Distraction.cs:30` `SetToFreeThisTurn()`
+/// maps onto `VarKey::FreeThisTurn`. Bead `sts2-rs-dtrv`
 /// (re-bodied under `sts2-rs-6ynt.8-distraction`).
 pub(crate) fn play_distraction(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     let Some(character) = state.player.character else {
@@ -24,13 +23,18 @@ pub(crate) fn play_distraction(state: &mut CombatState, _t: Option<CreatureUid>)
         true,
     );
     for uid in uids {
-        state.player.generated_cards_this_combat =
-            state.player.generated_cards_this_combat.saturating_add(1);
-        if state.player.hand.len() < sts2_core::cards::HAND_LIMIT {
-            state.player.hand.push(uid);
+        // Distraction.cs:30-31 `SetToFreeThisTurn()` then
+        // `AddGeneratedCardToCombat(card, Hand, Owner)`: the hand-cap
+        // redirect to discard, then the generation listeners (Regalite,
+        // Pillar of Creation, the Supermassive tally). `FreeThisTurn` is the
+        // same shim White Noise uses.
+        sts2_core::card_effects::set_card_var(state, uid, VarKey::FreeThisTurn, 1);
+        let pile = if sts2_core::cards::try_add_to_hand(&mut state.player, uid) {
+            sts2_core::card_effects::PileKind::Hand
         } else {
-            state.player.discard.push(uid);
-        }
+            sts2_core::card_effects::PileKind::Discard
+        };
+        sts2_core::card_effects::fire_card_generation_listeners(state, uid, pile, true);
     }
     EffectResult::Resolved
 }

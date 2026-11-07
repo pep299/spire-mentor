@@ -19,12 +19,41 @@ pub(crate) fn on_before_power_amount_changed_unsettling_lamp(
     if !unsettling_lamp_eligible(ctx) {
         return EffectResult::NotImplemented;
     }
+    // v0.111.0 adds `if (target.HasPower<ArtifactPower>()) return;`
+    // (`UnsettlingLamp.cs:102`). v0.107.1 has no such gate: the Before hook
+    // runs ahead of Artifact's `ModifyPowerAmountReceived` negation, so an
+    // Artifact-eaten debuff captures the trigger there.
+    if state.game_version >= crate::GameVersion::V0_111_0 && target_has_artifact(state, ctx.target)
+    {
+        return EffectResult::NotImplemented;
+    }
     if let Some(r) = unsettling_lamp_relic_mut(state) {
         r.counter = UNSETTLING_LAMP_CAPTURED;
         EffectResult::Resolved
     } else {
         EffectResult::NotImplemented
     }
+}
+
+/// C# `target.HasPower<ArtifactPower>()` for the lamp's target.
+fn target_has_artifact(state: &CombatState, target: crate::hooks::CreatureRef) -> bool {
+    // Only an enemy target reaches here (`unsettling_lamp_eligible`).
+    let crate::hooks::CreatureRef::Enemy(uid) = target else {
+        return false;
+    };
+    let uid = uid.0;
+    state
+        .creatures
+        .iter()
+        .find(|c| c.id == uid)
+        .is_some_and(|c| {
+            c.powers.iter().any(|p| {
+                state
+                    .powers
+                    .get_by_id(p.0)
+                    .is_some_and(|p| p.kind == crate::PowerKind::Artifact)
+            })
+        })
 }
 
 /// `UnsettlingLamp.modify_power_amount_given` — doubling phase. While

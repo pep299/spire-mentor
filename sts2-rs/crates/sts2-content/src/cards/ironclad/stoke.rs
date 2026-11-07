@@ -56,26 +56,17 @@ pub(crate) fn play_stoke(state: &mut CombatState, _t: Option<CreatureUid>) -> Ef
             let version = state.game_version;
             state.cards[idx].normalize_for_version(version);
         }
-        state.player.generated_cards_this_combat =
-            state.player.generated_cards_this_combat.saturating_add(1);
-        if state.player.hand.len() < sts2_core::cards::HAND_LIMIT {
-            state.player.hand.push(uid);
+        let pile = if sts2_core::cards::try_add_to_hand(&mut state.player, uid) {
+            PileKind::Hand
         } else {
-            state.player.discard.push(uid);
-        }
-        // C# `Stoke` adds the generated cards via `AddGeneratedCardsToCombat`,
-        // whose `oldPile == null` path fires `Hook.AfterCardEnteredCombat`
-        // (`CardPileCmd.cs:436-439`) for each — so Regalite grants +2 block per
-        // card (`Regalite.cs:16-20`). The raw push above skipped that bus
-        // (sweep 1db1, seed 5197). Mirror Discovery's dispatch.
-        let _ = sts2_core::relic_effects::dispatch_after_card_entered_combat(state, uid, true);
-        let _ =
-            sts2_core::monster_power_effects::dispatch_after_card_entered_combat_on_monster_powers(
-                state, uid,
-            );
-        // Card-level `AfterCardEnteredCombat`: a generated Stomp/Pinpoint
-        // back-fills this turn's play discounts (sweep seed 5546).
-        sts2_core::card_effects::stamp_entered_combat_cost_backfill(state, uid);
+            PileKind::Discard
+        };
+        // C# `Stoke.cs:33` `AddGeneratedCardsToCombat(cards, Hand, Owner)`:
+        // per card `History.CardGenerated`, `Add` (whose `oldPile == null`
+        // path fires `AfterCardEnteredCombat` — Regalite, Stomp's back-fill)
+        // and `Hook.AfterCardGeneratedForCombat` (Pillar of Creation, Arsenal,
+        // …). The hand-rolled dispatch covered only the entered-combat bus.
+        sts2_core::card_effects::fire_card_generation_listeners(state, uid, pile, true);
     }
     EffectResult::Resolved
 }

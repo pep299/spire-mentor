@@ -264,6 +264,16 @@ pub enum VarKey {
     /// by the auto-play resolver before the effect dispatch; read + cleared by
     /// `play_stardust`. regent-legal-action Fix B (seed 2010).
     AutoPlayStarX,
+    /// C# `Resources.EnergyValue` of an X-cost play when it differs from the
+    /// captured X in `energy_spent`, stored as `value + 1` (`0` = unset: the
+    /// play's `EnergyValue` is `energy_spent`). Only the Whispering Earring
+    /// path sets it: it pays the card with `SpendResources()` and then runs
+    /// `CardCmd.AutoPlay(skipXCapture: true)`, whose `EnergyValue =
+    /// EnergyCost.GetAmountToSpend()` (CardCmd.cs:126) is the player's energy
+    /// AFTER that spend (CardEnergyCost.cs:134-139), while the X stays the
+    /// spent amount. Read through [`play_energy_value`] by RightHandHand and
+    /// IvoryTile; cleared by every other play.
+    AutoPlayEnergyValue,
     /// How much of this card's cost came from an END-OF-TURN-expiring
     /// modifier that a *foreign* producer had already applied when the state
     /// was reconstructed — the amount
@@ -389,6 +399,43 @@ pub enum VarKey {
     /// modifiers and skips the catch-up) carries the count, so it is not shaved
     /// twice. Appended so no existing discriminant moves.
     BansheesCryEtherealCounted,
+    /// C# `CardModel.ExhaustOnNextPlay` left set on a card whose forced-exhaust
+    /// auto-play (Havoc, `CardPileCmd.AutoPlayFromDrawPile` `forceExhaust`) was
+    /// blocked: `MoveToResultPileWithoutPlaying` exhausts it WITHOUT clearing
+    /// the flag (only `GetResultLocationForCardPlay` and `EndOfTurnCleanup`
+    /// clear it, `CardModel.cs:2090-2120`, `:1613`). A Howl from Beyond
+    /// exhausted that way and auto-played again from the exhaust pile at the
+    /// same turn's end therefore exhausts once more instead of landing in
+    /// discard. Cleared at end-of-turn cleanup. Appended so no existing
+    /// discriminant moves.
+    ExhaustOnNextPlay,
+    /// The part of the card's `AddThisCombat` reductions (Melancholy,
+    /// Banshee's Cry) that took its cost below 0. C# keeps those as Relative
+    /// local modifiers and clamps only the final cost
+    /// (`CardEnergyCost.GetWithModifiers`, `Math.Max(0, num)` after the
+    /// global hooks), so a 3-cost Melancholy after four deaths sits at -1
+    /// and a +1 surcharge (Borrowed Time) still leaves it at 0. `cost` stays
+    /// clamped at 0; this holds the rest and is subtracted from the local
+    /// base ([`Card::add_cost_this_combat`]). Appended so no existing
+    /// discriminant moves.
+    CostDebtThisCombat,
+    /// A Flatten's live Snecko roll: `1 +` the turn's Osty-attack count when
+    /// the roll landed (0 = no live roll). Flatten's `SetThisTurn(0)` on an
+    /// Osty attack and the roll's `SetThisTurnOrUntilPlayed` are both
+    /// Absolute local modifiers applied in insertion order
+    /// (`CardEnergyCost.GetWithModifiers`), so the roll beats a zero from an
+    /// earlier attack and loses to one from a later attack
+    /// ([`crate::hooks::card_cost_locally_zeroed`]). Cleared with the roll.
+    /// Appended so no existing discriminant moves.
+    FlattenOstyAttacksAtRoll,
+    /// Relative cost added while a local zero was live (free this turn, free
+    /// until played, Flatten after an Osty attack). C# folds local modifiers
+    /// in insertion order, so Transfigure's `AddThisCombat(1)` on a
+    /// Discovery-made free card reads `Absolute(0) + 1 = 1` until the zero
+    /// expires ([`crate::hooks::card_cost_locally_zeroed`] is the base it is
+    /// added to). Cleared with the free-this-turn / until-played riders.
+    /// Appended so no existing discriminant moves.
+    CostAddedAfterLocalZero,
 }
 
 /// [`VarKey::SneckoRollLive`]: the Snecko roll raised `CostAbsolutelySet`, so
@@ -979,13 +1026,17 @@ impl LocalCostFunction {
         }
     }
 
-    fn value(self, base: i32) -> i32 {
+    fn raw_value(self, base: i32) -> i32 {
         let value = if self.uses_base {
             base.saturating_add(self.offset)
         } else {
             self.ceiling
         };
-        value.min(self.ceiling).max(0)
+        value.min(self.ceiling)
+    }
+
+    fn value(self, base: i32) -> i32 {
+        self.raw_value(base).max(0)
     }
 }
 
@@ -1011,6 +1062,17 @@ impl LocalEnergyCost {
             if modifier.expiration & expired == 0 {
                 function.append(modifier);
             }
+        }
+    }
+
+    #[must_use]
+    pub fn raw_cost(self) -> i32 {
+        if self.costs_x {
+            -1
+        } else if self.base < 0 {
+            self.base
+        } else {
+            self.functions[0].raw_value(self.base)
         }
     }
 
@@ -1300,6 +1362,8 @@ impl Card {
             VarKey::SneckoCostDeltaThisTurn,
             VarKey::SneckoRollLive,
             VarKey::CostReductionUntilPlayed,
+            VarKey::CostDebtThisCombat,
+            VarKey::CostAddedAfterLocalZero,
             VarKey::WireTransientCostThisTurn,
             VarKey::WireCostExpiringOnPlay,
             VarKey::WireCostStable,
@@ -1409,9 +1473,12 @@ impl Card {
             } else if card.combat_var(VarKey::FreeThisTurn) != 0
                 || card.combat_var(VarKey::FreeUntilPlayed) != 0
             {
-                0
+                card.combat_var(VarKey::CostAddedAfterLocalZero)
             } else {
-                (i32::from(card.cost) - card.combat_var(VarKey::CostReductionUntilPlayed)).max(0)
+                (i32::from(card.cost)
+                    - card.combat_var(VarKey::CostReductionUntilPlayed)
+                    - card.combat_var(VarKey::CostDebtThisCombat))
+                .max(0)
             }
         };
         let expire = |card: &mut Self, turn: bool| {
@@ -1429,6 +1496,7 @@ impl Card {
                 card.combat_vars.zero(VarKey::FreeUntilPlayed);
                 card.combat_vars.zero(VarKey::CostReductionUntilPlayed);
             }
+            card.combat_vars.zero(VarKey::CostAddedAfterLocalZero);
             card.expire_snecko_roll();
             let (key, other) = if turn {
                 (
@@ -1467,6 +1535,23 @@ impl Card {
         ]
     }
 
+    /// C# `CardModel.CreateClone()` of this card: a field-for-field copy that
+    /// is a NEW instance. Everything the clone deep-copies stays — cost
+    /// modifiers, enchantment amounts and their `Status` (Swift / Sown already
+    /// `Disabled` by the played card's own `OnPlay`, EnchantmentModel.cs:309-314
+    /// keeps `_status`). What does not carry over is state the engine derives
+    /// from the card INSTANCE's play history: Bolas / ThrummingHatchet return
+    /// only a card whose own play is in `History.CardPlaysFinished`
+    /// (Bolas.cs:41-46, ThrummingHatchet.cs:35-40), so the copy loses the
+    /// `ReturnIfPlayedRound` stamp. Callers spawn the result (which assigns the
+    /// new uid).
+    #[must_use]
+    pub fn create_clone(&self) -> Self {
+        let mut clone = *self;
+        clone.set_combat_var(VarKey::ReturnIfPlayedRound, 0);
+        clone
+    }
+
     /// C# `EnergyCost.AddUntilPlayed(-amount)`: bank `amount` more energy off
     /// this card until it is played ([`VarKey::CostReductionUntilPlayed`]).
     pub fn add_cost_reduction_until_played(&mut self, amount: i32) {
@@ -1481,6 +1566,34 @@ impl Card {
         }
         let banked = self.combat_var(VarKey::CostReductionUntilPlayed);
         self.set_combat_var(VarKey::CostReductionUntilPlayed, banked + amount);
+    }
+
+    /// C# `EnergyCost.AddThisCombat(delta)`: a Relative local modifier for the
+    /// rest of combat, unclamped until the final cost read. `cost` holds the
+    /// part at or above 0 and [`VarKey::CostDebtThisCombat`] the part below
+    /// it, so a later `+n` pays the debt off first. X-cost cards are skipped.
+    pub fn add_cost_this_combat(&mut self, delta: i32) {
+        if self.local_energy_cost.is_some() {
+            self.add_local_cost_modifier(LocalCostModifier {
+                kind: LocalCostModifierKind::Relative,
+                amount: delta,
+                reduce_only: false,
+                expiration: 0,
+            });
+            return;
+        }
+        if self.is_x_cost() {
+            return;
+        }
+        let debt = self.combat_var(VarKey::CostDebtThisCombat);
+        let raw = i32::from(self.cost) - debt + delta;
+        if raw >= 0 {
+            self.cost = i8::try_from(raw).unwrap_or(i8::MAX);
+            self.combat_vars.zero(VarKey::CostDebtThisCombat);
+        } else {
+            self.cost = 0;
+            self.set_combat_var(VarKey::CostDebtThisCombat, -raw);
+        }
     }
 
     /// C# `CardModel.SetToFreeThisCombat` (TouchOfInsanity): energy cost 0 and
@@ -1510,6 +1623,15 @@ impl Card {
     /// drops them (`CardEnergyCost.cs:331-335`) the Absolute still yields
     /// `cost`, so their banks are dropped too or the next turn-start restore
     /// re-adds them (Ironclad-2031: Touch-of-Insanity'd Stomp C# 0, Rust 2).
+    ///
+    /// It also supersedes the earlier local riders the collapsed model keeps
+    /// beside `cost`: the `SetThisTurnOrUntilPlayed(0)` / `SetUntilPlayed(0)`
+    /// Absolutes ([`VarKey::FreeThisTurn`], [`VarKey::FreeUntilPlayed`]) and an
+    /// `AddUntilPlayed(-n)` reduction ([`VarKey::CostReductionUntilPlayed`]) —
+    /// all folded BEFORE this Absolute, so it owns the cost (loadout Defect
+    /// v0.107.1 2008: a RocketPunch made free until played, then drawn under
+    /// Confused, cost the Confused roll in C#, 0 in Rust). `SetToFreeThisTurn`'s
+    /// star half survives (it is a separate star cost).
     pub fn set_cost_this_combat(&mut self, cost: i8) {
         if self.local_energy_cost.is_some() {
             self.add_local_cost_modifier(LocalCostModifier {
@@ -1521,11 +1643,22 @@ impl Card {
             return;
         }
         self.cost = cost;
+        // The later Absolute also supersedes the earlier Relative
+        // `AddThisCombat` reductions.
+        self.combat_vars.zero(VarKey::CostDebtThisCombat);
         self.set_combat_var(VarKey::CostAbsolutelySet, 1);
         self.set_combat_var(VarKey::SneckoCostDeltaThisTurn, 0);
         self.set_combat_var(VarKey::SneckoRollLive, 0);
         self.set_combat_var(VarKey::StompCostReductionThisTurn, 0);
         self.set_combat_var(VarKey::PinpointCostReductionThisTurn, 0);
+        if self.combat_vars.maybe_nonzero(VarKey::FreeThisTurn)
+            && self.combat_var(VarKey::FreeThisTurn) != 0
+        {
+            self.set_combat_var(VarKey::StarCostFreeThisTurn, 1);
+            self.combat_vars.zero(VarKey::FreeThisTurn);
+        }
+        self.combat_vars.zero(VarKey::FreeUntilPlayed);
+        self.combat_vars.zero(VarKey::CostReductionUntilPlayed);
     }
 
     /// C# `EnergyCost.SetThisTurnOrUntilPlayed(cost, reduceOnly: true)`
@@ -1535,6 +1668,17 @@ impl Card {
     /// modifier), so [`Self::expire_snecko_roll`] reverts it on either edge.
     /// Reduce-only: a card already at or below `cost` is left alone. X-cost
     /// cards are skipped.
+    ///
+    /// An earlier `AddUntilPlayed(-n)` reduction
+    /// ([`VarKey::CostReductionUntilPlayed`]) folds BEFORE this Absolute
+    /// (local modifiers apply in insertion order, `CardEnergyCost.cs:110-115`;
+    /// reduce-only Absolute = `min(current, cost)`, `LocalCostModifier.cs:91`),
+    /// so both the reduce-only test and the result see the reduced cost: a
+    /// 3-cost Reap retained with a 1-reduction (2) reads `min(2, 1) = 1`, not
+    /// `1 - 1 = 0`. The collapsed model subtracts the reduction after `cost`,
+    /// so `cost` is set to `cost + reduction`; past turn end (the reduction is
+    /// `WhenPlayed` only) the cap's expiry restores the old `cost` and the
+    /// reduction applies again, as in C#. Loadout Necrobinder v0.107.1 1386.
     pub fn set_this_turn_or_until_played_reduce_only(&mut self, cost: i8) {
         if self.local_energy_cost.is_some() {
             if !self.is_x_cost() {
@@ -1547,11 +1691,16 @@ impl Card {
             }
             return;
         }
-        if self.is_x_cost() || self.cost <= cost {
+        if self.is_x_cost() {
             return;
         }
-        let delta = i32::from(cost) - i32::from(self.cost);
-        self.cost = cost;
+        let reduction = self.combat_var(VarKey::CostReductionUntilPlayed);
+        if i32::from(self.cost) - reduction <= i32::from(cost) {
+            return;
+        }
+        let new_cost = i32::from(cost) + reduction;
+        let delta = new_cost - i32::from(self.cost);
+        self.cost = i8::try_from(new_cost).unwrap_or(i8::MAX);
         let banked = self.combat_var(VarKey::SneckoCostDeltaThisTurn);
         self.set_combat_var(
             VarKey::SneckoCostDeltaThisTurn,
@@ -1600,9 +1749,18 @@ impl Card {
         let live = self.combat_var(VarKey::SneckoRollLive);
         let banked = self.combat_var(VarKey::SneckoCostDeltaThisTurn);
         if live == 0 && banked == 0 {
-            if self.cost > cost {
-                self.cost = cost;
+            // An earlier `AddUntilPlayed(-n)` reduction folds before the cap
+            // (see `set_this_turn_or_until_played_reduce_only`): C# shows
+            // `min(cost - n, cap)` until the card is played, then `min(cost,
+            // cap)`. Keep the cap in `cost` and shrink the bank to the part of
+            // the reduction still visible under it.
+            let reduction = self.combat_var(VarKey::CostReductionUntilPlayed);
+            let capped = self.cost.min(cost);
+            if reduction != 0 {
+                let shown = (i32::from(self.cost) - reduction).min(i32::from(cost));
+                self.set_combat_var(VarKey::CostReductionUntilPlayed, i32::from(capped) - shown);
             }
+            self.cost = capped;
             return;
         }
         let displayed = i32::from(self.cost.min(cost));
@@ -1633,6 +1791,7 @@ impl Card {
         self.cost = self.cost.saturating_sub(banked as i8);
         self.set_combat_var(VarKey::SneckoCostDeltaThisTurn, 0);
         self.set_combat_var(VarKey::SneckoRollLive, 0);
+        self.combat_vars.zero(VarKey::FlattenOstyAttacksAtRoll);
         if live != SNECKO_ROLL_FLAG_PREOWNED {
             self.set_combat_var(VarKey::CostAbsolutelySet, 0);
         }
@@ -1981,8 +2140,20 @@ impl Card {
         // the `CardId`-keyed registries. Unlike the stat fields this
         // is an absolute set, not an additive delta — the upgraded
         // build already encodes the final keyword set.
-        if upgraded.keyword_override.is_some() {
-            self.keyword_override = upgraded.keyword_override;
+        //
+        // C# `UpgradeInternal` only runs the card's `OnUpgrade`, which
+        // adds/removes the keywords it names (Rainbow: `RemoveKeyword(
+        // Exhaust)`) on the LIVE set: a keyword gained in combat (Choices
+        // Paradox's Retain) survives the upgrade (loadout Defect v0.111.0
+        // 2015: a Bellows-upgraded Retain Rainbow lost its Retain). Apply
+        // the base -> upgraded keyword diff to the current set.
+        if let Some(up) = upgraded.keyword_override {
+            let registry = |c: &Card| crate::card_effects::registry_keyword_override(c.card_id);
+            let base_kw = base.keyword_override.unwrap_or_else(|| registry(base));
+            let current = self.keyword_override.unwrap_or(base_kw);
+            let removed = base_kw.0 & !up.0;
+            let added = up.0 & !base_kw.0;
+            self.keyword_override = Some(KeywordOverride((current.0 & !removed) | added));
         }
     }
 
@@ -2017,6 +2188,11 @@ impl Card {
                 self.revert_upgrade_delta(&base, &upgraded);
             }
         }
+        // C# `DowngradeInternal` (`CardModel.cs:2149-2162`) resets `_keywords`
+        // to the canonical Local set, so a keyword `CardCmd.ApplyKeyword`
+        // added (Ghost Seed's / Music Box's Ethereal, modelled as this combat
+        // var) is gone and nothing re-applies it.
+        self.combat_vars.zero(VarKey::EtherealThisCombat);
         true
     }
 
@@ -2024,6 +2200,19 @@ impl Card {
         if let Some(mut model) = self.local_energy_cost {
             model.upgrade_base(i32::from(base.cost) - i32::from(upgraded.cost));
             self.set_local_energy_cost(model);
+        } else if self.card_id == CardId::BansheesCry
+            && base.cost >= 0
+            && self.combat_var(VarKey::CostAbsolutelySet) == 0
+        {
+            // C# `ResetForDowngrade` restores `_base = Canonical` and keeps the
+            // `AddThisCombat(-2)` modifiers, so the cost re-resolves to
+            // `max(0, 9 - 2n)` (CardEnergyCost.cs GetWithModifiers). The
+            // collapsed `cost` already floored at 0; adding the +2 delta back
+            // to that floor over-charged (loadout Necrobinder 1006, Dampen).
+            let shaved = self
+                .combat_var(VarKey::BansheesCryEtherealCounted)
+                .saturating_mul(2);
+            self.cost = i8::try_from((i32::from(base.cost) - shaved).max(0)).unwrap_or(0);
         } else {
             self.cost = self.cost.saturating_sub(upgraded.cost - base.cost);
         }
@@ -3017,6 +3206,17 @@ pub fn cards_observationally_equal(a: &Card, b: &Card) -> bool {
     a2 == b2
 }
 
+/// C# `CardPlay.Resources.EnergyValue` of this card's latest play:
+/// `energy_spent`, unless [`VarKey::AutoPlayEnergyValue`] overrides it (an
+/// X-cost card the Whispering Earring paid for and auto-played).
+#[must_use]
+pub fn play_energy_value(card: &Card) -> i32 {
+    match card.combat_var(VarKey::AutoPlayEnergyValue) {
+        0 => card.energy_spent,
+        stamped => stamped - 1,
+    }
+}
+
 /// `card.energy_spent` as the observational identity sees it: the stamped
 /// value for an X-cost card, `0` for every other card.
 ///
@@ -3202,6 +3402,20 @@ fn reshuffle_rank(card_id: CardId) -> u16 {
         table
     });
     ranks[card_id as usize]
+}
+
+/// C# `CardModel.CompareTo` (`CardModel.cs:1745-1766`): `ModelId` first
+/// (ordinal [`card_model_entry`], via the O(1) [`reshuffle_rank`]), then
+/// `CurrentUpgradeLevel` ascending (base before upgraded). The `list.Sort()`
+/// key of every card `StableShuffle` (Catastrophe, Beat Down, Uproar, Seeker
+/// Strike, Stone Cracker, Power Cell). Keying on the raw python name instead
+/// misorders the `_CARD`/`_STATUS`-suffixed ids: `THUNDER_CARD` sorts after
+/// `THUNDERCLAP`, while C#'s `THUNDER` sorts before it.
+#[must_use]
+pub fn card_model_compare(a: &Card, b: &Card) -> std::cmp::Ordering {
+    reshuffle_rank(a.card_id)
+        .cmp(&reshuffle_rank(b.card_id))
+        .then_with(|| u8::from(a.upgraded).cmp(&u8::from(b.upgraded)))
 }
 
 /// Reshuffle pre-sort PRIMARY key: the O(1) ordinal rank of a uid's card name
@@ -3861,6 +4075,30 @@ pub fn draw_via_state(state: &mut crate::CombatState, n: i32) -> usize {
 
 #[cfg(test)]
 mod tests {
+    /// `card_model_compare` is C# `CardModel.CompareTo`: slugified Entry
+    /// (no `_CARD` suffix), then upgrade level.
+    #[test]
+    fn card_model_compare_keys_on_entry_then_upgrade() {
+        let mk = |card_id, upgraded| Card {
+            card_id,
+            upgraded,
+            ..Card::pod_defaults()
+        };
+        let thunder = mk(CardId::ThunderCard, false);
+        let clap = mk(CardId::Thunderclap, false);
+        assert_eq!(
+            card_model_compare(&thunder, &clap),
+            std::cmp::Ordering::Less,
+            "THUNDER < THUNDERCLAP"
+        );
+        let clap_plus = mk(CardId::Thunderclap, true);
+        assert_eq!(
+            card_model_compare(&clap, &clap_plus),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(card_model_compare(&clap, &clap), std::cmp::Ordering::Equal);
+    }
+
     use super::*;
 
     #[test]
@@ -7114,5 +7352,62 @@ mod tests {
         let mut store = store_with_ids(&[CardId::StrikeIronclad]);
         store[0].card_id = CardId::Pinpoint;
         let _ = store.holds_id(CardId::Pinpoint);
+    }
+
+    /// C# `CardModel.DowngradeInternal` (`CardModel.cs:2149-2162`, same in
+    /// v0.107.1) resets `_keywords` to the canonical Local set, dropping an
+    /// Ethereal that `CardCmd.ApplyKeyword` added (Ghost Seed, a Music Box
+    /// clone). Dampen's downgrade must clear `EtherealThisCombat`, or the
+    /// end-of-turn sweep exhausts the card (Ironclad:6190 @1049).
+    #[test]
+    fn downgrade_drops_applied_ethereal() {
+        let mut card = Card {
+            card_id: CardId::StrikeIronclad,
+            upgraded: true,
+            ..Card::pod_defaults()
+        };
+        card.set_combat_var(VarKey::EtherealThisCombat, 1);
+        card.set_combat_var(VarKey::DampenDowngradedMarker, 1);
+        assert!(card.downgrade_for(crate::GameVersion::V0_111_0));
+        assert_eq!(card.combat_var(VarKey::EtherealThisCombat), 0);
+        assert_eq!(
+            card.combat_var(VarKey::DampenDowngradedMarker),
+            1,
+            "other instance state survives"
+        );
+    }
+
+    /// C# `ResetForDowngrade` restores the base cost (9) under Banshee's Cry's
+    /// `AddThisCombat(-2)` modifiers, so after 5 Ethereal plays a downgraded
+    /// copy resolves to `max(0, 9 - 10) = 0`, not the floored 0 plus the
+    /// reverted +2 (loadout Necrobinder 1006).
+    #[test]
+    fn banshees_cry_downgrade_keeps_its_ethereal_discounts() {
+        let factory = |id, up: bool| {
+            Some(Card {
+                card_id: id,
+                cost: if up { 7 } else { 9 },
+                ..Card::pod_defaults()
+            })
+        };
+        let mut card = Card {
+            card_id: CardId::BansheesCry,
+            cost: 0,
+            upgraded: true,
+            ..Card::pod_defaults()
+        };
+        card.set_combat_var(VarKey::BansheesCryEtherealCounted, 5);
+        assert!(card.downgrade_with(factory));
+        assert_eq!(card.cost, 0);
+
+        let mut card = Card {
+            card_id: CardId::BansheesCry,
+            cost: 0,
+            upgraded: true,
+            ..Card::pod_defaults()
+        };
+        card.set_combat_var(VarKey::BansheesCryEtherealCounted, 4);
+        assert!(card.downgrade_with(factory));
+        assert_eq!(card.cost, 1, "max(0, 9 - 8)");
     }
 }

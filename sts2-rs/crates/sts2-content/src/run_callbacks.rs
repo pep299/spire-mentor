@@ -2322,6 +2322,55 @@ mod tests {
         );
     }
 
+    /// v0.107.1 parity seed 1086 (random loadout, step 1): NeowsBones grants
+    /// SmallCapsule, whose chained relic reward defers Kaleidoscope onto
+    /// `pending_post_pick_relic_grants`. The event route had already chosen
+    /// `MapChoice` when the settle drain granted Kaleidoscope, so its two
+    /// card rewards sat on `pending_rewards` and were never offered. C#
+    /// awaits Kaleidoscope's `OfferCustom` inside `RewardsSet.Offer()`, so
+    /// the card rewards come up before the map.
+    #[test]
+    fn deferred_kaleidoscope_grant_after_an_event_surfaces_its_card_rewards() {
+        use sts2_core::run_manager::{ActionResult, Phase, RunAction, RunManager};
+        use sts2_core::NeowRelic;
+        crate::relics::dispatch::ensure_installed();
+        let mut rm = RunManager::new(0, CharacterId::Ironclad)
+            .with_content_callbacks(ironclad_content_callbacks())
+            .with_neow_start();
+        rm.run_state.direct_event_relic_grant = true;
+        let (by_rarity, fallback, boss) = default_relic_grab_bag();
+        rm.run_state
+            .populate_relic_grab_bag_by_rarity(by_rarity, fallback, boss);
+        let mut offers = rm.run_state.neow_offers.expect("neow offers rolled");
+        offers.positive_2 = NeowRelic::SmallCapsule;
+        rm.run_state.neow_offers = Some(offers);
+        // The NeowsBones batch state: the 2nd relic is owed after the 1st.
+        rm.run_state
+            .pending_post_pick_relic_grants
+            .push(RelicId::Kaleidoscope);
+        assert_eq!(
+            rm.take_action(RunAction::EventChoice { idx: 1 }),
+            ActionResult::Advanced
+        );
+        assert!(rm.run_state.relics.contains(&RelicId::Kaleidoscope));
+        assert_eq!(
+            rm.phase(),
+            Phase::CardReward,
+            "Kaleidoscope's card reward is offered, not dropped for the map"
+        );
+        let mut offered = 0;
+        while rm.phase() == Phase::CardReward {
+            offered += 1;
+            assert_eq!(
+                rm.take_action(RunAction::PickCardReward { idx: None }),
+                ActionResult::Advanced
+            );
+        }
+        assert_eq!(offered, 2, "both Kaleidoscope rewards are offered");
+        assert!(rm.run_state.pending_rewards.is_empty());
+        assert_eq!(rm.phase(), Phase::MapChoice);
+    }
+
     #[test]
     fn card_reward_returns_three_cards_for_ironclad() {
         let mut rs = RunState::new();

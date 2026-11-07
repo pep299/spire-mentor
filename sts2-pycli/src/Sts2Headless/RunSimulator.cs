@@ -142,6 +142,7 @@ internal sealed class GameThread : IDisposable
     private void Run()
     {
         SynchronizationContext.SetSynchronizationContext(SyncContext);
+        ThreadProbe.GameThreadId = Environment.CurrentManagedThreadId;
         foreach (var (work, tcs) in _commands.GetConsumingEnumerable())
         {
             try
@@ -152,6 +153,10 @@ internal sealed class GameThread : IDisposable
             catch (Exception ex)
             {
                 tcs.TrySetException(ex);
+            }
+            finally
+            {
+                ThreadProbe.CurrentCommand = null;
             }
         }
     }
@@ -1003,6 +1008,13 @@ public class RunSimulator
                             var mutable = model.ToMutable();
                             mutable.Owner = player;
                             list.Add(mutable);
+                            // RelicCmd.Obtain's bag bookkeeping, without its
+                            // hooks: an owned relic must not be offered again.
+                            if (!mutable.IsStackable)
+                            {
+                                player.RelicGrabBag.Remove(mutable);
+                                _runState.SharedRelicGrabBag.Remove(mutable);
+                            }
                         }
                     }
                 }
@@ -2058,6 +2070,7 @@ public class RunSimulator
 
     private Dictionary<string, object?> ExecuteActionImpl(string action, Dictionary<string, object?>? args)
     {
+        ThreadProbe.CurrentCommand = action;
         try
         {
             if (_runState == null)
@@ -2169,20 +2182,30 @@ public class RunSimulator
         // b0: C# deck one card short, Rust correctly parked at card_reward). Run
         // shop entry on the thread pool like a relic purchase, and stash it in
         // `_pendingMapEntryTask` if it parks at a selection; the selection
-        // handlers drive it on. Other rooms keep the synchronous call, so combat
-        // starts are untouched.
+        // handlers drive it on. An Unknown node rolls its room inside
+        // EnterMapCoord, so one that lands on a merchant has the same deadlock
+        // (Ironclad-8084 act2 b1: Unknown -> MerchantRoom -> Lord's Parasol ->
+        // Orrery); it takes the same path. The pool thread must stay: the
+        // headless GetSelectedCardReward blocks its caller, so on the game
+        // thread it deadlocks. But an Unknown node can also roll a combat, and
+        // with no sync context on the pool thread every continuation of that
+        // combat went to the thread pool and ran concurrently with later
+        // commands (Defect-1000 act3: draw/discard counts flaked under load).
+        // So the entry runs with `_syncCtx` installed, which runs each
+        // continuation inline and serialized, as the synchronous path does.
+        // Other rooms keep the synchronous call.
         var point = _runState?.Map.GetPoint(coord);
-        if (point?.PointType == MapPointType.Shop)
+        if (point?.PointType is MapPointType.Shop or MapPointType.Unknown)
         {
-            var task = Task.Run(() => RunManager.Instance.EnterMapCoord(coord));
-            WaitUntilOptionTaskSettles(task, "shop map-entry task or selection");
+            var task = RunOnPool(() => RunManager.Instance.EnterMapCoord(coord));
+            WaitUntilOptionTaskSettles(task, "shop/unknown map-entry task or selection");
             if (!task.IsCompleted && AnySelectionPending())
             {
                 _pendingMapEntryTask = task;
                 WaitForActionExecutor();
                 return DetectDecisionPoint();
             }
-            WaitForTask(task, 2000, "shop map-entry task");
+            WaitForTask(task, 2000, "shop/unknown map-entry task");
             if (task.IsFaulted) task.GetAwaiter().GetResult();
         }
         else
@@ -2379,6 +2402,7 @@ public class RunSimulator
                 && !player.Creature.IsDead && !_cardSelector.HasPending)
             {
                 Log("EndTurn stuck, cancelling and retrying with SuppressYield...");
+                ThreadProbe.Note("end_turn stuck-retry");
                 try
                 {
                     RunManager.Instance.ActionExecutor.Cancel();
@@ -2439,6 +2463,7 @@ public class RunSimulator
                 var stuckState = CombatManager.Instance.DebugOnlyGetState();
                 var stuckEnemies = stuckState?.Enemies?.Where(e => e != null && e.IsAlive)
                     .Select(e => $"{e.Monster?.GetType().Name}(hp={e.CurrentHp})").ToList();
+                ThreadProbe.Note("end_turn nuclear fallback");
                 Log($"EndTurn STILL stuck after retry — nuclear fallback. Round={stuckState?.RoundNumber}, " +
                     $"Enemies=[{string.Join(",", stuckEnemies ?? new())}], " +
                     $"IsPlayPhase={IsPlayPhase()}, " +
@@ -2455,9 +2480,10 @@ public class RunSimulator
 
                     // Run EndTurn on ThreadPool with SuppressYield permanently on
                     YieldPatches.SuppressYield = true;
-                    var endTurnTask = Task.Run(() =>
+                    var endTurnTask = RunOnPool(() =>
                     {
                         PlayerCmd.EndTurn(player, canBackOut: false);
+                        return Task.CompletedTask;
                     });
 
                     // Aggressively pump sync context while waiting (up to 5 seconds)
@@ -2521,6 +2547,7 @@ public class RunSimulator
             // (run-parity RP0: cs deck 10 vs rs 11 across all characters).
             DrainEventOptionTaskIfDue();
             DrivePurchaseTask();
+            DrainRestSiteTaskIfDue();
             return DetectDecisionPoint();
         }
 
@@ -2569,6 +2596,7 @@ public class RunSimulator
             // task whose post-await effects (e.g. follow-up grants) must run.
             DrainEventOptionTaskIfDue();
             DrivePurchaseTask();
+            DrainRestSiteTaskIfDue();
             return DetectDecisionPoint();
         }
         if (_pendingCardReward != null)
@@ -2644,7 +2672,7 @@ public class RunSimulator
             // selection surfaced, stash the purchase task in `_pendingPurchaseTask`
             // so DoSelectCards (MerchantRoom branch) drives it to completion after
             // the player resolves the selection.
-            var task = Task.Run(() => entry.OnTryPurchaseWrapper(merchantRoom.GetLocalInventory()));
+            var task = RunOnPool(() => entry.OnTryPurchaseWrapper(merchantRoom.GetLocalInventory()));
             WaitUntilOptionTaskSettles(task, "relic-purchase task or selection");
             // A `select_cards` screen (PARITY118's deck card-select) or a card
             // reward (Orrery's 5) parks the task in `_pendingPurchaseTask`;
@@ -2711,7 +2739,7 @@ public class RunSimulator
         try
         {
             // Run on background thread so card selection can pause (same pattern as event options)
-            var task = Task.Run(() => removal.OnTryPurchaseWrapper(merchantRoom.GetLocalInventory()));
+            var task = RunOnPool(() => removal.OnTryPurchaseWrapper(merchantRoom.GetLocalInventory()));
             // Wait until the task settles (completes or parks at a selection) rather
             // than on a fixed 1 s budget — see WaitUntilOptionTaskSettles for why a
             // short timeout here drops a still-in-flight task and races its writes.
@@ -2760,9 +2788,9 @@ public class RunSimulator
         //
         // We resolve the bundle TCS EMPTY and add the cards manually rather than
         // resuming the continuation with the real cards because that continuation
-        // runs on a thread-pool task (`Task.Run(() => option.Chosen())` in
-        // DoChooseOption — no GameSyncContext), so its `CardPileCmd.Add` would
-        // mutate the pile off the game thread and not stick.
+        // runs on a thread-pool task (`RunOnPool(() => option.Chosen())` in
+        // DoChooseOption; before GH #1147 it had no GameSyncContext), so its
+        // `CardPileCmd.Add` would mutate the pile off the game thread and not stick.
         //
         // CRITICAL determinism fix — eliminate the writer race by ensuring the
         // game thread and the suspended thread-pool continuation never mutate the
@@ -2827,67 +2855,49 @@ public class RunSimulator
 
         Log($"Card selection: indices [{string.Join(",", indices)}]");
 
-        // In COMBAT, resolving this selection can resume a card play that chains
-        // into an auto-play (Catastrophe/Havoc/Mayhem) whose sub-cards open
-        // FURTHER choices deep inside the resumed play. The manual pump loop
-        // cannot surface those follow-on choices in time — their TCS strands and
-        // the play deadlocks with cards stuck in the PlayPile (seed 1279: an
-        // auto-played Splash's "choose 1 of 3 generated Attacks" screen, leaving
-        // the generated card unadded and Splash/Catastrophe in Play → hand 5v6 +
-        // discard 1v3 vs Rust). Resolve any such nested choice INLINE at the
-        // same option-0 prefix the drain loop uses (and that the Rust engine
-        // uses for its inline auto-play choices), so the play runs to
-        // completion. Combat-only; the first surfaced choice already resolved
-        // above, so this only affects choices opened by the RESUMED play.
-        bool combatResolve = CombatManager.Instance.IsInProgress;
-        if (combatResolve) _cardSelector.AutoResolveInline = true;
-        try
+        _cardSelector.ResolvePendingByIndices(indices);
+        _syncCtx.Pump();
+        // A resumed play can open the next card's select (Catastrophe's
+        // second auto-play, GH #1131). The real game prompts for it, so it
+        // surfaces like the first one; the executor stays busy until then.
+        WaitForActionExecutor(stopOnSelection: true);
+
+        // Await the stashed ChooseLocalOption task so the upgrade is fully
+        // applied before we force-transition to the map.
+        if (_runState?.CurrentRoom is RestSiteRoom)
         {
-            _cardSelector.ResolvePendingByIndices(indices);
-            _syncCtx.Pump();
+            var restSiteTask = _pendingRestSiteTask;
+            _pendingRestSiteTask = null;
+            if (restSiteTask != null) WaitForTask(restSiteTask, 2000, "rest-site task");
             WaitForActionExecutor();
-
-            // Await the stashed ChooseLocalOption task so the upgrade is fully
-            // applied before we force-transition to the map.
-            if (_runState?.CurrentRoom is RestSiteRoom)
-            {
-                var restSiteTask = _pendingRestSiteTask;
-                _pendingRestSiteTask = null;
-                if (restSiteTask != null) WaitForTask(restSiteTask, 2000, "rest-site task");
-                WaitForActionExecutor();
-                // RestSiteSynchronizer.ChooseOption (:202-215) keeps the other
-                // options open when a relic (MiniatureTent) declines
-                // ShouldDisableRemainingRestSiteOptions; RestSiteState only
-                // leaves for the map once none remain.
-                _restSiteOptionTaken = true;
-                Log("Card selection in rest site (SMITH) resolved");
-                return DetectDecisionPoint();
-            }
-
-            // Extra wait for shop card removal: the purchase task needs to finish.
-            // Continuations land on the GameSyncContext, so a passive Wait would
-            // deadlock — WaitForTask drives them.
-            if (_runState?.CurrentRoom is MerchantRoom)
-            {
-                DrivePurchaseTask();
-                Log("Card selection in shop (card removal), refreshing shop state");
-            }
-
-            // Extra wait for an event-relic AfterObtained selection (e.g. Neow's
-            // PrecariousShears → remove 2 cards + lose 16 HP). The suspended
-            // `EventOption.Chosen()` task resumes its post-await effect once the
-            // selection resolves; drive it to completion so the deck removal +
-            // HP damage actually apply before the snapshot / map transition.
-            // (Without this the run reached the map with an unmodified deck and
-            // full HP — the run-parity Neow skew.)
-            DrainEventOptionTaskIfDue();
-
+            // RestSiteSynchronizer.ChooseOption (:202-215) keeps the other
+            // options open when a relic (MiniatureTent) declines
+            // ShouldDisableRemainingRestSiteOptions; RestSiteState only
+            // leaves for the map once none remain.
+            _restSiteOptionTaken = true;
+            Log("Card selection in rest site (SMITH) resolved");
             return DetectDecisionPoint();
         }
-        finally
+
+        // Extra wait for shop card removal: the purchase task needs to finish.
+        // Continuations land on the GameSyncContext, so a passive Wait would
+        // deadlock — WaitForTask drives them.
+        if (_runState?.CurrentRoom is MerchantRoom)
         {
-            if (combatResolve) _cardSelector.AutoResolveInline = false;
+            DrivePurchaseTask();
+            Log("Card selection in shop (card removal), refreshing shop state");
         }
+
+        // Extra wait for an event-relic AfterObtained selection (e.g. Neow's
+        // PrecariousShears → remove 2 cards + lose 16 HP). The suspended
+        // `EventOption.Chosen()` task resumes its post-await effect once the
+        // selection resolves; drive it to completion so the deck removal +
+        // HP damage actually apply before the snapshot / map transition.
+        // (Without this the run reached the map with an unmodified deck and
+        // full HP — the run-parity Neow skew.)
+        DrainEventOptionTaskIfDue();
+
+        return DetectDecisionPoint();
     }
 
     private Dictionary<string, object?> DoSkipSelect(Player player)
@@ -2897,7 +2907,7 @@ public class RunSimulator
             Log("Skipping card selection");
             _cardSelector.CancelPending();
             _syncCtx.Pump();
-            WaitForActionExecutor();
+            WaitForActionExecutor(stopOnSelection: true);
 
             // Same continuation-drain as DoSelectCards: a skipped event-relic
             // AfterObtained selection (e.g. Neow's HeftyTablet → choose 1 of 3
@@ -3020,14 +3030,21 @@ public class RunSimulator
             try
             {
                 // Run on background thread so Smith card selection can pause
-                var task = Task.Run(() => RunManager.Instance.RestSiteSynchronizer.ChooseLocalOption(optionIndex));
+                var task = RunOnPool(() => RunManager.Instance.RestSiteSynchronizer.ChooseLocalOption(optionIndex));
                 // Wait until the task settles (completes or parks at a selection)
                 // rather than on a fixed 1 s budget — see WaitUntilOptionTaskSettles.
                 WaitUntilOptionTaskSettles(task, "rest-site option task or selection");
-                if (_cardSelector.HasPending)
+                // A heal parks at a card reward too: Dream Catcher's
+                // `ModifyRestSiteHealRewards` card goes through
+                // `RewardsCmd.OfferCustom` INSIDE `ChooseOption`, before its
+                // tail clears the options (`RestSiteSynchronizer.cs:140-149`).
+                if (_cardSelector.HasPending || _cardSelector.HasPendingReward)
                 {
-                    // Stash the task so DoSelectCards can await its completion
-                    // (the upgrade) after the player resolves the selection.
+                    // Stash the task so DoSelectCards / DoSelectCardReward /
+                    // DoSkipCardReward can await its completion (the upgrade,
+                    // the options clear) after the player resolves the selection.
+                    // Dropping it let the tail race the snapshot: the rest site
+                    // came back with HEAL still offered (random-loadout 1044).
                     _pendingRestSiteTask = task;
                     WaitForActionExecutor();
                     return DetectDecisionPoint();
@@ -3077,7 +3094,7 @@ public class RunSimulator
                         // suspended-at-a-selection path, which returns early.
                         YieldPatches.EventOptionInFlight = true;
                         // Run on thread pool so GetSelectedCards/GetSelectedCardReward can block
-                        var task = Task.Run(() => options[optionIndex].Chosen());
+                        var task = RunOnPool(() => options[optionIndex].Chosen());
                         // Wait until the option's `Chosen()` either completes or
                         // suspends at a player decision (card selection / reward /
                         // bundle). The terminal condition is `task.IsCompleted ||
@@ -5234,7 +5251,39 @@ public class RunSimulator
         WaitForActionExecutor();
     }
 
-    private void WaitForActionExecutor()
+    /// <summary>
+    /// Start game code on the thread pool, with <c>_syncCtx</c> installed on
+    /// that thread for its synchronous part (GH #1147, the pattern #1128
+    /// introduced for map entry).
+    /// <para>
+    /// Handlers go to the pool so a blocking selection
+    /// (<c>HeadlessCardSelector.GetSelectedCardReward</c>) parks there instead
+    /// of on the game thread. But every <c>await</c> captures the current sync
+    /// context, and with none on the pool thread a game chain started there
+    /// stays on the pool for good: when the game thread later completes what it
+    /// awaits, the runtime will not inline a context-less continuation on a
+    /// thread that has a sync context, so it queues it to the pool, which
+    /// re-captures no context, and so on. v0.111's combat turn loop
+    /// (<c>CombatManager.StartCombatInternal</c>) lives for the whole combat,
+    /// so a fight an event option started (BattlewornDummy, DenseVegetation,
+    /// PunchOff, FakeMerchant, TheLanternKey) ran every later enemy turn, draw
+    /// and turn start on a pool thread, concurrently with the game thread's
+    /// <c>DoEndTurn</c> polling and <c>DetectDecisionPoint</c> enumeration:
+    /// "Collection was modified" on <c>end_turn</c> under load, and state the
+    /// snapshot could read mid-write. With <c>_syncCtx</c> current, awaits
+    /// capture it and resume inline on the game thread that completes them.
+    /// The previous context is restored so the pool thread does not keep it.
+    /// </para>
+    /// </summary>
+    private static Task RunOnPool(Func<Task> work) => Task.Run(() =>
+    {
+        var prev = SynchronizationContext.Current;
+        SynchronizationContext.SetSynchronizationContext(_syncCtx);
+        try { return work(); }
+        finally { SynchronizationContext.SetSynchronizationContext(prev); }
+    });
+
+    private void WaitForActionExecutor(bool stopOnSelection = false)
     {
         try
         {
@@ -5251,6 +5300,7 @@ public class RunSimulator
             for (int i = 0; i < maxPumps; i++)
             {
                 _syncCtx.Pump();
+                if (stopOnSelection && _cardSelector.HasPending) break;
                 if (!executor.IsRunning)
                 {
                     if (++idleStreak >= idleStreakRequired) break;
@@ -5297,6 +5347,28 @@ public class RunSimulator
             LogException($"WaitFor exception ({reason})", ex);
             return false;
         }
+    }
+
+    /// <summary>
+    /// Finish a rest-site option task stashed at a card reward (Dream Catcher's
+    /// heal card): its tail clears the options (`RestSiteSynchronizer.cs:140-149`)
+    /// so the rest site then leaves for the map. Re-stashes if the task parks at
+    /// a further selection.
+    /// </summary>
+    private void DrainRestSiteTaskIfDue()
+    {
+        var task = _pendingRestSiteTask;
+        if (task == null || _runState?.CurrentRoom is not RestSiteRoom) return;
+        _pendingRestSiteTask = null;
+        WaitUntilOptionTaskSettles(task, "rest-site option task after reward");
+        if (!task.IsCompleted && AnySelectionPending())
+        {
+            _pendingRestSiteTask = task;
+            return;
+        }
+        WaitForTask(task, 2000, "rest-site option task");
+        WaitForActionExecutor();
+        _restSiteOptionTaken = true;
     }
 
     /// <summary>
@@ -5814,6 +5886,10 @@ public class RunSimulator
         // because there's no Godot scene tree, causing the ActionExecutor to deadlock.
         PatchCmdWait();
 
+        // GH #1147: opt-in (STS2_THREAD_PROBE=<dir>) log of game state touched
+        // off the game thread.
+        ThreadProbe.Install();
+
         // Capture-only prefix on the CardSelectCmd entry points: records which
         // entry point + CardSelectorPrefs prompt loc key opened the next card
         // selection (the ICardSelector signature drops both), so card_select
@@ -5913,6 +5989,12 @@ public class RunSimulator
         // NCombatRoom.Instance unguarded from its Died handler, so KILLING one abandons
         // the card play inside CreatureCmd.Kill before the win-condition check.
         PatchSoulNexusDeathAnim();
+
+#if !GAME_V0111
+        // v0.107.1 LordsParasol.PurchaseEverything derefs NRun.Instance unguarded in
+        // its relic loop; v0.111.0 made it null-safe. See PatchLordsParasol.
+        PatchLordsParasol();
+#endif
 
         // Patch Whirlwind.OnPlay + FlashOfSteel.OnPlay to headless-safe
         // reimplementations. Both deref combat-room / target scene nodes for
@@ -7156,6 +7238,45 @@ public class RunSimulator
         }
     }
 
+#if !GAME_V0111
+    // v0.107.1 LordsParasol.PurchaseEverything (LordsParasol.cs) skips its UI block
+    // under TestMode, but its RELIC loop still calls
+    // `NRun.Instance.GlobalUi.TopBar.Map.Enable()` with no `?.`. NRun.Instance is null
+    // headless, so the first relic throws, `TaskHelper.RunSafely` swallows it, and
+    // the oracle buys the cards only: no relics, no potions, no forced card removal.
+    // The real game has an NRun and buys everything; v0.111.0 added `?.` throughout
+    // the same body. Replace the v0.107.1 body with the same purchases minus the UI
+    // calls (Rust already models the full purchase). Seeds v0.107.1 1119/1143/1199.
+    private static void PatchLordsParasol()
+    {
+        try
+        {
+            var harmony = new Harmony("sts2headless.lordsparasol");
+            // GetTypes() throws when any type in the assembly fails to load (some
+            // Godot-bound types do under the stubs); the loadable ones are still usable.
+            Type?[] loadable;
+            try { loadable = typeof(RelicModel).Assembly.GetTypes(); }
+            catch (System.Reflection.ReflectionTypeLoadException tle) { loadable = tle.Types; }
+            var parasol = loadable.OfType<Type>()
+                .FirstOrDefault(t => t.Name == "LordsParasol" && typeof(RelicModel).IsAssignableFrom(t));
+            var m = parasol == null ? null : AccessTools.Method(parasol, "PurchaseEverything");
+            var pre = typeof(YieldPatches).GetMethod(nameof(YieldPatches.LordsParasolPurchaseEverythingPrefix),
+                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public);
+            if (m == null || pre == null)
+            {
+                Console.Error.WriteLine("[WARN] Could not find LordsParasol.PurchaseEverything - relic-loop NRE not patched");
+                return;
+            }
+            harmony.Patch(m, new HarmonyMethod(pre));
+            Console.Error.WriteLine("[INFO] Patched LordsParasol.PurchaseEverything (unguarded NRun deref in relic loop)");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[WARN] Failed to patch LordsParasol.PurchaseEverything: {ex.Message}");
+        }
+    }
+#endif
+
     // CrystalSphere is the one remaining event whose block is a real MINIGAME, not a
     // missing `?.`:
     //
@@ -7906,18 +8027,6 @@ public class RunSimulator
 
         public bool HasPending => _pendingTcs != null && !_pendingTcs.Task.IsCompleted;
 
-        // When set, GetSelectedCards resolves INLINE (returns a completed task)
-        // by picking the same option-0 prefix the parity drain loop would,
-        // instead of going pending. Used while a combat card-play is being
-        // resumed after a prior choice resolution: a chained auto-play
-        // (Catastrophe/Havoc/Mayhem) can open a FURTHER choice deep inside the
-        // resumed play that the manual pump loop cannot surface in time, so its
-        // TCS strands and the play deadlocks with cards stuck in the PlayPile
-        // (seed 1279: auto-played Splash's generated-card screen). Resolving it
-        // inline matches both the harness's own option-0 draining policy and
-        // the Rust engine's inline auto-play choice resolution. Bead to file.
-        public bool AutoResolveInline;
-
         public Task<IEnumerable<CardModel>> GetSelectedCards(
             IEnumerable<CardModel> options, int minSelect, int maxSelect)
         {
@@ -7932,15 +8041,14 @@ public class RunSimulator
             // Pile tracer (STS2_TRACE_PILES): emit the option list IN PRESENTATION
             // ORDER — for a Draw-pile select `CardSelectCmd.FromCombatPile` has
             // already re-sorted it by `orderby c.Rarity, c.Id`, so option[0] is
-            // exactly the card the harness's option-0 drain (or AutoResolveInline)
-            // picks. Diff vs the Rust select order to nail the draw-select pick
+            // exactly the card the harness's option-0 drain picks. Diff vs the Rust select order to nail the draw-select pick
             // key (#184). Card ids use `Id.ToString()` + `+` for upgraded.
             if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("STS2_TRACE_PILES")))
             {
                 var rendered = string.Join(
                     ",", optList.Select(c => c.Id.ToString() + (c.IsUpgraded ? "+" : "")));
                 Console.Error.WriteLine(
-                    $"SELECTTRACE options=[{rendered}] min={minSelect} max={maxSelect} inline={AutoResolveInline}");
+                    $"SELECTTRACE options=[{rendered}] min={minSelect} max={maxSelect}");
             }
             if (optList.Count == 0)
                 return Task.FromResult<IEnumerable<CardModel>>(Array.Empty<CardModel>());
@@ -7948,23 +8056,6 @@ public class RunSimulator
             // If only one option and minSelect requires it, auto-select
             if (optList.Count == 1 && minSelect >= 1)
                 return Task.FromResult<IEnumerable<CardModel>>(optList);
-
-            // Nested-choice inline resolution (see AutoResolveInline above):
-            // pick the option-0 prefix [0 .. max(minSelect,1)) — identical to
-            // `_drain_csharp_choices`'s `range(max(min_select, 1))` — so a
-            // chained auto-play's follow-on choice resolves without stranding.
-            // A hook listener's choice (HookPlayerChoiceContext: GamblingChip's
-            // turn-start mulligan after ChoicesParadox's pick) is exempt: the
-            // game pauses it into its own queued hook action, which the pump
-            // starts after the resumed play, so it surfaces as a normal pending
-            // selection instead of being auto-picked.
-            bool hookChoice = choiceCtx is HookPlayerChoiceContext
-                && choicePlayer != null;
-            if (AutoResolveInline && !hookChoice)
-            {
-                int count = Math.Min(Math.Max(minSelect, 1), optList.Count);
-                return Task.FromResult<IEnumerable<CardModel>>(optList.Take(count).ToList());
-            }
 
             if (choiceCtx != null && choicePlayer != null)
                 return SignalledSelection(choiceCtx, choicePlayer, choiceOpts, optList, minSelect, maxSelect,
@@ -8456,6 +8547,41 @@ public class RunSimulator
                 Console.Error.WriteLine($"[WARN] SlumberingBeetle AfterAddedToRoom safe: {ex.Message}");
             }
         }
+
+#if !GAME_V0111
+        /// <summary>
+        /// Lord's Parasol's v0.107.1 shop sweep without the Godot UI it touches
+        /// (see PatchLordsParasol). Order: in-stock character cards, in-stock
+        /// colorless cards, every relic, every potion (each purchase followed by
+        /// the 0.25 s beat), and the non-cancelable card removal last.
+        /// </summary>
+        public static bool LordsParasolPurchaseEverythingPrefix(
+            RelicModel __instance,
+            MerchantInventory inventory,
+            ref Task __result)
+        {
+            __result = SweepShopForParasol(__instance.Owner, inventory);
+            return false;
+        }
+
+        private static async Task SweepShopForParasol(Player owner, MerchantInventory shop)
+        {
+            if (shop.Player != owner) return;
+            IEnumerable<MerchantEntry> stockedCards = shop.CharacterCardEntries
+                .Concat(shop.ColorlessCardEntries)
+                .Where(card => card.IsStocked);
+            IEnumerable<MerchantEntry> sweep = stockedCards
+                .Concat(shop.RelicEntries)
+                .Concat(shop.PotionEntries);
+            foreach (MerchantEntry offer in sweep)
+            {
+                await offer.OnTryPurchaseWrapper(shop, true);
+                await Cmd.Wait(0.25f);
+            }
+            MerchantCardRemovalEntry? removal = shop.CardRemovalEntry;
+            if (removal is not null) await removal.OnTryPurchaseWrapper(shop, true, false);
+        }
+#endif
 
         /// <summary>
         /// Harmony prefix: headless-safe Whirlwind.OnPlay. The original
@@ -9405,4 +9531,100 @@ public class RunSimulator
     }
 
     #endregion
+}
+
+/// <summary>
+/// Opt-in detector for game state touched off the game thread (GH #1147).
+///
+/// The harness runs every command on <see cref="GameThread"/>. A few handlers
+/// start game code on the thread pool (<c>Task.Run</c>) so a blocking card
+/// reward can park there; anything that keeps running on the pool after its
+/// handler returned, or while a later command runs, races the game thread:
+/// "Collection was modified" on enumeration, or silent state drift.
+///
+/// Set <c>STS2_THREAD_PROBE=&lt;dir&gt;</c> and every game action start, pile
+/// write and HP write that happens off the game thread is appended to
+/// <c>&lt;dir&gt;/probe-&lt;pid&gt;.log</c> with the command in flight, whether the
+/// game thread was idle (between commands, <c>cmd=-(idle)</c>) at that moment,
+/// and the BOTTOM of the stack: an async continuation's bottom frames say who
+/// resumed it (<c>ThreadPoolWorkQueue.Dispatch</c> = queued to the pool).
+/// Lines are capped per process so a bad path cannot fill the disk.
+/// <para>
+/// Off-thread writes during a handler that started a pool task (shop, event,
+/// rest site, Unknown/shop map entry) are expected: the game thread is
+/// waiting on that task. Any during <c>end_turn</c>, <c>play_card</c>,
+/// <c>use_potion</c> or between commands are a race.
+/// </para>
+/// </summary>
+internal static class ThreadProbe
+{
+    private const int MaxLines = 200;
+    private const int StackFrames = 14;
+    private static string? _path;
+    private static int _lines;
+    private static readonly object _lock = new();
+
+    /// <summary>Managed id of the game thread; set once it starts.</summary>
+    public static volatile int GameThreadId = -1;
+
+    /// <summary>The command the game thread is running, or null between commands.</summary>
+    public static volatile string? CurrentCommand;
+
+    public static bool On => _path != null;
+
+    public static void Install()
+    {
+        var dir = Environment.GetEnvironmentVariable("STS2_THREAD_PROBE");
+        if (string.IsNullOrEmpty(dir)) return;
+        Directory.CreateDirectory(dir);
+        _path = Path.Combine(dir, $"probe-{Environment.ProcessId}.log");
+        var h = new Harmony("sts2headless.threadprobe");
+        var pre = new HarmonyMethod(typeof(ThreadProbe).GetMethod(nameof(Pre), BindingFlags.NonPublic | BindingFlags.Static));
+        foreach (var target in new MethodBase?[]
+                 {
+                     AccessTools.Method(typeof(GameAction), "Execute"),
+                     AccessTools.Method(typeof(CardPile), "AddInternal"),
+                     AccessTools.Method(typeof(CardPile), "RemoveInternal"),
+                     AccessTools.PropertySetter(typeof(Creature), "CurrentHp"),
+                 })
+        {
+            if (target == null) continue;
+            try { h.Patch(target, prefix: pre); }
+            catch (Exception ex) { Console.Error.WriteLine($"[WARN] thread probe: {target.Name}: {ex.Message}"); }
+        }
+        Console.Error.WriteLine($"[INFO] thread probe -> {_path}");
+    }
+
+    /// <summary>Write one marker line (e.g. an end-turn fallback) to the probe log.</summary>
+    public static void Note(string what)
+    {
+        if (_path == null) return;
+        Write($"NOTE cmd={CurrentCommand ?? "-"} {what}");
+    }
+
+    private static void Pre(MethodBase __originalMethod)
+    {
+        if (_path == null || Environment.CurrentManagedThreadId == GameThreadId) return;
+        var cmd = CurrentCommand;
+        var frames = new System.Diagnostics.StackTrace(1, false).GetFrames()
+            .Select(f => f.GetMethod())
+            .Where(m => m != null)
+            .TakeLast(StackFrames)
+            .Select(m => $"{m!.DeclaringType?.Name}.{m.Name}");
+        Write(
+            $"OFF {__originalMethod.DeclaringType?.Name}.{__originalMethod.Name} cmd={cmd ?? "-(idle)"} "
+            + $"tid={Environment.CurrentManagedThreadId} pool={Thread.CurrentThread.IsThreadPoolThread} "
+            + $"stack={string.Join(" < ", frames)}");
+    }
+
+    private static void Write(string line)
+    {
+        lock (_lock)
+        {
+            if (_lines >= MaxLines) return;
+            _lines++;
+            try { File.AppendAllText(_path!, line + "\n"); }
+            catch { }
+        }
+    }
 }

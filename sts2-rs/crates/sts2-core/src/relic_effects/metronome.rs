@@ -8,13 +8,16 @@ pub(crate) fn on_on_orb_channeled_metronome(
     if !player_owns_relic(state, crate::RelicKind::Metronome) {
         return EffectResult::NotImplemented;
     }
+    // C# `Metronome.AfterOrbChanneled` (v0.107.1/v0.111.0 Metronome.cs)
+    // fires when `OrbsChanneled == 7` EXACTLY and never resets mid-combat
+    // (only `AfterRoomEntered` / `AfterCombatEnd`): one trip per combat.
+    // The counter parks at 7, matching `DisplayAmount = Min(count, 7)`.
     let trip = if let Some(r) = metronome_relic_mut(state) {
-        r.counter = r.counter.saturating_add(1);
         if r.counter >= METRONOME_ORB_THRESHOLD {
-            r.counter = 0;
-            true
-        } else {
             false
+        } else {
+            r.counter += 1;
+            r.counter == METRONOME_ORB_THRESHOLD
         }
     } else {
         return EffectResult::NotImplemented;

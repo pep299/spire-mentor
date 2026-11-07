@@ -68,7 +68,7 @@ pub(crate) fn right_hand_hand_late_effect(
     let Some(played) = state.cards.get(played_idx) else {
         return;
     };
-    if played.energy_spent < RIGHT_HAND_HAND_ENERGY_THRESHOLD {
+    if sts2_core::cards::play_energy_value(played) < RIGHT_HAND_HAND_ENERGY_THRESHOLD {
         return;
     }
 

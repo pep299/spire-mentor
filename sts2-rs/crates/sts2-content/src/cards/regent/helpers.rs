@@ -21,28 +21,6 @@ pub(crate) fn hittable_enemy_snapshot(state: &CombatState) -> Vec<CreatureUid> {
         .collect()
 }
 
-/// `true` if `target_uid` is a live enemy carrying an Artifact stack
-/// (`amount > 0`). Peeked BEFORE a debuff apply (the apply consumes the
-/// stack) to decide whether a `TemporaryStrengthPower`'s internal Strength
-/// fold lands: C# `ArtifactPower` negates the whole debuff — including its
-/// `BeforeApplied` silent `StrengthPower` — and consumes one stack
-/// (`ArtifactPower.cs`). Used by the temp-strength-down cards
-/// (CrushUnder / DyingStar) whose marker power is Artifact-gated through
-/// [`apply_power_to_enemy`] while the Strength rider is applied raw via
-/// [`add_power_to_enemy_signed`]. Bead `sts2-rs-crush-under-artifact`.
-pub(crate) fn enemy_has_artifact(state: &CombatState, target_uid: CreatureUid) -> bool {
-    state.creatures.iter().any(|c| {
-        c.id == target_uid.0
-            && c.current_hp > 0
-            && c.powers.iter().any(|uid| {
-                state
-                    .powers
-                    .iter()
-                    .any(|p| p.id == uid.0 && p.kind == PowerKind::Artifact && p.amount > 0)
-            })
-    })
-}
-
 /// Look up `base_damage` for the card currently resolving (`player.play`'s
 /// tail). The dispatch contract guarantees there is exactly one card on the
 /// Play pile when a handler runs.

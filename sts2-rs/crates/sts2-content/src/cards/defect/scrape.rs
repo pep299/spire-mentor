@@ -15,42 +15,17 @@ pub(crate) fn play_scrape(state: &mut CombatState, target: Option<CreatureUid>) 
     let _ = deal_damage_player_to_enemy(state, t, base);
     let draws = if current_card_upgraded(state) { 5 } else { 4 };
     let own = draw_own_cards(state, draws);
-    // Filter the drawn cards to the non-0-cost / X-cost set (C#
-    // `Scrape.cs:32` `EnergyCost.GetWithModifiers(Local) != 0 || CostsX`;
-    // X-cost is encoded here as `cost == -1`, so `cost != 0` covers both).
-    let v0111 = state.game_version >= sts2_core::GameVersion::V0_111_0;
-    let to_discard: smallvec::SmallVec<[sts2_core::CardUid; 8]> = own
-        .iter()
-        .copied()
-        .filter(|&uid| {
-            let idx = uid.0.get() as usize - 1;
-            let Some(card) = state.cards.get(idx) else {
-                return false;
-            };
-            if v0111 {
-                // v0.111.0: `GetWithModifiers(CostModifiers.All) != 0 ||
-                // CostsX` — the GLOBAL cost modifiers count too (decomp
-                // Scrape.cs:32). A negative base (an unplayable Infection /
-                // curse, cost -1) returns -1 before any clamp
-                // (CardEnergyCost.cs:101-104), so it is discarded; the
-                // engine's cost read clamps it to 0 (Defect QX197).
-                card.is_x_cost()
-                    || card.cost < 0
-                    || sts2_core::hooks::effective_card_cost_inst(state, card, uid) != 0
-            } else {
-                // v0.107.1 reads `GetWithModifiers(CostModifiers.Local)`
-                // (Scrape.cs:30): a RocketPunch made free until played by a
-                // status draw is 0 and stays in hand (Defect full seed 3042).
-                card.is_x_cost() || sts2_core::hooks::local_card_cost(state, card) != 0
-            }
-        })
-        .collect();
-    // C# `Scrape.cs:33` uses `CardCmd.Discard`, which fires `AfterCardDiscarded`
-    // per card (Tingsha damage, CombatTargets stream advance) and auto-plays any
-    // discarded Sly card — the raw `cards::discard` loop fired none of that. Draw
-    // already happened above, so `draw_count = 0` makes this a plain hooked
-    // discard. Mirrors Calculated Gamble's use of the same helper.
-    let _ = sts2_core::card_effects::discard_and_draw_with_hooks(state, &to_discard, 0);
+    // C# awaits the whole `CardPileCmd.Draw` before filtering its result
+    // (Scrape.cs OnPlay, both builds): a draw suspended on a reshuffle's
+    // Stratagem pick discards only once the resumed draw finishes, with the
+    // cards it then draws in the filter too.
+    if state.pending_choice.is_some() {
+        if let Some(pdr) = state.pending_draw_resume.as_mut() {
+            pdr.then_scrape_discard.push_all(&own);
+            return EffectResult::Resolved;
+        }
+    }
+    sts2_core::card_effects::scrape_discard_drawn(state, &own);
     EffectResult::Resolved
 }
 
@@ -78,20 +53,26 @@ fn draw_own_cards(
         return state.player.hand[pre..].iter().copied().collect();
     }
     let mut own = smallvec::SmallVec::new();
-    for _ in 0..draws {
+    for i in 0..draws {
         let pre = state.player.hand.len();
         // `Draw(1)` repeated equals `Draw(n)` card by card; it only differs when
         // the draw is blocked (NoDraw), and then the first call moves nothing.
-        if sts2_core::cards::draw_via_state(state, 1) == 0 {
-            break;
+        let drawn = sts2_core::cards::draw_via_state(state, 1);
+        if drawn > 0 {
+            if let Some(&uid) = state.player.hand.get(pre) {
+                own.push(uid);
+            }
         }
-        if let Some(&uid) = state.player.hand.get(pre) {
-            own.push(uid);
-        }
-        // A Stratagem reshuffle select suspended the draw. The batch path would
-        // resume the rest after the pick; this one drops them. Stratagem is
+        // A Stratagem reshuffle select suspended the draw: the rest of Scrape's
+        // draw resumes after the pick, with the suspended one. Stratagem is
         // Silent's and Iteration Defect's, so it takes a cross-character mix.
         if state.pending_choice.is_some() {
+            if let Some(pdr) = state.pending_draw_resume.as_mut() {
+                pdr.remaining += draws - i - 1;
+            }
+            break;
+        }
+        if drawn == 0 {
             break;
         }
     }

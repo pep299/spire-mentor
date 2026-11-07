@@ -42,19 +42,18 @@ pub(crate) fn play_crush_under(state: &mut CombatState, _t: Option<CreatureUid>)
         // C# `CrushUnderPower.Type == Debuff`, so `PowerCmd.Apply` is
         // Artifact-gated: an Artifact-warded enemy consumes one stack and
         // the whole power is negated — its `BeforeApplied` (which applies
-        // the internal silent StrengthPower) never fires. Route the marker
-        // through the Artifact-aware `apply_power_to_enemy`, and only fold
-        // the internal Strength when the debuff actually lands. Peek for the
-        // Artifact stack BEFORE applying (the apply consumes it) so a warded
-        // enemy keeps its Strength (parity fuzz Regent seed 353: Rust
-        // applied CrushUnder + Strength past Artifact, leaving the enemy
-        // with 2 extra powers and its Artifact untouched). Bead
-        // `sts2-rs-crush-under-artifact`.
-        let warded = enemy_has_artifact(state, uid);
-        apply_power_to_enemy(state, uid, PowerKind::CrushUnder, strength_loss);
-        if !warded {
-            add_power_to_enemy_signed(state, uid, PowerKind::Strength, -strength_loss);
-        }
+        // the internal silent StrengthPower) never fires (parity fuzz Regent
+        // seed 353). Bead `sts2-rs-crush-under-artifact`.
+        //
+        // Otherwise the Strength leg is the MODIFIED amount: a Lamp-doubled
+        // CrushUnder lands CrushUnder 2 AND Strength -2 (loadout Necrobinder
+        // 1198 v0.107.1 act2), drained before the power lands.
+        sts2_core::card_effects::apply_temporary_strength_debuff(
+            state,
+            uid,
+            PowerKind::CrushUnder,
+            strength_loss,
+        );
     }
     EffectResult::Resolved
 }

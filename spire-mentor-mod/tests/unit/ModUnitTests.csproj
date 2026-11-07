@@ -25,6 +25,9 @@
     <Compile Include="../../WorkbenchUrl.cs" Link="WorkbenchUrl.cs" />
     <Compile Include="../../CoachPanelText.cs" Link="CoachPanelText.cs" />
     <Compile Include="../../AutoplayPause.cs" Link="AutoplayPause.cs" />
+    <Compile Include="../../Autobattle.cs" Link="Autobattle.cs" />
+    <Compile Include="../../SpeedSteps.cs" Link="SpeedSteps.cs" />
+    <Compile Include="../../LogPanelPlacement.cs" Link="LogPanelPlacement.cs" />
     <Compile Include="../../EnemyTagText.cs" Link="EnemyTagText.cs" />
     <Compile Include="../../TeammateTargetPick.cs" Link="TeammateTargetPick.cs" />
     <Compile Include="../../TieBandText.cs" Link="TieBandText.cs" />

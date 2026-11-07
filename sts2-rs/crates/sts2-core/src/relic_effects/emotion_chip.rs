@@ -36,6 +36,35 @@ pub(crate) fn on_after_damage_received_emotion_chip(
 /// `EmotionChip.after_side_turn_start` (`rare.py::EmotionChip`,
 /// pool=DEFECT, hook channel `after_side_turn_start`).
 /// `AfterPlayerTurnStart` entry for [`on_after_side_turn_start_emotion_chip`].
+/// C# `EmotionChip.LostHpInPreviousTurn` is "any `DamageReceivedEntry` on the
+/// owner last player turn with `!Result.WasFullyBlocked`"
+/// (EmotionChip.cs:14, both builds), not "lost HP": `CreatureCmd.Damage`
+/// records the entry for every hit while combat is in progress and not ending
+/// (CreatureCmd.cs:294-299) — a killing blow too (it is recorded before
+/// `AfterDamageReceived` is skipped), and a hit that nothing blocked even if
+/// Buffer or Intangible took its HP loss to 0 (`WasFullyBlocked` needs
+/// `blocked > 0 || Block > 0`, CreatureCmd.cs:274). The relic's
+/// `AfterDamageReceived` arm only sees hits that cost HP and did not kill, so
+/// each player damage chokepoint reports its entry here (loadout Defect
+/// v0.107.1 2033). `recorded` is "combat in progress and not ending" read
+/// BEFORE the hit's HP loss, which is when C# has not yet flagged the ending.
+pub(crate) fn note_player_damage_entry(
+    state: &mut CombatState,
+    recorded: bool,
+    was_fully_blocked: bool,
+) {
+    if !recorded || was_fully_blocked {
+        return;
+    }
+    if let Some(r) = state
+        .relics
+        .iter_mut()
+        .find(|r| !r.is_melted && r.kind == crate::RelicKind::EmotionChip)
+    {
+        r.counter = r.counter.max(1);
+    }
+}
+
 fn on_after_player_turn_start_emotion_chip(state: &mut CombatState) -> EffectResult {
     on_after_side_turn_start_emotion_chip(state, Side::Player)
 }

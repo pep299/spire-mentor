@@ -287,6 +287,19 @@ fn exhaust_fold_base_damage(state: &CombatState, uid: sts2_core::CardUid) -> i32
         // accumulated growth (seed 3646: a Rampage+ played once was folded as 9
         // instead of 18, leaving the boss 9 HP too high two Thrash plays later).
         CardId::Rampage => card.base_damage + card.combat_var(VarKey::RampageDamage),
+        // Osty attacks with only an `OstyDamage` var: Thrash folds its
+        // `BaseValue` (Thrash.cs:62-65), which `OnUpgrade` raised
+        // (`OstyDamage.UpgradeValueBy`, same in v0.107.1). These cards keep
+        // `base_damage` at the printed value and apply the upgrade in their
+        // handler (`upgrade()` is `None`), so add the bump here (Bone Shards+
+        // folded 9 instead of 12: Ironclad-8019 act3#b2). Poke / Snap carry a
+        // spec delta and take the `base_damage` arm.
+        CardId::BoneShards | CardId::Fetch => card.base_damage + if upgraded { 3 } else { 0 },
+        CardId::Flatten => card.base_damage + if upgraded { 4 } else { 0 },
+        CardId::HighFive | CardId::Rattle | CardId::RightHandHand => {
+            card.base_damage + if upgraded { 2 } else { 0 }
+        }
+        CardId::SicEm => card.base_damage + i32::from(upgraded),
         // Plain `Damage` var (or none): fold BaseValue, exactly C#'s `else`.
         _ => card.base_damage,
     }

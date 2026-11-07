@@ -6776,6 +6776,9 @@ pub fn effective_rollout_depth(root: &CombatState, cfg: &MctsConfig) -> u32 {
 /// of base `base` — the information-set reseed every chance realization
 /// runs before re-applying its edge (see [`Mcts::realize_chance_outcome`]).
 fn reseed_for_outcome(state: &mut CombatState, base: u64, n: u32) {
+    // GH #1129: an enemy-side snapshot replays the answer to a captured
+    // select, so it takes the same outcome.
+    state.for_each_enemy_side_snapshot(|s| reseed_for_outcome(s, base, n));
     state.run_rng.reseed_combat_streams(base, n);
     // Search-side reseed of the legacy stream — non-parity fast seed,
     // same rationale as reseed_combat_streams.
@@ -8735,6 +8738,8 @@ mod tests {
                 pending_draw_resume: None,
                 pending_snecko_cost_randomize: false,
                 pending_cluster_resume: None,
+                pending_collect_resume: None,
+                pending_play_phase_tail: false,
                 pending_hand_draw_resume: None,
                 pending_relic_hand_draw_resume: None,
                 pending_wlp_retain_resume: false,
@@ -8745,6 +8750,8 @@ mod tests {
                 pending_curse_choice: None,
                 pending_potion_hook_resume: None,
                 pending_enemy_exec_resume: None,
+                enemy_side_capture: None,
+                enemy_side_replay: None,
                 combat_log: TurnEvents::default(),
                 swipe_stolen: Vec::new(),
                 deck_link: None,
@@ -9019,6 +9026,8 @@ mod tests {
             pending_draw_resume: None,
             pending_snecko_cost_randomize: false,
             pending_cluster_resume: None,
+            pending_collect_resume: None,
+            pending_play_phase_tail: false,
             pending_hand_draw_resume: None,
             pending_relic_hand_draw_resume: None,
             pending_wlp_retain_resume: false,
@@ -9029,6 +9038,8 @@ mod tests {
             pending_curse_choice: None,
             pending_potion_hook_resume: None,
             pending_enemy_exec_resume: None,
+            enemy_side_capture: None,
+            enemy_side_replay: None,
             combat_log: TurnEvents::default(),
             swipe_stolen: Vec::new(),
             deck_link: None,
@@ -9379,6 +9390,8 @@ mod tests {
                 pending_draw_resume: None,
                 pending_snecko_cost_randomize: false,
                 pending_cluster_resume: None,
+                pending_collect_resume: None,
+                pending_play_phase_tail: false,
                 pending_hand_draw_resume: None,
                 pending_relic_hand_draw_resume: None,
                 pending_wlp_retain_resume: false,
@@ -9389,6 +9402,8 @@ mod tests {
                 pending_curse_choice: None,
                 pending_potion_hook_resume: None,
                 pending_enemy_exec_resume: None,
+                enemy_side_capture: None,
+                enemy_side_replay: None,
                 combat_log: TurnEvents::default(),
                 swipe_stolen: Vec::new(),
                 deck_link: None,
@@ -9576,6 +9591,8 @@ mod tests {
             pending_draw_resume: None,
             pending_snecko_cost_randomize: false,
             pending_cluster_resume: None,
+            pending_collect_resume: None,
+            pending_play_phase_tail: false,
             pending_hand_draw_resume: None,
             pending_relic_hand_draw_resume: None,
             pending_wlp_retain_resume: false,
@@ -9586,6 +9603,8 @@ mod tests {
             pending_curse_choice: None,
             pending_potion_hook_resume: None,
             pending_enemy_exec_resume: None,
+            enemy_side_capture: None,
+            enemy_side_replay: None,
             combat_log: TurnEvents::default(),
             swipe_stolen: Vec::new(),
             deck_link: None,
@@ -9753,6 +9772,8 @@ mod tests {
             pending_draw_resume: None,
             pending_snecko_cost_randomize: false,
             pending_cluster_resume: None,
+            pending_collect_resume: None,
+            pending_play_phase_tail: false,
             pending_hand_draw_resume: None,
             pending_relic_hand_draw_resume: None,
             pending_wlp_retain_resume: false,
@@ -9763,6 +9784,8 @@ mod tests {
             pending_curse_choice: None,
             pending_potion_hook_resume: None,
             pending_enemy_exec_resume: None,
+            enemy_side_capture: None,
+            enemy_side_replay: None,
             combat_log: TurnEvents::default(),
             swipe_stolen: Vec::new(),
             deck_link: None,
@@ -12355,10 +12378,9 @@ mod tests {
     fn belief_root_is_invariant_to_draw_pile_permutation() {
         // Both canonicalizer branches: unpinned (plain sort) and pinned
         // (preserve head/tail, sort the middle).
-        for (what, a) in [
-            ("unpinned", permutation_fixture()),
-            ("pinned", permutation_fixture_pinned()),
-        ] {
+        for (what, a) in std::iter::once(("unpinned", permutation_fixture()))
+            .chain(std::iter::once(("pinned", permutation_fixture_pinned())))
+        {
             let b = with_reversed_draw(&a);
             assert_ne!(
                 a.player.draw, b.player.draw,
@@ -13575,6 +13597,8 @@ mod tests {
             pending_draw_resume: None,
             pending_snecko_cost_randomize: false,
             pending_cluster_resume: None,
+            pending_collect_resume: None,
+            pending_play_phase_tail: false,
             pending_hand_draw_resume: None,
             pending_relic_hand_draw_resume: None,
             pending_wlp_retain_resume: false,
@@ -13585,6 +13609,8 @@ mod tests {
             pending_curse_choice: None,
             pending_potion_hook_resume: None,
             pending_enemy_exec_resume: None,
+            enemy_side_capture: None,
+            enemy_side_replay: None,
             combat_log: TurnEvents::default(),
             swipe_stolen: Vec::new(),
             deck_link: None,
@@ -14423,20 +14449,18 @@ mod endturn_prefix_tests {
     fn prefix_stops_before_an_enemy_move_that_draws_randomness() {
         for seed in [3, 17, 4242] {
             let (thievery, flutter) = hopper_rounds(seed);
-            for (label, s) in [
-                ("materialized", thievery.clone()),
-                ("belief", as_belief(&thievery)),
-            ] {
+            for (label, s) in std::iter::once(("materialized", thievery.clone()))
+                .chain(std::iter::once(("belief", as_belief(&thievery))))
+            {
                 assert_eq!(
                     prefix_len(&s),
                     3,
                     "seed {seed} {label}: THIEVERY's steal roll is in enemy_turn_exec"
                 );
             }
-            for (label, s) in [
-                ("materialized", flutter.clone()),
-                ("belief", as_belief(&flutter)),
-            ] {
+            for (label, s) in std::iter::once(("materialized", flutter.clone()))
+                .chain(std::iter::once(("belief", as_belief(&flutter))))
+            {
                 assert!(
                     prefix_len(&s) >= 4,
                     "seed {seed} {label}: FLUTTER draws nothing, so enemy_turn_exec is in the prefix"

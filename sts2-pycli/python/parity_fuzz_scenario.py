@@ -227,6 +227,43 @@ def generate_v2(seed: int, character: str = "Ironclad") -> Scenario:
     )
 
 
+@dataclass(frozen=True)
+class Loadout:
+    """A random deck, relic and potion set to graft onto a whole run."""
+
+    deck: tuple[str, ...]
+    relics: tuple[str, ...]
+    potions: tuple[str, ...]
+    gold: int
+
+
+def generate_loadout(
+    seed: str, character: str = "Ironclad", game_version: str | None = None
+) -> Loadout:
+    """The ``generate_v2`` pools as a whole-run start, not a single fight.
+
+    A run outlives one fight, so it carries more relics than a scenario does
+    (rewards, shops and rest sites are what the graft exists to exercise), and
+    gold, so shops get bought from. Deterministic per
+    ``(seed, character, game_version)``. The relics skip ``EVENT_RELICS``:
+    an event can grant those a second time.
+
+    Lives apart from ``generate_v2`` because that function's rng stream keys
+    the committed trace cache.
+    """
+    rng = random.Random(f"loadout:{seed}:{character}")
+    pool = _v2_card_pool(character, game_version)
+    return Loadout(
+        deck=tuple(
+            c + ("+1" if rng.random() < 0.25 else "")
+            for c in (rng.choice(pool) for _ in range(rng.randint(8, 25)))
+        ),
+        relics=tuple(rng.sample(LOADOUT_RELICS, rng.randint(3, 12))),
+        potions=tuple(rng.sample(ALL_POTIONS, rng.randint(0, 3))),
+        gold=rng.randint(0, 999),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Exhaustive coverage sweep (2026-05-30)
 # ---------------------------------------------------------------------------
@@ -566,6 +603,57 @@ ALL_RELICS: list[str] = [
     "WONGOS_MYSTERY_TICKET",
     "WONGO_CUSTOMER_APPRECIATION_BADGE",
 ]
+
+#: The Event-rarity relics in ``ALL_RELICS`` (``rarity`` in
+#: ``sts2-wiki/data/<version>/relics.json``; the same 35 in v0.107.1 and
+#: v0.111.0). An event hands each of them out by name, not from a grab bag, so
+#: a run grafted with one can meet its event and be given a second copy. The
+#: real game can't hold two: events don't repeat and every other source pulls
+#: from the grab bags, which drop owned relics. C# fires hooks once per copy
+#: and Rust once per ``RelicId``, so the copy shows up as a false divergence.
+#: ``generate_loadout`` leaves them out. (``ALL_RELICS`` has no Ancient ones.)
+EVENT_RELICS: frozenset[str] = frozenset(
+    {
+        "BIG_MUSHROOM",
+        "BING_BONG",
+        "BONE_TEA",
+        "BYRDPIP",
+        "CHOSEN_CHEESE",
+        "DARKSTONE_PERIAPT",
+        "DAUGHTER_OF_THE_WIND",
+        "DREAM_CATCHER",
+        "EMBER_TEA",
+        "FAKE_ANCHOR",
+        "FAKE_BLOOD_VIAL",
+        "FAKE_HAPPY_FLOWER",
+        "FAKE_LEES_WAFFLE",
+        "FAKE_MANGO",
+        "FAKE_MERCHANTS_RUG",
+        "FAKE_ORICHALCUM",
+        "FAKE_SNECKO_EYE",
+        "FAKE_STRIKE_DUMMY",
+        "FAKE_VENERABLE_TEA_SET",
+        "FORGOTTEN_SOUL",
+        "FRAGRANT_MUSHROOM",
+        "FRESNEL_LENS",
+        "HAND_DRILL",
+        "HISTORY_COURSE",
+        "LOST_WISP",
+        "MAW_BANK",
+        "MR_STRUGGLES",
+        "POLLINOUS_CORE",
+        "ROYAL_POISON",
+        "SWORD_OF_JADE",
+        "SWORD_OF_STONE",
+        "TEA_OF_DISCOURTESY",
+        "THE_BOOT",
+        "WONGOS_MYSTERY_TICKET",
+        "WONGO_CUSTOMER_APPRECIATION_BADGE",
+    }
+)
+
+#: The relics ``generate_loadout`` draws from.
+LOADOUT_RELICS: list[str] = [r for r in ALL_RELICS if r not in EVENT_RELICS]
 
 ALL_POTIONS: list[str] = [
     "ATTACK_POTION",

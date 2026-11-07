@@ -37,8 +37,9 @@ use super::prelude::*;
 pub(crate) fn play_misery(state: &mut CombatState, target: Option<CreatureUid>) -> EffectResult {
     let t = target.expect("Misery: Enemy-targeted");
 
-    // 1. Snapshot the target's debuffs (kind + amount) before the hit.
-    let original_debuffs: Vec<(PowerKind, i32)> = state
+    // 1. Snapshot the target's debuffs (kind + amount + C# `Applier`) before
+    // the hit.
+    let original_debuffs: Vec<Debuff> = state
         .creatures
         .iter()
         .find(|c| c.id == t.0)
@@ -47,7 +48,7 @@ pub(crate) fn play_misery(state: &mut CombatState, target: Option<CreatureUid>) 
                 .iter()
                 .filter_map(|p_uid| state.powers.get_by_id(p_uid.0))
                 .filter(|p| sts2_core::afflictions::is_debuff_for_amount(p.kind, p.amount))
-                .map(|p| (p.kind, p.amount))
+                .map(|p| (p.kind, p.amount, foreign_applier(state, c, p)))
                 .collect()
         })
         .unwrap_or_default();
@@ -59,7 +60,7 @@ pub(crate) fn play_misery(state: &mut CombatState, target: Option<CreatureUid>) 
     // (Necrobinder full seed 2643).
     let mut original_debuffs = original_debuffs;
     original_debuffs
-        .sort_by_key(|(k, _)| u8::from(sts2_core::afflictions::is_temporary_power_debuff(*k)));
+        .sort_by_key(|(k, _, _)| u8::from(sts2_core::afflictions::is_temporary_power_debuff(*k)));
 
     // 2. Deal the attack damage to the target.
     let _ = deal_damage_player_to_enemy(state, t, current_damage(state));
@@ -86,22 +87,86 @@ pub(crate) fn play_misery(state: &mut CombatState, target: Option<CreatureUid>) 
             if !alive {
                 continue;
             }
-            for &(kind, amount) in &original_debuffs {
-                // A snapshotted debuff can be a negative-amount attribute power
-                // (e.g. drained Strength reads as a Debuff via
-                // `is_debuff_for_amount`); `apply_power_to_enemy` early-outs on
-                // `amount <= 0`, so route negatives through the signed helper to
-                // mirror C# `PowerCmd.Apply(copy, enemy, item.Amount)`.
-                if amount < 0 {
-                    apply_power_signed_to_creature(state, enemy, kind, amount);
-                } else {
-                    apply_power_to_enemy(state, enemy, kind, amount);
-                }
+            for &(kind, amount, applier) in &original_debuffs {
+                copy_debuff(state, enemy, kind, amount, applier);
             }
         }
     }
 
     EffectResult::Resolved
+}
+
+/// One snapshotted target debuff: kind, amount, and the C# `item.Applier`
+/// when that is NOT the player (see [`foreign_applier`]).
+type Debuff = (PowerKind, i32, Option<CreatureUid>);
+
+/// The creature that applied power `p` on `owner`, when it is not the player
+/// — C# Misery copies with `item.Applier` (`Misery.cs`: `PowerCmd.Apply(...,
+/// enemy, item.Amount, item.Applier, this)`), and Unsettling Lamp captures and
+/// doubles only an apply whose applier is its owner (`UnsettlingLamp.cs`
+/// `BeforePowerAmountChanged`: `applier != base.Owner.Creature` → return).
+///
+/// Rust records `Power.applier` only on the applier-threaded surface; the
+/// spawn self-powers (BowlbugRock's `ImbalancedPower`, `BowlbugRock.cs:66`
+/// `PowerCmd.Apply<ImbalancedPower>(..., base.Creature, 1m, base.Creature,
+/// null)`) carry `None` there, so a debuff in the owner's
+/// `on_spawn_self_buffs` list is the owner's own. Anything else unrecorded is
+/// a player card / potion debuff.
+fn foreign_applier(
+    state: &CombatState,
+    owner: &sts2_core::Creature,
+    p: &sts2_core::Power,
+) -> Option<CreatureUid> {
+    let player = state.player.creature_uid;
+    match p.applier {
+        Some(uid) if Some(uid) != player => Some(uid),
+        Some(_) => None,
+        None => owner
+            .species
+            .is_some_and(|s| s.on_spawn_self_buffs().iter().any(|(k, _)| *k == p.kind))
+            .then_some(CreatureUid(owner.id)),
+    }
+}
+
+/// Copy one snapshotted debuff onto `enemy` — C#'s `ModifyAmount` / `Apply`
+/// branch with the original applier.
+///
+/// A copy of a monster's own debuff (`applier` = that monster) is invisible
+/// to Unsettling Lamp, so it neither captures nor doubles it, and it is not a
+/// player-applied debuff for Sleight of Flesh. Rust treated every copy as
+/// player-applied: Misery copying BowlbugRock's Imbalanced 1 onto its Nectar
+/// sibling under the Lamp landed Imbalanced 2 and burnt the Lamp's trigger
+/// (loadout Necrobinder 1096 v0.107.1 act2; C# Imbalanced 1).
+///
+/// A snapshotted debuff can be a negative-amount attribute power (drained
+/// Strength reads as a Debuff via `is_debuff_for_amount`), which
+/// `apply_power_to_enemy` rejects; the signed helper applies it, after the
+/// Lamp's Before / Given passes when the player applied the original.
+fn copy_debuff(
+    state: &mut CombatState,
+    enemy: CreatureUid,
+    kind: PowerKind,
+    amount: i32,
+    applier: Option<CreatureUid>,
+) {
+    match (amount < 0, applier) {
+        // A monster-applied copy is not the player's apply: Sleight of Flesh
+        // (`applier == base.Owner`, SleightOfFleshPower.cs:22) stays quiet, so
+        // skip the player-drain reactors (loadout Necrobinder 1210-v0.107.1:
+        // Sleight of Flesh hit Crusher for Rocket's own drained Strength -7).
+        (true, Some(_)) => {
+            super::helpers::apply_power_signed_to_creature_raw(state, enemy, kind, amount);
+        }
+        (true, None) => {
+            let amount =
+                sts2_core::card_effects::fold_player_card_signed_apply(state, enemy, kind, amount);
+            apply_power_signed_to_creature(state, enemy, kind, amount);
+        }
+        (false, Some(_)) => sts2_core::card_effects::apply_power_to_creature_with_applier(
+            state, enemy, kind, amount, applier,
+        ),
+        (false, None) => apply_power_to_enemy(state, enemy, kind, amount),
+    }
 }
 
 #[must_use]
@@ -140,13 +205,16 @@ pub(crate) fn upgrade() -> Option<CardUpgradeDelta> {
 /// Strength off again (applied explicitly here, the PiercingWail pattern).
 /// v0.107.1 instead copied both and suppressed the second Strength loss
 /// (`IgnoreNextInstance`).
-fn copy_debuffs_v0111(state: &mut CombatState, t: CreatureUid, original: &[(PowerKind, i32)]) {
+fn copy_debuffs_v0111(state: &mut CombatState, t: CreatureUid, original: &[Debuff]) {
     use sts2_core::afflictions::is_temporary_power_debuff;
-    let mut amounts: Vec<(PowerKind, i32)> = original.to_vec();
+    let mut amounts: Vec<Debuff> = original.to_vec();
     for i in 0..amounts.len() {
-        let (kind, amount) = amounts[i];
+        let (kind, amount, _) = amounts[i];
         if is_temporary_power_debuff(kind) {
-            if let Some(slot) = amounts.iter_mut().find(|(k, _)| *k == PowerKind::Strength) {
+            if let Some(slot) = amounts
+                .iter_mut()
+                .find(|(k, _, _)| *k == PowerKind::Strength)
+            {
                 slot.1 += amount;
             }
         }
@@ -167,39 +235,21 @@ fn copy_debuffs_v0111(state: &mut CombatState, t: CreatureUid, original: &[(Powe
         if !alive {
             continue;
         }
-        for &(kind, amount) in &amounts {
+        for &(kind, amount, applier) in &amounts {
             if amount == 0 {
                 continue;
             }
             if is_temporary_power_debuff(kind) {
                 // `TemporaryStrengthPower.BeforeApplied` (IsPositive => false):
-                // `Strength -amount` alongside the temporary power itself.
-                let prev = creature_power_amount(state, enemy, kind);
-                apply_power_to_enemy(state, enemy, kind, amount);
-                if creature_power_amount(state, enemy, kind) > prev {
-                    apply_power_signed_to_creature(state, enemy, PowerKind::Strength, -amount);
-                }
-            } else if amount < 0 {
-                apply_power_signed_to_creature(state, enemy, kind, amount);
+                // `Strength -amount` (the modified amount) before the
+                // temporary power itself lands. Only cards and potions apply
+                // these, so the applier is the player.
+                sts2_core::card_effects::apply_temporary_strength_debuff(
+                    state, enemy, kind, amount,
+                );
             } else {
-                apply_power_to_enemy(state, enemy, kind, amount);
+                copy_debuff(state, enemy, kind, amount, applier);
             }
         }
     }
-}
-
-/// The `amount` of `kind` on creature `uid` (0 when absent).
-fn creature_power_amount(state: &CombatState, uid: CreatureUid, kind: PowerKind) -> i32 {
-    state
-        .creatures
-        .iter()
-        .find(|c| c.id == uid.0)
-        .and_then(|c| {
-            c.powers
-                .iter()
-                .filter_map(|p| state.powers.get_by_id(p.0))
-                .find(|p| p.kind == kind)
-                .map(|p| p.amount)
-        })
-        .unwrap_or(0)
 }

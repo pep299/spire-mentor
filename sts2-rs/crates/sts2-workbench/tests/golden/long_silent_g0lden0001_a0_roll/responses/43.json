@@ -1,10 +1,11 @@
 {
  "details": [
-  "Play Strike",
-  "Shrinker Beetle HP 11→7 (−4)"
+  "Play Neutralize",
+  "Shrinker Beetle HP 7→5 (−2)",
+  "Shrinker Beetle +1 Weak"
  ],
  "error": null,
- "label": "Play Strike → Shrinker Beetle",
+ "label": "Play Neutralize → Shrinker Beetle",
  "step": {
   "action_label": "",
   "assets_base": "https://assets.test",
@@ -90,9 +91,28 @@
      "target_type": "None",
      "type": "Attack",
      "upgraded": false
+    },
+    {
+     "base_cost": 0,
+     "can_play": false,
+     "color": "green",
+     "cost": 0,
+     "description": "Deal 3 damage.\nApply 1 Weak.",
+     "description_rich": "Deal 3 damage.\nApply 1 [gold]Weak[/gold].",
+     "id": "NEUTRALIZE",
+     "image": "https://assets.test/card_atlas/silent/neutralize.png",
+     "index": -1,
+     "name": "Neutralize",
+     "rarity": "Basic",
+     "stats": {
+      "damage": 3
+     },
+     "target_type": "None",
+     "type": "Attack",
+     "upgraded": false
     }
    ],
-   "discard_pile_count": 3,
+   "discard_pile_count": 4,
    "draw_pile": [
     {
      "base_cost": 1,
@@ -270,13 +290,27 @@
    "enemies": [
     {
      "block": 0,
-     "hp": 7,
+     "hp": 5,
      "image": "https://assets.test/monsters/shrinker_beetle.png",
      "index": 0,
      "intents": [
       {
-       "damage": 13,
-       "intent_image": "https://assets.test/intent_atlas/attack/intent_attack_3.png",
+       "base_damage": 13,
+       "damage": 9,
+       "intent_image": "https://assets.test/intent_atlas/attack/intent_attack_2.png",
+       "modifiers": [
+        {
+         "image": "https://assets.test/power_atlas/weak_power.png",
+         "kind": "power",
+         "mul": [
+          3,
+          4
+         ],
+         "name": "WEAK",
+         "side": "enemy",
+         "title": "Weak"
+        }
+       ],
        "type": "Attack"
       }
      ],
@@ -284,7 +318,16 @@
      "max_hp": 40,
      "move_state": "STOMP",
      "name": "Shrinker Beetle",
-     "powers": [],
+     "powers": [
+      {
+       "amount": 1,
+       "display_amount": 1,
+       "id": "WEAK",
+       "image": "https://assets.test/power_atlas/weak_power.png",
+       "image_big": "https://assets.test/power_big/weak_power.png",
+       "name": "Weak"
+      }
+     ],
      "rig": "https://assets.test/monster_rigs/shrinker_beetle/shrinker_beetle",
      "rig_bounds_h": 161.0,
      "rig_bounds_w": 240.0,
@@ -299,28 +342,6 @@
    "floor": 3,
    "hand": [
     {
-     "base_cost": 0,
-     "can_play": true,
-     "color": "green",
-     "cost": 0,
-     "damage_preview": {
-      "0": 2
-     },
-     "description": "Deal 3 damage.\nApply 1 Weak.",
-     "description_rich": "Deal 3 damage.\nApply 1 [gold]Weak[/gold].",
-     "id": "NEUTRALIZE",
-     "image": "https://assets.test/card_atlas/silent/neutralize.png",
-     "index": 0,
-     "name": "Neutralize",
-     "rarity": "Basic",
-     "stats": {
-      "damage": 3
-     },
-     "target_type": "AnyEnemy",
-     "type": "Attack",
-     "upgraded": false
-    },
-    {
      "base_cost": 1,
      "can_play": false,
      "color": "green",
@@ -332,7 +353,7 @@
      "description_rich": "Deal 6 damage.",
      "id": "STRIKE_SILENT",
      "image": "https://assets.test/card_atlas/silent/strike_silent.png",
-     "index": 1,
+     "index": 0,
      "name": "Strike",
      "rarity": "Basic",
      "stats": {

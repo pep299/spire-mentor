@@ -2834,17 +2834,58 @@ pub fn dispatch_before_card_played(state: &mut CombatState, ctx: &CardEventCtx) 
     }
 }
 
-/// Dispatch `after_card_exhausted` to every registered listener.
+/// Dispatch `after_card_exhausted` to every registered listener, in player
+/// EQUIP order (`state.relics` order).
+///
+/// C# `Hook.AfterCardExhausted` walks `IterateHookListeners`, which yields the
+/// player's relics in the order they were obtained, so e.g. BurningSticks and
+/// JossPaper react to one exhaust in equip order (random-loadout v0.107.1 seed
+/// 1176). The handler set is exactly the guarded walk's (the plan's call bits,
+/// or every handler without a plan); only the order changes: handlers of an
+/// owned relic sort by its first non-melted equip slot, the rest (unowned,
+/// self-no-op) keep `RelicId` order after them.
 pub fn dispatch_after_card_exhausted(state: &mut CombatState, ctx: &CardEventCtx) -> EffectResult {
     if is_empty_after_card_exhausted() {
         return EffectResult::NotImplemented;
     }
-    walk_guarded_event(
-        registry_after_card_exhausted(),
-        GuardedChannel::AfterCardExhausted,
-        state,
-        |f, state| f(state, ctx),
-    )
+    let registry = registry_after_card_exhausted();
+    let equip_slot = |state: &CombatState, id: RelicId| {
+        id.to_relic_kind()
+            .and_then(|k| {
+                state
+                    .relics
+                    .iter()
+                    .position(|r| !r.is_melted && r.kind == k)
+            })
+            .unwrap_or(usize::MAX)
+    };
+    let mut calls: smallvec::SmallVec<[(usize, AfterCardExhaustedFn); 8]> =
+        smallvec::SmallVec::new();
+    if let Some((frozen, mut bits)) =
+        guarded_plan(registry, GuardedChannel::AfterCardExhausted, state)
+    {
+        while bits != 0 {
+            let i = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            calls.push((equip_slot(state, frozen[i].0), frozen[i].1));
+        }
+    } else {
+        for (id, f) in registry.listeners() {
+            calls.push((equip_slot(state, id), f));
+        }
+    }
+    calls.sort_by_key(|(slot, _)| *slot);
+    let mut any_resolved = false;
+    for (_, f) in calls {
+        if f(state, ctx) == EffectResult::Resolved {
+            any_resolved = true;
+        }
+    }
+    if any_resolved {
+        EffectResult::Resolved
+    } else {
+        EffectResult::NotImplemented
+    }
 }
 
 /// Dispatch `after_room_entered` to every registered listener.
@@ -3476,11 +3517,17 @@ pub fn dispatch_after_death(
     )
 }
 
-/// Dispatch `modify_hp_lost` as a left-to-right fold over registered
-/// listeners — each handler receives the current amount and returns the
-/// new amount. Matches Python `Relic.modify_hp_lost` which returns the
-/// (possibly transformed) amount; the dispatcher iterates the
-/// `BTreeMap` in `RelicId` order so the result is deterministic.
+/// Dispatch `modify_hp_lost` as a left-to-right fold over the owned
+/// relics' listeners — each handler receives the current amount and
+/// returns the new amount.
+///
+/// The fold runs in relic OBTAIN order (`state.relics` order): C#
+/// `Hook.ModifyHpLost` (`Hook.cs:1870-1905`, both builds) folds over
+/// `IterateHookListeners`, and Tungsten Rod's `-1` does not commute with
+/// Beating Remnant's per-turn cap. The Boot (`AfterOstyLate`) only acts on
+/// hits against an enemy, which the other two never touch, so the one
+/// shared fold stays exact. With at most one owned listener the order is
+/// moot and the plan path is kept.
 pub fn dispatch_modify_hp_lost(
     state: &CombatState,
     ctx: &ModifyHpLostCtx,
@@ -3496,7 +3543,14 @@ pub fn dispatch_modify_hp_lost(
         return base_amount;
     }
     let mut current = base_amount;
-    for f in owned_listeners(registry_modify_hp_lost(), OwnedChannel::ModifyHpLost, state) {
+    let mut owned = owned_listeners(registry_modify_hp_lost(), OwnedChannel::ModifyHpLost, state);
+    let Some(first) = owned.next() else {
+        return current;
+    };
+    if owned.next().is_none() {
+        return first(state, ctx, current);
+    }
+    for (_, _, f) in collect_equip_order_listeners(registry_modify_hp_lost(), state) {
         current = f(state, ctx, current);
     }
     current
@@ -5180,19 +5234,19 @@ mod plan_tests {
     #[test]
     fn replacing_a_handler_replaces_its_guard() {
         super::super::ensure_installed();
-        let bookmark = |guards: Vec<(RelicId, RelicGuard)>| {
+        let joss_paper = |guards: Vec<(RelicId, RelicGuard)>| {
             guards
                 .into_iter()
-                .find(|&(id, _)| id == RelicId::Bookmark)
+                .find(|&(id, _)| id == RelicId::JossPaper)
                 .map(|(_, guard)| guard)
         };
         assert_eq!(
-            bookmark(listener_guards_after_turn_end()),
-            Some(RelicGuard::Owned(RelicKind::Bookmark))
+            joss_paper(listener_guards_after_turn_end()),
+            Some(RelicGuard::Owned(RelicKind::JossPaper))
         );
-        register_after_turn_end(RelicId::Bookmark, counting_after_turn_end);
+        register_after_turn_end(RelicId::JossPaper, counting_after_turn_end);
         assert_eq!(
-            bookmark(listener_guards_after_turn_end()),
+            joss_paper(listener_guards_after_turn_end()),
             Some(RelicGuard::Always)
         );
         freeze_all_channels();

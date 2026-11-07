@@ -53,6 +53,7 @@ pub use helpers::spawn_frantic_escape;
 pub use helpers::spawn_infection;
 pub use helpers::spawn_parasite;
 pub use helpers::spawn_shiv;
+pub use helpers::spawn_shiv_with_origin;
 pub use helpers::spawn_slimed;
 pub use helpers::spawn_toxic;
 pub use helpers::spawn_void;

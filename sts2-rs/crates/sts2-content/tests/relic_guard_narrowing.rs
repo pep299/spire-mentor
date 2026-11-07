@@ -531,10 +531,21 @@ fn guarded_channels_are_declared_and_planned() {
                 r.channel,
                 r.id
             ),
-            RelicGuard::Always => assert_eq!(
-                (r.channel, r.id),
-                ("listeners_after_combat_end", RelicId::JossPaper),
-                "a production handler without a declared guard (register_owned_*)"
+            // JossPaper writes state whatever is owned; PaperPhrog acts while
+            // melted (C# `VulnerablePower` reads it via `GetRelic`), which the
+            // `Owned` guard would skip.
+            RelicGuard::Always => assert!(
+                matches!(
+                    (r.channel, r.id),
+                    ("listeners_after_combat_end", RelicId::JossPaper)
+                        | (
+                            "listeners_modify_vulnerable_multiplier",
+                            RelicId::PaperPhrog
+                        )
+                ),
+                "a production handler without a declared guard (register_owned_*): {} {:?}",
+                r.channel,
+                r.id
             ),
         }
     }

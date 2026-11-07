@@ -84,6 +84,8 @@ from typing import Any
 
 from full_state_diff import diff_full, path_class, project_csharp, project_rust
 from parity_audit import assert_wheel_fresh, cs_version_namespace
+from parity_fuzz import _csharp_card_id
+from parity_fuzz_scenario import Loadout, generate_loadout
 from run_parity import (
     Divergence,
     RunResult,
@@ -415,6 +417,48 @@ def _pin(g: Any, r: Any, hp: int) -> None:
     r.set_player(hp=hp, max_hp=hp)
 
 
+def _relic_ids(view: dict[str, Any]) -> list[str]:
+    """The Rust view's relic ids, bare (``BURNING_BLOOD``), in owned order."""
+    relics = (view.get("player") or {}).get("relics") or []
+    return [str(r["id"]).removeprefix("RELIC.") for r in relics]
+
+
+def _graft_loadout(g: Any, r: Any, lo: Loadout, rs_view: dict[str, Any]) -> list[str]:
+    """Install ``lo`` on both engines; return what stopped them matching it.
+
+    Replaces the deck and potions, and adds to the relics already owned, so the
+    starter and Neow relics stay. ``set_player`` fires no on-obtain hook on
+    either engine and draws no RNG: anything the graft bypasses (a Potion
+    Belt's extra slots, a Whetstone's upgrades) is bypassed on both sides. It
+    does take the relics out of the grab bags, so they aren't offered again.
+
+    C# skips an id it doesn't know, so an unusable pool entry would otherwise
+    surface later as an engine divergence. It's checked here instead.
+    """
+    owned = _relic_ids(rs_view)
+    relics = owned + [x for x in lo.relics if x not in owned]
+    potions = list(lo.potions[: r.rm.max_potion_slots()])
+    cs_reply = g.set_player(
+        deck=[_csharp_card_id(c) for c in lo.deck],
+        relics=relics,
+        potions=potions,
+        gold=lo.gold,
+    )
+    if _is_err(cs_reply):
+        return [f"C# set_player failed: {cs_reply.get('message')!r}"]
+    rs_reply = r.set_player(deck=list(lo.deck), relics=relics, potions=potions, gold=lo.gold)
+    if _is_err(rs_reply):
+        return [f"Rust set_player failed: {rs_reply.get('message')!r}"]
+    cs, rs = Snap.of(cs_reply, "cs"), Snap.of(rs_reply, "rs")
+    problems = [f for f in diff_snaps(cs, rs) if not f.startswith("phase")]
+    for side, snap in (("cs", cs), ("rs", rs)):
+        if snap.deck_size != len(lo.deck):
+            problems.append(f"{side} deck_size {snap.deck_size} != loadout {len(lo.deck)}")
+        if len(snap.relics) != len(relics):
+            problems.append(f"{side} relics {len(snap.relics)} != loadout {len(relics)}")
+    return problems
+
+
 @dataclass
 class InvRun:
     """One invincible-lockstep run: a ``run_parity.RunResult`` plus the extra
@@ -437,6 +481,11 @@ class InvRun:
     full_split: FullSplit | None = None
     # Acts whose checkpoint this run wrote (``checkpoint_dir``).
     checkpoints: list[int] = field(default_factory=list)
+    # ``random_loadout``: what the run was grafted with.
+    loadout: Loadout | None = None
+    # A one-sided C# reject's ``stack_trace`` (GH #1147): printed by the sweep
+    # too, so a sweep-only harness exception names its throwing frame.
+    cs_stack: str | None = None
 
 
 @dataclass
@@ -643,6 +692,7 @@ def run_one_invincible(
     from_checkpoint: Path | None = None,
     branch: int = 0,
     survival_policy: bool = True,
+    random_loadout: bool = False,
 ) -> InvRun:
     """Drive a single invincible lockstep run; return an :class:`InvRun`.
 
@@ -665,6 +715,10 @@ def run_one_invincible(
     Neow. ``branch`` picks the walk from there: each branch seeds the random
     policy differently, so one checkpoint yields many act-2/3 trials. With
     ``from_checkpoint``, ``max_steps`` counts the steps after the checkpoint.
+
+    ``random_loadout`` replaces the deck, potions and gold, and adds relics, at
+    the run's first map (see ``_graft_loadout``). The loadout is a pure
+    function of ``(seed, character)``, so rerunning the seed reproduces it.
     """
     full_state = full_state or trace_split
     meta: dict[str, Any] | None = None
@@ -992,6 +1046,18 @@ def run_one_invincible(
                     )
                 return out
 
+            # Past Neow, and the diff above just passed: both engines take the
+            # loadout from the same state.
+            if random_loadout and out.loadout is None and cs_dec == "map_select":
+                out.loadout = generate_loadout(seed, character)
+                problems = _graft_loadout(g, r, out.loadout, rs_view)
+                if verbose:
+                    res.trace.append(f"[{step:04d}] graft {out.loadout}")
+                if problems:
+                    res.divergence = Divergence(step, cs_snap.phase, problems, "harness")
+                    res.terminal = "error"
+                    return out
+
             # Checkpoint here: the diff above just passed, and HP isn't pinned
             # for this step yet, so a resume replays the pin exactly as now.
             ck_act = _act_of(cs_view) or 0
@@ -1058,7 +1124,13 @@ def run_one_invincible(
             # 25 max HP and Rust at 1 (Defect:1002, Regent:1007 at v0.107.1).
             # The map step before the event already pinned, so the event and
             # anything it leads to still start from INVINCIBLE_HP.
-            if invincible and cs_snap.phase not in ("combat", "event"):
+            #
+            # Nor inside a fight that is showing a select (``card_select``
+            # phase): a select a kill's ``Hook.AfterDeath`` opened does not
+            # block (HookPlayerChoiceContext), so it can surface mid-combat,
+            # after the next player turn started, where a pin rewrites HP
+            # the fight is still checking (Regent v107 1028).
+            if invincible and cs_snap.phase not in ("combat", "event") and r.combat_state() is None:
                 _pin(g, r, INVINCIBLE_HP)
 
             # Pick a choice; on a both-reject (benign illegal move) drop it and
@@ -1082,6 +1154,10 @@ def run_one_invincible(
                 if cs_err or rs_err:
                     rs_msg = (nxt_rs.get("error") or nxt_rs.get("message")) if rs_err else None
                     cs_msg = nxt_cs.get("message") if cs_err else None
+                    if cs_err and nxt_cs.get("stack_trace"):
+                        out.cs_stack = nxt_cs["stack_trace"]
+                        if verbose:
+                            res.trace.append(f"C# stack_trace:\n{out.cs_stack}")
                     res.divergence = Divergence(
                         step,
                         cs_snap.phase,
@@ -1140,9 +1216,21 @@ class SweepReport:
     checkpointed: int = 0  # runs that ended at their last checkpoint
 
 
+# Frames of a one-sided C# reject's stack trace a sweep prints per run.
+SWEEP_STACK_FRAMES = 8
+
+
+def _stack_head(stack: str | None) -> list[str]:
+    """The first ``SWEEP_STACK_FRAMES`` frames of a C# stack trace, compacted."""
+    if not stack:
+        return []
+    frames = [ln.strip() for ln in stack.splitlines() if ln.strip()]
+    return frames[:SWEEP_STACK_FRAMES]
+
+
 def _worker(
     job: dict[str, Any],
-) -> tuple[str, str, int, str, str | None, int, int, FullSplit | None]:
+) -> tuple[str, str, int, str, str | None, int, int, FullSplit | None, list[str]]:
     """Run one sweep job: ``label`` plus ``run_one_invincible`` keyword args."""
     kwargs = dict(job)
     label = kwargs.pop("label")
@@ -1163,6 +1251,7 @@ def _worker(
         out.hp_artifacts,
         out.max_hp_artifact,
         out.full_split,
+        _stack_head(out.cs_stack),
     )
 
 
@@ -1184,6 +1273,7 @@ def sweep(
     from_checkpoints: list[Path] | None = None,
     branches: int = 1,
     survival_policy: bool = True,
+    random_loadout: bool = False,
 ) -> SweepReport:
     rep = SweepReport()
     common: dict[str, Any] = {
@@ -1197,6 +1287,7 @@ def sweep(
         "checkpoint_acts": checkpoint_acts,
         "stop_at_checkpoint": stop_at_checkpoint,
         "survival_policy": survival_policy,
+        "random_loadout": random_loadout,
     }
     if from_checkpoints is not None:
         # Every branch of every checkpoint is its own trial.
@@ -1226,7 +1317,7 @@ def sweep(
     with ProcessPoolExecutor(max_workers=workers) as ex:
         futs = {ex.submit(_worker, j): j["label"] for j in jobs}
         for fut in as_completed(futs):
-            label, sig, max_act, term, div, hp_arts, max_hp_art, split = fut.result()
+            label, sig, max_act, term, div, hp_arts, max_hp_art, split, stack = fut.result()
             rep.runs += 1
             rep.act_hist[max_act] += 1
             rep.term_hist[term] += 1
@@ -1257,6 +1348,11 @@ def sweep(
                     if split.suspects:
                         full += f" src={','.join(split.suspects)}"
             print(f"  {label:24s} act{max_act} {term:16s} {sig}{art}{full}", flush=True)
+            if div and stack:
+                # One-sided C# reject: name the throwing frame (GH #1147).
+                print(f"    {label} {div}", flush=True)
+                for frame in stack:
+                    print(f"      cs_stack| {frame}", flush=True)
     return rep
 
 
@@ -1375,6 +1471,13 @@ def main() -> int:
         help="pick uniformly at random even when a SURVIVAL_CARDS card is "
         "playable (the pre-2026-11 walk, which dies to The Insatiable)",
     )
+    ap.add_argument(
+        "--random-loadout",
+        action="store_true",
+        help="at the first map, replace the deck, potions and gold and add relics "
+        "from the full pools, on both engines, without on-obtain hooks; the "
+        "seed reproduces the loadout. Not with --from-checkpoints",
+    )
     ap.add_argument("--seed", help="single verbose run for this seed (overrides sweep)")
     ap.add_argument("--verbose", action="store_true", help="dump per-step trace (single run)")
     add_game_version_arg(ap)
@@ -1392,6 +1495,9 @@ def main() -> int:
     args.character = args.character or "Ironclad"
     args.ascension = 0 if args.ascension is None else args.ascension
     chars = ALL_CHARACTERS if args.all_characters else [args.character]
+    if args.random_loadout and args.from_checkpoints:
+        # A checkpoint already carries whatever its run was grafted with.
+        ap.error("--random-loadout starts at Neow, so it can't take --from-checkpoints")
     ckpt_acts = frozenset(int(a) for a in args.checkpoint_acts.split(",") if a.strip())
     from_ckpts: list[Path] | None = None
     if args.from_checkpoints is not None:
@@ -1425,6 +1531,7 @@ def main() -> int:
             checkpoint_acts=ckpt_acts,
             stop_at_checkpoint=args.stop_at_checkpoint,
             survival_policy=not args.uniform_policy,
+            random_loadout=args.random_loadout,
         )
         res = out.result
         if args.verbose:
@@ -1479,6 +1586,7 @@ def main() -> int:
         from_checkpoints=from_ckpts,
         branches=args.branches,
         survival_policy=not args.uniform_policy,
+        random_loadout=args.random_loadout,
     )
     print_report(rep)
     n_div = sum(len(v) for k, v in rep.buckets.items() if not k.startswith("clean:"))

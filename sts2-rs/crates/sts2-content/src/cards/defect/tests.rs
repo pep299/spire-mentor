@@ -545,6 +545,86 @@ fn scrape_keeps_cards_drawn_by_iteration() {
     }
 }
 
+/// Scrape filters the result of the WHOLE `CardPileCmd.Draw` (Scrape.cs
+/// OnPlay, both builds): a draw that reshuffles into a Stratagem pick
+/// suspends, and the discard waits until the resumed draw finishes, taking
+/// the cards drawn after the pick too, but not the pick itself (Stratagem
+/// moves it to hand; it is not part of the draw's result). Defect loadout
+/// v0.107.1 seed 1027.
+#[test]
+fn scrape_discard_waits_for_a_stratagem_suspended_draw() {
+    install_pool();
+    for version in [
+        sts2_core::GameVersion::V0_107_1,
+        sts2_core::GameVersion::V0_111_0,
+    ] {
+        let (mut state, euid) = fresh_state(CardId::Scrape, 7, 0);
+        state.game_version = version;
+        let mut uids = Vec::new();
+        for (n, id) in [CardId::Zap, CardId::Leap, CardId::Coolheaded]
+            .into_iter()
+            .enumerate()
+        {
+            let uid = sts2_core::CardUid(NonZeroU32::new(n as u32 + 2).expect("nz"));
+            state.cards.push(Card {
+                uid,
+                card_id: id,
+                cost: 1,
+                card_type: CardType::Skill,
+                target_type: TargetType::None,
+                ..Card::pod_defaults()
+            });
+            uids.push(uid);
+        }
+        let zap = uids[0];
+        state.player.draw.push(zap);
+        state.player.discard.extend([uids[1], uids[2]]);
+        let pid = NonZeroU32::new(99).expect("nz");
+        state.powers.push(sts2_core::Power::new(
+            pid,
+            sts2_core::PowerKind::Stratagem,
+            1,
+        ));
+        state.player.powers.push(sts2_core::PowerUid(pid));
+
+        let f = lookup(CardId::Scrape).expect("registered");
+        assert_eq!(f(&mut state, Some(euid)), EffectResult::Resolved);
+        assert!(
+            state.pending_choice.is_some(),
+            "{version:?}: Stratagem pick open"
+        );
+        assert!(
+            state.player.hand.contains(&zap),
+            "{version:?}: no discard before the draw finishes"
+        );
+        let pick = state.pending_choice.as_ref().expect("open").options[0]
+            .card_uid
+            .expect("uid");
+        let mut sel: SmallVec<[u8; 4]> = SmallVec::new();
+        sel.push(0);
+        let _ = sts2_core::apply(
+            &mut state,
+            sts2_core::Action::ResolveChoice { selection: sel },
+        );
+        assert!(state.pending_choice.is_none(), "{version:?}: pick resolved");
+        let resumed = uids[1..]
+            .iter()
+            .copied()
+            .find(|&u| u != pick)
+            .expect("the other reshuffled card");
+        assert!(
+            state.player.hand.contains(&pick),
+            "{version:?}: the Stratagem pick is not Scrape's to discard"
+        );
+        for own in [zap, resumed] {
+            assert!(
+                state.player.discard.contains(&own),
+                "{version:?}: Scrape's draw {own:?} discarded"
+            );
+        }
+    }
+}
+
 /// An auto-played card runs its `Enchantment.OnPlay` like a hand play
 /// (CardModel.cs:1930-1943): Uproar auto-playing a Sown(1) Strike gains 1
 /// energy, once. Defect QX189.
@@ -988,6 +1068,55 @@ fn all_for_one_stops_at_full_hand_and_reappends_the_rest() {
     assert_eq!(state.player.discard.to_vec(), vec![costly, zero_power]);
 }
 
+/// All for One's filter reads the MODIFIED cost (`GetWithModifiers(All)`,
+/// AllForOne.cs:38): under Corruption a 1-cost Skill costs 0 and is pulled
+/// back; an Attack of the same printed cost is not (random-loadout v0.107.1
+/// seed 1178).
+#[test]
+fn all_for_one_pulls_skills_made_free_by_corruption() {
+    install_pool();
+    let (mut state, euid) = fresh_state(CardId::AllForOne, 10, 0);
+    apply_power_to_player(&mut state, PowerKind::Corruption, 1);
+    let skill = push_arena_card(&mut state, CardId::Zap, 1, CardType::Skill);
+    let attack = push_arena_card(&mut state, CardId::Claw, 1, CardType::Attack);
+    state.player.discard.extend([skill, attack]);
+    let f = lookup(CardId::AllForOne).expect("registered");
+    f(&mut state, Some(euid));
+    assert!(
+        state.player.hand.contains(&skill),
+        "Corruption makes the Skill free"
+    );
+    assert_eq!(state.player.discard.to_vec(), vec![attack]);
+}
+
+/// `FreePowerPower.TryModifyEnergyCostInCombatLate` (FreePowerPower.cs:14-41,
+/// both builds) only zeroes a card in the Hand or Play pile, so a 1-cost
+/// Power in the discard is NOT free for All for One's filter (Defect
+/// random-loadout v0.111.0 seed 1022). The same Power in hand is free.
+#[test]
+fn all_for_one_ignores_free_power_for_discard_cards() {
+    install_pool();
+    let (mut state, euid) = fresh_state(CardId::AllForOne, 10, 0);
+    apply_power_to_player(&mut state, PowerKind::FreePower, 1);
+    let in_discard = push_arena_card(&mut state, CardId::Capacitor, 1, CardType::Power);
+    let in_hand = push_arena_card(&mut state, CardId::Capacitor, 1, CardType::Power);
+    state.player.discard.push(in_discard);
+    state.player.hand.push(in_hand);
+    let card = *sts2_core::card_by_uid(&state.cards, in_hand).expect("card");
+    assert_eq!(
+        sts2_core::hooks::effective_card_cost_inst(&state, &card, in_hand),
+        0,
+        "FreePower zeroes a Power in hand"
+    );
+    let f = lookup(CardId::AllForOne).expect("registered");
+    f(&mut state, Some(euid));
+    assert_eq!(
+        state.player.discard.to_vec(),
+        vec![in_discard],
+        "a discard-pile Power keeps its printed cost"
+    );
+}
+
 #[test]
 fn play_hyperbeam_aoe_damage() {
     install_pool();
@@ -1334,6 +1463,28 @@ fn play_tesla_coil_fires_only_lightning_passives() {
     assert_eq!(state.creatures[0].current_hp, 91);
     // Frost passive did NOT fire — no block.
     assert_eq!(state.player.block, 0);
+}
+
+/// Tesla Coil's `OrbCmd.Passive` zap is the orb's own `PassiveVal`, which
+/// Infused Core's `ModifyOrbValue` raises by 1 for Lightning
+/// (InfusedCore.cs:50-60; Defect random-loadout v0.111.0 seed 1035).
+#[test]
+fn tesla_coil_zap_includes_infused_core_bonus() {
+    install_pool();
+    let (mut state, euid) = fresh_state(CardId::TeslaCoil, 3, 0);
+    state.player.orbs = sts2_core::OrbSlots::with_default_capacity();
+    orbs::channel_orb(&mut state, Orb::lightning());
+    state.relics.push(sts2_core::Relic {
+        id: std::num::NonZeroU32::new(90).expect("nz"),
+        kind: sts2_core::RelicKind::InfusedCore,
+        counter: 0,
+        is_wax: false,
+        is_melted: false,
+    });
+    let f = lookup(CardId::TeslaCoil).expect("registered");
+    f(&mut state, Some(euid));
+    // 3 (attack) + 4 (Lightning passive 3 + Infused Core 1).
+    assert_eq!(state.creatures[0].current_hp, 93);
 }
 
 /// v0.107.1 TeslaCoil upgrade: base damage 3→4 AND each Lightning orb's
@@ -2334,13 +2485,15 @@ fn creative_ai_generates_amount_power_cards_via_separate_shuffles() {
     );
 }
 
-/// C# Compact is ONE batch `CardCmd.Transform(list)` (`Compact.cs:34-46`):
-/// originals are removed first with indices recorded AFTER earlier removals,
-/// then re-inserted at those indices (`CardCmd.cs:384-446`). Statuses at hand
-/// positions 0, 1, 4 therefore become Fuels at 0, 1, 2, not in place
-/// (Defect seed 1017, GH #1054 item 7).
-#[test]
-fn compact_batch_transform_clusters_fuels_like_csharp() {
+/// v0.111.0 C# Compact is ONE batch `CardCmd.Transform(list)`
+/// (`Compact.cs:34-46`): originals are removed first with indices recorded
+/// AFTER earlier removals, then re-inserted at those indices
+/// (`CardCmd.cs:384-446`). Statuses at hand positions 0, 1, 4 therefore
+/// become Fuels at 0, 1, 2, not in place (Defect seed 1017, GH #1054 item 7).
+/// v0.107.1 `Compact.cs` awaits one `CardCmd.Transform(item, fuel)` per
+/// Status, so each Fuel lands in its Status's slot (Defect random-loadout
+/// v0.107.1 seeds 1014/1020/1023).
+fn compact_transform_hand_order(version: sts2_core::GameVersion) -> Vec<CardId> {
     fn push(state: &mut CombatState, id: CardId, ty: CardType) -> sts2_core::CardUid {
         let raw = u32::try_from(state.cards.len() + 1).expect("fits");
         let uid = sts2_core::CardUid::new(raw).expect("non-zero");
@@ -2358,6 +2511,7 @@ fn compact_batch_transform_clusters_fuels_like_csharp() {
     install_pool();
     let f = lookup(CardId::Compact).expect("registered");
     let (mut state, _) = fresh_state(CardId::Compact, 0, 6);
+    state.game_version = version;
     state.player.hand.clear();
     push(&mut state, CardId::Wound, CardType::Status);
     push(&mut state, CardId::Wound, CardType::Status);
@@ -2368,14 +2522,26 @@ fn compact_batch_transform_clusters_fuels_like_csharp() {
 
     let _ = f(&mut state, None);
 
-    let ids: Vec<CardId> = state
+    let others: Vec<sts2_core::CardUid> = state
+        .player
+        .hand
+        .iter()
+        .copied()
+        .filter(|u| [cap, ft, spin].contains(u))
+        .collect();
+    assert_eq!(others, vec![cap, ft, spin]);
+    state
         .player
         .hand
         .iter()
         .map(|u| state.cards[u.0.get() as usize - 1].card_id)
-        .collect();
+        .collect()
+}
+
+#[test]
+fn compact_batch_transform_clusters_fuels_like_csharp_v0111() {
     assert_eq!(
-        ids,
+        compact_transform_hand_order(sts2_core::GameVersion::V0_111_0),
         vec![
             CardId::Fuel,
             CardId::Fuel,
@@ -2386,5 +2552,20 @@ fn compact_batch_transform_clusters_fuels_like_csharp() {
         ],
         "Fuels cluster at the C# batch-transform indices 0,0,2"
     );
-    assert_eq!(&state.player.hand[3..], &[cap, ft, spin]);
+}
+
+#[test]
+fn compact_transforms_in_place_one_at_a_time_v0107() {
+    assert_eq!(
+        compact_transform_hand_order(sts2_core::GameVersion::V0_107_1),
+        vec![
+            CardId::Fuel,
+            CardId::Fuel,
+            CardId::Capacitor,
+            CardId::FightThrough,
+            CardId::Fuel,
+            CardId::Zap,
+        ],
+        "each Fuel replaces its Status in place"
+    );
 }

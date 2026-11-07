@@ -194,4 +194,117 @@ mod tests {
             "only Pillage's own hit should land (recycle deals 0); got {dealt}"
         );
     }
+
+    /// A recycle whose auto-plays build Strength is PROGRESS even while it
+    /// deals no damage yet: C# `Pillage.OnPlay`'s do/while is unbounded
+    /// (Pillage.cs:28-33), so Hellraiser keeps auto-playing the drawn Setup
+    /// Strikes until the Strength they grant turns the hits positive and the
+    /// enemy dies, all inside one Pillage play. Act23 Ironclad-8109 act 3
+    /// @1155: Strength -96, 15 Setup Strike auto-plays, then Ashen Strike
+    /// killed The Lost; the no-progress guard (enemy hp+block only) broke
+    /// after 4 Setup Strikes and left the enemy alive.
+    #[test]
+    fn pillage_strength_building_recycle_runs_to_the_kill() {
+        crate::cards::ironclad::install_pool();
+        install_default_registry();
+        let mut state = CombatState {
+            rng: sts2_core::dotnet_rng::Rng::new(0_i32),
+            ..Default::default()
+        };
+        state.player.current_hp = 80;
+        state.player.max_hp = 80;
+        state.phase = CombatPhase::PlayerPlayPhase;
+        let enemy_id = NonZeroU32::new(1).expect("non-zero");
+        state.creatures.push(Creature {
+            id: enemy_id,
+            current_hp: 10,
+            max_hp: 10,
+            block: 0,
+            powers: SmallVec::new(),
+            species: Some(MonsterKind::Nibbit),
+            intent: None,
+            intent_history: IntentHistory::default(),
+            monster_id: MonsterId("Nibbit"),
+            ai: None,
+        });
+        let enemy_uid = CreatureUid(enemy_id);
+        state.enemy_uids.push(enemy_uid);
+        let player_id = NonZeroU32::new(100).expect("non-zero");
+        state.creatures.push(Creature {
+            id: player_id,
+            current_hp: 80,
+            max_hp: 80,
+            block: 0,
+            powers: SmallVec::new(),
+            species: Some(MonsterKind::Nibbit),
+            intent: None,
+            intent_history: IntentHistory::default(),
+            monster_id: MonsterId("Player"),
+            ai: None,
+        });
+        state.player.creature_uid = Some(CreatureUid(player_id));
+        apply_power_to_creature(&mut state, CreatureUid(player_id), PowerKind::Hellraiser, 1);
+        // Deep enough that Setup Strike (7 dmg, +2 Strength each at this pin)
+        // needs ~27 auto-plays before a hit lands — past the old window.
+        apply_power_to_creature(&mut state, CreatureUid(player_id), PowerKind::Strength, 1);
+        for p in &mut state.powers {
+            if p.kind == PowerKind::Strength {
+                p.amount = -60;
+            }
+        }
+
+        let pillage_uid = sts2_core::CardUid::new(1).expect("non-zero");
+        state.cards.push(Card {
+            local_energy_cost: None,
+            uid: pillage_uid,
+            card_id: CardId::Pillage,
+            cost: 1,
+            card_type: CardType::Attack,
+            target_type: TargetType::Enemy,
+            upgraded: false,
+            base_damage: 6,
+            base_block: 0,
+            combat_vars: sts2_core::cards::CombatVars::new(),
+            enchantments: sts2_core::cards::CardEnchantments::new(),
+            tags: CardTags::NONE,
+            energy_spent: 0,
+            base_replay_count: 0,
+            keyword_override: None,
+            affliction: None,
+        });
+        state.player.play.push(pillage_uid);
+        for _ in 0..2 {
+            let raw = u32::try_from(state.cards.len() + 1).expect("fits");
+            let uid = sts2_core::CardUid::new(raw).expect("non-zero");
+            state.cards.push(Card {
+                local_energy_cost: None,
+                uid,
+                card_id: CardId::SetupStrikeCard,
+                cost: 1,
+                card_type: CardType::Attack,
+                target_type: TargetType::Enemy,
+                upgraded: false,
+                base_damage: 7,
+                base_block: 0,
+                combat_vars: sts2_core::cards::CombatVars::new(),
+                enchantments: sts2_core::cards::CardEnchantments::new(),
+                tags: CardTags::one(sts2_core::cards::CardTag::Strike),
+                energy_spent: 0,
+                base_replay_count: 0,
+                keyword_override: None,
+                affliction: None,
+            });
+            state.player.draw.insert(0, uid);
+        }
+
+        let res = play_pillage(&mut state, Some(enemy_uid));
+        assert!(matches!(res, EffectResult::Resolved));
+        assert_eq!(
+            state.creatures[0].current_hp,
+            0,
+            "the Strength-building recycle runs until the hits kill the enemy \
+             (Strength now {})",
+            state.player_power_amount(PowerKind::Strength)
+        );
+    }
 }

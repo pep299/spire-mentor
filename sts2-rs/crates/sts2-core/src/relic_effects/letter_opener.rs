@@ -28,6 +28,21 @@ pub(crate) fn on_after_side_turn_start_letter_opener(
     EffectResult::Resolved
 }
 
+/// C# `LetterOpener.BeforeCombatStart` (`LetterOpener.cs:89-94`, both
+/// builds): the per-turn skill counter starts every combat at 0. The counter
+/// lives on `Relic.counter`, which the run carries between combats (seeded
+/// from `rs.relic_counters` on combat entry), and C# `AfterCombatEnd` does
+/// NOT zero it — so without this reset a combat could open with the previous
+/// combat's count and fire one or two Skills early (random-loadout v0.111.0
+/// seed 1110).
+pub(crate) fn on_before_combat_start_letter_opener(state: &mut CombatState) -> EffectResult {
+    let Some(r) = letter_opener_relic_mut(state) else {
+        return EffectResult::NotImplemented;
+    };
+    r.counter = 0;
+    EffectResult::Resolved
+}
+
 /// `LetterOpener.after_card_played` — `if card.card_type == SKILL:
 /// _skills_this_turn += 1; if _skills_this_turn % 3 == 0: deal 5 AoE`
 /// (`uncommon.py::LetterOpener`, line 354). Bead `sts2-rs-7po6`.
@@ -74,6 +89,10 @@ pub(crate) fn on_after_combat_end_letter_opener(state: &mut CombatState) -> Effe
 }
 
 pub(crate) fn install() {
+    register_before_combat_start(
+        RelicId::LetterOpener,
+        on_before_combat_start_letter_opener as BeforeCombatStartFn,
+    );
     register_after_side_turn_start(
         RelicId::LetterOpener,
         on_after_side_turn_start_letter_opener as AfterSideTurnStartFn,

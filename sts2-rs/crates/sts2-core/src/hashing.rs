@@ -593,9 +593,47 @@ fn hash_enemies_cards_items_pending_skipping<E: HashEncoding, H: Hasher>(
     0x09u8.hash(h);
     hash_pending_choice(state.pending_choice.as_ref(), h);
     state.pending_play.is_some().hash(h);
+    // A tail parked mid-replay owes a different remainder than one parked on
+    // the first play's choice (GH #1131). `Start` adds nothing, so every hash
+    // from before replays could park is unchanged.
+    if let Some(at) = state
+        .pending_play
+        .as_ref()
+        .map(|p| p.finish.resume_at)
+        .filter(|&at| at != crate::combat_loop::TailResume::Start)
+    {
+        at.hash(h);
+    }
     // Auto-play suspended on a surfaced card-select (parity bug
     // `combat_select_ironclad`) — track presence like `pending_play`.
     state.pending_autoplay_resume.is_some().hash(h);
+    if let Some(at) = state
+        .pending_autoplay_resume
+        .as_ref()
+        .map(|r| r.finish.resume_at)
+        .filter(|&at| at != crate::combat_loop::TailResume::Start)
+    {
+        at.hash(h);
+    }
+    // A draw-pile auto-play parked on its reshuffle select (GH #1131). Hashed
+    // only when present, so every earlier hash is unchanged.
+    if let Some(c) = state.pending_collect_resume.as_ref() {
+        0xC0u8.hash(h);
+        c.ap.remaining.hash(h);
+        c.ap.collected.hash(h);
+        c.ap.force_exhaust.hash(h);
+        c.batch.hash(h);
+    }
+    if state.pending_play_phase_tail {
+        0xC1u8.hash(h);
+    }
+    // GH #1129: a select captured from the enemy side. The snapshot is the
+    // same for every state reached from one enemy side, so the answers given
+    // so far tell such states apart.
+    if let Some(r) = state.enemy_side_replay.as_ref() {
+        0xC2u8.hash(h);
+        r.answers.hash(h);
+    }
 }
 
 /// Fold a card's `(key, amount)` map (`combat_vars` / `enchantments`) into

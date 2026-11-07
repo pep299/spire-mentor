@@ -581,13 +581,16 @@ class RustGame(GameBackend):
         return []
 
     def set_player(self, **kwargs: Any) -> dict[str, Any]:
-        """Debug/coverage HP/gold override, mirroring the C# ``set_player``
-        scalar subset so both engines can be pinned identically in lockstep
-        (see ``act23_state_parity.py``). Accepts ``hp`` / ``max_hp`` / ``gold``;
-        other C# ``set_player`` keys (deck/relics/potions) are not supported on
-        the Rust backend and are ignored."""
+        """Debug/coverage override, mirroring the C# ``set_player`` command so
+        both engines can be pinned identically in lockstep (see
+        ``act23_state_parity.py``). Accepts ``hp`` / ``max_hp`` / ``gold`` and
+        ``deck`` / ``relics`` / ``potions``, which replace the whole list and
+        fire no on-obtain hook, as in C#."""
         if self.rm is None:
             return {"type": "error", "message": "no run in progress"}
+        self.rm.debug_set_loadout(kwargs.get("deck"), kwargs.get("relics"))
+        if kwargs.get("potions") is not None:
+            self.rm.debug_set_potion_state(list(kwargs["potions"]))
         self.rm.set_player(
             hp=kwargs.get("hp"),
             max_hp=kwargs.get("max_hp"),

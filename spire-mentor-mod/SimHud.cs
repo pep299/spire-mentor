@@ -1783,6 +1783,18 @@ internal sealed class SimHud
     private const float PanelWidth = 430f;
 
     /// <summary>
+    /// Left edge and bottom of the advice column -- the advice panel and the
+    /// coach chips under it -- which the action log sits under until the
+    /// player drags it (LogPanelPlacement). Viewport pixels. Main thread.
+    /// </summary>
+    public (float Left, float Bottom) ColumnBottom()
+    {
+        Vector2 slot = ChipSlot();
+        float chips = SimCoachChip.Instance.StackHeight();
+        return (slot.X, slot.Y + chips);
+    }
+
+    /// <summary>
     /// Where the coach chip (SimCoachChip) goes: just below the advice panel
     /// when it is showing, else in the panel's own slot (under the toolbar,
     /// wherever the toolbar is). Viewport pixels. Main thread.

@@ -615,7 +615,7 @@ public class SimCombatHandler : IRoomHandler, IHandler
     /// Status=4 — sts2-core cards.rs CardType::index). Mirrors the scan
     /// RingingPower.ShouldPlay does over CombatManager history.
     /// </summary>
-    private static int[] CountCardsPlayedThisTurn(CombatState? combatState, Creature? playerCreature)
+    internal static int[] CountCardsPlayedThisTurn(CombatState? combatState, Creature? playerCreature)
     {
         var buckets = new int[5];
         if (combatState == null || playerCreature == null)

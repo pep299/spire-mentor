@@ -336,6 +336,12 @@ pub struct CardReward {
     /// SilkenTress's Glam), and C# adds that very card to the deck on pick
     /// (`CardReward.OnSelect` → `CardPileCmd.Add(result.Card, Deck)`). GH #806.
     pub enchantments: Vec<crate::cards::CardEnchantments>,
+    /// For an unrolled sentinel (empty [`Self::options`]): `Some(room)` when
+    /// C# builds it with `CardCreationOptions.ForRoom(player, room)` (an
+    /// `Encounter`-source roll with that room's odds: pity, upgrade roll),
+    /// e.g. Dream Catcher's rest-heal card. `None` rolls as a non-combat
+    /// (`CardCreationSource.Other`) base-odds reward.
+    pub for_room: Option<RoomType>,
 }
 
 impl CardReward {
@@ -346,6 +352,18 @@ impl CardReward {
             options: Vec::new(),
             upgraded: Vec::new(),
             enchantments: Vec::new(),
+            for_room: None,
+        }
+    }
+
+    /// An unrolled `CardReward(CardCreationOptions.ForRoom(player, room), 3)`,
+    /// rolled at its queue position like an [`Self::empty`] sentinel but with
+    /// the room's encounter odds.
+    #[must_use]
+    pub fn for_room(room: RoomType) -> Self {
+        Self {
+            for_room: Some(room),
+            ..Self::empty()
         }
     }
 
@@ -354,8 +372,7 @@ impl CardReward {
     pub fn from_options(options: Vec<CardId>) -> Self {
         Self {
             options,
-            upgraded: Vec::new(),
-            enchantments: Vec::new(),
+            ..Self::empty()
         }
     }
 
@@ -367,6 +384,7 @@ impl CardReward {
             options: cards.iter().map(|c| c.card_id).collect(),
             upgraded: cards.iter().map(|c| c.upgraded).collect(),
             enchantments: cards.iter().map(|c| c.enchantments).collect(),
+            for_room: None,
         }
     }
 }
@@ -1300,7 +1318,7 @@ pub struct RunState {
     /// Per-relic counter store for run-side relics. Mirrors the
     /// per-instance counters Python `RelicInstance` subclasses keep
     /// (e.g. `WongosMysteryTicket._combats_finished` /
-    /// `_gave_relic`, `DreamCatcher._procs_left`). The combat-side
+    /// `_gave_relic`). The combat-side
     /// `Relic.counter` POD covers in-combat relics; this map covers
     /// the run-side ones whose lifecycle is between-combat. Defaults
     /// to empty.
@@ -2663,6 +2681,33 @@ impl RunState {
         true
     }
 
+    /// Add `kind` into the specific physical potion slot `slot` — C#
+    /// `PotionCmd.TryToProcure(potion, player, slotIndex)` /
+    /// `Player.AddPotionInternal(potion, slotIndex)` with an explicit
+    /// `slotIndex >= 0`: the potion goes into THAT slot (not the first
+    /// empty one) and fails `TooFull` when the slot is occupied. Returns
+    /// `false` (potion not added) when the slot is filled or outside
+    /// [`Self::potion_belt_cap`]. Alchemical Coffer is the only caller
+    /// (`AlchemicalCoffer.cs`, both v0.107.1 and v0.111.0).
+    pub fn add_potion_to_belt_at_slot(
+        &mut self,
+        kind: crate::potions::PotionKind,
+        slot: u8,
+    ) -> bool {
+        self.sync_potion_slot_indices();
+        if usize::from(slot) >= self.potion_belt_cap() || self.potion_slot_indices.contains(&slot) {
+            return false;
+        }
+        let pos = self
+            .potion_slot_indices
+            .iter()
+            .position(|&s| s > slot)
+            .unwrap_or(self.potions.len());
+        self.potions.insert(pos, kind);
+        self.potion_slot_indices.insert(pos, slot);
+        true
+    }
+
     /// Remove the potion at visible index `idx` from the run-level belt,
     /// leaving its physical slot empty (C# `Player.RemovePotionInternal`
     /// nulls the slot — no compaction).
@@ -3539,21 +3584,29 @@ impl RunState {
         // `RunState.IterateHookListeners` (`RunState.cs:123-156`, same in
         // v0.107.1), which queues every deck card (and enchantment) ahead of
         // relics, potions and modifiers. Bead `sts2-rs-RP24`.
-        if self
+        // The hook runs once per listener with no dedupe, so EACH egg card in
+        // the deck adds its own Hatch option (two eggs: Heal, Smith, Hatch,
+        // Hatch; Ironclad-8178 act2#b1 step 878).
+        for _ in self
             .master_deck
             .iter()
-            .any(|c| c.card_id == crate::cards::CardId::ByrdonisEgg)
+            .filter(|c| c.card_id == crate::cards::CardId::ByrdonisEgg)
         {
             options.push(RestSiteOption::Hatch);
         }
         let _ = crate::run_effects::dispatch_modify_rest_site_options(self, &mut options);
-        // MiniatureTent's second pick: drop the options already taken here.
-        options.retain(|o| {
-            !self
-                .rest_site_taken
+        // MiniatureTent's second pick: C# removes only the chosen option
+        // (`RestSiteSynchronizer.cs:210` `options.RemoveAt(optionIndex)`), so
+        // drop ONE matching option per taken entry, not every option of that
+        // kind (taking one of two Hatches leaves the other).
+        for taken in &self.rest_site_taken {
+            if let Some(i) = options
                 .iter()
-                .any(|t| std::mem::discriminant(t) == std::mem::discriminant(o))
-        });
+                .position(|o| std::mem::discriminant(o) == std::mem::discriminant(taken))
+            {
+                options.remove(i);
+            }
+        }
         options
     }
 
@@ -4301,6 +4354,14 @@ impl RunState {
         for bucket in self.shared_relic_grab_bag_by_rarity.values_mut() {
             bucket.retain(|&r| r != relic_id);
         }
+    }
+
+    /// Strip `relic_id` from both grab bags: the bag half of C#
+    /// `RelicCmd.Obtain` (`RelicCmd.cs:41-45`), for a debug graft that owns a
+    /// relic without obtaining it.
+    pub fn remove_relic_from_grab_bags(&mut self, relic_id: RelicId) {
+        self.remove_relic_from_player_grab_bag(relic_id);
+        self.remove_relic_from_shared_grab_bag(relic_id);
     }
 
     /// Strip `relic_id` from the PLAYER bag's per-rarity deques. Mirrors C#
@@ -5096,6 +5157,32 @@ impl RunState {
         let _ = crate::run_effects::dispatch_on_gold_gained(self, delta);
     }
 
+    /// [`Self::gain_gold`] for a C# `decimal` amount with a fractional part,
+    /// given exactly as `numer / denom` (`denom > 0`). C# `PlayerCmd.GainGold`
+    /// (`PlayerCmd.cs:141-170`, both builds) applies `ModifyGoldGained`
+    /// (Bowler Hat x1.25) to the decimal and truncates ONCE on
+    /// `player.Gold += (int)amount`; truncating before the x1.25 loses a gold
+    /// whenever the fraction pushes the product over an integer (Jungle Maze
+    /// 150 + float swing). Non-positive amounts are a no-op, as in C#.
+    pub fn gain_gold_decimal(&mut self, numer: i128, denom: i128) {
+        debug_assert!(denom > 0, "gain_gold_decimal: denom must be positive");
+        if numer <= 0 || denom <= 0 {
+            return;
+        }
+        let base = i32::try_from(numer / denom).unwrap_or(i32::MAX);
+        if !crate::run_effects::dispatch_should_gain_gold(self, base) {
+            return;
+        }
+        let (numer, denom) = if self.owns_active_relic(RelicId::BowlerHat) {
+            (numer * 5, denom * 4)
+        } else {
+            (numer, denom)
+        };
+        let delta = i32::try_from(numer / denom).unwrap_or(i32::MAX);
+        self.gold = self.gold.saturating_add(delta);
+        let _ = crate::run_effects::dispatch_on_gold_gained(self, delta);
+    }
+
     /// Offer a potion reward through the `should_procure_potion` veto
     /// channel. Returns `true` and pushes a [`Reward::Potion`] when the
     /// channel allows, `false` when any relic listener vetoes (e.g.
@@ -5634,7 +5721,10 @@ impl RunState {
             .iter()
             .map(|&i| {
                 let c = &self.master_deck[i];
-                (c.card_id.to_python_name(), u8::from(c.upgraded))
+                (
+                    crate::cards::card_model_entry(c.card_id),
+                    u8::from(c.upgraded),
+                )
             })
             .collect();
         // `candidates` and `keyed` are parallel (built in the same deck
@@ -8338,6 +8428,48 @@ mod tests {
         );
     }
 
+    /// C# `Player.AddPotionInternal(potion, slotIndex)` with an explicit
+    /// slot fills THAT slot, leaving earlier holes empty, and fails on an
+    /// occupied or out-of-range slot (Alchemical Coffer, random-loadout
+    /// fuzz v0.107.1 seed 1123).
+    #[test]
+    fn potion_belt_add_at_slot_targets_that_slot() {
+        use crate::potions::PotionKind;
+        let mut rs = RunState::new();
+        assert!(rs.add_potion_to_belt(PotionKind::FirePotion));
+        rs.gain_potion_slots(4);
+        assert!(rs.add_potion_to_belt_at_slot(PotionKind::BlockPotion, 4));
+        assert!(rs.add_potion_to_belt_at_slot(PotionKind::WeakPotion, 3));
+        assert!(
+            !rs.add_potion_to_belt_at_slot(PotionKind::EnergyPotion, 3),
+            "occupied"
+        );
+        assert!(
+            !rs.add_potion_to_belt_at_slot(PotionKind::EnergyPotion, 7),
+            "out of range"
+        );
+        assert_eq!(
+            rs.potions,
+            vec![
+                PotionKind::FirePotion,
+                PotionKind::WeakPotion,
+                PotionKind::BlockPotion
+            ]
+        );
+        // Slots 1 and 2 stay empty: the next first-empty add lands at 1,
+        // listing between Fire@0 and Weak@3.
+        assert!(rs.add_potion_to_belt(PotionKind::EnergyPotion));
+        assert_eq!(
+            rs.potions,
+            vec![
+                PotionKind::FirePotion,
+                PotionKind::EnergyPotion,
+                PotionKind::WeakPotion,
+                PotionKind::BlockPotion,
+            ]
+        );
+    }
+
     /// Bead `sts2-rs-dsgf9`: `RunState::gain_potion_slots(amount)`
     /// shifts `max_potion_slots` by `amount`, clamped at 0. Mirrors
     /// Python `run_state.py:316-317`. Default is 3 (Python pin
@@ -9564,6 +9696,32 @@ mod tests {
                 .any(|o| matches!(o, RestSiteOption::Hatch)),
             "Hatch offered once the egg is in the deck"
         );
+    }
+
+    /// C# `Hook.ModifyRestSiteOptions` (`Hook.cs:2101-2112`) calls every
+    /// deck card's `TryModifyRestSiteOptions` with no dedupe, and each
+    /// `ByrdonisEgg` adds a Hatch (`ByrdonisEgg.cs:19-27`): two eggs give
+    /// Heal, Smith, Hatch, Hatch (Ironclad-8178 act2#b1 step 878). Under
+    /// MiniatureTent C# drops only the chosen option
+    /// (`RestSiteSynchronizer.cs:210` `RemoveAt`), so one Hatch remains.
+    #[test]
+    fn rest_site_options_offers_one_hatch_per_egg() {
+        let mut rs = RunState::new();
+        for _ in 0..2 {
+            let mut egg = Card::pod_defaults();
+            egg.card_id = CardId::ByrdonisEgg;
+            rs.master_deck.push(egg);
+        }
+        let hatches = |rs: &RunState| {
+            rs.rest_site_options()
+                .iter()
+                .filter(|o| matches!(o, RestSiteOption::Hatch))
+                .count()
+        };
+        assert_eq!(rs.rest_site_options().len(), 4);
+        assert_eq!(hatches(&rs), 2);
+        rs.rest_site_taken.push(RestSiteOption::Hatch);
+        assert_eq!(hatches(&rs), 1, "taking one Hatch leaves the other");
     }
 
     /// Bead `sts2-rs-RP24`: selecting `Hatch` obtains the `Byrdpip` relic

@@ -8,11 +8,20 @@ use super::prelude::*;
 /// [`crate::cards::status::spawn_shiv`] (Hand pile) + idempotent
 /// [`Card::upgrade`] for the in-place upgrade flip, same pattern as
 /// `drink_cosmic_concoction`. Bead `sts2-rs-k66v`.
+///
+/// The Shivs are player-created: C# `Shiv.CreateInHand` ends in
+/// `CardPileCmd.AddGeneratedCardsToCombat(shivs, Hand, creator ?? owner)`
+/// (`Shiv.cs:103`, both builds; v0.111.0 passes the drinker as `creator`).
+/// A potion drink leaves the Play pile empty, so the spawn path's play-pile
+/// heuristic read `false` and every `AfterCardGeneratedForCombat` listener
+/// gated on `creator == Owner` stayed silent — Regalite's Block (Silent
+/// random-loadout v0.111.0 seed 1025: block cs=21 rs=17), Arsenal, the
+/// Supermassive tally. Spawn with an explicit `added_by_player = true`.
 pub(crate) fn drink_cunning_potion(state: &mut CombatState, _target: Option<u8>) -> EffectResult {
-    use crate::cards::status::spawn_shiv;
+    use crate::cards::status::spawn_shiv_with_origin;
     use sts2_core::card_effects::PileKind;
     for _ in 0..3 {
-        let uid = spawn_shiv(state, PileKind::Hand);
+        let uid = spawn_shiv_with_origin(state, PileKind::Hand, true);
         let idx = uid.0.get() as usize - 1;
         if let Some(card) = state.cards.get_mut(idx) {
             let _ = card.upgrade_for(state.game_version);

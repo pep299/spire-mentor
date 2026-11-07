@@ -1,10 +1,10 @@
 {
  "details": [
-  "Play Defend",
-  "You Block 11→16"
+  "Play Ultimate Strike",
+  "Nibbit HP 43→29 (−14)"
  ],
  "error": null,
- "label": "Play Defend",
+ "label": "Play Ultimate Strike → Nibbit",
  "step": {
   "action_label": "",
   "assets_base": "https://assets.test",
@@ -107,9 +107,28 @@
      "target_type": "None",
      "type": "Skill",
      "upgraded": false
+    },
+    {
+     "base_cost": 1,
+     "can_play": false,
+     "color": "colorless",
+     "cost": 1,
+     "description": "Deal 14 damage.",
+     "description_rich": "Deal 14 damage.",
+     "id": "ULTIMATE_STRIKE",
+     "image": "https://assets.test/card_atlas/colorless/ultimate_strike.png",
+     "index": -1,
+     "name": "Ultimate Strike",
+     "rarity": "Uncommon",
+     "stats": {
+      "damage": 14
+     },
+     "target_type": "None",
+     "type": "Attack",
+     "upgraded": false
     }
    ],
-   "discard_pile_count": 4,
+   "discard_pile_count": 5,
    "draw_pile": [
     {
      "base_cost": 1,
@@ -264,7 +283,7 @@
    "enemies": [
     {
      "block": 0,
-     "hp": 43,
+     "hp": 29,
      "image": "https://assets.test/monsters/nibbit.png",
      "index": 0,
      "intents": [
@@ -286,7 +305,7 @@
      "uid": 2
     }
    ],
-   "energy": 1,
+   "energy": 0,
    "energy_image": "https://assets.test/sprite_fonts/defect_energy_icon.png",
    "exhaust_pile": [],
    "exhaust_pile_count": 0,
@@ -294,7 +313,7 @@
    "hand": [
     {
      "base_cost": 1,
-     "can_play": true,
+     "can_play": false,
      "color": "blue",
      "cost": 1,
      "description": "Channel 1 Lightning.",
@@ -307,28 +326,7 @@
      "stats": {},
      "target_type": "None",
      "type": "Skill",
-     "upgraded": false
-    },
-    {
-     "base_cost": 1,
-     "can_play": true,
-     "color": "colorless",
-     "cost": 1,
-     "damage_preview": {
-      "0": 14
-     },
-     "description": "Deal 14 damage.",
-     "description_rich": "Deal 14 damage.",
-     "id": "ULTIMATE_STRIKE",
-     "image": "https://assets.test/card_atlas/colorless/ultimate_strike.png",
-     "index": 1,
-     "name": "Ultimate Strike",
-     "rarity": "Uncommon",
-     "stats": {
-      "damage": 14
-     },
-     "target_type": "AnyEnemy",
-     "type": "Attack",
+     "unplayable_reason": "cost",
      "upgraded": false
     }
    ],

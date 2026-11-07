@@ -132,17 +132,19 @@ fn channel_into_zero_capacity_is_noop(tc: TestCase) {
 }
 
 #[hegel::test]
-fn add_slots_grows_capacity_additively(tc: TestCase) {
+fn add_slots_grows_capacity_additively_up_to_ten(tc: TestCase) {
     let start = tc.draw(gs::integers::<usize>().min_value(0).max_value(20));
     let add = tc.draw(gs::integers::<usize>().min_value(0).max_value(20));
     let mut belt = OrbSlots::with_capacity(start);
     let before_filled = belt.filled_len();
     belt.add_slots(add);
 
-    // Capacity grows by exactly `add`, all new slots are empty, and no
-    // existing orb is disturbed.
-    assert_eq!(belt.capacity(), start + add);
-    assert_eq!(belt.slots.len(), start + add);
+    // Capacity grows by `add`, clamped to 10 total (C# `OrbCmd.AddSlots`
+    // `Min(10 - Capacity, amount)`, never shrinking a belt already past it);
+    // all new slots are empty, and no existing orb is disturbed.
+    let want = start.max((start + add).min(sts2_core::orbs::MAX_ORB_SLOTS));
+    assert_eq!(belt.capacity(), want);
+    assert_eq!(belt.slots.len(), want);
     assert_eq!(belt.filled_len(), before_filled);
 }
 
