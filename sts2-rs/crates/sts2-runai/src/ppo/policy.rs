@@ -329,10 +329,7 @@ fn build_full_map_obs(rm: &RunManager) -> Option<FullMapObs> {
 /// `RunManager.shop_inventory()` mirror (`sts2-py::run_manager.rs`
 /// ~:1184). Prices must match the Python-facing shop inventory and the
 /// engine's actual affordability/charge calculation, including relic discounts.
-fn build_shop_obs(
-    inv: &ShopInventory,
-    active_relics: &[sts2_core::relics::RelicId],
-) -> ShopObs {
+fn build_shop_obs(inv: &ShopInventory, active_relics: &[sts2_core::relics::RelicId]) -> ShopObs {
     let price_of = |base| i64::from(merchant_price_with_modifiers(active_relics, base));
     let cards: Vec<ShopCardObs> = inv
         .cards
@@ -603,9 +600,7 @@ pub fn build_obs(rm: &RunManager, phase: &str, surface: Option<&str>) -> PpoObs 
             );
         }
         Some("shop") => {
-            obs.shop = rm
-                .shop_inventory()
-                .map(|inv| build_shop_obs(inv, &rs.active_relics()));
+            obs.shop = rm.shop_inventory().map(|inv| build_shop_obs(inv, &rs.active_relics()));
         }
         Some("event") => {
             obs.event_name = rs.current_event.map(|id| id.python_name().to_string());
