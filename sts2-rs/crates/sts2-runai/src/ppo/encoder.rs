@@ -1696,4 +1696,81 @@ mod tests {
         }
         assert_eq!(on.obs_cat[0], off.obs_cat[0]);
     }
+
+    // GH #24: use the option ID in the obs, not the current action position.
+    fn rest_obs(ids: Option<&[&str]>) -> PpoObs {
+        serde_json::from_value(serde_json::json!({
+            "phase": "rest_site",
+            "surface": "rest",
+            "seed": 0, "ascension": 10,
+            "deck": [], "relics": [], "potions": [],
+            "map": null, "map_coord": null,
+            "total_floor": 1, "act_index": 1, "act_floor": 1,
+            "hp": 40, "max_hp": 80, "gold": 0,
+            "deck_size": 0, "num_upgraded": 0, "num_relics": 0, "num_potions": 0,
+            "rest_option_labels": ids
+        }))
+        .expect("rest obs")
+    }
+
+    #[test]
+    fn rest_option_semantics_survive_tent_reindexing() {
+        let original = rest_obs(Some(&["HEAL", "SMITH"]));
+        let original_actions = [
+            ActionDesc::RestOption { idx: 0 },
+            ActionDesc::RestOption { idx: 1 },
+        ];
+        let original_feat = featurize_with(&original, &original_actions, Features::default());
+
+        let smith_only = rest_obs(Some(&["SMITH"]));
+        let smith_feat = featurize_with(
+            &smith_only,
+            &[ActionDesc::RestOption { idx: 0 }],
+            Features::default(),
+        );
+        assert_eq!(original_feat.act_cat[1], smith_feat.act_cat[0]);
+
+        let heal_only = rest_obs(Some(&["HEAL"]));
+        let heal_feat = featurize_with(
+            &heal_only,
+            &[ActionDesc::RestOption { idx: 0 }],
+            Features::default(),
+        );
+        assert_eq!(original_feat.act_cat[0], heal_feat.act_cat[0]);
+
+        // Old rows with the original two labels or no labels are compatible.
+        let legacy = rest_obs(Some(&["rest", "smith"]));
+        let legacy_feat = featurize_with(&legacy, &original_actions, Features::default());
+        let absent = rest_obs(None);
+        let absent_feat = featurize_with(&absent, &original_actions, Features::default());
+        assert_eq!(original_feat.act_cat, legacy_feat.act_cat);
+        assert_eq!(original_feat.act_cat, absent_feat.act_cat);
+    }
+
+    #[test]
+    fn rest_option_ids_get_distinct_existing_onnx_rows() {
+        for (id, kind, stable_idx) in [
+            ("HEAL", "rest_heal", 0),
+            ("SMITH", "rest_smith", 1),
+            ("DIG", "rest_other", 0),
+            ("LIFT", "rest_other", 1),
+            ("COOK", "rest_other", 2),
+            ("CLONE", "rest_other", 3),
+            ("HATCH", "rest_other", 4),
+            ("KINDLE", "rest_other", 5),
+            ("MEND", "rest_other", 6),
+            ("FUTURE_OPTION", "rest_other", 7),
+        ] {
+            let obs = rest_obs(Some(&[id]));
+            let feat = featurize_with(
+                &obs,
+                &[ActionDesc::RestOption { idx: 0 }],
+                Features::default(),
+            );
+            assert_eq!(feat.act_cat[0][6], vocab::fixed_index(kind) as i64);
+            assert_eq!(feat.act_cat[0][7], stable_idx);
+        }
+        // Every used ID is inside the existing 8 option-index rows.
+        assert_eq!(vocab::MAX_OPT_IDX, 8);
+    }
 }
