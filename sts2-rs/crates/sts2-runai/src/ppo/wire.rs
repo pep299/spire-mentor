@@ -1897,4 +1897,30 @@ mod tests {
         assert_eq!(map.current_coord, None);
         assert_eq!(d.obs.map_coord, Some((2, 2)));
     }
+
+    #[test]
+    fn bridge_rest_options_use_ids_after_disabled_options_are_filtered() {
+        let s = json!({
+            "type": "rest_site", "floor": 5, "act": 1,
+            "run_state": run_state(),
+            "options": [
+                {"index": 0, "id": "HEAL", "label": "Rest", "enabled": false},
+                {"index": 1, "id": "SMITH", "label": "Smith", "enabled": true},
+                {"index": 2, "id": "DIG", "label": "Dig", "enabled": true}
+            ]
+        });
+        let d = build_decision(&s, "rest_site").expect("decision");
+        assert_eq!(
+            d.obs.rest_option_labels,
+            Some(vec!["SMITH".to_owned(), "DIG".to_owned()])
+        );
+        assert_eq!(
+            d.actions,
+            vec![
+                ActionDesc::RestOption { idx: 0 },
+                ActionDesc::RestOption { idx: 1 }
+            ]
+        );
+        assert_eq!(d.responses, vec![choose(1), choose(2)]);
+    }
 }
