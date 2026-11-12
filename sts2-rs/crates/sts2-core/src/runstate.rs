@@ -794,6 +794,18 @@ impl EnchantCardsReward {
     }
 }
 
+/// Claws' 0..=6 card-selection state. Candidates retain the original deck
+/// positions and prebuilt Mauls; the deck stays unchanged until confirmation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingClawsSelection {
+    /// Legal original deck indices paired with their Maul replacements.
+    pub candidates: Vec<(usize, crate::cards::Card)>,
+    /// Indices into `candidates` already selected by the player.
+    pub selected: Vec<usize>,
+    /// Maximum number of cards the player may select.
+    pub max_count: usize,
+}
+
 /// One queued interactive deck-transform pick (see
 /// [`RunState::pending_deck_transforms`]). NewLeaf-style transforms queue
 /// `{ basic_only: false, fixed_target: None }` (replacement rolled off
@@ -1756,6 +1768,10 @@ pub struct RunState {
     /// (remove original, append replacement at the tail).
     pub pending_deck_transforms: Vec<PendingDeckTransform>,
 
+    /// Pending optional Claws selections. Separate from NewLeaf's
+    /// immediate, single-card transform actions to preserve atomicity.
+    pub pending_claws_selections: Vec<PendingClawsSelection>,
+
     /// Queue of interactive deck-enchant picks (Wood Carvings' Snake →
     /// Slither), oldest first; gated on
     /// [`Self::interactive_card_transform`] like the transform queue (the
@@ -2178,6 +2194,7 @@ impl Default for RunState {
             pending_deck_upgrades: 0,
             interactive_card_transform: false,
             pending_deck_transforms: Vec::new(),
+            pending_claws_selections: Vec::new(),
             pending_deck_enchants: Vec::new(),
             interactive_potion_swap: false,
             pending_potion_swaps: Vec::new(),
@@ -2986,6 +3003,7 @@ impl RunState {
         self.pending_deck_removals != 0
             || self.pending_deck_upgrades != 0
             || !self.pending_deck_transforms.is_empty()
+            || !self.pending_claws_selections.is_empty()
             || !self.pending_deck_enchants.is_empty()
             || !self.pending_card_selects.is_empty()
             || !self.pending_rewards.is_empty()

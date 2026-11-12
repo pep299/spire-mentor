@@ -71,6 +71,7 @@ _DECK_MUTATION_ACTIONS = frozenset(
         "remove_deck_card",
         "upgrade_deck_card",
         "transform_deck_card",
+        "confirm_deck_selection",
         "enchant_deck_card",
         "grant_deck_card",
     }
