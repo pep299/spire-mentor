@@ -149,6 +149,7 @@ def test_miniature_tent_after_smith_exposes_heal_at_index_zero():
     assert [option_id for option_id, _ in options] == ["HEAL"]
     assert _token(["HEAL"], 0) == _token(["HEAL", "SMITH"], 0)
 
+
 def test_unchanged_onnx_can_score_reindexed_rest_site():
     pytest.importorskip("onnxruntime")
     if not MODEL.exists():
