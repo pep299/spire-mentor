@@ -24,7 +24,7 @@ use sts2_core::map::MapPointType;
 use sts2_core::run_manager::RunManager;
 #[cfg(feature = "ppo")]
 use sts2_core::run_manager::{Phase, RunAction};
-use sts2_core::shop::{is_shop_entry_available, ShopInventory};
+use sts2_core::shop::{is_shop_entry_available, merchant_price_with_modifiers, ShopInventory};
 use sts2_core::ChoiceKind;
 
 #[cfg(feature = "ppo")]
@@ -327,8 +327,10 @@ fn build_full_map_obs(rm: &RunManager) -> Option<FullMapObs> {
 }
 
 /// `RunManager.shop_inventory()` mirror (`sts2-py::run_manager.rs`
-/// ~:1184).
-fn build_shop_obs(inv: &ShopInventory) -> ShopObs {
+/// ~:1184). Prices must match the Python-facing shop inventory and the
+/// engine's actual affordability/charge calculation, including relic discounts.
+fn build_shop_obs(inv: &ShopInventory, active_relics: &[sts2_core::relics::RelicId]) -> ShopObs {
+    let price_of = |base| i64::from(merchant_price_with_modifiers(active_relics, base));
     let cards: Vec<ShopCardObs> = inv
         .cards
         .iter()
@@ -337,7 +339,7 @@ fn build_shop_obs(inv: &ShopInventory) -> ShopObs {
         .map(|(idx, e)| ShopCardObs {
             idx: idx as i64,
             id: e.card.as_ref().map(|c| format!("{:?}", c.card_id)),
-            price: i64::from(e.price),
+            price: price_of(e.price),
             on_sale: e.on_sale,
             is_colorless: e.is_colorless,
             available: is_shop_entry_available(e.price) && e.card.is_some(),
@@ -351,7 +353,7 @@ fn build_shop_obs(inv: &ShopInventory) -> ShopObs {
         .map(|(idx, e)| ShopEntryObs {
             idx: idx as i64,
             id: e.relic_id.map(|r| format!("RELIC.{}", r.to_python_name())),
-            price: i64::from(e.price),
+            price: price_of(e.price),
             available: is_shop_entry_available(e.price) && e.relic_id.is_some(),
         })
         .collect();
@@ -362,7 +364,7 @@ fn build_shop_obs(inv: &ShopInventory) -> ShopObs {
         .map(|(idx, e)| ShopEntryObs {
             idx: idx as i64,
             id: e.potion_kind.map(|k| format!("{k:?}")),
-            price: i64::from(e.price),
+            price: price_of(e.price),
             available: is_shop_entry_available(e.price) && e.potion_kind.is_some(),
         })
         .collect();
@@ -370,7 +372,7 @@ fn build_shop_obs(inv: &ShopInventory) -> ShopObs {
         cards,
         relics,
         potions,
-        removal_cost: i64::from(inv.removal_cost),
+        removal_cost: price_of(inv.removal_cost),
         removal_used: inv.removal_used,
     }
 }
@@ -598,7 +600,9 @@ pub fn build_obs(rm: &RunManager, phase: &str, surface: Option<&str>) -> PpoObs 
             );
         }
         Some("shop") => {
-            obs.shop = rm.shop_inventory().map(build_shop_obs);
+            obs.shop = rm
+                .shop_inventory()
+                .map(|inv| build_shop_obs(inv, &rs.active_relics()));
         }
         Some("event") => {
             obs.event_name = rs.current_event.map(|id| id.python_name().to_string());
