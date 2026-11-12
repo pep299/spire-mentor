@@ -637,7 +637,12 @@ pub fn build_obs(rm: &RunManager, phase: &str, surface: Option<&str>) -> PpoObs 
             });
         }
         Some("rest") => {
-            obs.rest_option_labels = Some(vec!["rest".to_string(), "smith".to_string()]);
+            obs.rest_option_labels = Some(
+                rs.rest_site_options()
+                    .iter()
+                    .map(|opt| opt.option_id().to_string())
+                    .collect(),
+            );
         }
         Some("potion-swap") => {
             // `RunManager::pending_potion_swap`'s debug-name spelling
@@ -1090,21 +1095,34 @@ impl RunNudge {
         let Some(threshold) = self.smith_hp else {
             return argmax;
         };
-        if phase != Phase::RestSite || actions[argmax] != (RunAction::RestOption { idx: 0 }) {
+        if phase != Phase::RestSite {
             return argmax;
         }
         let rs = &rm.run_state;
-        let smith_enabled = matches!(
-            rs.rest_site_options().get(1),
-            Some(sts2_core::runstate::RestSiteOption::Smith { enabled: true })
-        );
-        if !smith_enabled || f64::from(rs.current_hp) < f64::from(threshold) * f64::from(rs.max_hp)
-        {
+        let options = rs.rest_site_options();
+        let RunAction::RestOption { idx } = actions[argmax] else {
+            return argmax;
+        };
+        if !matches!(
+            options.get(idx),
+            Some(sts2_core::runstate::RestSiteOption::Rest)
+        ) {
             return argmax;
         }
+        if f64::from(rs.current_hp) < f64::from(threshold) * f64::from(rs.max_hp) {
+            return argmax;
+        }
+        let Some(smith_idx) = options.iter().position(|opt| {
+            matches!(
+                opt,
+                sts2_core::runstate::RestSiteOption::Smith { enabled: true }
+            )
+        }) else {
+            return argmax;
+        };
         actions
             .iter()
-            .position(|a| *a == RunAction::RestOption { idx: 1 })
+            .position(|a| *a == RunAction::RestOption { idx: smith_idx })
             .unwrap_or(argmax)
     }
 }
@@ -1497,7 +1515,7 @@ mod combat_fallback_tests {
 
 #[cfg(all(test, feature = "ppo"))]
 mod run_nudge_tests {
-    use super::RunNudge;
+    use super::{build_obs, RunNudge};
 
     #[test]
     fn unset_or_empty_is_no_nudge() {
@@ -1523,5 +1541,34 @@ mod run_nudge_tests {
     #[should_panic(expected = "not a number")]
     fn a_typo_panics_instead_of_running_the_baseline() {
         let _ = RunNudge::parse(Some("smith_hp=half"));
+    }
+
+    #[test]
+    fn miniature_tent_second_pick_observation_and_nudge_track_smith() {
+        use sts2_core::potions::CharacterId;
+        use sts2_core::run_manager::{Phase, RunAction, RunManager};
+        use sts2_core::RelicId;
+
+        sts2_content::relics::dispatch::ensure_installed();
+        let mut rm = RunManager::new(0, CharacterId::Ironclad)
+            .with_content_callbacks(sts2_content::run_callbacks::ironclad_content_callbacks());
+        rm.run_state.relics.push(RelicId::MiniatureTent);
+        rm.run_state.current_hp = 40;
+        rm.enter_rest_site();
+
+        let before = build_obs(&rm, "rest_site", Some("rest"));
+        assert_eq!(
+            before.rest_option_labels,
+            Some(vec!["HEAL".to_owned(), "SMITH".to_owned()])
+        );
+        rm.take_action(RunAction::RestOption { idx: 0 });
+        assert_eq!(rm.phase(), Phase::RestSite);
+        let after = build_obs(&rm, "rest_site", Some("rest"));
+        assert_eq!(after.rest_option_labels, Some(vec!["SMITH".to_owned()]));
+
+        // idx=0 now means Smith; the HP-based nudge must not treat it as Heal.
+        let actions = rm.get_available_actions();
+        let nudge = RunNudge::parse(Some("smith_hp=0.5"));
+        assert_eq!(nudge.smith_override(&rm, Phase::RestSite, &actions, 0), 0);
     }
 }

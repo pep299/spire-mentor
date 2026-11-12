@@ -405,6 +405,8 @@ pub struct PpoObs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_options: Option<Vec<EventOptionObs>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Current engine rest-site option IDs in RestOption{idx} order. The key
+    /// stays named labels for compatibility with recorded PPO observations.
     pub rest_option_labels: Option<Vec<String>>,
 }
 
