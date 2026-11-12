@@ -86,11 +86,6 @@ _PHASE_SURFACE = {
     "treasure": "treasure",
 }
 
-# Base rest-site option order is always [Rest, Smith] (run_manager.rs);
-# the engine exposes no labels (workbench does the same mapping).
-REST_OPTION_LABELS = ("rest", "smith")
-
-
 def classify_surface(phase: str, actions: list[dict[str, Any]]) -> str | None:
     """Surface class for a decision, or None (combat/over).
 
@@ -208,7 +203,10 @@ def observe(
         obs["event_name"] = rm.current_event_name()
         obs["event_options"] = rm.event_option_infos()
     elif surface == "rest":
-        obs["rest_option_labels"] = list(REST_OPTION_LABELS)
+        # The engine's CURRENT option ids, in RestOption{idx} order. A
+        # Miniature Tent second pick removes the first choice and reindexes
+        # the remainder; the old fixed ["rest", "smith"] list was incorrect.
+        obs["rest_option_labels"] = [option_id for option_id, _ in rm.rest_site_options()]
     elif surface == "potion-swap":
         # The potion being OFFERED. Every option token names a potion you
         # would THROW AWAY (or the decline), so without this the decision is
