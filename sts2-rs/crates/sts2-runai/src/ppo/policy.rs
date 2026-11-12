@@ -637,7 +637,12 @@ pub fn build_obs(rm: &RunManager, phase: &str, surface: Option<&str>) -> PpoObs 
             });
         }
         Some("rest") => {
-            obs.rest_option_labels = Some(vec!["rest".to_string(), "smith".to_string()]);
+            obs.rest_option_labels = Some(
+                rs.rest_site_options()
+                    .iter()
+                    .map(|opt| opt.option_id().to_string())
+                    .collect(),
+            );
         }
         Some("potion-swap") => {
             // `RunManager::pending_potion_swap`'s debug-name spelling
@@ -1090,21 +1095,31 @@ impl RunNudge {
         let Some(threshold) = self.smith_hp else {
             return argmax;
         };
-        if phase != Phase::RestSite || actions[argmax] != (RunAction::RestOption { idx: 0 }) {
+        if phase != Phase::RestSite {
             return argmax;
         }
         let rs = &rm.run_state;
-        let smith_enabled = matches!(
-            rs.rest_site_options().get(1),
-            Some(sts2_core::runstate::RestSiteOption::Smith { enabled: true })
-        );
-        if !smith_enabled || f64::from(rs.current_hp) < f64::from(threshold) * f64::from(rs.max_hp)
-        {
+        let options = rs.rest_site_options();
+        let RunAction::RestOption { idx } = actions[argmax] else {
+            return argmax;
+        };
+        if !matches!(options.get(idx), Some(sts2_core::runstate::RestSiteOption::Rest)) {
             return argmax;
         }
+        if f64::from(rs.current_hp) < f64::from(threshold) * f64::from(rs.max_hp) {
+            return argmax;
+        }
+        let Some(smith_idx) = options.iter().position(|opt| {
+            matches!(
+                opt,
+                sts2_core::runstate::RestSiteOption::Smith { enabled: true }
+            )
+        }) else {
+            return argmax;
+        };
         actions
             .iter()
-            .position(|a| *a == RunAction::RestOption { idx: 1 })
+            .position(|a| *a == RunAction::RestOption { idx: smith_idx })
             .unwrap_or(argmax)
     }
 }
