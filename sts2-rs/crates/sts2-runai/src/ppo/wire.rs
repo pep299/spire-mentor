@@ -1910,7 +1910,10 @@ mod tests {
             ]
         });
         let d = build_decision(&s, "rest_site").expect("decision");
-        assert_eq!(d.obs.rest_option_labels, Some(vec!["SMITH".to_owned(), "DIG".to_owned()]));
+        assert_eq!(
+            d.obs.rest_option_labels,
+            Some(vec!["SMITH".to_owned(), "DIG".to_owned()])
+        );
         assert_eq!(d.actions.len(), 2);
         assert_eq!(d.actions[0], ActionDesc::RestOption { idx: 0 });
         assert_eq!(d.actions[1], ActionDesc::RestOption { idx: 1 });
