@@ -600,7 +600,9 @@ pub fn build_obs(rm: &RunManager, phase: &str, surface: Option<&str>) -> PpoObs 
             );
         }
         Some("shop") => {
-            obs.shop = rm.shop_inventory().map(|inv| build_shop_obs(inv, &rs.active_relics()));
+            obs.shop = rm
+                .shop_inventory()
+                .map(|inv| build_shop_obs(inv, &rs.active_relics()));
         }
         Some("event") => {
             obs.event_name = rs.current_event.map(|id| id.python_name().to_string());
