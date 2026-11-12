@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 import sts2_rs
@@ -10,6 +11,7 @@ from ppo import encoder, vocab
 from ppo.env import metrics_snapshot, observe
 
 SEED = 984001164
+MODEL = Path(__file__).resolve().parents[1] / "data/ppo/ppo_fullrun_ironclad_cont300_it1150.onnx"
 
 
 def _token(option_ids: list[str], idx: int) -> list[int]:
@@ -146,3 +148,19 @@ def test_miniature_tent_after_smith_exposes_heal_at_index_zero():
     options = _assert_live_obs_ids(rm)
     assert [option_id for option_id, _ in options] == ["HEAL"]
     assert _token(["HEAL"], 0) == _token(["HEAL", "SMITH"], 0)
+
+def test_unchanged_onnx_can_score_reindexed_rest_site():
+    pytest.importorskip("onnxruntime")
+    if not MODEL.exists():
+        pytest.skip(f"published Ironclad ONNX absent: {MODEL}")
+    from ppo.onnx_policy import OnnxPolicy
+
+    rm = _enter_rest_site("MINIATURE_TENT")
+    rm.take_action({"action": "rest_option", "idx": 0})
+    assert rm.phase() == "rest_site"
+    obs = observe(rm, rm.phase(), "rest", seed=SEED, ascension=10)
+    actions = rm.available_actions()
+    assert any(a["action"] == "rest_option" and a["idx"] == 0 for a in actions)
+    probs, _ = OnnxPolicy(str(MODEL)).distribution(obs, actions, metrics_snapshot(rm))
+    assert len(probs) == len(actions)
+    assert abs(sum(probs) - 1.0) < 1e-6
