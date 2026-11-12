@@ -173,6 +173,7 @@ _KIND_SURFACE = {
     "remove_deck_card": "card-remove",
     "upgrade_deck_card": "card-upgrade",
     "transform_deck_card": "card-transform",
+    "confirm_deck_selection": "card-transform",
     "enchant_deck_card": "card-enchant",
     "grant_deck_card": "card-grant",
     "shop_buy_card": "shop",
@@ -477,6 +478,8 @@ def _build_action_token(ctx: _Ctx, a: dict[str, Any]):
         )
         _stamp_enchant(ctx, cat, cont, ctx.deck_ench, deck_i)
         return sec, cat, cont, aux
+    if kind == "confirm_deck_selection":
+        return _fixed_tok("skip_card")
     if kind == "transform_deck_card":
         deck_i = _at(ctx.transform_idxs, int(a.get("idx", 0)), "transform")
         ent = _at(ctx.deck, int(deck_i), "deck") if deck_i is not None else None
