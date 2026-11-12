@@ -13,7 +13,6 @@ from pathlib import Path
 
 import pytest
 import sts2_rs
-
 from ppo.env import metrics_snapshot
 
 SEED = 984001164
