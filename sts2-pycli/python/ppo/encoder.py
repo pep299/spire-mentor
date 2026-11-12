@@ -387,8 +387,11 @@ def _rest_option_token(option_id: str | None, idx: int) -> tuple[str, int]:
     Missing labels in legacy recordings retain the old positional encoding.
     """
     if option_id is None:
-        kind = "rest_heal" if idx == 0 else "rest_smith" if idx == 1 else "rest_other"
-        return kind, min(vocab.MAX_OPT_IDX - 1, max(0, idx))
+        if idx == 0:
+            return "rest_heal", 0
+        if idx == 1:
+            return "rest_smith", 1
+        return "rest_other", min(vocab.MAX_OPT_IDX - 1, max(0, idx))
     identity = option_id.upper()
     if identity in ("HEAL", "REST"):
         return "rest_heal", 0
