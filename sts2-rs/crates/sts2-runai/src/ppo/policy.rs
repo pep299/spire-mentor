@@ -116,6 +116,7 @@ pub fn classify_surface(phase: Phase, actions: &[RunAction]) -> Option<&'static 
                 RunAction::RemoveDeckCard { .. }
                     | RunAction::UpgradeDeckCard { .. }
                     | RunAction::TransformDeckCard { .. }
+                    | RunAction::ConfirmDeckSelection
                     | RunAction::EnchantDeckCard { .. }
                     | RunAction::GrantDeckCard { .. }
             )

@@ -3071,7 +3071,9 @@ fn enchant_card_type_restriction(
     use sts2_core::cards::{CardType, EnchantmentId};
     match ench {
         // Attack-only (Sharp/Momentum/… group in `can_enchant_card`).
-        EnchantmentId::Sharp | EnchantmentId::Momentum => (Some(CardType::Attack), None),
+        EnchantmentId::Sharp | EnchantmentId::Momentum | EnchantmentId::Instinct => {
+            (Some(CardType::Attack), None)
+        }
         // Skill-only.
         EnchantmentId::Imbued => (Some(CardType::Skill), None),
         // Attack OR Skill — RoyalStamp's RoyallyApproved.
@@ -4165,6 +4167,10 @@ fn listener_paels_growth(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::PaelsGrowth) {
         return EffectResult::NotImplemented;
     }
+    if try_queue_interactive_enchant(rs, sts2_core::cards::EnchantmentId::Clone, 4, 1, false) {
+        return EffectResult::Resolved;
+    }
+    // Zero/one eligible cards need no choice; parity-mode remains automatic.
     let _ = enchant_eligible_deck_cards(rs, sts2_core::cards::EnchantmentId::Clone, 4, 1);
     EffectResult::Resolved
 }
@@ -4320,6 +4326,17 @@ fn listener_tri_boomerang(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::TriBoomerang) {
         return EffectResult::NotImplemented;
     }
+    if try_queue_interactive_enchant(
+        rs,
+        sts2_core::cards::EnchantmentId::Instinct,
+        1,
+        TRI_BOOMERANG_CARDS,
+        false,
+    ) {
+        return EffectResult::Resolved;
+    }
+    // Three or fewer eligible Attacks need no choice. Parity mode remains
+    // automatic rather than opening an extra reward screen.
     let _ = enchant_eligible_deck_cards(
         rs,
         sts2_core::cards::EnchantmentId::Instinct,
@@ -4673,12 +4690,11 @@ fn listener_claws(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::Claws) {
         return EffectResult::NotImplemented;
     }
-    let mut indices = Vec::with_capacity(CLAWS_CARDS);
-    let mut mauls = Vec::with_capacity(CLAWS_CARDS);
+    let mut candidates = Vec::new();
     let version = rs.game_version;
     let maul_spec = crate::cards::spec_index::spec_for_card_id(CardId::Maul);
     for (i, card) in rs.master_deck.iter().enumerate() {
-        if indices.len() >= CLAWS_CARDS {
+        if !rs.interactive_card_transform && candidates.len() >= CLAWS_CARDS {
             break;
         }
         if card.is_quest() || !crate::cards::spec_index::card_is_removable_instance(card) {
@@ -4703,11 +4719,22 @@ fn listener_claws(rs: &mut RunState) -> EffectResult {
                     let _ = crate::enchantments::apply_static_enchantment(&mut maul, ench, amount);
                 }
             }
-            indices.push(i);
-            mauls.push(maul);
+            candidates.push((i, maul));
         }
     }
-    let _ = rs.transform_specific_cards(&indices, mauls);
+    if rs.interactive_card_transform {
+        if !candidates.is_empty() {
+            rs.pending_claws_selections
+                .push(sts2_core::runstate::PendingClawsSelection {
+                    candidates,
+                    selected: Vec::new(),
+                    max_count: CLAWS_CARDS,
+                });
+        }
+    } else {
+        let (indices, mauls): (Vec<_>, Vec<_>) = candidates.into_iter().unzip();
+        let _ = rs.transform_specific_cards(&indices, mauls);
+    }
     EffectResult::Resolved
 }
 
@@ -15133,6 +15160,191 @@ mod tests {
             ids,
             vec![CardId::StrikeIronclad],
             "the Sharp-eligible Strike must be collected via its own spec"
+        );
+    }
+}
+
+#[cfg(test)]
+mod issue28_relic_selection_tests {
+    use super::*;
+    use sts2_core::cards::{CardId, EnchantmentId};
+    use sts2_core::potions::CharacterId;
+    use sts2_core::run_manager::{ActionResult, RunAction, RunManager};
+
+    fn manager_for(relic: RelicId, cards: &[CardId]) -> RunManager {
+        crate::cards::dispatch::ensure_installed();
+        crate::relics::dispatch::ensure_installed();
+        let mut rm = RunManager::new(0, CharacterId::Ironclad);
+        rm.run_state.set_agent_decisions();
+        for &id in cards {
+            push_deck_card(&mut rm.run_state, id);
+        }
+        rm.run_state.obtain_relic(relic);
+        rm
+    }
+
+    #[test]
+    fn claws_zero_one_six_and_replay() {
+        let cards = [
+            CardId::StrikeIronclad,
+            CardId::DefendIronclad,
+            CardId::StrikeIronclad,
+            CardId::DefendIronclad,
+            CardId::StrikeIronclad,
+            CardId::DefendIronclad,
+            CardId::StrikeIronclad,
+            CardId::DefendIronclad,
+        ];
+        for picks in [0, 1, 6] {
+            let mut rm = manager_for(RelicId::Claws, &cards);
+            let original = rm.run_state.master_deck.clone();
+            assert_eq!(rm.run_state.pending_claws_selections.len(), 1);
+            assert_eq!(
+                rm.get_available_actions().last(),
+                Some(&RunAction::ConfirmDeckSelection)
+            );
+            let mut replay = manager_for(RelicId::Claws, &cards);
+            for _ in 0..picks {
+                let action = RunAction::TransformDeckCard { idx: 0 };
+                assert_eq!(rm.take_action(action), ActionResult::Advanced);
+                assert_eq!(replay.take_action(action), ActionResult::Advanced);
+                // No intermediate Mauls: the C# multi-select applies on confirm.
+                assert_eq!(rm.run_state.master_deck, original);
+                assert_eq!(rm.get_available_actions(), replay.get_available_actions());
+            }
+            if picks == 6 {
+                assert_eq!(
+                    rm.get_available_actions(),
+                    vec![RunAction::ConfirmDeckSelection]
+                );
+                assert_eq!(
+                    rm.take_action(RunAction::TransformDeckCard { idx: 0 }),
+                    ActionResult::InvalidForPhase
+                );
+            }
+            assert_eq!(
+                rm.take_action(RunAction::ConfirmDeckSelection),
+                ActionResult::Advanced
+            );
+            assert_eq!(
+                replay.take_action(RunAction::ConfirmDeckSelection),
+                ActionResult::Advanced
+            );
+            assert_eq!(rm.run_state.master_deck, replay.run_state.master_deck);
+            assert!(rm.run_state.pending_claws_selections.is_empty());
+            assert_eq!(
+                rm.run_state
+                    .master_deck
+                    .iter()
+                    .filter(|c| c.card_id == CardId::Maul)
+                    .count(),
+                picks
+            );
+            assert_eq!(rm.run_state.master_deck.len(), original.len());
+            if picks == 0 {
+                assert_eq!(rm.run_state.master_deck, original);
+            }
+        }
+    }
+
+    #[test]
+    fn claws_can_select_a_non_first_card_and_only_transforms_after_confirm() {
+        let mut rm = manager_for(
+            RelicId::Claws,
+            &[CardId::StrikeIronclad, CardId::DefendIronclad],
+        );
+        let original = rm.run_state.master_deck.clone();
+        assert_eq!(
+            rm.take_action(RunAction::TransformDeckCard { idx: 1 }),
+            ActionResult::Advanced
+        );
+        assert_eq!(rm.run_state.master_deck, original);
+        assert_eq!(
+            rm.take_action(RunAction::ConfirmDeckSelection),
+            ActionResult::Advanced
+        );
+        assert_eq!(rm.run_state.master_deck[0].card_id, CardId::StrikeIronclad);
+        assert_eq!(rm.run_state.master_deck[1].card_id, CardId::Maul);
+        assert_eq!(
+            rm.run_state.master_deck[1].target_type,
+            sts2_core::cards::TargetType::Enemy
+        );
+    }
+
+    #[test]
+    fn tri_boomerang_selects_three_distinct_attacks_not_defends() {
+        let mut rm = manager_for(
+            RelicId::TriBoomerang,
+            &[
+                CardId::StrikeIronclad,
+                CardId::StrikeIronclad,
+                CardId::StrikeIronclad,
+                CardId::StrikeIronclad,
+                CardId::DefendIronclad,
+            ],
+        );
+        assert_eq!(rm.run_state.pending_deck_enchants.len(), 3);
+        assert_eq!(rm.enchant_eligible_deck_indices(), vec![0, 1, 2, 3]);
+        for idx in [3, 0, 0] {
+            assert_eq!(
+                rm.take_action(RunAction::EnchantDeckCard { idx }),
+                ActionResult::Advanced
+            );
+        }
+        assert!(rm.run_state.pending_deck_enchants.is_empty());
+        for (idx, card) in rm.run_state.master_deck.iter().enumerate() {
+            assert_eq!(
+                card.enchantment(EnchantmentId::Instinct),
+                i32::from(matches!(idx, 0 | 1 | 3))
+            );
+        }
+    }
+
+    #[test]
+    fn tri_boomerang_auto_enchants_when_fewer_than_three_eligible() {
+        let rm = manager_for(
+            RelicId::TriBoomerang,
+            &[
+                CardId::StrikeIronclad,
+                CardId::DefendIronclad,
+                CardId::StrikeIronclad,
+            ],
+        );
+        assert!(rm.run_state.pending_deck_enchants.is_empty());
+        assert_eq!(
+            rm.run_state
+                .master_deck
+                .iter()
+                .filter(|c| c.enchantment(EnchantmentId::Instinct) == 1)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn paels_growth_selects_the_chosen_copy_and_auto_handles_one() {
+        let mut rm = manager_for(
+            RelicId::PaelsGrowth,
+            &[CardId::StrikeIronclad, CardId::StrikeIronclad],
+        );
+        assert_eq!(rm.run_state.pending_deck_enchants.len(), 1);
+        assert_eq!(
+            rm.take_action(RunAction::EnchantDeckCard { idx: 1 }),
+            ActionResult::Advanced
+        );
+        assert_eq!(
+            rm.run_state.master_deck[0].enchantment(EnchantmentId::Clone),
+            0
+        );
+        assert_eq!(
+            rm.run_state.master_deck[1].enchantment(EnchantmentId::Clone),
+            4
+        );
+        let single = manager_for(RelicId::PaelsGrowth, &[CardId::StrikeIronclad]);
+        assert!(single.run_state.pending_deck_enchants.is_empty());
+        assert_eq!(
+            single.run_state.master_deck[0].enchantment(EnchantmentId::Clone),
+            4
         );
     }
 }

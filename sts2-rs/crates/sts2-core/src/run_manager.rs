@@ -237,6 +237,8 @@ pub enum RunAction {
     /// [`crate::runstate::RunState::interactive_card_transform`] is set.
     /// Bead 6ynt.4.deck-add / GH #34.
     TransformDeckCard { idx: usize },
+    /// Confirm the currently selected Claws cards (including zero picks).
+    ConfirmDeckSelection,
     /// Enchant a deck card, draining one pending interactive enchant (see
     /// [`crate::runstate::RunState::pending_deck_enchants`] — Wood
     /// Carvings' Snake → Slither). `idx` is the position within the
@@ -1342,6 +1344,15 @@ impl RunManager {
                 .map(|idx| RunAction::UpgradeDeckCard { idx })
                 .collect();
         }
+        // Claws uses an optional batch: the target cards do not change until
+        // Confirm, and selected cards are removed from the offer, not deck.
+        if !self.run_state.pending_claws_selections.is_empty() {
+            let mut actions: Vec<RunAction> = (0..self.transform_eligible_deck_indices().len())
+                .map(|idx| RunAction::TransformDeckCard { idx })
+                .collect();
+            actions.push(RunAction::ConfirmDeckSelection);
+            return actions;
+        }
         // Interactive deck transform (NewLeaf / Wood Carvings Bird+Torus)
         // preempts the same way. `idx` is the position within the ELIGIBLE
         // subset for the front pending entry — the whole deck for the
@@ -1754,6 +1765,9 @@ impl RunManager {
         // (NewLeaf / Wood Carvings). Bead 6ynt.4.deck-add / GH #34.
         if let RunAction::TransformDeckCard { idx } = action {
             return self.do_transform_deck_card_at(idx);
+        }
+        if let RunAction::ConfirmDeckSelection = action {
+            return self.do_confirm_deck_selection();
         }
         // Phase-agnostic: drain a pending interactive deck enchant
         // (Wood Carvings Snake).
@@ -4461,6 +4475,7 @@ impl RunManager {
         let still_picking = self.run_state.pending_deck_removals != 0
             || self.run_state.pending_deck_upgrades != 0
             || !self.run_state.pending_deck_transforms.is_empty()
+            || !self.run_state.pending_claws_selections.is_empty()
             || !self.run_state.pending_deck_enchants.is_empty();
         if !still_picking {
             let opened_card_reward = self.drain_pending_rewards();
@@ -4533,6 +4548,18 @@ impl RunManager {
     /// falls back to "everything", keeping the legacy unfiltered order.
     #[must_use]
     pub fn transform_eligible_deck_indices(&self) -> Vec<usize> {
+        if let Some(pending) = self.run_state.pending_claws_selections.first() {
+            if pending.selected.len() >= pending.max_count {
+                return Vec::new();
+            }
+            return pending
+                .candidates
+                .iter()
+                .enumerate()
+                .filter(|(idx, _)| !pending.selected.contains(idx))
+                .map(|(_, (deck_idx, _))| *deck_idx)
+                .collect();
+        }
         let basic_only = self
             .run_state
             .pending_deck_transforms
@@ -4645,6 +4672,22 @@ impl RunManager {
     /// When a rolled entry's callback is unwired (raw-core tests) the pick
     /// drains without mutating the deck. Bead 6ynt.4.deck-add / GH #34.
     fn do_transform_deck_card_at(&mut self, idx: usize) -> ActionResult {
+        if !self.run_state.pending_claws_selections.is_empty() {
+            let offered = self.transform_eligible_deck_indices();
+            let Some(&deck_idx) = offered.get(idx) else {
+                return ActionResult::InvalidForPhase;
+            };
+            let front = &mut self.run_state.pending_claws_selections[0];
+            let Some(position) = front
+                .candidates
+                .iter()
+                .position(|(original_idx, _)| *original_idx == deck_idx)
+            else {
+                return ActionResult::InvalidForPhase;
+            };
+            front.selected.push(position);
+            return ActionResult::Advanced;
+        }
         if self.run_state.pending_deck_transforms.is_empty() {
             return ActionResult::InvalidForPhase;
         }
@@ -4693,6 +4736,27 @@ impl RunManager {
                 self.phase = Phase::RunOver;
             }
         }
+        self.settle_after_deck_pick();
+        ActionResult::Advanced
+    }
+
+    /// Apply all selected Claws transforms simultaneously in original
+    /// deck-index order. The zero-pick confirm leaves the deck unchanged.
+    fn do_confirm_deck_selection(&mut self) -> ActionResult {
+        if self.run_state.pending_claws_selections.is_empty() {
+            return ActionResult::InvalidForPhase;
+        }
+        let pending = self.run_state.pending_claws_selections.remove(0);
+        let (indices, replacements): (Vec<_>, Vec<_>) = pending
+            .candidates
+            .into_iter()
+            .enumerate()
+            .filter(|(idx, _)| pending.selected.contains(idx))
+            .map(|(_, candidate)| candidate)
+            .unzip();
+        let _ = self
+            .run_state
+            .transform_specific_cards(&indices, replacements);
         self.settle_after_deck_pick();
         ActionResult::Advanced
     }
