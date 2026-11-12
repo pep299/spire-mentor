@@ -86,6 +86,7 @@ _PHASE_SURFACE = {
     "treasure": "treasure",
 }
 
+
 def classify_surface(phase: str, actions: list[dict[str, Any]]) -> str | None:
     """Surface class for a decision, or None (combat/over).
 
