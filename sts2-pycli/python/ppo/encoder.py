@@ -245,6 +245,8 @@ class _Ctx:
         self.pending_enchantment: str = str(obs.get("pending_enchantment") or "")
         self.event_name: str = str(obs.get("event_name") or "")
         self.event_options: list[dict] = obs.get("event_options") or []
+        # Engine option IDs in action-index order, not fixed Rest/Smith slots.
+        self.rest_option_labels: list[str] = obs.get("rest_option_labels") or []
         self.card_reward_ids: list[str] = obs.get("card_reward_option_ids") or []
         # Scroll Boxes packs (GH #978): `card_reward_ids` holds each pack's
         # first card, this the whole pack. Only read under `card_bundles`.
@@ -363,6 +365,39 @@ def _at(lst: list, i: int, what: str):
     if 0 <= i < len(lst):
         return lst[i]
     return None
+
+
+_REST_OTHER_IDS = {
+    "DIG": 0,
+    "LIFT": 1,
+    "COOK": 2,
+    "CLONE": 3,
+    "HATCH": 4,
+    "KINDLE": 5,
+    "MEND": 6,
+}
+
+
+def _rest_option_token(option_id: str | None, idx: int) -> tuple[str, int]:
+    """Stable action identity in existing ONNX fixed-kind/option-index rows.
+
+    Heal and Smith preserve their historical token exactly, regardless of
+    shifted action index. Other option IDs occupy distinct rows under the
+    already-existing rest_other fixed-kind token (no embedding resize).
+    Missing labels in legacy recordings retain the old positional encoding.
+    """
+    if option_id is None:
+        if idx == 0:
+            return "rest_heal", 0
+        if idx == 1:
+            return "rest_smith", 1
+        return "rest_other", min(vocab.MAX_OPT_IDX - 1, max(0, idx))
+    identity = option_id.upper()
+    if identity in ("HEAL", "REST"):
+        return "rest_heal", 0
+    if identity == "SMITH":
+        return "rest_smith", 1
+    return "rest_other", _REST_OTHER_IDS.get(identity, vocab.MAX_OPT_IDX - 1)
 
 
 def _build_action_token(ctx: _Ctx, a: dict[str, Any]):
@@ -513,9 +548,10 @@ def _build_action_token(ctx: _Ctx, a: dict[str, Any]):
         return _fixed_tok("leave_shop")
     if kind == "rest_option":
         idx = int(a.get("idx", 0))
-        name = ("rest_heal", "rest_smith")[idx] if idx < 2 else "rest_other"
+        option_id = _at(ctx.rest_option_labels, idx, "rest option")
+        name, stable_idx = _rest_option_token(option_id, idx)
         tok = _fixed_tok(name)
-        tok[1][7] = min(vocab.MAX_OPT_IDX - 1, idx)
+        tok[1][7] = stable_idx
         return tok
     if kind == "event_choice":
         idx = int(a.get("idx", 0))

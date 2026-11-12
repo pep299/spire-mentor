@@ -481,6 +481,33 @@ fn fixed_tok(kind: &str, price: i64) -> (i64, Cat, ContF64) {
     (SEC_FIXED, cat, cont)
 }
 
+/// Stable rest action identity in existing ONNX embedding rows. The normal
+/// Heal/Smith tokens stay byte-identical; other option IDs share the existing
+/// rest_other fixed token but have distinct option-index rows. No vocab or
+/// tensor-width change. Old observations without IDs keep positional encoding.
+fn rest_option_token(option_id: Option<&str>, idx: i64) -> (&'static str, i64) {
+    let Some(id) = option_id else {
+        let kind = match idx {
+            0 => "rest_heal",
+            1 => "rest_smith",
+            _ => "rest_other",
+        };
+        return (kind, idx.clamp(0, vocab::MAX_OPT_IDX as i64 - 1));
+    };
+    match id.to_ascii_uppercase().as_str() {
+        "REST" | "HEAL" => ("rest_heal", 0),
+        "SMITH" => ("rest_smith", 1),
+        "DIG" => ("rest_other", 0),
+        "LIFT" => ("rest_other", 1),
+        "COOK" => ("rest_other", 2),
+        "CLONE" => ("rest_other", 3),
+        "HATCH" => ("rest_other", 4),
+        "KINDLE" => ("rest_other", 5),
+        "MEND" => ("rest_other", 6),
+        _ => ("rest_other", vocab::MAX_OPT_IDX as i64 - 1),
+    }
+}
+
 /// Featurization context: obs lookups shared by the action builders.
 /// Mirrors `encoder.py::_Ctx`.
 struct Ctx<'a> {
@@ -497,6 +524,7 @@ struct Ctx<'a> {
     pending_potion_swap: &'a str,
     event_name: &'a str,
     event_options: &'a [EventOptionObs],
+    rest_option_labels: &'a [String],
     card_reward_ids: &'a [String],
     /// Per-option upgrade flags aligned with `card_reward_ids`; short or
     /// empty means "not upgraded". Only read under
@@ -567,6 +595,7 @@ impl<'a> Ctx<'a> {
             pending_potion_swap: obs.pending_potion_swap.as_deref().unwrap_or(""),
             event_name: obs.event_name.as_deref().unwrap_or(""),
             event_options: obs.event_options.as_deref().unwrap_or(&[]),
+            rest_option_labels: obs.rest_option_labels.as_deref().unwrap_or(&[]),
             card_reward_ids: obs.card_reward_option_ids.as_deref().unwrap_or(&[]),
             card_reward_upgraded: obs.card_reward_option_upgraded.as_deref().unwrap_or(&[]),
             bundles: if features.card_bundles {
@@ -820,18 +849,12 @@ fn build_action_token(ctx: &Ctx<'_>, a: &ActionDesc) -> (i64, Cat, ContF64) {
         }
         ActionDesc::LeaveShop => fixed_tok("leave_shop", 0),
         ActionDesc::RestOption { idx } => {
-            // Mirrors `("rest_heal", "rest_smith")[idx] if idx < 2 else
-            // "rest_other"` for the only idx values valid decision data
-            // ever carries (0/1); negative-idx Python tuple-wraparound
-            // is not replicated (structurally unreachable — `idx` is an
-            // unsigned engine option index).
-            let name = match *idx {
-                0 => "rest_heal",
-                1 => "rest_smith",
-                _ => "rest_other",
-            };
+            // The action index locates a CURRENT engine offer, not an action
+            // kind. Miniature Tent removes the first offer after using it.
+            let option_id = at(ctx.rest_option_labels, *idx).map(String::as_str);
+            let (name, stable_idx) = rest_option_token(option_id, *idx);
             let (sec, mut cat, cont) = fixed_tok(name, 0);
-            cat[7] = (vocab::MAX_OPT_IDX as i64 - 1).min(*idx);
+            cat[7] = stable_idx;
             (sec, cat, cont)
         }
         ActionDesc::EventChoice { idx } => {
@@ -1672,5 +1695,82 @@ mod tests {
             assert_eq!(a[..CAT_CARD_TYPE], b[..CAT_CARD_TYPE]);
         }
         assert_eq!(on.obs_cat[0], off.obs_cat[0]);
+    }
+
+    // GH #24: use the option ID in the obs, not the current action position.
+    fn rest_obs(ids: Option<&[&str]>) -> PpoObs {
+        serde_json::from_value(serde_json::json!({
+            "phase": "rest_site",
+            "surface": "rest",
+            "seed": 0, "ascension": 10,
+            "deck": [], "relics": [], "potions": [],
+            "map": null, "map_coord": null,
+            "total_floor": 1, "act_index": 1, "act_floor": 1,
+            "hp": 40, "max_hp": 80, "gold": 0,
+            "deck_size": 0, "num_upgraded": 0, "num_relics": 0, "num_potions": 0,
+            "rest_option_labels": ids
+        }))
+        .expect("rest obs")
+    }
+
+    #[test]
+    fn rest_option_semantics_survive_tent_reindexing() {
+        let original = rest_obs(Some(&["HEAL", "SMITH"]));
+        let original_actions = [
+            ActionDesc::RestOption { idx: 0 },
+            ActionDesc::RestOption { idx: 1 },
+        ];
+        let original_feat = featurize_with(&original, &original_actions, Features::default());
+
+        let smith_only = rest_obs(Some(&["SMITH"]));
+        let smith_feat = featurize_with(
+            &smith_only,
+            &[ActionDesc::RestOption { idx: 0 }],
+            Features::default(),
+        );
+        assert_eq!(original_feat.act_cat[1], smith_feat.act_cat[0]);
+
+        let heal_only = rest_obs(Some(&["HEAL"]));
+        let heal_feat = featurize_with(
+            &heal_only,
+            &[ActionDesc::RestOption { idx: 0 }],
+            Features::default(),
+        );
+        assert_eq!(original_feat.act_cat[0], heal_feat.act_cat[0]);
+
+        // Old rows with the original two labels or no labels are compatible.
+        let legacy = rest_obs(Some(&["rest", "smith"]));
+        let legacy_feat = featurize_with(&legacy, &original_actions, Features::default());
+        let absent = rest_obs(None);
+        let absent_feat = featurize_with(&absent, &original_actions, Features::default());
+        assert_eq!(original_feat.act_cat, legacy_feat.act_cat);
+        assert_eq!(original_feat.act_cat, absent_feat.act_cat);
+    }
+
+    #[test]
+    fn rest_option_ids_get_distinct_existing_onnx_rows() {
+        for (id, kind, stable_idx) in [
+            ("HEAL", "rest_heal", 0),
+            ("SMITH", "rest_smith", 1),
+            ("DIG", "rest_other", 0),
+            ("LIFT", "rest_other", 1),
+            ("COOK", "rest_other", 2),
+            ("CLONE", "rest_other", 3),
+            ("HATCH", "rest_other", 4),
+            ("KINDLE", "rest_other", 5),
+            ("MEND", "rest_other", 6),
+            ("FUTURE_OPTION", "rest_other", 7),
+        ] {
+            let obs = rest_obs(Some(&[id]));
+            let feat = featurize_with(
+                &obs,
+                &[ActionDesc::RestOption { idx: 0 }],
+                Features::default(),
+            );
+            assert_eq!(feat.act_cat[0][6], vocab::fixed_index(kind) as i64);
+            assert_eq!(feat.act_cat[0][7], stable_idx);
+        }
+        // Every used ID is inside the existing 8 option-index rows.
+        assert_eq!(vocab::MAX_OPT_IDX, 8);
     }
 }

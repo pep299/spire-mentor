@@ -648,9 +648,6 @@ fn build_boss_relic(state: &Value) -> Option<WireDecision> {
     })
 }
 
-/// The rest-site option vocabulary the net was trained on.
-const REST_OPTION_LABELS: [&str; 2] = ["rest", "smith"];
-
 /// `rest_site` → the "rest" surface (`rest_option`).
 fn build_rest_site(state: &Value) -> Option<WireDecision> {
     let options = enabled_options(state);
@@ -658,7 +655,19 @@ fn build_rest_site(state: &Value) -> Option<WireDecision> {
         return None;
     }
     let mut obs = base_obs(state);
-    obs.rest_option_labels = Some(REST_OPTION_LABELS.iter().map(|&x| x.to_owned()).collect());
+    // Use the identity on each visible bridge option, not a fixed Rest/Smith
+    // assumption. An absent ID falls back to its display label, if present.
+    obs.rest_option_labels = Some(
+        options
+            .iter()
+            .map(|o| {
+                opt_s(o, "option_id")
+                    .or_else(|| opt_s(o, "id"))
+                    .or_else(|| opt_s(o, "label"))
+                    .unwrap_or_default()
+            })
+            .collect(),
+    );
     Some(WireDecision {
         obs,
         actions: (0..options.len())
@@ -1827,11 +1836,7 @@ mod tests {
         let d = build_decision(&s, "rest_site").expect("decision");
         assert_eq!(d.labels, ["Rest"]);
         assert_eq!(d.actions, [ActionDesc::RestOption { idx: 0 }]);
-        // The trained label vocabulary is fixed, not derived from the options.
-        assert_eq!(
-            d.obs.rest_option_labels.as_deref(),
-            Some(&["rest".to_owned(), "smith".to_owned()][..])
-        );
+        assert_eq!(d.obs.rest_option_labels, Some(vec!["Rest".to_owned()]));
     }
 
     #[test]
@@ -1891,5 +1896,27 @@ mod tests {
         // is the field the features come from.
         assert_eq!(map.current_coord, None);
         assert_eq!(d.obs.map_coord, Some((2, 2)));
+    }
+
+    #[test]
+    fn bridge_rest_options_use_ids_after_disabled_options_are_filtered() {
+        let s = json!({
+            "type": "rest_site", "floor": 5, "act": 1,
+            "run_state": run_state(),
+            "options": [
+                {"index": 0, "id": "HEAL", "label": "Rest", "enabled": false},
+                {"index": 1, "id": "SMITH", "label": "Smith", "enabled": true},
+                {"index": 2, "id": "DIG", "label": "Dig", "enabled": true}
+            ]
+        });
+        let d = build_decision(&s, "rest_site").expect("decision");
+        assert_eq!(
+            d.obs.rest_option_labels,
+            Some(vec!["SMITH".to_owned(), "DIG".to_owned()])
+        );
+        assert_eq!(d.actions.len(), 2);
+        assert_eq!(d.actions[0], ActionDesc::RestOption { idx: 0 });
+        assert_eq!(d.actions[1], ActionDesc::RestOption { idx: 1 });
+        assert_eq!(d.responses, vec![choose(1), choose(2)]);
     }
 }
