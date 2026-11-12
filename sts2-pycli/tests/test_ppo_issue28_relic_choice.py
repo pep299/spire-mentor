@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from ppo import encoder, vocab
 from ppo.env import assert_encodable, classify_surface
 

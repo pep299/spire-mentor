@@ -15203,7 +15203,7 @@ mod issue28_relic_selection_tests {
                 rm.get_available_actions().last(),
                 Some(&RunAction::ConfirmDeckSelection)
             );
-            let mut replay = rm.clone();
+            let mut replay = manager_for(RelicId::Claws, &cards);
             for _ in 0..picks {
                 let action = RunAction::TransformDeckCard { idx: 0 };
                 assert_eq!(rm.take_action(action), ActionResult::Advanced);
