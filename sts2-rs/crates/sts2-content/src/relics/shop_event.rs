@@ -3073,7 +3073,7 @@ fn enchant_card_type_restriction(
         // Attack-only (Sharp/Momentum/… group in `can_enchant_card`).
         EnchantmentId::Sharp | EnchantmentId::Momentum | EnchantmentId::Instinct => {
             (Some(CardType::Attack), None)
-        },
+        }
         // Skill-only.
         EnchantmentId::Imbued => (Some(CardType::Skill), None),
         // Attack OR Skill — RoyalStamp's RoyallyApproved.
