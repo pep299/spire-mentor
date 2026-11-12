@@ -478,7 +478,11 @@ def _build_action_token(ctx: _Ctx, a: dict[str, Any]):
         _stamp_enchant(ctx, cat, cont, ctx.deck_ench, deck_i)
         return sec, cat, cont, aux
     if kind == "transform_deck_card":
-        deck_i = _at(ctx.transform_idxs, int(a.get("idx", 0)), "transform")
+        # Claws offers idx == candidate count to confirm 0..=6 picks.
+        idx = int(a.get("idx", 0))
+        if idx == len(ctx.transform_idxs):
+            return _fixed_tok("skip_card")
+        deck_i = _at(ctx.transform_idxs, idx, "transform")
         ent = _at(ctx.deck, int(deck_i), "deck") if deck_i is not None else None
         sec, cat, cont, aux = _card_tok(
             ctx, ent[0] if ent else None, bool(ent[1]) if ent else False, op="transform"

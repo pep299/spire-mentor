@@ -1756,6 +1756,11 @@ pub struct RunState {
     /// (remove original, append replacement at the tail).
     pub pending_deck_transforms: Vec<PendingDeckTransform>,
 
+    /// Claws's 0..=6 selectable transformations. Selected ORIGINAL deck
+    /// positions are held until confirmation, so no pick can reselect a
+    /// newly created Maul. None means no Claws selection is pending.
+    pub pending_claws_indices: Option<Vec<usize>>,
+
     /// Queue of interactive deck-enchant picks (Wood Carvings' Snake →
     /// Slither), oldest first; gated on
     /// [`Self::interactive_card_transform`] like the transform queue (the
@@ -2178,6 +2183,7 @@ impl Default for RunState {
             pending_deck_upgrades: 0,
             interactive_card_transform: false,
             pending_deck_transforms: Vec::new(),
+            pending_claws_indices: None,
             pending_deck_enchants: Vec::new(),
             interactive_potion_swap: false,
             pending_potion_swaps: Vec::new(),
@@ -2986,6 +2992,7 @@ impl RunState {
         self.pending_deck_removals != 0
             || self.pending_deck_upgrades != 0
             || !self.pending_deck_transforms.is_empty()
+            || self.pending_claws_indices.is_some()
             || !self.pending_deck_enchants.is_empty()
             || !self.pending_card_selects.is_empty()
             || !self.pending_rewards.is_empty()

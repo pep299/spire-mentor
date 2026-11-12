@@ -748,6 +748,11 @@ fn build_action_token(ctx: &Ctx<'_>, a: &ActionDesc) -> (i64, Cat, ContF64) {
             (sec, cat, cont)
         }
         ActionDesc::TransformDeckCard { idx } => {
+            // Claws's up-to-six selector uses the extra position to
+            // confirm. Reuse the existing skip-card token / ONNX shape.
+            if *idx == ctx.transform_idxs.len() as i64 {
+                return fixed_tok("skip_card", 0);
+            }
             let di = at(ctx.transform_idxs, *idx).copied();
             let ent = di.and_then(|di| at(ctx.deck, di));
             let (sec, mut cat, mut cont) = match ent {

@@ -3071,7 +3071,9 @@ fn enchant_card_type_restriction(
     use sts2_core::cards::{CardType, EnchantmentId};
     match ench {
         // Attack-only (Sharp/Momentum/… group in `can_enchant_card`).
-        EnchantmentId::Sharp | EnchantmentId::Momentum => (Some(CardType::Attack), None),
+        EnchantmentId::Sharp | EnchantmentId::Momentum | EnchantmentId::Instinct => {
+            (Some(CardType::Attack), None)
+        },
         // Skill-only.
         EnchantmentId::Imbued => (Some(CardType::Skill), None),
         // Attack OR Skill — RoyalStamp's RoyallyApproved.
@@ -4165,6 +4167,9 @@ fn listener_paels_growth(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::PaelsGrowth) {
         return EffectResult::NotImplemented;
     }
+    if try_queue_interactive_enchant(rs, sts2_core::cards::EnchantmentId::Clone, 4, 1, false) {
+        return EffectResult::Resolved;
+    }
     let _ = enchant_eligible_deck_cards(rs, sts2_core::cards::EnchantmentId::Clone, 4, 1);
     EffectResult::Resolved
 }
@@ -4319,6 +4324,15 @@ fn listener_ninja_scroll(state: &mut CombatState, side: Side) -> EffectResult {
 fn listener_tri_boomerang(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::TriBoomerang) {
         return EffectResult::NotImplemented;
+    }
+    if try_queue_interactive_enchant(
+        rs,
+        sts2_core::cards::EnchantmentId::Instinct,
+        1,
+        TRI_BOOMERANG_CARDS,
+        false,
+    ) {
+        return EffectResult::Resolved;
     }
     let _ = enchant_eligible_deck_cards(
         rs,
@@ -4668,16 +4682,18 @@ fn listener_archaic_tooth(rs: &mut RunState) -> EffectResult {
 /// follows `CardCmd.Transform` (`CardCmd.cs:383-436`): originals leave the
 /// deck and each Maul is appended through the add-to-deck hooks in original
 /// pile-index order, which [`RunState::transform_specific_cards`] does.
-fn listener_claws(rs: &mut RunState) -> EffectResult {
+/// Apply the original deck positions together, after the 0..=6 Claws
+/// selection is confirmed. Reuse this for the noninteractive fallback.
+pub(crate) fn apply_claws_selection(rs: &mut RunState, selected_indices: &[usize]) {
     use sts2_core::cards::CardId;
-    if rs.last_obtained_relic != Some(RelicId::Claws) {
-        return EffectResult::NotImplemented;
-    }
     let mut indices = Vec::with_capacity(CLAWS_CARDS);
     let mut mauls = Vec::with_capacity(CLAWS_CARDS);
     let version = rs.game_version;
     let maul_spec = crate::cards::spec_index::spec_for_card_id(CardId::Maul);
-    for (i, card) in rs.master_deck.iter().enumerate() {
+    for &i in selected_indices {
+        let Some(card) = rs.master_deck.get(i) else {
+            continue;
+        };
         if indices.len() >= CLAWS_CARDS {
             break;
         }
@@ -4708,6 +4724,29 @@ fn listener_claws(rs: &mut RunState) -> EffectResult {
         }
     }
     let _ = rs.transform_specific_cards(&indices, mauls);
+}
+
+fn listener_claws(rs: &mut RunState) -> EffectResult {
+    if rs.last_obtained_relic != Some(RelicId::Claws) {
+        return EffectResult::NotImplemented;
+    }
+    if rs.interactive_card_transform {
+        // No original is changed until the player explicitly confirms.
+        // The legal empty selection is represented by confirming at once.
+        rs.pending_claws_indices = Some(Vec::new());
+        return EffectResult::Resolved;
+    }
+    let indices: Vec<usize> = rs
+        .master_deck
+        .iter()
+        .enumerate()
+        .filter(|(_, card)| {
+            !card.is_quest() && crate::cards::spec_index::card_is_removable_instance(card)
+        })
+        .map(|(i, _)| i)
+        .take(CLAWS_CARDS)
+        .collect();
+    apply_claws_selection(rs, &indices);
     EffectResult::Resolved
 }
 

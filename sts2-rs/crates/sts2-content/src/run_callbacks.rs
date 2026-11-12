@@ -95,6 +95,7 @@ pub fn ironclad_content_callbacks() -> ContentCallbacks {
         // (item, RunState.Rng.Niche)` — as a spec-populated POD. Bead
         // 6ynt.4.deck-add / GH #34.
         roll_transform_replacement: Some(roll_transform_replacement),
+        apply_claws_transforms: Some(crate::relics::shop_event::apply_claws_selection),
         // Bead `sts2-rs-ck9z6` (GH #166): event→combat bridge. Build the
         // nested combat for an event fight (BattlewornDummy / TheLanternKey /
         // FakeMerchant) and resume the parent event after victory.

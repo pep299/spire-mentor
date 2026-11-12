@@ -534,6 +534,9 @@ pub struct ContentCallbacks {
             event_stream: Option<(&'static str, u32)>,
         ) -> Option<crate::cards::Card>,
     >,
+    /// Apply the selected original deck positions for Claws atomically on
+    /// confirmation. Content owns Maul construction and enchantment rules.
+    pub apply_claws_transforms: Option<fn(rs: &mut RunState, indices: &[usize])>,
     /// Build the [`CombatState`] for an event-nested combat
     /// ([`crate::events::EventCombatRequest`]). Mirrors C#
     /// `EventModel.EnterCombatWithoutExitingEvent` building a `CombatRoom`
@@ -624,6 +627,7 @@ impl core::fmt::Debug for ContentCallbacks {
                 "roll_transform_replacement",
                 &self.roll_transform_replacement.is_some(),
             )
+            .field("apply_claws_transforms", &self.apply_claws_transforms.is_some())
             .field("build_event_combat", &self.build_event_combat.is_some())
             .field(
                 "resume_event_after_combat",
@@ -1353,6 +1357,18 @@ impl RunManager {
         // space. Mandatory, no skip (`CardSelectorPrefs(
         // TransformSelectionPrompt, N)` → min==max==N).
         // Bead 6ynt.4.deck-add / GH #34.
+        if let Some(selected) = self.run_state.pending_claws_indices.as_ref() {
+            // idx == remaining candidate count confirms 0..=6 selections.
+            // Keep the originals unchanged until confirmation.
+            let remaining = if selected.len() < 6 {
+                self.transform_eligible_deck_indices().len()
+            } else {
+                0
+            };
+            return (0..=remaining)
+                .map(|idx| RunAction::TransformDeckCard { idx })
+                .collect();
+        }
         if !self.run_state.pending_deck_transforms.is_empty() {
             return (0..self.transform_eligible_deck_indices().len())
                 .map(|idx| RunAction::TransformDeckCard { idx })
@@ -4461,6 +4477,7 @@ impl RunManager {
         let still_picking = self.run_state.pending_deck_removals != 0
             || self.run_state.pending_deck_upgrades != 0
             || !self.run_state.pending_deck_transforms.is_empty()
+            || self.run_state.pending_claws_indices.is_some()
             || !self.run_state.pending_deck_enchants.is_empty();
         if !still_picking {
             let opened_card_reward = self.drain_pending_rewards();
@@ -4533,18 +4550,31 @@ impl RunManager {
     /// falls back to "everything", keeping the legacy unfiltered order.
     #[must_use]
     pub fn transform_eligible_deck_indices(&self) -> Vec<usize> {
-        let basic_only = self
+        if self
             .run_state
-            .pending_deck_transforms
-            .first()
-            .is_some_and(|t| t.basic_only);
+            .pending_claws_indices
+            .as_ref()
+            .is_some_and(|selected| selected.len() >= 6)
+        {
+            return Vec::new();
+        }
+        let basic_only = self.run_state.pending_claws_indices.is_none()
+            && self
+                .run_state
+                .pending_deck_transforms
+                .first()
+                .is_some_and(|t| t.basic_only);
+        let claws_selected = self.run_state.pending_claws_indices.as_deref();
         let rank = crate::lookup_card_rarity_rank();
         let removable = crate::lookup_card_removable();
         self.run_state
             .master_deck
             .iter()
             .enumerate()
-            .filter(|(_, c)| {
+            .filter(|(i, c)| {
+                if claws_selected.is_some_and(|selected| selected.contains(i)) {
+                    return false;
+                }
                 // CardSelectCmd.cs:488 (v0.111.0 :592): `c.Type != CardType.Quest`.
                 if c.is_quest() {
                     return false;
@@ -4645,6 +4675,37 @@ impl RunManager {
     /// When a rolled entry's callback is unwired (raw-core tests) the pick
     /// drains without mutating the deck. Bead 6ynt.4.deck-add / GH #34.
     fn do_transform_deck_card_at(&mut self, idx: usize) -> ActionResult {
+        if self.run_state.pending_claws_indices.is_some() {
+            let selected_len = self
+                .run_state
+                .pending_claws_indices
+                .as_ref()
+                .map_or(0, Vec::len);
+            let remaining = if selected_len >= 6 {
+                Vec::new()
+            } else {
+                self.transform_eligible_deck_indices()
+            };
+            if idx == remaining.len() {
+                let Some(apply) = self.callbacks.apply_claws_transforms else {
+                    return ActionResult::NotImplemented;
+                };
+                let selected = self.run_state.pending_claws_indices.take().unwrap_or_default();
+                apply(&mut self.run_state, &selected);
+                self.settle_after_deck_pick();
+                return ActionResult::Advanced;
+            }
+            if selected_len >= 6 {
+                return ActionResult::InvalidForPhase;
+            }
+            let Some(&deck_idx) = remaining.get(idx) else {
+                return ActionResult::InvalidForPhase;
+            };
+            if let Some(selected) = self.run_state.pending_claws_indices.as_mut() {
+                selected.push(deck_idx);
+            }
+            return ActionResult::Advanced;
+        }
         if self.run_state.pending_deck_transforms.is_empty() {
             return ActionResult::InvalidForPhase;
         }
