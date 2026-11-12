@@ -101,8 +101,14 @@ fn claws_six_targets_and_saved_actions_replay_identically() {
             .count(),
         6
     );
-    assert_eq!(first.run_state.master_deck[0].card_id, CardId::StrikeIronclad);
-    assert_eq!(first.run_state.master_deck[1].card_id, CardId::StrikeIronclad);
+    assert_eq!(
+        first.run_state.master_deck[0].card_id,
+        CardId::StrikeIronclad
+    );
+    assert_eq!(
+        first.run_state.master_deck[1].card_id,
+        CardId::StrikeIronclad
+    );
 }
 
 #[test]
@@ -138,16 +144,15 @@ fn tri_boomerang_offers_three_attack_picks_not_defends() {
             .count(),
         3
     );
-    assert_eq!(rm.run_state.master_deck[1].enchantment(EnchantmentId::Instinct), 0);
+    assert_eq!(
+        rm.run_state.master_deck[1].enchantment(EnchantmentId::Instinct),
+        0
+    );
 }
 
 #[test]
 fn tri_boomerang_auto_resolves_when_only_two_attacks_exist() {
-    let mut rm = run(&[
-        CardId::StrikeIronclad,
-        CardId::DefendIronclad,
-        CardId::Bash,
-    ]);
+    let mut rm = run(&[CardId::StrikeIronclad, CardId::DefendIronclad, CardId::Bash]);
     rm.run_state.obtain_relic(RelicId::TriBoomerang);
     assert!(rm.run_state.pending_deck_enchants.is_empty());
     assert_eq!(
@@ -162,18 +167,23 @@ fn tri_boomerang_auto_resolves_when_only_two_attacks_exist() {
 
 #[test]
 fn paels_growth_enchants_the_selected_card_with_clone() {
-    let mut rm = run(&[
-        CardId::StrikeIronclad,
-        CardId::Bash,
-        CardId::DefendIronclad,
-    ]);
+    let mut rm = run(&[CardId::StrikeIronclad, CardId::Bash, CardId::DefendIronclad]);
     rm.run_state.obtain_relic(RelicId::PaelsGrowth);
     assert_eq!(rm.run_state.pending_deck_enchants.len(), 1);
     assert_eq!(
         rm.take_action(RunAction::EnchantDeckCard { idx: 2 }),
         ActionResult::Advanced
     );
-    assert_eq!(rm.run_state.master_deck[2].enchantment(EnchantmentId::Clone), 4);
-    assert_eq!(rm.run_state.master_deck[0].enchantment(EnchantmentId::Clone), 0);
-    assert_eq!(rm.run_state.master_deck[1].enchantment(EnchantmentId::Clone), 0);
+    assert_eq!(
+        rm.run_state.master_deck[2].enchantment(EnchantmentId::Clone),
+        4
+    );
+    assert_eq!(
+        rm.run_state.master_deck[0].enchantment(EnchantmentId::Clone),
+        0
+    );
+    assert_eq!(
+        rm.run_state.master_deck[1].enchantment(EnchantmentId::Clone),
+        0
+    );
 }

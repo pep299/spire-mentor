@@ -627,7 +627,10 @@ impl core::fmt::Debug for ContentCallbacks {
                 "roll_transform_replacement",
                 &self.roll_transform_replacement.is_some(),
             )
-            .field("apply_claws_transforms", &self.apply_claws_transforms.is_some())
+            .field(
+                "apply_claws_transforms",
+                &self.apply_claws_transforms.is_some(),
+            )
             .field("build_event_combat", &self.build_event_combat.is_some())
             .field(
                 "resume_event_after_combat",
@@ -4690,7 +4693,11 @@ impl RunManager {
                 let Some(apply) = self.callbacks.apply_claws_transforms else {
                     return ActionResult::NotImplemented;
                 };
-                let selected = self.run_state.pending_claws_indices.take().unwrap_or_default();
+                let selected = self
+                    .run_state
+                    .pending_claws_indices
+                    .take()
+                    .unwrap_or_default();
                 apply(&mut self.run_state, &selected);
                 self.settle_after_deck_pick();
                 return ActionResult::Advanced;
