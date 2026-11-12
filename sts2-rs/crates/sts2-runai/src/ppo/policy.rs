@@ -1110,10 +1110,7 @@ impl RunNudge {
             return argmax;
         }
         let Some(smith_idx) = options.iter().position(|opt| {
-            matches!(
-                opt,
-                sts2_core::runstate::RestSiteOption::Smith { enabled: true }
-            )
+            matches!(opt, sts2_core::runstate::RestSiteOption::Smith { enabled: true })
         }) else {
             return argmax;
         };
@@ -1554,10 +1551,7 @@ mod run_nudge_tests {
         rm.enter_rest_site();
 
         let before = build_obs(&rm, "rest_site", Some("rest"));
-        assert_eq!(
-            before.rest_option_labels,
-            Some(vec!["HEAL".to_owned(), "SMITH".to_owned()])
-        );
+        assert_eq!(before.rest_option_labels, Some(vec!["HEAL".to_owned(), "SMITH".to_owned()]));
         rm.take_action(RunAction::RestOption { idx: 0 });
         assert_eq!(rm.phase(), Phase::RestSite);
         let after = build_obs(&rm, "rest_site", Some("rest"));
@@ -1566,9 +1560,6 @@ mod run_nudge_tests {
         // idx=0 now means Smith; the HP-based nudge must not treat it as Heal.
         let actions = rm.get_available_actions();
         let nudge = RunNudge::parse(Some("smith_hp=0.5"));
-        assert_eq!(
-            nudge.smith_override(&rm, Phase::RestSite, &actions, 0),
-            0
-        );
+        assert_eq!(nudge.smith_override(&rm, Phase::RestSite, &actions, 0), 0);
     }
 }
