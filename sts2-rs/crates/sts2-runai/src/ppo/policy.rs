@@ -1103,14 +1103,20 @@ impl RunNudge {
         let RunAction::RestOption { idx } = actions[argmax] else {
             return argmax;
         };
-        if !matches!(options.get(idx), Some(sts2_core::runstate::RestSiteOption::Rest)) {
+        if !matches!(
+            options.get(idx),
+            Some(sts2_core::runstate::RestSiteOption::Rest)
+        ) {
             return argmax;
         }
         if f64::from(rs.current_hp) < f64::from(threshold) * f64::from(rs.max_hp) {
             return argmax;
         }
         let Some(smith_idx) = options.iter().position(|opt| {
-            matches!(opt, sts2_core::runstate::RestSiteOption::Smith { enabled: true })
+            matches!(
+                opt,
+                sts2_core::runstate::RestSiteOption::Smith { enabled: true }
+            )
         }) else {
             return argmax;
         };
@@ -1551,7 +1557,10 @@ mod run_nudge_tests {
         rm.enter_rest_site();
 
         let before = build_obs(&rm, "rest_site", Some("rest"));
-        assert_eq!(before.rest_option_labels, Some(vec!["HEAL".to_owned(), "SMITH".to_owned()]));
+        assert_eq!(
+            before.rest_option_labels,
+            Some(vec!["HEAL".to_owned(), "SMITH".to_owned()])
+        );
         rm.take_action(RunAction::RestOption { idx: 0 });
         assert_eq!(rm.phase(), Phase::RestSite);
         let after = build_obs(&rm, "rest_site", Some("rest"));
