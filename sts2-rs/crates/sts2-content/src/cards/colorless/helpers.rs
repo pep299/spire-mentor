@@ -132,22 +132,15 @@ pub(crate) fn move_card_from_draw_to_hand_by_type(
     state: &mut CombatState,
     kind: sts2_core::cards::CardType,
 ) {
-    let mut candidates: SmallVec<[sts2_core::CardUid; 16]> = state
-        .player
-        .draw
-        .iter()
-        .copied()
-        .filter(|uid| {
-            // C# filters `c.Type == kind`; the Quest cards are
-            // `CardType.Quest` (`Dowsing.cs:45`), which Rust models as
-            // Skills, so Secret Technique must not fetch them.
-            let card = &state.cards[uid.0.get() as usize - 1];
-            card.card_type == kind && !card.is_quest()
-        })
-        .collect();
-    // Mirror C# `FromCombatPile`'s `OrderBy(Rarity).ThenBy(Id)` Draw-pile
-    // sort (stable, no `upgraded` key). Harmless for the 0/1-candidate arms.
-    candidates.sort_by(|a, b| {
+    // C# filters `c.Type == kind`; the Quest cards are `CardType.Quest`
+    // (`Dowsing.cs:45`), so Secret Technique never fetches them.
+    move_card_from_draw_to_hand_where(state, |c| c.card_type == kind);
+}
+
+/// C# `FromCombatPile`'s `OrderBy(Rarity).ThenBy(x)` Draw-pile grid sort
+/// (stable, no `upgraded` key).
+pub(crate) fn sort_draw_select(state: &CombatState, uids: &mut [sts2_core::CardUid]) {
+    uids.sort_by(|a, b| {
         let ca = &state.cards[a.0.get() as usize - 1];
         let cb = &state.cards[b.0.get() as usize - 1];
         crate::cards::spec_index::card_rarity_rank_csharp_in(ca.card_id, state.game_version)
@@ -156,10 +149,26 @@ pub(crate) fn move_card_from_draw_to_hand_by_type(
                 state.game_version,
             ))
             .then_with(|| {
-                sts2_core::cards::card_model_entry(ca.card_id)
-                    .cmp(sts2_core::cards::card_model_entry(cb.card_id))
+                sts2_core::cards::draw_select_tiebreak(&state.cards, *a, *b, state.game_version)
             })
     });
+}
+
+/// [`move_card_from_draw_to_hand_by_type`] with an arbitrary `filter`
+/// (C# `FromCombatPile(Draw, filter)` then `CardPileCmd.Add(.., Hand)`):
+/// v0.113.0 `LockedIn` fetches a `CardTag.Shoot` card.
+pub(crate) fn move_card_from_draw_to_hand_where(
+    state: &mut CombatState,
+    filter: impl Fn(&sts2_core::cards::Card) -> bool,
+) {
+    let mut candidates: SmallVec<[sts2_core::CardUid; 16]> = state
+        .player
+        .draw
+        .iter()
+        .copied()
+        .filter(|uid| filter(&state.cards[uid.0.get() as usize - 1]))
+        .collect();
+    sort_draw_select(state, &mut candidates);
     match candidates.as_slice() {
         [] => {}
         [uid] => {
@@ -170,6 +179,9 @@ pub(crate) fn move_card_from_draw_to_hand_by_type(
             // which an auto-play from the draw pile (Mayhem) can reach.
             if let Some(pos) = state.player.draw.iter().position(|u| u == uid) {
                 let card = state.player.draw.remove(pos);
+                // A pinned draw card leaves no stale pin behind, as the
+                // multi-candidate select resolution does (#1105).
+                sts2_core::cards::unpin(&mut state.player, card);
                 let _ = sts2_core::cards::try_add_to_hand(&mut state.player, card);
             }
         }
@@ -426,7 +438,7 @@ pub(crate) fn create_character_ethereal_cards_into_arena(
     state
         .run_rng
         .combat_card_generation
-        .shuffle(shuffled.as_mut_slice());
+        .shuffle_for(state.game_version, shuffled.as_mut_slice());
     let chosen: SmallVec<[CardSpec; 4]> = shuffled.into_iter().take(count).collect();
     let mut uids: SmallVec<[CardUid; 4]> = SmallVec::with_capacity(chosen.len());
     for spec in chosen {
@@ -482,7 +494,8 @@ pub(crate) fn combat_generatable_pool(
     // (~1.1% of instructions on the 2026-07-03 realistic-deck callgrind).
     // Memoize per character; the borrow is `'static`, so callers filter /
     // copy from the cached slice without reconstruction.
-    static POOLS: [OnceLock<SmallVec<[CardSpec; 96]>>; 5] = [
+    static POOLS: [OnceLock<SmallVec<[CardSpec; 96]>>; 6] = [
+        OnceLock::new(),
         OnceLock::new(),
         OnceLock::new(),
         OnceLock::new(),
@@ -495,6 +508,7 @@ pub(crate) fn combat_generatable_pool(
         CharacterId::Defect => &POOLS[2],
         CharacterId::Necrobinder => &POOLS[3],
         CharacterId::Regent => &POOLS[4],
+        CharacterId::Fool => &POOLS[5],
     };
     slot.get_or_init(|| build_combat_generatable_pool(character))
 }
@@ -526,8 +540,23 @@ pub(crate) fn fight_colorless_ids(state: &CombatState) -> SmallVec<[CardId; 72]>
             .map(|s| s.id)
             .collect()
     } else {
-        SmallVec::from_slice(colorless_combat_generatable_card_ids())
+        colorless_combat_generatable_ids_in(state.game_version)
     }
+}
+
+/// [`colorless_combat_generatable_card_ids`] in game build `version`:
+/// v0.113.0 adds MyShinies right after MindBlast (`ColorlessCardPool.cs:62-63`;
+/// it can be generated in combat and is not multiplayer-only).
+pub(crate) fn colorless_combat_generatable_ids_in(
+    version: sts2_core::GameVersion,
+) -> SmallVec<[CardId; 72]> {
+    let mut ids = SmallVec::from_slice(colorless_combat_generatable_card_ids());
+    if version >= sts2_core::GameVersion::V0_113_0 {
+        if let Some(at) = ids.iter().position(|&id| id == CardId::MindBlast) {
+            ids.insert(at + 1, CardId::MyShinies);
+        }
+    }
+    ids
 }
 
 /// [`combat_generatable_pool`] in game build `version` (GH #793): the
@@ -586,7 +615,8 @@ pub(crate) fn combat_generatable_pool_in(
         }
         return leaked;
     }
-    static POOLS: [OnceLock<Vec<CardSpec>>; 5] = [
+    static POOLS: [OnceLock<Vec<CardSpec>>; 6] = [
+        OnceLock::new(),
         OnceLock::new(),
         OnceLock::new(),
         OnceLock::new(),
@@ -599,6 +629,7 @@ pub(crate) fn combat_generatable_pool_in(
         CharacterId::Defect => &POOLS[2],
         CharacterId::Necrobinder => &POOLS[3],
         CharacterId::Regent => &POOLS[4],
+        CharacterId::Fool => &POOLS[5],
     };
     slot.get_or_init(|| build(character, version))
 }
@@ -737,6 +768,20 @@ fn build_combat_generatable_pool(
                 )
             })
             .collect(),
+        // The Fool (v0.113.0): `FoolCardPool` filtered by C# `FilterForCombat`
+        // (drop Basic / Ancient / Event and `CanBeGeneratedInCombat => false`);
+        // the MultiplayerOnly cards fall to the post-filter below.
+        CharacterId::Fool => crate::cards::fool_pool::FOOL_SPECS
+            .iter()
+            .map(|f| f())
+            .filter(|s| {
+                use crate::cards::types::CardRarity;
+                !matches!(
+                    s.rarity,
+                    CardRarity::Basic | CardRarity::Ancient | CardRarity::Event
+                ) && card_can_be_generated_in_combat(s.id)
+            })
+            .collect(),
     };
     // C# `CardFactory.FilterForPlayerCount` (CardFactory.cs:24-31): in
     // singleplayer (`Players.Count == 1`, the only mode here) drop every
@@ -862,19 +907,23 @@ pub fn transform_card_to_random_for_hook(
     // `COLORLESS_SPECS`, so it fell through to the player's character pool
     // (Entropy on a Silent hand TheBall rolled KNIFE_TRAP where C# rolls the
     // colorless PREP_TIME). The id exists in no v0.107.1 state.
+    // v0.113.0 adds MyShinies (Rare) to the same pool, and its spec also
+    // lives outside `COLORLESS_SPECS`. Reading the build's
+    // `ColorlessCardPool.GenerateAllCards()` list covers every such card.
     let is_colorless_original = crate::cards::spec_index::COLORLESS_SPECS
         .iter()
         .any(|f| f().id == original_id)
-        || (state.game_version >= sts2_core::GameVersion::V0_111_0
-            && original_id == CardId::TheBall);
+        || crate::cards::pool_order::generate_all_cards(
+            crate::cards::pool_order::Pool::Colorless,
+            state.game_version,
+        )
+        .contains(&original_id);
     // Quest / Event / Ancient / **Token** originals are FORCED onto the
     // ColorlessCardPool by C#
     // (`(Type != Quest && Rarity not in {Event,Ancient,Token}) ? Pool :
-    // ColorlessCardPool`, CardFactory.cs:173). `CardType.Quest` has no Rust
-    // variant (Quest cards are modelled as Unplayable Skills), but every
-    // Quest-TYPE card (ByrdonisEgg, LanternKey, SpoilsMap, Dowsing) is also
-    // `CardRarity.Quest` and no other card is, so the rarity stands in for the
-    // type: Entropy on SPOILS_MAP rolls the colorless pool (random-loadout
+    // ColorlessCardPool`, CardFactory.cs:173). Every Quest-TYPE card
+    // (ByrdonisEgg, LanternKey, SpoilsMap, Dowsing) is also `CardRarity.Quest`
+    // and no other card is, so the rarity stands in for the type: Entropy on SPOILS_MAP rolls the colorless pool (random-loadout
     // v0.107.1 seed 1198: C# FINESSE, not the character pool's DARK_EMBRACE).
     // The Token arm is the
     // fix for bead `sts2-rs-p52dg`: the per-combat token cards (GiantRock,
@@ -1001,10 +1050,15 @@ pub fn transform_card_to_random_for_hook(
     if pool.is_empty() {
         return None;
     }
-    let idx = state
-        .run_rng
-        .combat_card_selection
-        .next_int_exclusive(0, pool.len() as i32) as usize;
+    // The only caller is EntropyPower: v0.113.0 rolls on
+    // `CombatCardGeneration` (decomp EntropyPower.cs:31), before that on
+    // `CombatCardSelection`.
+    let rng = if state.game_version >= sts2_core::GameVersion::V0_113_0 {
+        &mut state.run_rng.combat_card_generation
+    } else {
+        &mut state.run_rng.combat_card_selection
+    };
+    let idx = rng.next_int_exclusive(0, pool.len() as i32) as usize;
     let replacement = card_from_spec(&pool[idx]);
     sts2_core::card_effects::transform_card_in_place(state, card_uid, replacement)
 }
@@ -1060,7 +1114,7 @@ pub(crate) fn create_filtered_character_cards_into_arena(
         state
             .run_rng
             .combat_card_generation
-            .shuffle(shuffled.as_mut_slice());
+            .shuffle_for(state.game_version, shuffled.as_mut_slice());
         shuffled.into_iter().take(count).collect()
     } else {
         (0..count)
@@ -1119,7 +1173,7 @@ pub(crate) fn distinct_character_card_ids(
     state
         .run_rng
         .combat_card_generation
-        .shuffle(pool.as_mut_slice());
+        .shuffle_for(state.game_version, pool.as_mut_slice());
     pool.into_iter().take(count).collect()
 }
 
@@ -1144,6 +1198,9 @@ pub(crate) fn card_can_be_generated_in_combat(id: CardId) -> bool {
             | CardId::HandOfGreed
             | CardId::HiddenGem
             | CardId::MindRot
+            // v0.113.0 Fool: MythicForm and the Sadness status.
+            | CardId::MythicFormCard
+            | CardId::Sadness
             | CardId::NeowsFury
             | CardId::NotYet
             | CardId::RoyaltiesCard
@@ -1242,13 +1299,26 @@ pub(crate) fn distinct_cross_character_attack_ids(
             }
         }
     }
+    // v0.113.0: `ModelDb.AllCharacters` gains The Fool LAST, and with every
+    // character unlocked its pool joins `CharacterCardPools`.
+    if !coop
+        && own != Some(CharacterId::Fool)
+        && state.game_version >= sts2_core::GameVersion::V0_113_0
+    {
+        for f in crate::cards::fool_pool::FOOL_SPECS {
+            let s = f();
+            if eligible(&s) && !crate::cards::spec_index::is_multiplayer_only(s.id) {
+                pool.push(s.id);
+            }
+        }
+    }
     if pool.is_empty() {
         return SmallVec::new();
     }
     state
         .run_rng
         .combat_card_generation
-        .shuffle(pool.as_mut_slice());
+        .shuffle_for(state.game_version, pool.as_mut_slice());
     pool.into_iter().take(count).collect()
 }
 
@@ -1271,7 +1341,7 @@ pub(crate) fn distinct_colorless_modifier_ids(
     state
         .run_rng
         .combat_card_generation
-        .shuffle(shuffled.as_mut_slice());
+        .shuffle_for(state.game_version, shuffled.as_mut_slice());
     shuffled.into_iter().take(count).collect()
 }
 
@@ -1326,7 +1396,7 @@ fn distinct_colorless_ids_except(
     state
         .run_rng
         .combat_card_generation
-        .shuffle(shuffled.as_mut_slice());
+        .shuffle_for(state.game_version, shuffled.as_mut_slice());
     shuffled.into_iter().take(count).collect()
 }
 
@@ -1661,6 +1731,7 @@ pub const fn is_colorless_card_id(id: CardId) -> bool {
             | CardId::MasterOfStrategy
             | CardId::Omnislice
             | CardId::MindBlast
+            | CardId::MyShinies
             | CardId::SecretTechnique
             | CardId::SecretWeapon
             | CardId::ThinkingAhead
@@ -1699,7 +1770,9 @@ pub const fn is_colorless_card_id(id: CardId) -> bool {
 /// cards override `VisualCardPool` with the character pool whose color they
 /// wear, so they do not count: Caltrops, Distraction, Outmaneuver (Silent),
 /// Clash, DualWield, Entrench (Ironclad), HelloWorld, Rebound, RipAndTear,
-/// Stack (Defect). Both the override list and the pools are the same in
+/// Stack (Defect) — `scripts/gen_card_pool_order.py` reads the overrides
+/// from the decomp ([`crate::cards::pool_order::has_character_visual_pool`]).
+/// Both the override list and the pools are the same in
 /// v0.107.1 and v0.111.0, apart from the two v0.111.0-only cards
 /// [`crate::cards::pool_order::in_colorless_pool`] describes.
 ///
@@ -1718,21 +1791,9 @@ pub const fn is_colorless_card_id(id: CardId) -> bool {
 #[must_use]
 pub fn is_visual_pool_colorless(id: CardId) -> bool {
     // `public override CardPoolModel VisualCardPool => ModelDb.CardPool<..>()`
-    // on these ten Event cards (e.g. `Caltrops.cs:17`, `HelloWorld.cs:12`).
-    let character_colored = matches!(
-        id,
-        CardId::Caltrops
-            | CardId::Clash
-            | CardId::Distraction
-            | CardId::DualWield
-            | CardId::Entrench
-            | CardId::HelloWorldCard
-            | CardId::Outmaneuver
-            | CardId::Rebound
-            | CardId::RipAndTear
-            | CardId::Stack
-    );
-    !character_colored && crate::cards::pool_order::in_colorless_pool(id)
+    // on these ten Event cards, generated from the decomp (#1181).
+    !crate::cards::pool_order::has_character_visual_pool(id)
+        && crate::cards::pool_order::in_colorless_pool(id)
 }
 
 /// Card ids in the "colorless modifier" generation pool. Returned in a
@@ -1910,7 +1971,7 @@ pub fn create_colorless_modifier_cards(
         state
             .run_rng
             .combat_card_generation
-            .shuffle(shuffled.as_mut_slice());
+            .shuffle_for(state.game_version, shuffled.as_mut_slice());
         shuffled.into_iter().take(take).collect()
     } else {
         (0..count)

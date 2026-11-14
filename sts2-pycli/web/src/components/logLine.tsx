@@ -57,6 +57,26 @@ export function LogLine({ row }: { row: CombatLogRow }) {
       return <>{actor} channeled {noun}.</>;
     case "orb_evoked":
       return <>{actor} evoked {noun}.</>;
+    // A card the engine played on its own (Stampede, Havoc, Mayhem, …). The
+    // step label only ever names the card the player chose, so this line is
+    // where the auto-play shows (GH #1155). `source` is what pulled it.
+    case "card_auto_played":
+      return (
+        <>
+          {actor} auto-played {noun}
+          {row.source ? <>{" via "}<span style={{ color: "var(--gold)" }}>{row.source}</span></> : null}.
+        </>
+      );
+    // A card a play moved: Brand's exhaust pick, Survivor's discard, an added
+    // Shiv (GH #1015). The step label names only the card played.
+    case "card_exhausted":
+    case "card_discarded":
+    case "card_generated":
+      return row.actor && row.verb && row.noun ? (
+        <>{actor} {row.verb} {noun}.</>
+      ) : (
+        <>{row.text}</>
+      );
     // Every other kind (including anything a newer engine adds) renders the
     // server's own sentence rather than being dropped.
     default:

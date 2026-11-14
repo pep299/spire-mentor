@@ -63,6 +63,7 @@ pub fn character_str(c: sts2_core::potions::CharacterId) -> &'static str {
         CharacterId::Defect => "Defect",
         CharacterId::Regent => "Regent",
         CharacterId::Necrobinder => "Necrobinder",
+        CharacterId::Fool => "Fool",
     }
 }
 
@@ -128,6 +129,42 @@ pub fn resolve_choice_selection(
     ensure_play_log_flag(rm, record_card_plays, record_combat_log);
     let sel: smallvec::SmallVec<[u8; 4]> = selection.iter().copied().collect();
     result_str(&rm.resolve_combat_choice_selection(sel))
+}
+
+/// A recorded native action (`__agent_native__` node args) on the run: a
+/// `RunAction` dict, or the multi-pick `combat_resolve_choice_selection` the
+/// e2e brain records (no `RunAction` form). Returns the result string.
+///
+/// # Errors
+///
+/// A dict neither parser accepts.
+pub fn take_native_value(
+    rm: &mut RunManager,
+    action: &Value,
+    record_card_plays: bool,
+    record_combat_log: bool,
+) -> Result<&'static str, String> {
+    if action.get("action").and_then(Value::as_str) == Some("combat_resolve_choice_selection") {
+        let sel = action
+            .get("selection")
+            .and_then(Value::as_array)
+            .ok_or("combat_resolve_choice_selection without a selection")?
+            .iter()
+            .map(|x| {
+                x.as_u64()
+                    .and_then(|i| u8::try_from(i).ok())
+                    .ok_or_else(|| format!("bad selection entry {x}"))
+            })
+            .collect::<Result<Vec<u8>, String>>()?;
+        return Ok(resolve_choice_selection(
+            rm,
+            &sel,
+            record_card_plays,
+            record_combat_log,
+        ));
+    }
+    let ra = action_from_value(action)?;
+    Ok(take_action(rm, ra, record_card_plays, record_combat_log))
 }
 
 /// `PyRunManager::ensure_play_log_flag`: the binding re-arms the two display

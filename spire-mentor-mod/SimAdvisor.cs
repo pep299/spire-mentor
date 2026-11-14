@@ -40,6 +40,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Text.Json;
 using System.Threading;
 using Godot;
@@ -170,6 +171,47 @@ internal sealed class SimAdvisor
     /// </summary>
     private static int _advisorCoachCapability;
     public static int AdvisorCoachCapability => Volatile.Read(ref _advisorCoachCapability);
+
+    /// <summary>
+    /// The advisor's <c>capabilities.instinct</c> from its latest reply: the
+    /// characters + game builds its Instinct can play (PROTOCOL.md section 5,
+    /// v5.2). Empty until a reply arrives, whenever no advisor is connected,
+    /// and on an advisor without an Instinct net. Only decides whether the
+    /// brain switch is shown; the advisor itself decides per request who
+    /// answers.
+    /// </summary>
+    private static IReadOnlyList<InstinctTarget> _advisorInstinct = Array.Empty<InstinctTarget>();
+    public static IReadOnlyList<InstinctTarget> AdvisorInstinctCapability => Volatile.Read(ref _advisorInstinct);
+
+    /// <summary>
+    /// The advisor's <c>capabilities.potion_swap</c> from its latest reply
+    /// (v5.2); 0 until one arrives and whenever no advisor is connected. At
+    /// &gt;= 1 a potion reward that only a full belt blocks is asked as
+    /// <c>advice_for: "potion_swap"</c> (PotionSwapAdvice); at 0 the loot
+    /// screen is answered mod-side exactly as before.
+    /// </summary>
+    private static int _advisorPotionSwapCapability;
+    public static int AdvisorPotionSwapCapability => Volatile.Read(ref _advisorPotionSwapCapability);
+
+    /// <summary>The brain the player chose, in wire form ("search" /
+    /// "instinct"): sent as <c>brain</c> on every advice_request.</summary>
+    public static string CurrentBrain =>
+        AdvisorBrainRules.Effective(Volatile.Read(ref _brainOverride), SpireMentorModConfig.AdvisorBrain);
+
+    /// <summary>The brain an advice request asks for: <see cref="CurrentBrain"/>,
+    /// but Instinct only in a run it plays (AdvisorBrainRules.Requested). Every
+    /// request and the stale check use this. Main thread (reads the run).</summary>
+    public static string RequestedBrain =>
+        AdvisorBrainRules.Requested(CurrentBrain, AdvisorInstinctCapability.Count > 0, InstinctPlaysThisRun());
+
+    /// <summary>SpireMentor.conf's <c>advisor_brain</c> (SimConfig.AdvisorBrain):
+    /// overrides the persisted preference for this session, never saved over
+    /// it, and dropped the moment the player switches brain in game.</summary>
+    private static string? _brainOverride = SimConfig.Instance.AdvisorBrain;
+
+    /// <summary>The brain the in-flight request was stamped with: a reply to
+    /// it is dropped once the player has switched (AdvisorBrainRules.IsStale).</summary>
+    private string _inflightBrain = AdvisorBrainRules.Search;
 
     /// <summary>The human pressed End turn (PlayerCmd.EndTurn prefix, see
     /// <c>HumanEndTurnPatch</c>); reported once the enemy side actually
@@ -441,6 +483,9 @@ internal sealed class SimAdvisor
             {
                 SetAutoPlay(false);
                 DropInflight();
+                // The advisor goes with the mode: so does what it could play.
+                Volatile.Write(ref _advisorInstinct, Array.Empty<InstinctTarget>());
+                Volatile.Write(ref _advisorPotionSwapCapability, 0);
                 SimChoiceCapture.Reset();
                 ForgetShownAdvice();
                 HumanEndTurnPending = false;
@@ -815,6 +860,85 @@ internal sealed class SimAdvisor
     }
 
     // ------------------------------------------------------------------
+    // Advisor brain: Search / Instinct (AdvisorBrainRules)
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// The advisor's Instinct can play the run on screen: its
+    /// <c>capabilities.instinct</c> names this character and game build. What
+    /// shows the brain switch and lets a request ask for Instinct
+    /// (<see cref="RequestedBrain"/>). Main thread
+    /// (reads the run).
+    /// </summary>
+    public static bool InstinctPlaysThisRun()
+    {
+        try
+        {
+            IReadOnlyList<InstinctTarget> targets = AdvisorInstinctCapability;
+            if (targets.Count == 0)
+            {
+                return false;
+            }
+            RunState? runState = RunManager.Instance?.DebugOnlyGetState();
+            Player? me = runState == null ? null : LocalContext.GetMe(runState);
+            return AdvisorBrainRules.Eligible(targets, me?.Character?.Id.Entry, SimGameVersion.Wire);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>The brain switch (toolbar button, Shift+F8, the frame):
+    /// Search &lt;-&gt; Instinct.</summary>
+    public void ToggleBrain(string surface) => SetBrain(AdvisorBrainRules.Toggle(CurrentBrain), surface);
+
+    /// <summary>
+    /// Switch the brain the advice comes from, persist it, and re-ask for the
+    /// position on screen at once: the request in flight was asked of the
+    /// other brain, so it is cancelled (its late reply then fails the request
+    /// id check, and <see cref="AdvisorBrainRules.IsStale"/> backs that up)
+    /// and the HUD drops the old brain's advice instead of leaving it up
+    /// under the new name. Everything that reads the advice -- HUD, F6, F7,
+    /// Autobattle, the coach -- follows from there. Any thread.
+    /// </summary>
+    public void SetBrain(string brain, string surface)
+    {
+        string next = AdvisorBrainRules.Normalize(brain);
+        if (next == CurrentBrain)
+        {
+            return;
+        }
+        // An explicit switch in game outranks the conf's session override.
+        Volatile.Write(ref _brainOverride, null);
+        SpireMentorModConfig.AdvisorBrain = next;
+        SpireMentorModConfig.SaveSoon();
+        string label = AdvisorBrainRules.Label(next);
+        Logger.Log($"[SimAdvisor] {surface}: advisor brain -> {label}.");
+        RunOnMainThread(() =>
+        {
+            if (AdvisorBrainRules.IsInstinct(next))
+            {
+                SimActionLog.Note(InstinctPlaysThisRun()
+                    ? "Advisor brain: Instinct -- the end-to-end net plays every decision, no search."
+                    : "Advisor brain: Instinct -- it plays Ironclad on v0.111.0 and the v0.113.0 beta for now; in other runs the search answers.");
+            }
+            else
+            {
+                SimActionLog.Note("Advisor brain: Search -- the fights are searched again.");
+            }
+            if (SimRuntime.Mode == SimMode.Advisor)
+            {
+                DropInflight();
+                SimHud.Instance.ClearAdvice();
+                ScheduleAdvice();
+            }
+            // The settings tickbox and the toolbar re-read the preference.
+            SimRuntime.NotifyChanged();
+        });
+    }
+
+    // ------------------------------------------------------------------
     // Debounce + request
     // ------------------------------------------------------------------
 
@@ -1110,6 +1234,8 @@ internal sealed class SimAdvisor
                 SimHud.Instance.SetAdvisorStatus(SimAdvisorStatus.None);
                 _adviceDeferredNoClient = true;
                 Volatile.Write(ref _advisorCoachCapability, 0);
+                Volatile.Write(ref _advisorInstinct, Array.Empty<InstinctTarget>());
+                Volatile.Write(ref _advisorPotionSwapCapability, 0);
                 return;
             }
 
@@ -1254,6 +1380,8 @@ internal sealed class SimAdvisor
             {
                 state["combat_log"] = combatLog;
                 state["capabilities"] = ModCapabilities();
+                string brain = RequestedBrain;
+                state["brain"] = brain;
 
                 DropInflight();
 
@@ -1281,6 +1409,7 @@ internal sealed class SimAdvisor
                 _inflightStateId = stateId;
                 _inflightEpoch = _positionEpoch;
                 _inflightSignature = "";
+                _inflightBrain = brain;
                 ClearActedFrom();
                 UpdateThinkFps();
                 SimHud.Instance.SetAdvisorStatus(SimAdvisorStatus.Thinking);
@@ -1341,7 +1470,7 @@ internal sealed class SimAdvisor
             SimHud.Instance.SetAdvisorStatus(SimAdvisorStatus.Connected);
             if (screen.LocalAdvice != null)
             {
-                SimHud.Instance.ShowAdvice(screen.LocalAdvice, null);
+                SimHud.Instance.ShowAdvice(screen.LocalAdvice, null, screen);
                 RenderLatchedPeek();
             }
             if (_autoPlay && !HoldForAutobattle(screen, isCombat: false) &&
@@ -1357,6 +1486,8 @@ internal sealed class SimAdvisor
             SimHud.Instance.SetAdvisorStatus(SimAdvisorStatus.None);
             _adviceDeferredNoClient = true;
             Volatile.Write(ref _advisorCoachCapability, 0);
+            Volatile.Write(ref _advisorInstinct, Array.Empty<InstinctTarget>());
+            Volatile.Write(ref _advisorPotionSwapCapability, 0);
             return;
         }
 
@@ -1364,6 +1495,7 @@ internal sealed class SimAdvisor
         // Given back on every way out but a sent request, as in
         // RequestAdviceNow (GH #989).
         List<Dictionary<string, object?>>? screenLog = SimCombatLog.Drain();
+        string brain = RequestedBrain;
         try
         {
             var payload = new Dictionary<string, object>(screen.State)
@@ -1375,6 +1507,7 @@ internal sealed class SimAdvisor
                 // without this they would sit unsent until the next fight.
                 ["combat_log"] = screenLog,
                 ["capabilities"] = ModCapabilities(),
+                ["brain"] = brain,
             };
 
             DropInflight();
@@ -1404,6 +1537,7 @@ internal sealed class SimAdvisor
             _inflightScreen = screen.Screen;
             _inflightEpoch = _positionEpoch;
             _inflightSignature = screen.SignatureOrDefault;
+            _inflightBrain = brain;
             ClearActedFrom();
             UpdateThinkFps();
             SimHud.Instance.SetAdvisorStatus(SimAdvisorStatus.Thinking);
@@ -1476,6 +1610,8 @@ internal sealed class SimAdvisor
             // Every reply speaks for the advisor build that sent it, accepted
             // or not: absent = an advisor without coach support.
             Volatile.Write(ref _advisorCoachCapability, CoachCapabilityOf(root));
+            Volatile.Write(ref _advisorInstinct, AdvisorBrainRules.ParseCapability(root));
+            Volatile.Write(ref _advisorPotionSwapCapability, PotionSwapAdvice.CapabilityOf(root));
 
             RunOnMainThread(() =>
             {
@@ -1486,6 +1622,17 @@ internal sealed class SimAdvisor
                 if (requestId != _inflightRequestId || (stateId >= 0 && stateId != _inflightStateId))
                 {
                     Logger.Log($"[SimAdvisor] Dropping stale advice (request {requestId}, state {stateId}).");
+                    return;
+                }
+                // Asked of the other brain: the player switched while it was
+                // in flight. SetBrain already cancels the request, so this is
+                // the backstop for a reply that raced the switch; ask again,
+                // stamped with the brain the player wants now.
+                if (AdvisorBrainRules.IsStale(_inflightBrain, RequestedBrain))
+                {
+                    Logger.Log($"[SimAdvisor] Dropping {_inflightBrain} advice (request {requestId}): the brain is {RequestedBrain} now.");
+                    DropInflight();
+                    ScheduleAdvice();
                     return;
                 }
                 // The correlation fix: the state id is retired WITH the request
@@ -1523,12 +1670,31 @@ internal sealed class SimAdvisor
 
                 _lastBestLabel = advice.Options.FirstOrDefault(o => o.IsBest)?.Label
                                  ?? advice.Options.FirstOrDefault()?.Label;
-                _lastBest = advice.Best;
+                // A fight reply that raced a board change (our own play, a
+                // teammate's, the enemy's) renders, but never executes: its
+                // card and target indices name a hand that is gone, and
+                // the board change already scheduled a fresh request. In
+                // co-op that race is routine -- the teammate keeps moving
+                // -- and a stale index played Dazed (refused) right after
+                // the Anger it had already played (live, 2026-11-08); a
+                // legal card at the stale index would have been played
+                // silently instead.
+                bool racedBoard = isCombat && !samePosition;
+                if (racedBoard)
+                {
+                    Logger.Log($"[SimAdvisor] Advice {requestId} raced a board change: shown, not played; the fresh one is coming.");
+                }
+                _lastBest = racedBoard ? null : advice.Best;
                 _lastBestNote = advice.Note;
 
                 SimHud.Instance.SetAdvisorStatus(SimAdvisorStatus.Connected);
                 RunState? runState = RunManager.Instance.DebugOnlyGetState();
-                SimHud.Instance.ShowAdvice(advice, LocalContext.GetMe(runState));
+                // The screen this reply answers gets its pick ringed (combat: none).
+                SimScreenDecision? shownOn = !isCombat && _lastScreen != null &&
+                                             ReferenceEquals(_lastScreen.Screen, forScreen)
+                    ? _lastScreen
+                    : null;
+                SimHud.Instance.ShowAdvice(advice, LocalContext.GetMe(runState), shownOn);
                 RenderLatchedPeek();
 
                 // The screen this reply answers, for `pause_on`'s ids and the
@@ -1545,7 +1711,7 @@ internal sealed class SimAdvisor
                     // (and press F7 to stop) before it fires.
                     ScheduleAutoPlay(isCombat ? AllyWaitMs(advice) : 0);
                 }
-                if (isCombat)
+                if (isCombat && !racedBoard)
                 {
                     _noMoveInARow = _lastBest != null ? 0 : _noMoveInARow + 1;
                     if (_autoPlay && _lastBest == null)
@@ -2193,15 +2359,18 @@ internal sealed class SimAdvisor
         {
             return index;
         }
-        string want = best.Label.Trim();
+        // Compared in display form on both sides: the advisor names an option
+        // in words ("discard Fire Potion") where the screen may still spell
+        // the game id ("discard FIRE_POTION", PotionSwapAdvice.Labels).
+        string want = AdviceMarks.Humanize(best.Label).Trim();
         if (index >= 0 && index < labels.Count &&
-            string.Equals(labels[index].Trim(), want, StringComparison.OrdinalIgnoreCase))
+            string.Equals(AdviceMarks.Humanize(labels[index]).Trim(), want, StringComparison.OrdinalIgnoreCase))
         {
             return index;
         }
         for (int i = 0; i < labels.Count; i++)
         {
-            if (string.Equals(labels[i].Trim(), want, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(AdviceMarks.Humanize(labels[i]).Trim(), want, StringComparison.OrdinalIgnoreCase))
             {
                 Logger.Log($"[SimAdvisor] Takeover: '{want}' moved {index} -> {i} since the advice; " +
                            "clicking the named option.");
@@ -2607,24 +2776,65 @@ internal sealed class SimAdvisor
             }
 
             string detail = SafeDescription(entry);
+            // The log line is for reading (display names, "you"); the advisor
+            // keeps getting the raw Description below (human_action).
+            CombatEvent ev = CombatEventText.Describe(entry, playerCreature);
             bool byPlayer = playerCreature != null && entry.Actor == playerCreature;
+            int act = (runState?.CurrentActIndex ?? -1) + 1;
+            int floor = runState?.TotalFloor ?? 0;
+
+            // A card play is LOGGED when it starts and REPORTED (wire) when it
+            // finishes. Everything the card does -- the damage, the card
+            // Brand exhausts, the Shiv it adds -- lands in the history between
+            // the two, so a play row written at the finish came AFTER its own
+            // effects, and the frame filed those under the previous step (GH
+            // #1015). The wire still keys on the finish: the advisor's mirror
+            // replays a play once it has resolved.
+            if (entry is CardPlayStartedEntry started)
+            {
+                CardPlay play = started.CardPlay;
+                if (byPlayer && !play.IsAutoPlay && play.PlayIndex == 0)
+                {
+                    // _aiActionsPending is consumed at the finish, below.
+                    bool ai = _aiActionsPending > 0;
+                    SimActionLog.Record(new SimActionLogEntry
+                    {
+                        Actor = ai ? "AI" : "You",
+                        Act = act,
+                        Floor = floor,
+                        DecisionType = "combat",
+                        Action = ev.Text,
+                        Event = ev,
+                        Advice = !ai && _lastBestLabel != null ? $"AI: {_lastBestLabel}" : null,
+                    });
+                    continue;
+                }
+                // An auto-play, a replay (Burst / Echo Form) or a teammate's
+                // play: commentary under whatever step caused it.
+                RecordWorld(ev, act, floor);
+                continue;
+            }
+
+            if (entry is CardPlayFinishedEntry && !byPlayer)
+            {
+                continue; // a teammate's play: logged when it started
+            }
+
             bool isOwnAction = byPlayer && entry is CardPlayFinishedEntry or PotionUsedEntry;
 
             // Everything that is not a decision by us (damage, enemy moves,
-            // block, powers) is world commentary -- the "what happened"
-            // half the workbench log shows and this one was missing.
+            // block, powers, the cards a play exhausts / discards / adds) is
+            // world commentary -- the "what happened" half the workbench log
+            // shows and this one was missing.
             if (!isOwnAction)
             {
-                SimActionLog.Record(new SimActionLogEntry
-                {
-                    Actor = "game",
-                    Act = (runState?.CurrentActIndex ?? -1) + 1,
-                    Floor = runState?.TotalFloor ?? 0,
-                    DecisionType = "",
-                    Action = detail,
-                });
+                RecordWorld(ev, act, floor);
                 continue;
             }
+
+            // A card play was logged at its start; a potion has no start
+            // entry, so it is logged here.
+            bool logIt = entry is PotionUsedEntry;
 
             // Actions enqueued by the takeover path show up in the same
             // history feed; attribute them to the AI. Still reported on the
@@ -2633,31 +2843,57 @@ internal sealed class SimAdvisor
             if (_aiActionsPending > 0)
             {
                 _aiActionsPending--;
-                SimActionLog.Record(new SimActionLogEntry
+                if (logIt)
                 {
-                    Actor = "AI",
-                    Act = (runState?.CurrentActIndex ?? -1) + 1,
-                    Floor = runState?.TotalFloor ?? 0,
-                    DecisionType = "combat",
-                    Action = detail,
-                });
+                    SimActionLog.Record(new SimActionLogEntry
+                    {
+                        Actor = "AI",
+                        Act = act,
+                        Floor = floor,
+                        DecisionType = "combat",
+                        Action = ev.Text,
+                        Event = ev,
+                    });
+                }
                 SendHumanAction("ai_play", $"AI: {detail}", PlayOf(entry), DrinkOf(entry));
                 continue;
             }
 
-            SimActionLog.Record(new SimActionLogEntry
+            if (logIt)
             {
-                Actor = "You",
-                Act = (runState?.CurrentActIndex ?? -1) + 1,
-                Floor = runState?.TotalFloor ?? 0,
-                DecisionType = "combat",
-                Action = detail,
-                Advice = _lastBestLabel != null ? $"AI: {_lastBestLabel}" : null,
-            });
+                SimActionLog.Record(new SimActionLogEntry
+                {
+                    Actor = "You",
+                    Act = act,
+                    Floor = floor,
+                    DecisionType = "combat",
+                    Action = ev.Text,
+                    Event = ev,
+                    Advice = _lastBestLabel != null ? $"AI: {_lastBestLabel}" : null,
+                });
+            }
 
+            // The verdict word over the hand and the fight score (SimMoveFeedback).
+            CardPlay? humanPlay = PlayOf(entry);
+            Callable.From(() => SimMoveFeedback.Instance.OnHumanPlay(humanPlay?.Card, TargetIndexOf(humanPlay))).CallDeferred();
             SendHumanAction("card_play", detail, PlayOf(entry), DrinkOf(entry));
         }
         _historySeen = entries.Count;
+    }
+
+    /// <summary>One line of combat commentary (not a decision) in the action
+    /// log.</summary>
+    private static void RecordWorld(CombatEvent ev, int act, int floor)
+    {
+        SimActionLog.Record(new SimActionLogEntry
+        {
+            Actor = "game",
+            Act = act,
+            Floor = floor,
+            DecisionType = "",
+            Action = ev.Text,
+            Event = ev,
+        });
     }
 
     /// <summary>One in-combat action report on the wire (fire-and-forget) --
@@ -3236,9 +3472,13 @@ internal sealed class SimAdvisor
     private static bool ShouldLog(CombatHistoryEntry entry) => entry switch
     {
         CardDrawnEntry => false,
-        CardDiscardedEntry => false,
+        // Not filtered: a discard / exhaust is the card a play CHOSE (Brand,
+        // Survivor, True Grit), which the play row does not say (GH #1015).
+        // The end-of-turn hand flush records no discard entries.
         EnergySpentEntry => false,
-        CardPlayStartedEntry => false, // the Finished twin carries the outcome
+        // Not filtered either: a play's log row is written at its start, so
+        // its effects follow it (see ReportNewHumanActions).
+        CreatureAttackedEntry => false, // its DamageReceived entries say who took what
         _ => true,
     };
 
@@ -3311,5 +3551,354 @@ public static class ChooseACardOfferPatch
         {
             Logger.Log($"[SimAdvisor] Could not log a card offer: {ex.Message}");
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CombatEventText: combat-history entries as action-log lines.
+//
+// Lives in this file (its only caller) on purpose: the public export ratchets
+// references to the game's namespaces (release/export_unit.py, content-marker
+// baseline), and these types need exactly the ones SimAdvisor already imports.
+// ---------------------------------------------------------------------------
+// One combat-history entry as the workbench's combat-log
+// display row (sts2-pycli/python/workbench/combatlog.py `display_row`: kind,
+// verb, actor / target with their sides, amount, noun), with the game's
+// display names ("Jaw Worm", "Strike", "Weak") instead of the debug
+// Description's ids ("IRONCLAD played STRIKE_IRONCLAD targeting JAW_WORM").
+//
+// Display only: the action log (in-game it shows `Text`; the frame's log
+// renders the row with the workbench's own LogLine, so a hit reads the same
+// in both). The advisor still gets the raw Description in `human_action`.
+
+internal sealed class CombatEvent
+{
+    /// <summary>The plain sentence (in-game log, and LogLine's fallback).</summary>
+    public string Text = "";
+
+    /// <summary>The workbench row kind: "damage" | "block" | "power" |
+    /// "monster_move" | "potion" | "card_play" | "card_auto_played" |
+    /// "card_replayed" | "card_exhausted" | "card_discarded" |
+    /// "card_generated" | "other". The frame's net view keeps the card_*
+    /// ones besides card_play (turnLedgerState.ts `keptInNet`).</summary>
+    public string Kind = "other";
+
+    public string? Verb;
+    public string? Actor;
+    public string? ActorSide;
+    public string? Target;
+    public string? TargetSide;
+    public int? Amount;
+    public string? Noun;
+
+    /// <summary>Whose turn it was ("player" | "enemy"), from the entry's own
+    /// CurrentSide; null when the game would not say. Not the actor's side:
+    /// Thorns, Curl Up or a Strength-on-hit monster reacting to your Strike
+    /// is an enemy actor on YOUR turn.</summary>
+    public string? Side;
+
+    /// <summary>Damage: the receiver died.</summary>
+    public bool Killed;
+}
+
+internal static class CombatEventText
+{
+    public static CombatEvent Describe(CombatHistoryEntry entry, Creature? me)
+    {
+        CombatEvent ev = DescribeEntry(entry, me);
+        ev.Side = TurnSide(entry);
+        return ev;
+    }
+
+    // CombatHistoryEntry.CurrentSide is private in v0.107.1 and v0.111.0
+    // (public in v0.103.2; see the decompiled CombatHistoryEntry.cs). The
+    // constructor sets it, so it is the turn the event happened on, not the
+    // turn we read it on.
+    private static readonly PropertyInfo? CurrentSideProp =
+        typeof(CombatHistoryEntry).GetProperty(
+            "CurrentSide", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+
+    private static string? TurnSide(CombatHistoryEntry entry)
+    {
+        try
+        {
+            return CurrentSideProp?.GetValue(entry) is CombatSide side
+                ? side == CombatSide.Player ? "player" : "enemy"
+                : null;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    private static CombatEvent DescribeEntry(CombatHistoryEntry entry, Creature? me)
+    {
+        try
+        {
+            return entry switch
+            {
+                CardPlayStartedEntry e => Play(e.CardPlay, e.Actor, me),
+                CardPlayFinishedEntry e => Play(e.CardPlay, e.Actor, me),
+                CardExhaustedEntry e => CardMoved(e.Card, e.Actor, "card_exhausted", "exhausted"),
+                CardDiscardedEntry e => CardMoved(e.Card, e.Actor, "card_discarded", "discarded"),
+                CardGeneratedEntry e => CardMoved(e.Card, e.Actor, "card_generated", "gained"),
+                PotionUsedEntry e => Potion(e, me),
+                DamageReceivedEntry e => Damage(e),
+                BlockGainedEntry e => Block(e),
+                PowerReceivedEntry e => Power(e),
+                MonsterPerformedMoveEntry e => Move(e),
+                _ => new CombatEvent { Text = Pretty(entry.Description) },
+            };
+        }
+        catch (Exception)
+        {
+            return new CombatEvent { Text = entry.GetType().Name };
+        }
+    }
+
+    private static CombatEvent Play(CardPlay play, Creature? actor, Creature? me)
+    {
+        string card = play.Card.Title;
+        Creature? target = play.Target;
+        string onTarget = target == null ? "" : $" → {Name(target)}";
+        if (play.IsAutoPlay)
+        {
+            // The engine played it (Havoc, Stampede, Mayhem, ...): never the
+            // card the step label names, so the row is what shows it (#1155).
+            return new CombatEvent
+            {
+                Kind = "card_auto_played",
+                Verb = "auto-played",
+                Actor = Name(actor),
+                ActorSide = SideOf(actor),
+                Target = target == null ? null : Name(target),
+                TargetSide = target == null ? null : SideOf(target),
+                Noun = card,
+                Text = $"{Name(actor)} auto-played {card}{onTarget}.",
+            };
+        }
+        if (play.PlayIndex > 0)
+        {
+            // A replay of the same card (Burst, Echo Form, Duplication): the
+            // decision row already names it.
+            return new CombatEvent
+            {
+                Kind = "card_replayed",
+                Verb = "played",
+                Actor = Name(actor),
+                ActorSide = SideOf(actor),
+                Noun = card,
+                Text = $"{Name(actor)} played {card} again{onTarget}.",
+            };
+        }
+        bool mine = me != null && actor == me;
+        return new CombatEvent
+        {
+            Kind = "card_play",
+            Verb = "played",
+            Actor = Name(actor),
+            ActorSide = SideOf(actor),
+            Target = target == null ? null : Name(target),
+            TargetSide = target == null ? null : SideOf(target),
+            Noun = card,
+            // Yours is a decision row: its label, in the advice's own shape.
+            Text = mine ? card + onTarget : $"{Name(actor)} played {card}{onTarget}",
+        };
+    }
+
+    /// <summary>A card a play (or a power) moved: Brand's exhaust pick,
+    /// Survivor's discard, an added Shiv. The step label names only the card
+    /// played, so this row is the one that says WHICH card (GH #1015).</summary>
+    private static CombatEvent CardMoved(CardModel card, Creature? actor, string kind, string verb)
+    {
+        string name = card.Title;
+        return new CombatEvent
+        {
+            Kind = kind,
+            Verb = verb,
+            Actor = Name(actor),
+            ActorSide = SideOf(actor),
+            Noun = name,
+            Text = $"{Name(actor)} {verb} {name}.",
+        };
+    }
+
+    private static CombatEvent Potion(PotionUsedEntry e, Creature? me)
+    {
+        string potion = e.Potion.Title.GetFormattedText();
+        string onTarget = e.Target == null ? "" : $" → {Name(e.Target)}";
+        bool mine = me != null && e.Actor == me;
+        return new CombatEvent
+        {
+            Kind = "potion",
+            Verb = "drank",
+            Actor = Name(e.Actor),
+            ActorSide = SideOf(e.Actor),
+            Noun = potion,
+            Text = mine ? potion + onTarget : $"{Name(e.Actor)} drank {potion}.",
+        };
+    }
+
+    private static CombatEvent Damage(DamageReceivedEntry e)
+    {
+        int dmg = e.Result.UnblockedDamage;
+        string target = Name(e.Receiver);
+        string? dealer = e.Dealer == null ? null : Name(e.Dealer);
+        return new CombatEvent
+        {
+            Kind = "damage",
+            Verb = dealer == null ? "took" : "dealt",
+            Actor = dealer,
+            ActorSide = e.Dealer == null ? null : SideOf(e.Dealer),
+            Target = target,
+            TargetSide = SideOf(e.Receiver),
+            Amount = dmg,
+            Killed = e.Result.WasTargetKilled,
+            Text = dealer == null ? $"{target} took {dmg} damage." : $"{dealer} dealt {dmg} damage to {target}.",
+        };
+    }
+
+    private static CombatEvent Block(BlockGainedEntry e)
+    {
+        string actor = Name(e.Receiver);
+        return new CombatEvent
+        {
+            Kind = "block",
+            Verb = "gained",
+            Actor = actor,
+            ActorSide = SideOf(e.Receiver),
+            Amount = e.Amount,
+            Noun = "Block",
+            Text = $"{actor} gained {e.Amount} Block.",
+        };
+    }
+
+    private static CombatEvent Power(PowerReceivedEntry e)
+    {
+        string power = e.Power.Title.GetFormattedText();
+        int amount = (int)e.Amount;
+        string target = Name(e.Actor);
+        string? applier = e.Applier == null ? null : Name(e.Applier);
+        return new CombatEvent
+        {
+            Kind = "power",
+            Verb = applier == null ? "gained" : "applied",
+            Actor = applier ?? target,
+            ActorSide = SideOf(e.Applier ?? e.Actor),
+            Target = target,
+            TargetSide = SideOf(e.Actor),
+            Amount = amount,
+            Noun = power,
+            Text = applier == null
+                ? $"{target} gained {amount} {power}."
+                : $"{applier} applied {amount} {power} to {target}.",
+        };
+    }
+
+    private static CombatEvent Move(MonsterPerformedMoveEntry e)
+    {
+        string monster = e.Monster.Title.GetFormattedText() + TagSuffix(e.Actor);
+        string move = MoveName(e.Move.Id);
+        return new CombatEvent
+        {
+            Kind = "monster_move",
+            Verb = "used",
+            Actor = monster,
+            ActorSide = "enemy",
+            Noun = move,
+            Text = $"{monster} used {move}.",
+        };
+    }
+
+    private static string SideOf(Creature? c) => c != null && c.IsEnemy ? "enemy" : "player";
+
+    /// <summary>The display name, with the "#k" the advisor and the HUD give
+    /// an enemy that shares its name ("Two-Tailed Rat #2"), so the log says
+    /// which rat was hit and a play matches the advice's label.</summary>
+    private static string Name(Creature? c) => BareName(c) + TagSuffix(c);
+
+    private static string BareName(Creature? c)
+    {
+        if (c == null)
+        {
+            return "?";
+        }
+        try
+        {
+            return c.Name;
+        }
+        catch (Exception)
+        {
+            return "?";
+        }
+    }
+
+    /// <summary>" #k" for an enemy sharing its name, numbered over the combat's
+    /// enemy list as EnemyTagText numbers it. The creature itself counts even
+    /// when dead: the entry for the Strike that killed rat #2 is read after
+    /// the kill, but the advice named that rat while it was alive.</summary>
+    private static string TagSuffix(Creature? c)
+    {
+        if (c == null || !c.IsEnemy)
+        {
+            return "";
+        }
+        try
+        {
+            IReadOnlyList<Creature>? enemies = CombatManager.Instance?.DebugOnlyGetState()?.Enemies;
+            if (enemies == null || enemies.Count < 2)
+            {
+                return "";
+            }
+            var names = new List<string?>(enemies.Count);
+            int at = -1;
+            for (int i = 0; i < enemies.Count; i++)
+            {
+                Creature e = enemies[i];
+                if (e == c)
+                {
+                    at = i;
+                }
+                bool counted;
+                try { counted = e == c || e.IsAlive; } catch (Exception) { counted = true; }
+                names.Add(counted ? BareName(e) : null);
+            }
+            string? tag = at < 0 ? null : EnemyTagText.Tags(names)[at];
+            return tag == null ? "" : " " + tag;
+        }
+        catch (Exception)
+        {
+            return "";
+        }
+    }
+
+    /// <summary>Moves have no display title on this path: the id, prettified
+    /// as the workbench does ("OIL_SPRAY_MOVE" -> "Oil Spray"; the "_MOVE"
+    /// most ids end in says nothing).</summary>
+    internal static string MoveName(string id)
+    {
+        string s = id ?? "";
+        if (s.EndsWith("_MOVE", StringComparison.Ordinal))
+        {
+            s = s[..^5];
+        }
+        return Pretty(s);
+    }
+
+    /// <summary>"CHOMP" / "STRIKE_IRONCLAD" -> "Chomp" / "Strike Ironclad".
+    /// Text that is not an all-caps id comes back as is.</summary>
+    internal static string Pretty(string id)
+    {
+        if (string.IsNullOrEmpty(id) || id != id.ToUpperInvariant() || id.Contains(' '))
+        {
+            return id;
+        }
+        string[] words = id.Replace('-', '_').ToLowerInvariant().Split('_', StringSplitOptions.RemoveEmptyEntries);
+        for (int i = 0; i < words.Length; i++)
+        {
+            words[i] = char.ToUpperInvariant(words[i][0]) + words[i][1..];
+        }
+        return string.Join(' ', words);
     }
 }

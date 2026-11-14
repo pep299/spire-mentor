@@ -473,12 +473,19 @@ def launch_game(stdout_log: Path) -> None:
     )
 
 
-def write_conf(character: str, ascension: int, resume: bool, time_scale: float) -> None:
+def write_conf(
+    character: str,
+    ascension: int,
+    resume: bool,
+    time_scale: float,
+    advisor_brain: str = "search",
+    seed: str | None = None,
+) -> None:
     conf = {
         "port": 9002,
         "character": character,
         "ascension": ascension,
-        "seed": None,
+        "seed": seed,
         "num_runs": 1,
         "speed_patches": True,
         "agent_timeout_seconds": 0,
@@ -500,6 +507,12 @@ def write_conf(character: str, ascension: int, resume: bool, time_scale: float) 
         # rendering the idle board at full rate starved it ~5x.
         "think_fps": 10,
         "run_timeout_minutes": 360,
+        # Which brain plays (PROTOCOL.md section 5, v5.2): "search" (MCTS +
+        # the run net) or "instinct" (the e2e net, no search). Written
+        # explicitly so the run never inherits whatever brain a human last
+        # chose in the game's settings -- the conf key overrides that for
+        # the session (SimConfig.AdvisorBrain).
+        "advisor_brain": advisor_brain,
     }
     CONF.write_text(json.dumps(conf, indent=2), encoding="utf-8")
 
@@ -693,6 +706,9 @@ class RunResult:
     # Recorded so a crash or a refusal spike can be attributed to the speed it
     # ran at -- issue 15 was only diagnosable because the value was known.
     time_scale: float = 1.0
+    #: The brain that played ("search" / "instinct"): a win rate means nothing
+    #: without it once both can climb.
+    advisor_brain: str = "search"
     #: The game's own run seed, from the archived history record. The ledger
     #: had no seed at all before, so a run worth re-creating could not be
     #: found again even though the game had written one down.
@@ -706,6 +722,23 @@ class RunResult:
     record_ascension: int | None = None
     killed_by: str | None = None
     run_seconds: int | None = None
+    #: The advisor's `_unranked` fallbacks this run, by trigger (GH #980):
+    #: decisions answered with "the first option, NOT a recommendation".
+    #: `{}` is the healthy value; `None` means no advisor slice was archived.
+    unranked: dict[str, int] | None = None
+
+
+#: The advisor's structured `_unranked` line
+#: (`realgame_advisor.UNRANKED_LOG_PREFIX`; keep the two in step).
+UNRANKED_RE = re.compile(r"unranked fallback trigger=(\S+)")
+
+
+def count_unranked(text: str) -> dict[str, int]:
+    """Count the advisor's `_unranked` fallbacks in a log slice, by trigger."""
+    counts: dict[str, int] = {}
+    for m in UNRANKED_RE.finditer(text):
+        counts[m.group(1)] = counts.get(m.group(1), 0) + 1
+    return counts
 
 
 def read_log() -> str:
@@ -906,6 +939,8 @@ def play_one(
     index: int,
     resume_first: bool = False,
     time_scale: float = 1.0,
+    advisor_brain: str = "search",
+    seed: str | None = None,
 ) -> RunResult:
     global PROGRESS
     stamp = datetime.now().strftime("%m%d-%H%M")
@@ -931,7 +966,7 @@ def play_one(
     for attempt in range(1, RESUME_ATTEMPTS + 2):
         kill_everything()
         resume = attempt > 1 or resume_first
-        write_conf(character, ascension, resume, time_scale)
+        write_conf(character, ascension, resume, time_scale, advisor_brain, seed)
         how = "resuming the saved run" if resume else f"ascension {ascension} (max {before})"
         say(f"RUN {tag}: launching {character}, {how} [attempt {attempt}]")
         # Straight to a scratch path: the game's stderr is the same flood as
@@ -988,6 +1023,7 @@ def play_one(
         log=f"{tag}.godot.log",
         ascension_after=after,
         time_scale=time_scale,
+        advisor_brain=advisor_brain,
     )
     kill_everything()
     archive_log(OUT_DIR / result.log)
@@ -1003,6 +1039,13 @@ def play_one(
     result.killed_by = str(killed) if killed else None
     secs = record.get("run_time")
     result.run_seconds = secs if isinstance(secs, int) else None
+    try:
+        slice_text = (OUT_DIR / f"{tag}.advisor.log").read_text(
+            encoding="utf-8", errors="replace"
+        )
+        result.unranked = count_unranked(slice_text) if slice_text else None
+    except OSError:
+        result.unranked = None
     # The two graders disagreeing is a defect signal, not a rounding error --
     # a watchdog-killed VICTORY reading as a loss is exactly how live wins were
     # lost before (2026-08-03). Say so loudly; the record wins.
@@ -1025,7 +1068,7 @@ def play_one(
         f"[{result.floors} floors, {result.actions} actions, "
         f"{result.refusals} refusals, {result.minutes} min, "
         f"ascension {before} -> {after}, record win={result.record_win} "
-        f"a{result.record_ascension} seed={result.seed}]"
+        f"a{result.record_ascension} seed={result.seed}, unranked={result.unranked}]"
     )
     return result
 
@@ -1113,6 +1156,26 @@ def main() -> int:
         ),
     )
     ap.add_argument(
+        "--advisor-brain",
+        choices=("search", "instinct"),
+        default="search",
+        help=(
+            "which brain plays: search (MCTS for the fights, the run net for "
+            "the screens; default) or instinct (the end-to-end net, no search "
+            "-- Ironclad on v0.111.0 only; elsewhere the advisor falls back "
+            "to the search and says so in its note). Written to the conf as "
+            "advisor_brain and recorded per run in climb.jsonl."
+        ),
+    )
+    ap.add_argument(
+        "--seed",
+        default=None,
+        help=(
+            "play this run seed (the conf's seed; e.g. one from a ledger line, "
+            "to replay a run after a fix). Default: a random seed."
+        ),
+    )
+    ap.add_argument(
         "--skip-prebuild",
         action="store_true",
         help=(
@@ -1181,6 +1244,8 @@ def main() -> int:
             index,
             resume_first=args.resume and played == 1,
             time_scale=args.time_scale,
+            advisor_brain=args.advisor_brain,
+            seed=args.seed,
         )
         if args.ascension is not None:
             if result.record_win is None:

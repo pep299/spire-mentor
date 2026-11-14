@@ -154,10 +154,12 @@ settings. Fields (authoritative docs: `SimConfig.cs`):
 | `port` | `9002` | TCP listen port (loopback only) |
 | `auto_start` | `false` | Launch Autopilot at boot (the unattended sweep lane). `false` = Off, or Advisor if the "Turn the coach on when the game starts" setting is ticked (default; Windows only) |
 | `advisor_autoplay` | `false` | Testing: once a run is live, switch to Advisor mode and toggle AI autoplay (the F8+F7 path) unattended. Forces `pause_on` empty |
+| `advisor_brain` | `null` | `"search"` / `"instinct"`: the advisor brain for this session, overriding the in-game setting (not saved over it) until a player switches brain in game; `null` = the in-game setting. How an unattended run plays with Instinct (`ascension_climb.py --advisor-brain instinct`) |
 | `pause_on` | `"unsupported"` | Where F7 stops and hands the decision back (F7 resumes). `unsupported` = decisions the AI has no real policy for (the advisor's `hand_back`); add event ids / `advice_for` values to always play those yourself, e.g. `"unsupported, Neow"`; `""` = never pause. A JSON array works too |
 | `character` / `ascension` / `seed` | `"Ironclad"` / `0` / `null` | Run setup for Autopilot; `seed: null` = fresh random seed |
 | `num_runs` | `1` | Runs to play in sequence before going idle |
 | `resume_run` | `false` | Click Continue instead of starting a new run (recover a run after a game crash) |
+| `game_mode` | `"standard"` | Which singleplayer mode Autopilot starts: `"standard"`, `"blitz"` or `"dread"` (v0.113.0+, needs that mode unlocked). How the live test lane plays those modes unattended |
 | `speed_patches` | `true` | Faster-than-realtime patches while Autopilot is engaged |
 | `fast_mode` | `"normal"`* | Game `FastModeType` at run start: `"instant"` / `"fast"` / `"normal"` |
 | `time_scale` | `1.0` | Whole-game `Engine.TimeScale` (0.1–4.0), Autopilot only |
@@ -165,7 +167,7 @@ settings. Fields (authoritative docs: `SimConfig.cs`):
 | `client_run_config` | `false` | Let the TCP client pick character/ascension/seed via the `run_config`/`start_run` handshake (PROTOCOL.md) |
 | `debug_player_hp` | `0` | Testing cheat: `>0` sets player HP at run start; never use for measurements |
 | `overlay` | `true` | Render autopilot `annotations` (status chip + per-card score labels) in the HUD |
-| `ai_partners_menu` | `false` | Experimental: a "With AI partners" entry in the multiplayer host menu, a co-op run with an AI teammate in this one game process, and "Add AI partner" / "Remove AI partner" tiles in the lobby you host (also a Steam lobby: friends join as usual and play next to the AI; they need no mod, and their game shows the partner without a name). The teammate runs its own advisor (one more advisor process while the run lasts); see `docs/plans/2026-11-05-ai-coop-partners.md` for what it does not handle yet |
+| `ai_partners_menu` | `true` | Experimental (`false` hides it): a "With AI partners" entry in the multiplayer host menu, a co-op run with an AI teammate in this one game process, and "Add AI partner" / "Remove AI partner" tiles in the lobby you host (also a Steam lobby: friends join as usual and play next to the AI; they need no mod, and their game shows the partner without a name). The teammate runs its own advisor (one more advisor process while the run lasts); see `docs/plans/2026-11-05-ai-coop-partners.md` for what it does not handle yet |
 | `stall_timeout_seconds` | `300` | Mod-side stall limit replacing the game's 30 s AutoSlay watchdog |
 | `run_timeout_minutes` | `360` | Absolute per-run wall-clock cap |
 
@@ -177,29 +179,73 @@ settings. Fields (authoritative docs: `SimConfig.cs`):
 - **Settings page** — main menu → Mod Configuration (BaseLib) → Spire Mentor:
   advisor-mode toggle, game-speed slider, HUD toggles, advisor-backend launch
   settings. Main-menu only.
-- **Toolbar** (`SimToolbar.cs`) — the clickable `SpireMentor` strip in the
-  top-left mirrors every hotkey. The live controls (coach, AI once / auto,
-  speed) are flat buttons; the one-shot verbs sit in three dropdowns
-  (`SimUiKit.MakeMenuButton`): **Rewind ▾** (`⟲ Turn` / `⟲ Room` /
-  `⟲⟲ Back`), **Panels ▾** (log, HUD, help, mid-run **Settings** —
-  `SimSettingsPanel.cs` — and **Report a bug**) and **Workbench ▾** (open
-  the browser view, copy state). Click the pill to collapse the strip.
+- **The Spire Mentor badge** (`SimToolbar.cs`, words in `MentorBadge.cs`) —
+  one compact badge docked under the right end of the game's top bar (under
+  the map / deck / settings buttons; the top-left is the game's relic tray and
+  co-op player list). Its colour and word say the mode at a glance (grey Off,
+  cyan Coach, green Hints, amber while the AI plays) and what the advisor is
+  doing (thinking dots — still with *Reduce combat effects* — starting,
+  offline, or the engine-build counter). Click it for a popover that mirrors
+  every hotkey, grouped: **Mode** `Off · Coach · Hints · AI plays` (one switch
+  for F8 + the style; *AI plays* is F7, and reads *Autopilot* while a
+  config-armed Autopilot holds the run — `MentorModes` in `CoachStyle.cs`),
+  **Brain** Search / Instinct (where Instinct can play), **This decision**
+  Peek (F5) / Let AI pick (F6), **Autoplay** Autobattle (Shift+F7) / AI
+  plays until stopped (F7), **Speed** (F9/F10), and **More**: three dropdowns
+  (`SimUiKit.MakeMenuButton`), **Rewind ▾** (`⟲ Turn` / `⟲ Room` /
+  `⟲⟲ Back`), **Panels ▾** (hide all, log, HUD, help, mid-run **Settings** —
+  `SimSettingsPanel.cs` — **Report a bug** and **Panels in their own window**) and **Workbench ▾** (open
+  the browser view, copy state). The popover closes on the badge, a click
+  elsewhere or Esc (read without swallowing them: the click still reaches the
+  game), and stays open or closed across launches. While the AI plays, an
+  amber frame runs round the screen edge and an **AI is playing — Stop (F7)**
+  button sits next to the badge; **Partner go** sits there too in a combat
+  with AI partners. Drag the `⠿` grip to move the badge; double-click it to
+  dock it again.
+- **Panels in their own window** (`SimFrameLauncher.cs`, `FrameLaunchRules.cs`;
+  Windows) — the mod starts the Spire Mentor frame (`../spire-mentor-frame/`,
+  shipped in `mods/SpireMentor/SpireMentorFrame/`, .NET Framework 4.8) next
+  to the running game: the frame adopts the game's window and lays the
+  toolbar, advice, coach and action log out around it, from the bundled
+  workbench's `frame.html` on the advisor's control plane (:8079;
+  `SpireMentorModConfig.FrameUrl` overrides it, e.g. the Vite dev server).
+  `FrameLink.Attach` feeds it. The settings pages' tickbox and the Panels ▾
+  entry turn it on, and it reopens on the next start; closing the frame window
+  gives the game its window back, puts the panels in again and unticks it. A
+  fullscreen game goes windowed first. Framed, fullscreen is the frame's
+  (`FrameFullscreen.cs`): its toolbar's **⛶ Fullscreen**, the game's Fullscreen
+  tickbox or Alt+Enter move the panels into the game and the frame covers the
+  monitor, borderless; the **⛶ Exit fullscreen** button beside the badge goes
+  back. The workbench keys (g / p / h / f)
+  stay bound only for a game the frame launched (`--spire-mentor-frame-port`).
 - **Hotkeys** (`SimHotkeys.cs`) — `F1` help panel (the in-game documentation:
   current mode, every key, file locations), `Ctrl+L` action-log panel (it
   sits under the advice column and follows it until you drag it; a dragged
   position is kept across launches, and right-clicking its header puts it back
   under the column — `LogPanelPlacement.cs`), `Ctrl+H` hides every
-  panel down to the toolbar pill (again, or click the pill, to show them), `F4` HUD
-  on/off, `F6` AI takes this one decision, `F7` AI plays until you stop,
+  panel down to the Spire Mentor badge (again, or click the badge, to show them), `F4` HUD
+  on/off, `F6` AI takes this one decision, `Shift+F6` co-op: every AI
+  partner waiting for you plays its turn now (below), `F7` AI plays until you stop,
   `Shift+F7` autobattle (below),
   `F8` turns the AI on / off in the current style (from Autopilot: stops the
-  AI and hands you the controls; the toolbar's Hints / Coach button switches
+  AI and hands you the controls; the badge's Mode switch picks the
   style), `F5` peeks at the AI's next pick in the Coach style,
   `F9`/`F10` game speed −/+ in whole steps, 1x–4x (`SpeedSteps.cs`; the
   settings slider still sets tenths), `Ctrl+Z` undo to the start of the
   combat turn, `Ctrl+Shift+Z` restart the room, `Ctrl+Shift+C` copy state,
   `Ctrl+Shift+B` report a bug. `F2` and `F11` belong to the game.
-- **Autobattle** (`Autobattle.cs`, `Shift+F7` or the toolbar's
+- **AI partners in the lobby and in combat** (`SimAiPartnerLobby.cs`,
+  `SimAiPartnerBrain.cs`, `PartnerCharacters.cs`) — click an AI partner's
+  slot in a lobby you host to give it the next character (right-click: the
+  previous one); each seat keeps its last pick for the next lobby
+  (`AiPartnerCharacters` in the BaseLib config). In combat, a partner whose
+  best move needs your setup play (Vulnerable on its target, block on it)
+  holds it up to **AI partner holds for your setup play** (default 10 s,
+  0–60), briefly (2.5 s) when only other AI partners are still to act. The
+  **Partner go** button next to the badge (in a combat with AI partners; `▶` and a
+  countdown while one waits) or `Shift+F6` ends every wait for this turn:
+  the setup hold and the "waits for your first play / end turn" settings.
+- **Autobattle** (`Autobattle.cs`, `Shift+F7` or the badge's
   **Autobattle**) — the workbench's autobattle mode in the real game: the AI
   plays the fights (card picks inside a fight included) and every run-level
   decision — card reward, map, shop, rest site, event, card removal /
@@ -319,7 +365,7 @@ How the mod fits the rest of the stack: [`../ARCHITECTURE.md`](../ARCHITECTURE.m
 
 ## The workbench link
 
-The toolbar's **Workbench ▾ → open** opens the *Workbench URL* setting.
+The badge's **More › Workbench ▾ → Open workbench** opens the *Workbench URL* setting.
 Blank (the default) tries two pages in order (`SimWorkbenchLink.cs`):
 
 1. **The bundled workbench**, `http://127.0.0.1:8079/?follow=1`. The release zip

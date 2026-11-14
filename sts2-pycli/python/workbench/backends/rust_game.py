@@ -156,8 +156,9 @@ _REST_LABELS = {0: "Rest", 1: "Smith"}
 # is the Torch Head Amalgam it spawns alongside the Queen (QueenBoss.cs slots
 # ["amalgam", "queen"]); players know that node as "Queen". Keyed by monster
 # ``kind`` → encounter display name. Only the map node is renamed — both
-# monsters keep their own names as combatants.
-_BOSS_KIND_ENCOUNTER_NAME = {"TorchHeadAmalgam": "Queen"}
+# monsters keep their own names as combatants. The Kin's lead is a follower
+# (the roster mirrors C#'s spawn order, priest last); its node is "The Kin".
+_BOSS_KIND_ENCOUNTER_NAME = {"TorchHeadAmalgam": "Queen", "KinFollower": "The Kin"}
 
 
 def _boss_encounter_title(encounter_id: str) -> str:
@@ -508,6 +509,9 @@ class RustGame(GameBackend):
             self.rm.force_remove_card(name)
         for relic_id in snapshot.relics:
             self.rm.force_add_relic(relic_id)
+        # The live run already made the pickups' choices (Lead Paperweight's
+        # choose screen); left queued, they surface as the run advances.
+        self.rm.debug_clear_pending_choices()
         for card_id, _upgraded in snapshot.deck:
             self.rm.force_add_card(card_id)
         for card_id, upgraded in snapshot.deck:
@@ -1805,18 +1809,29 @@ class RustGame(GameBackend):
         if smith_acts and smith_ids:
             self._fill_smith(state, smith_acts, smith_ids)
             return
-        # Drive options off whichever set is live so the screen is never empty;
-        # choose_option indexes into _option_actions.
-        self._option_actions = rest_acts or list(acts)
-        # ``(option_id, enabled)`` per offered option, index-aligned with the
-        # ``rest_option`` actions above. This is what lets the UI name the
-        # option and find its plaque art: the frontend keys
-        # ``ui/rest_site/option_<option_id>.png`` and the loc row
-        # ``rest_site.OPTION_<ID>.name`` off ``option_id``.
+        # ``(option_id, enabled)`` per offered option, in ``rest_option`` idx
+        # order. This is what lets the UI name the option and find its plaque
+        # art: the frontend keys ``ui/rest_site/option_<option_id>.png`` and
+        # the loc row ``rest_site.OPTION_<ID>.name`` off ``option_id``.
         try:
             engine_opts = list(rm.rest_site_options())
         except AttributeError:  # wheel predating the accessor
             engine_opts = []
+        # choose_option indexes into _option_actions. The engine does not offer
+        # a DISABLED option (Smith with nothing to upgrade) as an action, but
+        # C# still shows it greyed, so render every engine option at its idx
+        # (``is_enabled`` False; picking it is rejected). With no enabled
+        # option left (MiniatureTent) the remaining actions — leave — follow.
+        # Without the accessor, drive off whichever set is live so the screen
+        # is never empty.
+        if engine_opts:
+            self._option_actions = [
+                {"action": "rest_option", "idx": i} for i in range(len(engine_opts))
+            ]
+            if not rest_acts:
+                self._option_actions += list(acts)
+        else:
+            self._option_actions = rest_acts or list(acts)
         options = []
         for i, a in enumerate(self._option_actions):
             if a.get("action") == "rest_option":

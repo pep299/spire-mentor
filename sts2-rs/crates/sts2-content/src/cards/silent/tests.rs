@@ -60,7 +60,7 @@ fn fresh_state(card_id: CardId, base_damage: i32, base_block: i32) -> (CombatSta
     state.cards.push(Card {
         uid: sts2_core::CardUid(card_uid),
         card_id,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: false,
@@ -242,7 +242,7 @@ fn ai23c_expertise_upgraded_draws_to_seven() {
         state.cards.push(Card {
             uid,
             card_id: CardId::Wound,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Status,
             target_type: TargetType::Self_,
             upgraded: false,
@@ -267,7 +267,7 @@ fn ai23c_expertise_base_draws_to_six() {
         state.cards.push(Card {
             uid,
             card_id: CardId::Wound,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Status,
             target_type: TargetType::Self_,
             upgraded: false,
@@ -313,14 +313,23 @@ pin_registered!(pin_up_my_sleeve, UpMySleeve);
 fn dsljq_up_my_sleeve_decrements_own_cost() {
     install_pool();
     let (mut state, _euid) = fresh_state(CardId::UpMySleeve, 0, 0);
-    state.cards[0].cost = 2;
+    state.cards[0].cost = sts2_core::CardEnergyCost::new(2);
     let f = lookup(CardId::UpMySleeve).expect("registered");
     f(&mut state, None);
-    assert_eq!(state.cards[0].cost, 1, "first play 2 → 1");
+    assert_eq!(state.cards[0].local_cost(), 1, "first play 2 → 1");
     f(&mut state, None);
-    assert_eq!(state.cards[0].cost, 0, "second play 1 → 0");
+    assert_eq!(state.cards[0].local_cost(), 0, "second play 1 → 0");
     f(&mut state, None);
-    assert_eq!(state.cards[0].cost, 0, "third play floors at 0");
+    assert_eq!(
+        state.cards[0].local_cost(),
+        -1,
+        "third play: unclamped local"
+    );
+    assert_eq!(
+        sts2_core::hooks::effective_card_cost(&state, state.cards[0].uid),
+        0,
+        "third play reads 0"
+    );
 }
 pin_registered!(pin_well_laid_plans, WellLaidPlans);
 pin_registered!(pin_abrasive, Abrasive);
@@ -823,7 +832,7 @@ fn bullet_time_deep_pin_zero_cost_retain_semantics() {
 }
 
 /// Bullet Time makes every card in hand free **for this turn only**
-/// (`VarKey::FreeThisTurn = 1`, matching C# `SetToFreeThisTurn`) and
+/// (`LocalCostMod::FREE_THIS_TURN`, matching C# `SetToFreeThisTurn`) and
 /// applies NoDraw=1. The base `cost` is left untouched — the override is
 /// a temporary combat-var cleared at turn end by
 /// `combat_loop::clear_per_turn_card_vars`, NOT a permanent mutation — so
@@ -842,7 +851,7 @@ fn bullet_time_frees_hand_costs_for_turn_and_applies_no_draw() {
         state.cards.push(Card {
             uid: sts2_core::CardUid(card_uid),
             card_id: CardId::StrikeSilent,
-            cost,
+            cost: sts2_core::CardEnergyCost::new(cost),
             card_type: ctype,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -861,13 +870,15 @@ fn bullet_time_frees_hand_costs_for_turn_and_applies_no_draw() {
 
     for (&uid, expected_cost) in state.player.hand.iter().zip([2_i8, 1, 3]) {
         let idx = uid.0.get() as usize - 1;
-        assert_eq!(
-            state.cards[idx].combat_var(VarKey::FreeThisTurn),
-            1,
+        assert!(
+            state.cards[idx]
+                .cost
+                .has(sts2_core::LocalCostMod::FREE_THIS_TURN),
             "hand card uid={uid:?} should be free THIS TURN after Bullet Time"
         );
         assert_eq!(
-            state.cards[idx].cost, expected_cost,
+            state.cards[idx].base_cost(),
+            expected_cost,
             "hand card uid={uid:?} keeps its base cost (temp override, not permanent)"
         );
     }
@@ -876,7 +887,7 @@ fn bullet_time_frees_hand_costs_for_turn_and_applies_no_draw() {
     state.cards.push(Card {
         uid: sts2_core::CardUid(drawn_uid),
         card_id: CardId::Neutralize,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: false,
@@ -887,12 +898,12 @@ fn bullet_time_frees_hand_costs_for_turn_and_applies_no_draw() {
     state.player.hand.push(sts2_core::CardUid(drawn_uid));
     let drawn = &state.cards[(drawn_uid.get() as usize) - 1];
     assert_eq!(
-        drawn.cost, 1,
+        drawn.local_cost(),
+        1,
         "Newly drawn card after Bullet Time keeps its cost"
     );
-    assert_eq!(
-        drawn.combat_var(VarKey::FreeThisTurn),
-        0,
+    assert!(
+        !drawn.cost.has(sts2_core::LocalCostMod::FREE_THIS_TURN),
         "Newly drawn card after Bullet Time is NOT freed"
     );
 }
@@ -1010,7 +1021,7 @@ fn well_laid_plans_retains_one_card_at_end_of_turn() {
     state.cards.push(Card {
         uid: CardUid(decoy_uid_raw),
         card_id: CardId::StrikeSilent,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: false,
@@ -1102,7 +1113,7 @@ fn well_laid_plans_skip_retains_nothing() {
     state.cards.push(Card {
         uid: decoy_uid,
         card_id: CardId::StrikeSilent,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         ..Card::pod_defaults()
@@ -1116,7 +1127,7 @@ fn well_laid_plans_skip_retains_nothing() {
         state.cards.push(Card {
             uid: fu,
             card_id: CardId::StrikeSilent,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             ..Card::pod_defaults()
@@ -1175,7 +1186,7 @@ fn well_laid_plans_no_eligible_card_no_prompt() {
     state.cards.push(Card {
         uid: card_uid,
         card_id: CardId::StrikeSilent,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         ..Card::pod_defaults()
@@ -1222,7 +1233,7 @@ fn well_laid_plans_no_prompt_once_combat_is_ending() {
     state.cards.push(Card {
         uid: card_uid,
         card_id: CardId::StrikeSilent,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         ..Card::pod_defaults()
@@ -1258,6 +1269,52 @@ fn well_laid_plans_no_prompt_once_combat_is_ending() {
     assert_eq!(state.player.pending_retain_count, 0);
 }
 
+/// `WellLaidPlansPower.BeforeFlushLate` returns before its select when the
+/// hand will not be flushed (`!Hook.ShouldFlush`, WellLaidPlansPower.cs:21):
+/// under RetainHandPower the whole hand stays, so no retain pick opens
+/// (loadout Silent 1286 v0.107.1).
+#[test]
+fn well_laid_plans_no_prompt_while_retain_hand_keeps_the_hand() {
+    use sts2_core::combat_loop::{end_player_turn_phase_one, end_player_turn_phase_two};
+    use sts2_core::{CardUid, CombatPhase, StepResult};
+    install_pool();
+    let (mut state, _euid) = fresh_state(CardId::WellLaidPlans, 0, 0);
+    state.player.current_hp = 70;
+    state.player.max_hp = 70;
+    let _ = state.init_player_creature();
+    let f = lookup(CardId::WellLaidPlans).expect("registered");
+    assert_eq!(f(&mut state, None), EffectResult::Resolved);
+    let player = state.player.creature_uid.expect("player row");
+    sts2_core::card_effects::apply_power_to_creature(
+        &mut state,
+        player,
+        sts2_core::PowerKind::RetainHand,
+        1,
+    );
+
+    state.player.play.clear();
+    let card_uid = CardUid(NonZeroU32::new(2).expect("nz"));
+    state.cards.push(Card {
+        uid: card_uid,
+        card_id: CardId::StrikeSilent,
+        cost: sts2_core::CardEnergyCost::new(1),
+        card_type: CardType::Attack,
+        target_type: TargetType::Enemy,
+        ..Card::pod_defaults()
+    });
+    state.player.hand.push(card_uid);
+
+    state.phase = CombatPhase::PlayerPlayPhase;
+    end_player_turn_phase_one(&mut state);
+    let r2 = end_player_turn_phase_two(&mut state);
+    assert_ne!(r2, StepResult::PendingChoice, "no retain select");
+    assert!(state.pending_choice.is_none());
+    assert!(
+        state.player.hand.contains(&card_uid),
+        "RetainHand keeps the card"
+    );
+}
+
 /// Direct plumbing test: a card explicitly flagged in
 /// `retain_this_turn` survives the end-of-turn flush even with no
 /// retain-granting power. Locks the side-table contract used by
@@ -1281,7 +1338,7 @@ fn explicit_retain_flag_survives_flush() {
     state.cards.push(Card {
         uid: CardUid(target_uid_raw),
         card_id: CardId::StrikeSilent,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: false,
@@ -1348,7 +1405,7 @@ fn reflex_does_not_draw_on_end_of_turn_flush() {
         state.cards.push(Card {
             uid: CardUid(raw),
             card_id: CardId::StrikeSilent,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -1513,7 +1570,7 @@ fn three_enemy_ricochet_state(seed: u64) -> CombatState {
     state.cards.push(Card {
         uid: sts2_core::CardUid(card_uid_raw),
         card_id: CardId::Ricochet,
-        cost: 2,
+        cost: sts2_core::CardEnergyCost::new(2),
         card_type: CardType::Attack,
         target_type: TargetType::Random,
         upgraded: false,
@@ -1624,7 +1681,7 @@ fn random_target_routing_breaks_when_board_clears() {
     state.cards.push(Card {
         uid: sts2_core::CardUid(card_uid_raw),
         card_id: CardId::Ricochet,
-        cost: 2,
+        cost: sts2_core::CardEnergyCost::new(2),
         card_type: CardType::Attack,
         target_type: TargetType::Random,
         upgraded: false,
@@ -1738,7 +1795,7 @@ fn survivor_opens_discard_choice_for_multi_card_hand() {
         state.cards.push(Card {
             uid,
             card_id: CardId::StrikeSilent,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -1786,7 +1843,7 @@ fn survivor_auto_discards_single_card_hand_no_prompt() {
     state.cards.push(Card {
         uid: only,
         card_id: CardId::StrikeSilent,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: false,
@@ -1986,7 +2043,7 @@ fn corrosive_wave_poison_is_cardless_under_unsettling_lamp() {
     state.cards.push(Card {
         uid: draw_uid,
         card_id: CardId::StrikeSilent,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         ..Card::pod_defaults()
@@ -2091,7 +2148,7 @@ fn speedster_damages_enemies_on_card_effect_draw_not_hand_draw() {
         state.cards.push(Card {
             uid,
             card_id: CardId::DefendSilent,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Skill,
             target_type: TargetType::Self_,
             upgraded: false,
@@ -2209,7 +2266,7 @@ fn handtrick_state(n_skills: usize) -> CombatState {
         state.cards.push(Card {
             uid,
             card_id: CardId::DefendSilent,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Skill,
             target_type: TargetType::Self_,
             upgraded: false,
@@ -2223,8 +2280,8 @@ fn handtrick_state(n_skills: usize) -> CombatState {
 }
 
 /// Flechettes counts C# `Type == CardType.Skill` (`Flechettes.cs:23`). A Quest
-/// card (`SpoilsMap`, C# `CardType.Quest`) is modelled as a Skill in Rust but
-/// must not count: hand = SpoilsMap + one real Skill -> exactly 1 hit.
+/// card (`SpoilsMap`, `CardType::Quest`) must not count: hand = SpoilsMap +
+/// one real Skill -> exactly 1 hit.
 /// Regression for act23 parity Silent seed 1019 (#1054 item 7).
 #[test]
 fn flechettes_does_not_count_quest_cards_as_skills() {
@@ -2236,8 +2293,12 @@ fn flechettes_does_not_count_quest_cards_as_skills() {
         state.cards.push(Card {
             uid,
             card_id,
-            cost: 1,
-            card_type: CardType::Skill,
+            cost: sts2_core::CardEnergyCost::new(1),
+            card_type: if card_id == CardId::SpoilsMap {
+                CardType::Quest
+            } else {
+                CardType::Skill
+            },
             target_type: TargetType::Self_,
             ..Card::pod_defaults()
         });
@@ -2284,8 +2345,8 @@ fn hand_trick_auto_applies_sly_with_one_skill() {
 }
 
 /// HandTrick's filter is C# `card.Type == CardType.Skill` (`HandTrick.cs:30`);
-/// a Quest card (C# `CardType.Quest`, a Skill in Rust) is not a candidate, so
-/// one real Skill + Dowsing auto-applies to the Skill with no prompt.
+/// a Quest card (`CardType::Quest`) is not a candidate, so one real Skill +
+/// Dowsing auto-applies to the Skill with no prompt.
 #[test]
 fn hand_trick_skips_quest_cards() {
     install_pool();
@@ -2295,8 +2356,8 @@ fn hand_trick_skips_quest_cards() {
     state.cards.push(Card {
         uid: quest,
         card_id: CardId::Dowsing,
-        cost: -1,
-        card_type: CardType::Skill,
+        cost: sts2_core::CardEnergyCost::new(-1),
+        card_type: CardType::Quest,
         target_type: TargetType::Self_,
         ..Card::pod_defaults()
     });
@@ -2667,7 +2728,7 @@ fn grand_finale_aoe_locks_damage_before_mid_aoe_shrink_removal() {
     state.cards.push(Card {
         uid: sts2_core::CardUid(NonZeroU32::new(1).expect("nz")),
         card_id: CardId::GrandFinale,
-        cost: 0,
+        cost: sts2_core::CardEnergyCost::new(0),
         card_type: CardType::Attack,
         target_type: TargetType::AllEnemies,
         base_damage: 60,
@@ -2731,7 +2792,7 @@ fn grand_finale_deals_damage_with_nonempty_draw_pile() {
     state.cards.push(Card {
         uid: sts2_core::CardUid(NonZeroU32::new(1).expect("nz")),
         card_id: CardId::GrandFinale,
-        cost: 0,
+        cost: sts2_core::CardEnergyCost::new(0),
         card_type: CardType::Attack,
         target_type: TargetType::AllEnemies,
         base_damage: 60,
@@ -2746,7 +2807,7 @@ fn grand_finale_deals_damage_with_nonempty_draw_pile() {
     state.cards.push(Card {
         uid: sts2_core::CardUid(NonZeroU32::new(2).expect("nz")),
         card_id: CardId::StrikeSilent,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         base_damage: 6,
@@ -2808,7 +2869,7 @@ fn knife_trap_auto_plays_each_exhaust_shiv_as_real_card_play() {
     state.cards.push(Card {
         uid: sts2_core::CardUid(NonZeroU32::new(1).expect("nz")),
         card_id: CardId::KnifeTrap,
-        cost: 2,
+        cost: sts2_core::CardEnergyCost::new(2),
         card_type: CardType::Skill,
         target_type: TargetType::Enemy,
         ..Card::pod_defaults()
@@ -2823,7 +2884,7 @@ fn knife_trap_auto_plays_each_exhaust_shiv_as_real_card_play() {
         state.cards.push(Card {
             uid,
             card_id: CardId::Shiv,
-            cost: 0,
+            cost: sts2_core::CardEnergyCost::new(0),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             base_damage: 4,
@@ -2883,7 +2944,7 @@ fn calculated_gamble_auto_plays_single_turn_sly_discard() {
     state.cards.push(Card {
         uid: sts2_core::CardUid(NonZeroU32::new(1).expect("nz")),
         card_id: CardId::CalculatedGamble,
-        cost: 0,
+        cost: sts2_core::CardEnergyCost::new(0),
         card_type: CardType::Skill,
         target_type: TargetType::Self_,
         ..Card::pod_defaults()
@@ -2897,7 +2958,7 @@ fn calculated_gamble_auto_plays_single_turn_sly_discard() {
     state.cards.push(Card {
         uid: dp,
         card_id: CardId::DeadlyPoison,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Skill,
         target_type: TargetType::Enemy,
         ..Card::pod_defaults()
@@ -2910,7 +2971,7 @@ fn calculated_gamble_auto_plays_single_turn_sly_discard() {
     state.cards.push(Card {
         uid: filler,
         card_id: CardId::DefendSilent,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Skill,
         target_type: TargetType::Self_,
         base_block: 5,
@@ -2961,7 +3022,7 @@ fn reflex_discarded_via_helper_draws_two_not_four() {
     state.cards.push(Card {
         uid: reflex,
         card_id: CardId::Reflex,
-        cost: 3,
+        cost: sts2_core::CardEnergyCost::new(3),
         card_type: CardType::Skill,
         target_type: TargetType::Self_,
         ..Card::pod_defaults()
@@ -2975,7 +3036,7 @@ fn reflex_discarded_via_helper_draws_two_not_four() {
         state.cards.push(Card {
             uid,
             card_id: CardId::DefendSilent,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Skill,
             target_type: TargetType::Self_,
             base_block: 5,
@@ -3024,7 +3085,7 @@ fn master_planner_marks_played_skills_sly_for_combat() {
     state.cards.push(Card {
         uid: defend,
         card_id: CardId::DefendSilent,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Skill,
         target_type: TargetType::Self_,
         base_block: 5,
@@ -3034,7 +3095,7 @@ fn master_planner_marks_played_skills_sly_for_combat() {
     state.cards.push(Card {
         uid: strike,
         card_id: CardId::StrikeSilent,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         base_damage: 6,
@@ -3351,7 +3412,7 @@ fn nightmare_one_hand_card_auto_picks_and_clones_three_before_hand_draw() {
     state.cards.push(Card {
         uid: sts2_core::CardUid(strike_uid),
         card_id: CardId::StrikeSilent,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: false,
@@ -3413,7 +3474,7 @@ fn nightmare_clones_drop_the_selected_cards_affliction() {
     let mut strike = Card {
         uid: sts2_core::CardUid(strike_uid),
         card_id: CardId::StrikeSilent,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: false,
@@ -3486,7 +3547,7 @@ fn nightmare_two_hand_cards_opens_select_and_clones_chosen() {
     state.cards.push(Card {
         uid: sts2_core::CardUid(strike_uid),
         card_id: CardId::StrikeSilent,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: false,
@@ -3499,7 +3560,7 @@ fn nightmare_two_hand_cards_opens_select_and_clones_chosen() {
     state.cards.push(Card {
         uid: sts2_core::CardUid(defend_uid),
         card_id: CardId::DefendSilent,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Skill,
         target_type: TargetType::Self_,
         upgraded: false,
@@ -3598,7 +3659,7 @@ fn nightmare_clones_the_select_time_snapshot_not_the_live_card() {
         state.cards.push(Card {
             uid,
             card_id: id,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             ..Card::pod_defaults()
         });
         state.player.hand.push(uid);
@@ -3649,7 +3710,7 @@ fn nightmare_with_an_unrecoverable_card_still_expires_on_hand_draw() {
     state.cards.push(Card {
         uid: sts2_core::CardUid(strike_uid),
         card_id: CardId::StrikeSilent,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: false,
@@ -3722,7 +3783,7 @@ fn play_hidden_daggers_opens_discard_choice_then_resolves() {
         state.cards.push(Card {
             uid,
             card_id: CardId::StrikeSilent,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -3809,7 +3870,7 @@ fn play_hidden_daggers_sly_draw_lands_before_the_shivs() {
         state.cards.push(Card {
             uid,
             card_id,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type,
             target_type: TargetType::Self_,
             ..Card::pod_defaults()
@@ -3859,7 +3920,7 @@ fn play_hidden_daggers_one_card_auto_discards_no_prompt() {
     state.cards.push(Card {
         uid,
         card_id: CardId::StrikeSilent,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: false,
@@ -3917,7 +3978,7 @@ fn play_hidden_daggers_auto_discard_fires_sly_tactician_energy() {
     state.cards.push(Card {
         uid,
         card_id: CardId::Tactician,
-        cost: 3,
+        cost: sts2_core::CardEnergyCost::new(3),
         card_type: CardType::Skill,
         target_type: TargetType::Self_,
         upgraded: false,
@@ -3949,7 +4010,7 @@ fn play_hidden_daggers_upgraded_spawns_two_upgraded_shivs() {
     state.cards.push(Card {
         uid,
         card_id: CardId::StrikeSilent,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: false,
@@ -4016,4 +4077,83 @@ fn echoing_slash_rewaves_on_kill() {
         survivor_hp, 80,
         "survivor takes 2 waves (10+10) — the kill of the low-HP enemy rewaves"
     );
+}
+
+/// Tactician's energy goes through `PlayerCmd.GainEnergy` (C# `Tactician.cs`
+/// `OnPlay`), so `NoEnergyGainPower.ModifyEnergyGain` zeroes it. A Sly
+/// Tactician discarded by Storm of Steel under No Energy Gain gained nothing
+/// in C# (Silent loadout v0.107.1 seed 7346).
+#[test]
+fn tactician_gains_no_energy_under_no_energy_gain() {
+    install_pool();
+    let (mut state, _) = fresh_state(CardId::Tactician, 0, 0);
+    state.player.energy = 2;
+    apply_power_to_player(&mut state, PowerKind::NoEnergyGain, 1);
+    let _ = lookup(CardId::Tactician).expect("registered")(&mut state, None);
+    assert_eq!(state.player.energy, 2);
+}
+
+/// Speedster and Corrosive Wave both listen on `AfterCardDrawn`; C# walks the
+/// player's powers in application order and awaits each, so with Speedster
+/// applied first the card whose hit kills a Stock Axebot then poisons the
+/// Axebot `StockPower.AfterDeath` respawned (loadout Silent v0.107.1 8690:
+/// C# 6 Poison on the respawn, Rust 3). Applied the other way round, that
+/// card's Poison lands on the dying Axebot instead.
+#[test]
+fn speedster_then_corrosive_wave_poisons_the_stock_respawn() {
+    fn respawn_poison(speedster_first: bool) -> Option<i32> {
+        install_pool();
+        crate::cards::dispatch::ensure_installed();
+        let (mut state, euid) = fresh_state(CardId::SpeedsterCard, 0, 0);
+        if let Some(c) = state.creatures.iter_mut().find(|c| c.id == euid.0) {
+            c.current_hp = 2;
+            c.species = Some(MonsterKind::Axebot);
+            c.monster_id = MonsterId("Axebot");
+        }
+        sts2_core::card_effects::apply_power_to_creature(&mut state, euid, PowerKind::Stock, 2);
+        if speedster_first {
+            apply_power_to_player(&mut state, PowerKind::Speedster, 2);
+            apply_power_to_player(&mut state, PowerKind::CorrosiveWave, 3);
+        } else {
+            apply_power_to_player(&mut state, PowerKind::CorrosiveWave, 3);
+            apply_power_to_player(&mut state, PowerKind::Speedster, 2);
+        }
+        for _ in 0..2_u32 {
+            let raw = u32::try_from(state.cards.len() + 1).expect("fits");
+            let uid = sts2_core::CardUid::new(raw).expect("non-zero");
+            state.cards.push(Card {
+                uid,
+                card_id: CardId::DefendSilent,
+                cost: sts2_core::CardEnergyCost::new(1),
+                card_type: CardType::Skill,
+                target_type: TargetType::Self_,
+                base_block: 5,
+                ..Card::pod_defaults()
+            });
+            state.player.draw.push(uid);
+        }
+        let _ = sts2_core::cards::draw_via_state(&mut state, 2);
+        let respawn = state
+            .enemy_uids
+            .iter()
+            .copied()
+            .find(|u| {
+                *u != euid
+                    && state
+                        .creatures
+                        .iter()
+                        .any(|c| c.id == u.0 && c.current_hp > 0)
+            })
+            .expect("Stock respawned an Axebot");
+        let creature = state.creatures.iter().find(|c| c.id == respawn.0)?;
+        creature.powers.iter().find_map(|pu| {
+            state
+                .powers
+                .iter()
+                .find(|p| p.id == pu.0 && p.kind == PowerKind::Poison)
+                .map(|p| p.amount)
+        })
+    }
+    assert_eq!(respawn_poison(true), Some(6));
+    assert_eq!(respawn_poison(false), Some(3));
 }

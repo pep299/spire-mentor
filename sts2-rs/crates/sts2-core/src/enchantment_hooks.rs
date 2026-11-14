@@ -53,6 +53,28 @@ const VIGOROUS_USED_BIT: i32 = 0b0001;
 const GLAM_USED_BIT: i32 = 0b0010;
 const SWIFT_USED_BIT: i32 = 0b0100;
 const SOWN_USED_BIT: i32 = 0b1000;
+/// v0.113.0 Swift / Sown disable in `AfterCardPlayed`, not in `OnPlay`
+/// (`Swift.cs:19`, `Sown.cs:17`). The effect fires with the card still
+/// Normal; these PENDING bits stand for "disabled once this play iteration's
+/// `AfterCardPlayed` reaches the enchantment". They turn into the USED bits at
+/// the card's next enchantment `OnPlay` (always after that `AfterCardPlayed`),
+/// and a Music Box clone made during the same `AfterCardPlayed` (relics come
+/// before card enchantments in `IterateHookListeners`) drops them, so it keeps
+/// a Normal Swift / Sown ([`clear_pending_first_play_disable`]).
+const SWIFT_PENDING_BIT: i32 = 0b1_0000_0000;
+const SOWN_PENDING_BIT: i32 = 0b10_0000_0000;
+
+/// Music Box clone of the card being played (v0.113.0): the enchantment has
+/// not yet disabled itself, so drop the pending Swift / Sown disables.
+pub fn clear_pending_first_play_disable(card: &mut crate::cards::Card) {
+    let bits = card.combat_var(VarKey::EnchantmentUsed);
+    if bits & (SWIFT_PENDING_BIT | SOWN_PENDING_BIT) != 0 {
+        card.set_combat_var(
+            VarKey::EnchantmentUsed,
+            bits & !(SWIFT_PENDING_BIT | SOWN_PENDING_BIT),
+        );
+    }
+}
 
 /// Additive damage bonus contributed by the *played card's* enchantments,
 /// for a powered attack. Mirrors the C# `*.EnchantDamageAdditive` chain
@@ -294,9 +316,10 @@ fn on_card_drawn_stub(state: &mut CombatState, card_uid: CardUid, _from_hand_dra
     if !state.player.hand.contains(&card_uid) {
         return;
     }
-    let new_cost: i8 = state.run_rng.combat_energy_costs.next_int(0, 3) as i8;
+    let new_cost = state.run_rng.combat_energy_costs.next_int(0, 3);
     if let Some(card) = state.cards.get_mut(idx) {
-        card.set_cost_this_combat(new_cost);
+        // `EnergyCost.SetThisCombat(NextEnergyCost())` (Slither.cs:50).
+        card.cost.set_this_combat(new_cost, false);
     }
 }
 
@@ -313,10 +336,20 @@ fn on_card_drawn_stub(state: &mut CombatState, card_uid: CardUid, _from_hand_dra
 /// Python entry: `enchantments.py:126` —
 /// `after_player_turn_start(owner, combat)`.
 ///
-/// Empty-bus early-out: if no card in the draw pile has any
-/// enchantments, skip the walk entirely.
+/// Empty-bus early-out: if no card in any pile has any enchantments, skip
+/// the walk entirely.
 pub fn dispatch_after_player_turn_start(state: &mut CombatState) {
-    if !pile_has_any_enchantments(state, &state.player.draw) {
+    let p = &state.player;
+    if ![
+        &p.hand[..],
+        &p.draw[..],
+        &p.discard[..],
+        &p.exhaust[..],
+        &p.play[..],
+    ]
+    .into_iter()
+    .any(|pile| pile_has_any_enchantments(state, pile))
+    {
         return;
     }
     after_player_turn_start_stub(state);
@@ -325,8 +358,12 @@ pub fn dispatch_after_player_turn_start(state: &mut CombatState) {
 /// Listener body.
 ///
 /// **Wave 3 (`sts2-rs-g7rni`):** Imbued auto-play. On the first player turn
-/// only, scan the draw pile for cards carrying the Imbued enchantment and
-/// auto-play each.
+/// only, auto-play every card carrying the Imbued enchantment, wherever it
+/// sits. `Hook.AfterAutoPrePlayPhaseEntered` walks the listener list that
+/// `CombatState.IterateHookListeners` snapshots up front: the cards of Hand,
+/// Draw, Discard, Exhaust and Play, in that order (CombatState.cs). So an
+/// Imbued card drawn into the opening hand (a deck of 5 cards or fewer) plays
+/// too, and before the ones still in the draw pile (GH #1094).
 ///
 /// **v0.107.1 retime/rewindow (§8):** C# `Imbued.cs` moved its body from
 /// `BeforePlayPhaseStart` to `AfterAutoPrePlayPhaseEntered` and changed the
@@ -359,11 +396,16 @@ fn after_player_turn_start_stub(state: &mut CombatState) {
     if state.turn_number() > 1 {
         return;
     }
-    // Snapshot Imbued uids in current draw order.
-    let imbued: Vec<CardUid> = state
-        .player
-        .draw
+    // Snapshot the Imbued uids in C#'s listener order: Hand, Draw, Discard,
+    // Exhaust, Play.
+    let p = &state.player;
+    let imbued: Vec<CardUid> = p
+        .hand
         .iter()
+        .chain(p.draw.iter())
+        .chain(p.discard.iter())
+        .chain(p.exhaust.iter())
+        .chain(p.play.iter())
         .copied()
         .filter(|uid| {
             let idx = (uid.get() as usize).saturating_sub(1);
@@ -373,41 +415,89 @@ fn after_player_turn_start_stub(state: &mut CombatState) {
                 .is_some_and(|c| c.has_enchantment(EnchantmentId::Imbued))
         })
         .collect();
-    for uid in imbued {
-        // The card may have been auto-played + exhausted already if a
-        // prior auto-play reshuffled — check it's still in draw.
-        let Some(pos) = state.player.draw.iter().position(|u| *u == uid) else {
-            continue;
-        };
-        if state.player.deferred_draw_order {
-            // GH #785: under BeliefDraw the auto-play below pops the top
-            // through `cards::pop_top_card`, which only takes a KNOWN card
-            // deterministically. The Imbued card is known, so move it to the
-            // physical top and PIN it there (it is then popped with no RNG
-            // read). A swap would drop whatever sat at `draw[0]` (a pinned
-            // card, or the head of the sorted unknown middle) into the
-            // middle of the pile and break the pile's segment layout.
-            state.player.draw.remove(pos);
-            state.player.draw.insert(0, uid);
-            crate::cards::pin_top(&mut state.player, uid);
-        } else if pos != 0 {
-            // C# `CardCmd.AutoPlay(card)` plays the card where it sits and
-            // leaves the rest of the pile in order, so lift it to the top
-            // (remove + insert) rather than swapping, which dropped the old
-            // top card into the Imbued card's slot. Imbued cards now start at
-            // the BOTTOM (`ShouldStartAtBottomOfDrawPile`, CombatManager.cs:
-            // 661-666, see `start_player_turn`), so a swap would bury the top
-            // card at the bottom on every Imbued combat (act23 Ironclad:1013).
-            state.player.draw.remove(pos);
-            state.player.draw.insert(0, uid);
+    imbued_run(state, &imbued);
+}
+
+/// Auto-play the snapshotted Imbued cards in order. C# awaits each
+/// `CardCmd.AutoPlay` (Imbued.cs:20-27), so a select one of them opens (Hidden
+/// Daggers' discard) resolves before the next card plays: when a play parks on
+/// `pending_autoplay_resume`, the cards not yet played go onto it as a loop
+/// continuation, the BeatDown way, and [`imbued_resume`] plays them once the
+/// pick lands (Silent v0.111.0 seed 5447). A Sly card that same select
+/// discards nests under it, and the Sly loop keeps this continuation as its
+/// outer one ([`crate::card_effects::play_discarded_sly`]).
+fn imbued_run(state: &mut CombatState, imbued: &[CardUid]) {
+    for (i, &uid) in imbued.iter().enumerate() {
+        // `CardCmd.AutoPlay` returns at once when the combat `IsOverOrEnding`
+        // (CardCmd.cs:54-57, both builds), not only once it is over: an
+        // Imbued Capture Spirit that kills the last enemy leaves the next
+        // Imbued card unplayed where it sits.
+        if crate::combat_loop::combat_is_ending(state) {
+            break;
         }
-        // Imbued does NOT force-exhaust — C# `Imbued.cs` calls
-        // `CardCmd.AutoPlay(card, null)` which leaves `ExhaustOnNextPlay`
-        // at its default (false), so the played card routes to its natural
-        // pile (discard unless it self-exhausts). Bead q6bix F-F.
-        let _ =
-            crate::combat_loop::auto_play_card_from_draw_top(state, /*force_exhaust=*/ false);
+        imbued_play_one(state, uid);
+        if let Some(resume) = state.pending_autoplay_resume.as_mut() {
+            // The parked card took any loop of its own onto its frame
+            // (`park_auto_play_finish`), so the top slot is free for ours.
+            debug_assert!(resume.continuation.is_none());
+            resume.continuation = Some(crate::AutoPlayLoopCont {
+                resume_fn: imbued_resume,
+                iters: 0,
+                uids: imbued[i + 1..].iter().copied().collect(),
+                force_exhaust: false,
+                then: None,
+            });
+            return;
+        }
     }
+}
+
+/// Resume entry point stored on [`crate::AutoPlayLoopCont`]: play the Imbued
+/// cards not yet played.
+fn imbued_resume(state: &mut CombatState, cont: &crate::AutoPlayLoopCont) {
+    imbued_run(state, &cont.uids);
+}
+
+/// One Imbued card's `CardCmd.AutoPlay`, from whatever pile it is in now.
+fn imbued_play_one(state: &mut CombatState, uid: CardUid) {
+    // `CardCmd.AutoPlay` plays the card from whatever pile it is in now.
+    // Outside the draw pile no top-of-pile bookkeeping applies: the
+    // any-pile auto-play moves it to Play and resolves it.
+    let Some(pos) = state.player.draw.iter().position(|u| *u == uid) else {
+        if !state.player.play.contains(&uid) {
+            let _ = crate::combat_loop::auto_play_specific_card_from_discard(
+                state, uid, /*force_exhaust=*/ false,
+            );
+        }
+        return;
+    };
+    if state.player.deferred_draw_order {
+        // GH #785: under BeliefDraw the auto-play below pops the top
+        // through `cards::pop_top_card`, which only takes a KNOWN card
+        // deterministically. The Imbued card is known, so move it to the
+        // physical top and PIN it there (it is then popped with no RNG
+        // read). A swap would drop whatever sat at `draw[0]` (a pinned
+        // card, or the head of the sorted unknown middle) into the
+        // middle of the pile and break the pile's segment layout.
+        state.player.draw.remove(pos);
+        state.player.draw.insert(0, uid);
+        crate::cards::pin_top(&mut state.player, uid);
+    } else if pos != 0 {
+        // C# `CardCmd.AutoPlay(card)` plays the card where it sits and
+        // leaves the rest of the pile in order, so lift it to the top
+        // (remove + insert) rather than swapping, which dropped the old
+        // top card into the Imbued card's slot. Imbued cards now start at
+        // the BOTTOM (`ShouldStartAtBottomOfDrawPile`, CombatManager.cs:
+        // 661-666, see `start_player_turn`), so a swap would bury the top
+        // card at the bottom on every Imbued combat (act23 Ironclad:1013).
+        state.player.draw.remove(pos);
+        state.player.draw.insert(0, uid);
+    }
+    // Imbued does NOT force-exhaust — C# `Imbued.cs` calls
+    // `CardCmd.AutoPlay(card, null)` which leaves `ExhaustOnNextPlay`
+    // at its default (false), so the played card routes to its natural
+    // pile (discard unless it self-exhausts). Bead q6bix F-F.
+    let _ = crate::combat_loop::auto_play_card_from_draw_top(state, /*force_exhaust=*/ false);
 }
 
 // ---------------------------------------------------------------------------
@@ -436,7 +526,7 @@ pub fn dispatch_before_flush(state: &mut CombatState) {
 /// (`SlumberingEssence.cs`), a `Relative`, `WhenPlayed` local modifier — so
 /// the discounts stack while the card waits and all expire when it is played
 /// (a permanent `cost -= 1` kept them through every later redraw). Banked in
-/// [`crate::cards::VarKey::CostReductionUntilPlayed`]; the evaluated cost
+/// `CardEnergyCost::add_until_played` modifier; the evaluated cost
 /// floors at 0. X-cost cards are skipped: C# `GetWithModifiers` ignores local
 /// modifiers on a `CostsX` card.
 #[inline]
@@ -444,7 +534,7 @@ fn before_flush_stub(state: &mut CombatState) {
     let hand: Vec<CardUid> = state.player.hand.iter().copied().collect();
     for uid in hand {
         let idx = (uid.get() as usize).saturating_sub(1);
-        let Some(card) = state.cards.get_mut(idx) else {
+        let Some(card) = state.cards.get(idx) else {
             continue;
         };
         if !card.has_enchantment(EnchantmentId::SlumberingEssence) {
@@ -453,9 +543,7 @@ fn before_flush_stub(state: &mut CombatState) {
         if card.is_x_cost() {
             continue;
         }
-        if card.cost > 0 {
-            card.add_cost_reduction_until_played(1);
-        }
+        state.add_card_cost_reduction_until_played(uid, 1);
     }
 }
 
@@ -603,6 +691,25 @@ fn on_card_played_stub(state: &mut CombatState, card_uid: CardUid) {
     // discipline: the immutable borrow of `card_for` dies before we
     // call `apply_damage_to_player` / `gain_block_player` (which
     // need `&mut state`).
+    // v0.113.0: a disable pending from an earlier play iteration has landed
+    // by now (its `AfterCardPlayed` ran).
+    if state.game_version >= crate::GameVersion::V0_113_0 {
+        let idx = (card_uid.get() as usize).saturating_sub(1);
+        if let Some(card) = state.cards.get_mut(idx) {
+            let bits = card.combat_var(VarKey::EnchantmentUsed);
+            let mut landed = bits & !(SWIFT_PENDING_BIT | SOWN_PENDING_BIT);
+            if bits & SWIFT_PENDING_BIT != 0 {
+                landed |= SWIFT_USED_BIT;
+            }
+            if bits & SOWN_PENDING_BIT != 0 {
+                landed |= SOWN_USED_BIT;
+            }
+            if landed != bits {
+                card.set_combat_var(VarKey::EnchantmentUsed, landed);
+            }
+        }
+    }
+    let disable_later = state.game_version >= crate::GameVersion::V0_113_0;
     let (
         card_id,
         momentum_amount,
@@ -668,7 +775,15 @@ fn on_card_played_stub(state: &mut CombatState, card_uid: CardUid) {
     // after it; the draw cannot reach this card (it is on the Play pile), so
     // one order serves both.
     if swift_amount > 0 && (used_bits & SWIFT_USED_BIT) == 0 {
-        mark_used(state, card_uid, SWIFT_USED_BIT);
+        mark_used(
+            state,
+            card_uid,
+            if disable_later {
+                SWIFT_PENDING_BIT
+            } else {
+                SWIFT_USED_BIT
+            },
+        );
         // C# `Swift.OnPlay` → `CardPileCmd.Draw(fromHandDraw = false)` —
         // vetoed by NoDraw/Fiddle like every card-effect draw.
         let _ = state.draw_into_hand_card_effect(swift_amount);
@@ -677,7 +792,15 @@ fn on_card_played_stub(state: &mut CombatState, card_uid: CardUid) {
     // Sown: gain N energy on first play per combat. Same first-play gate and
     // in-play disable as Swift (Sown.cs:13-20).
     if sown_amount > 0 && (used_bits & SOWN_USED_BIT) == 0 {
-        mark_used(state, card_uid, SOWN_USED_BIT);
+        mark_used(
+            state,
+            card_uid,
+            if disable_later {
+                SOWN_PENDING_BIT
+            } else {
+                SOWN_USED_BIT
+            },
+        );
         state.gain_energy(sown_amount);
     }
 }
@@ -763,7 +886,7 @@ mod tests {
         let mut c = Card {
             uid: uid(n),
             card_id: CardId::StrikeIronclad,
-            cost: 1,
+            cost: crate::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -896,7 +1019,7 @@ mod tests {
         let mut c = Card {
             uid: uid(1),
             card_id: CardId::StrikeIronclad,
-            cost: 1,
+            cost: crate::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -1245,7 +1368,7 @@ mod tests {
         let mut filler = Card {
             uid: uid(2),
             card_id: CardId::StrikeIronclad,
-            cost: 1,
+            cost: crate::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -1325,6 +1448,33 @@ mod tests {
         );
     }
 
+    /// v0.113 `Sown`/`Swift` disable in `AfterCardPlayed`, not in `OnPlay`: a
+    /// Music Box clone made earlier in that hook pass (relics before card
+    /// enchantments) is still Normal and fires again; the original is spent.
+    #[test]
+    fn sown_v0113_disables_after_play_so_a_mid_play_clone_stays_normal() {
+        let mut state = state_with_one_enchanted_card(EnchantmentId::Sown, 2);
+        state.game_version = crate::GameVersion::V0_113_0;
+        state.player.energy = 0;
+        dispatch_on_card_played(&mut state, uid(1));
+        assert_eq!(state.player.energy, 2);
+        assert_eq!(
+            state.cards[0].combat_var(VarKey::EnchantmentUsed) & SOWN_USED_BIT,
+            0,
+            "not yet Disabled inside the play"
+        );
+        let mut clone = state.cards[0].create_clone();
+        clear_pending_first_play_disable(&mut clone);
+        clone.uid = uid(2);
+        state.cards.push(clone);
+        dispatch_after_card_played(&mut state, uid(1));
+        dispatch_on_card_played(&mut state, uid(2));
+        assert_eq!(state.player.energy, 4, "the Normal clone grants energy");
+        // The original's next play is inert.
+        dispatch_on_card_played(&mut state, uid(1));
+        assert_eq!(state.player.energy, 4);
+    }
+
     /// Glam: after_card_played sets bit 1 (matches sts2-content
     /// encoding for `mark_glam_used`). On-played leg is inert.
     #[test]
@@ -1375,9 +1525,9 @@ mod tests {
     #[test]
     fn slither_on_card_drawn_rerolls_cost_in_zero_three() {
         let mut state = state_with_one_enchanted_card(EnchantmentId::Slither, 1);
-        state.cards[0].cost = 1; // starting cost
+        state.cards[0].cost = crate::CardEnergyCost::new(1); // starting cost
         dispatch_on_card_drawn(&mut state, uid(1), true);
-        let new_cost = state.cards[0].cost;
+        let new_cost = state.cards[0].local_cost();
         assert!(
             (0..=3).contains(&new_cost),
             "Slither cost roll out of range: {new_cost}"
@@ -1395,7 +1545,7 @@ mod tests {
     #[test]
     fn slumbering_essence_before_flush_ticks_cost_down() {
         let mut state = state_with_one_enchanted_card(EnchantmentId::SlumberingEssence, 1);
-        state.cards[0].cost = 3;
+        state.cards[0].cost = crate::CardEnergyCost::new(3);
         // Card must be in hand for before_flush to consider it.
         // state_with_one_enchanted_card already pushes uid(1) to hand.
         let cost = |s: &CombatState| crate::hooks::effective_card_cost(s, uid(1));
@@ -1407,8 +1557,13 @@ mod tests {
         assert_eq!(cost(&state), 0, "saturates at 0");
         dispatch_before_flush(&mut state);
         assert_eq!(cost(&state), 0, "stays at 0 — no underflow");
-        assert_eq!(state.cards[0].cost, 3, "printed cost untouched");
-        state.restore_wire_cost_expiring_on_play(uid(1));
+        assert_eq!(state.cards[0].base_cost(), 3, "printed cost untouched");
+        assert_eq!(
+            state.cards[0].local_cost(),
+            -1,
+            "3 - 4, clamped only on read"
+        );
+        state.cards[0].cost.after_card_played_cleanup();
         assert_eq!(
             cost(&state),
             3,
@@ -1420,9 +1575,9 @@ mod tests {
     #[test]
     fn slumbering_essence_skips_x_cost_cards() {
         let mut state = state_with_one_enchanted_card(EnchantmentId::SlumberingEssence, 1);
-        state.cards[0].cost = -1; // X-cost sentinel
+        state.cards[0].cost = crate::CardEnergyCost::new(-1); // X-cost sentinel
         dispatch_before_flush(&mut state);
-        assert_eq!(state.cards[0].cost, -1, "X-cost untouched");
+        assert_eq!(state.cards[0].local_cost(), -1, "X-cost untouched");
     }
 
     /// SlumberingEssence on a non-hand-resident card is inert (the
@@ -1430,10 +1585,10 @@ mod tests {
     #[test]
     fn slumbering_essence_ignores_non_hand_cards() {
         let mut state = state_with_one_enchanted_card(EnchantmentId::SlumberingEssence, 1);
-        state.cards[0].cost = 3;
+        state.cards[0].cost = crate::CardEnergyCost::new(3);
         state.player.hand.clear();
         dispatch_before_flush(&mut state);
-        assert_eq!(state.cards[0].cost, 3, "non-hand card untouched");
+        assert_eq!(state.cards[0].local_cost(), 3, "non-hand card untouched");
     }
 
     /// PerfectFit: floats marked cards to the front while preserving
@@ -1446,7 +1601,7 @@ mod tests {
             let mut c = Card {
                 uid: uid(n),
                 card_id: CardId::StrikeIronclad,
-                cost: 1,
+                cost: crate::CardEnergyCost::new(1),
                 card_type: CardType::Attack,
                 target_type: TargetType::Enemy,
                 upgraded: false,
@@ -1561,6 +1716,41 @@ mod tests {
         );
     }
 
+    /// C# hook listeners are every combat pile's enchantments, so an Imbued
+    /// card already in the hand on turn 1 (a Power Cell pulled it there
+    /// before the opening draw) is auto-played from the hand (loadout Defect
+    /// 1235 v0.107.1).
+    #[test]
+    fn imbued_card_in_hand_is_auto_played_on_turn_one() {
+        let mut state = CombatState::default();
+        state.player.current_hp = 80;
+        state.player.max_hp = 80;
+        let _ = state.init_player_creature();
+        let mut c = Card {
+            uid: uid(1),
+            card_id: CardId::DefendIronclad,
+            cost: crate::CardEnergyCost::new(1),
+            card_type: CardType::Skill,
+            target_type: TargetType::Self_,
+            base_block: 5,
+            ..Card::pod_defaults()
+        };
+        c.set_enchantment(EnchantmentId::Imbued, 1);
+        state.cards.push(c);
+        state.player.hand.push(uid(1));
+
+        dispatch_after_player_turn_start(&mut state);
+
+        assert!(
+            !state.player.hand.contains(&uid(1)),
+            "auto-played out of the hand"
+        );
+        assert!(
+            state.player.discard.contains(&uid(1)),
+            "it lands in discard"
+        );
+    }
+
     /// GH #785: under BeliefDraw the auto-play pops the top through
     /// `cards::pop_top_card`, which samples an UNKNOWN top. The Imbued card
     /// is known, so it must be pinned on top first: the auto-play then takes
@@ -1574,7 +1764,7 @@ mod tests {
             state.cards.push(Card {
                 uid: uid(n),
                 card_id: CardId::DefendIronclad,
-                cost: 1,
+                cost: crate::CardEnergyCost::new(1),
                 card_type: CardType::Skill,
                 target_type: TargetType::Self_,
                 ..Card::pod_defaults()

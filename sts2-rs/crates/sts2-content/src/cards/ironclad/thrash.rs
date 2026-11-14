@@ -277,6 +277,37 @@ fn exhaust_fold_base_damage(state: &CombatState, uid: sts2_core::CardUid) -> i32
         // under-count (Stampede auto-played that Thrash for 2 hits) left
         // VineShambler alive at 9 where C# killed it.
         CardId::GangUp => 5,
+        // The other `CalculatedDamage` attacks fold `Calculate(null)`: their
+        // previews with no target (a target-keyed multiplier — Bully's
+        // Vulnerable, Time's Up's Doom — is 0, as under C#'s null). A
+        // Supermassive folded only its base 5 where C# folded 5 + 3 × the
+        // cards generated this combat (loadout Ironclad 3111 v0.107.1).
+        CardId::Bully => crate::cards::ironclad::bully::preview_bully(state, card, None),
+        CardId::CrescentSpear => {
+            crate::cards::regent::crescent_spear::preview_crescent_spear(state, card, None)
+        }
+        CardId::Supermassive => {
+            crate::cards::regent::supermassive::preview_supermassive(state, card, None)
+        }
+        CardId::DeathMarch => {
+            crate::cards::necrobinder::death_march::preview_death_march(state, card, None)
+        }
+        CardId::Protector => {
+            crate::cards::necrobinder::protector::preview_protector(state, card, None)
+        }
+        CardId::SoulStorm => {
+            crate::cards::necrobinder::soul_storm::preview_soul_storm(state, card, None)
+        }
+        CardId::Squeeze => crate::cards::necrobinder::squeeze::preview_squeeze(state, card, None),
+        CardId::TimesUp => crate::cards::necrobinder::times_up::preview_times_up(state, card, None),
+        CardId::Unleash => crate::cards::necrobinder::unleash::preview_unleash(state, card, None),
+        CardId::MementoMori => {
+            crate::cards::silent::memento_mori::preview_memento_mori(state, card, None)
+        }
+        CardId::Murder => crate::cards::silent::murder::preview_murder(state, card, None),
+        CardId::PreciseCut => {
+            crate::cards::silent::precise_cut::preview_precise_cut(state, card, None)
+        }
         // Rampage grows its damage on each play. C# stores the growth IN
         // `Damage.BaseValue` (`Rampage.cs:54` `Damage.BaseValue += Increase`),
         // so Thrash folds the GROWN value (Thrash.cs:60 `else` branch reads
@@ -292,9 +323,13 @@ fn exhaust_fold_base_damage(state: &CombatState, uid: sts2_core::CardUid) -> i32
         // (`OstyDamage.UpgradeValueBy`, same in v0.107.1). These cards keep
         // `base_damage` at the printed value and apply the upgrade in their
         // handler (`upgrade()` is `None`), so add the bump here (Bone Shards+
-        // folded 9 instead of 12: Ironclad-8019 act3#b2). Poke / Snap carry a
-        // spec delta and take the `base_damage` arm.
-        CardId::BoneShards | CardId::Fetch => card.base_damage + if upgraded { 3 } else { 0 },
+        // folded 9 instead of 12: Ironclad-8019 act3#b2). Poke / Snap declare
+        // an `upgrade()` delta, but `card_upgrades_generated::upgrade_delta`
+        // does not route to it, so their `base_damage` also stays printed
+        // (Poke+ folded 6 instead of 9: loadout Ironclad 5215 v0.107.1).
+        CardId::BoneShards | CardId::Fetch | CardId::Poke | CardId::Snap => {
+            card.base_damage + if upgraded { 3 } else { 0 }
+        }
         CardId::Flatten => card.base_damage + if upgraded { 4 } else { 0 },
         CardId::HighFive | CardId::Rattle | CardId::RightHandHand => {
             card.base_damage + if upgraded { 2 } else { 0 }

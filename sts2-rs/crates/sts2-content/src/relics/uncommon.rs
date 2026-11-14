@@ -1215,9 +1215,6 @@ fn listener_stone_cracker(state: &mut CombatState) -> EffectResult {
                 .is_some_and(sts2_core::cards::Card::is_upgradable)
         })
         .collect();
-    if candidates.is_empty() {
-        return EffectResult::NotImplemented;
-    }
     // C# `StoneCracker.cs::AfterRoomEntered`:
     //   Draw.Cards.Where(IsUpgradable)
     //       .StableShuffle(RunState.Rng.CombatCardSelection)
@@ -1239,12 +1236,18 @@ fn listener_stone_cracker(state: &mut CombatState) -> EffectResult {
         let ia = a.0.get() as usize - 1;
         let ib = b.0.get() as usize - 1;
         let (ca, cb) = (&state.cards[ia], &state.cards[ib]);
-        sts2_core::cards::card_model_compare(ca, cb)
+        sts2_core::cards::card_model_compare_for(ca, cb, state.game_version)
     };
-    state
-        .run_rng
-        .combat_card_selection
-        .stable_shuffle_by(candidates.as_mut_slice(), &cmp);
+    state.run_rng.combat_card_selection.stable_shuffle_by_for(
+        state.game_version,
+        candidates.as_mut_slice(),
+        &cmp,
+    );
+    // An empty list is shuffled too: from v0.113 that still reads one
+    // `NextUnsignedLong`, which `shuffle_for` handles.
+    if candidates.is_empty() {
+        return EffectResult::NotImplemented;
+    }
     for uid in candidates.into_iter().take(STONE_CRACKER_CARDS as usize) {
         upgrade_card_uid(state, uid);
     }
@@ -2549,10 +2552,9 @@ mod tests {
             .map_or(1, |m| m.saturating_add(1));
         let uid = sts2_core::CardUid(NonZeroU32::new(next_raw).expect("non-zero"));
         state.cards.push(Card {
-            local_energy_cost: None,
             uid,
             card_id: CardId::StrikeIronclad,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -2628,7 +2630,7 @@ mod tests {
             let c = &mut state.cards[bane.0.get() as usize - 1];
             c.card_id = sts2_core::cards::CardId::AscendersBane;
             c.card_type = sts2_core::cards::CardType::Curse;
-            c.cost = -1;
+            c.cost = sts2_core::CardEnergyCost::new(-1);
             c.base_damage = 0;
         }
         let _ = dispatch_after_player_turn_start(&mut state);
@@ -2703,10 +2705,9 @@ mod tests {
             .map_or(1, |m| m.saturating_add(1));
         let uid = sts2_core::CardUid(NonZeroU32::new(next_raw).expect("non-zero"));
         state.cards.push(Card {
-            local_energy_cost: None,
             uid,
             card_id: CardId::StrikeIronclad,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type,
             target_type: TargetType::Enemy,
             upgraded,
@@ -3348,10 +3349,9 @@ mod tests {
             .map_or(1, |m| m.saturating_add(1));
         let uid = CardUid(NonZeroU32::new(next_raw).expect("non-zero"));
         state.cards.push(Card {
-            local_energy_cost: None,
             uid,
             card_id,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Skill,
             target_type: TargetType::None,
             upgraded: false,

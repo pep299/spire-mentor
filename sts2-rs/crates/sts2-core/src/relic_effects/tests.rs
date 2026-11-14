@@ -3799,6 +3799,67 @@ fn art_of_war_inert_round_one() {
     );
 }
 
+/// C# `ArtOfWar.AfterCardPlayed` ignores an Attack while
+/// `AnyAttacksPlayedLastTurn` is set, and `AfterEnergyReset` (turn > 1)
+/// clears both flags. An Attack auto-played on the enemy turn (Centennial
+/// Puzzle's draw into Hellraiser) therefore counts for nothing: the next
+/// turn gets no energy for the turn before it, and the turn after that does.
+/// Rust recorded the enemy-turn Attack and kept it past the energy reset,
+/// so it withheld the energy one turn later (loadout Ironclad 8774
+/// v0.111.0: energy cs=6 rs=5).
+#[test]
+#[serial_test::serial(global_registry)]
+fn art_of_war_ignores_an_enemy_turn_attack_after_an_attack_turn() {
+    ensure_installed();
+    let mut state = fresh_state_with_player(70, 70);
+    state.round = 3;
+    give_player_relic(&mut state, RelicKind::ArtOfWar);
+    // The player's turn had an Attack; its turn end shifted it to "last".
+    set_art_of_war_counter(&mut state, ART_OF_WAR_LAST_TURN_BIT);
+    // An Attack played on the enemy turn.
+    let uid = push_card(&mut state, 77, crate::cards::CardType::Attack);
+    let _ = on_after_card_played_art_of_war(&mut state, &make_card_ctx(uid));
+    assert_eq!(
+        art_of_war_counter(&state),
+        ART_OF_WAR_LAST_TURN_BIT,
+        "an Attack while last turn's flag is set is not recorded"
+    );
+
+    // Player turn 3: no energy (attacks on turn 2), both flags cleared.
+    let energy_before = state.player.energy;
+    let _ = dispatch_after_energy_reset(&mut state);
+    assert_eq!(state.player.energy, energy_before);
+    assert_eq!(
+        art_of_war_counter(&state),
+        0,
+        "the energy reset clears both"
+    );
+
+    // No Attack on turn 3: turn 4 gains the energy.
+    let _ = dispatch_after_turn_end(&mut state, Side::Player);
+    state.round = 4;
+    let energy_before = state.player.energy;
+    let _ = dispatch_after_energy_reset(&mut state);
+    assert_eq!(state.player.energy, energy_before + 1);
+}
+
+/// C# `AfterEnergyReset` clears `AnyAttacksPlayedThisTurn` on turn > 1, so an
+/// Attack recorded before the reset (an enemy-turn auto-play while last
+/// turn's flag was clear) does not carry into the new turn.
+#[test]
+#[serial_test::serial(global_registry)]
+fn art_of_war_energy_reset_clears_an_attack_recorded_before_it() {
+    ensure_installed();
+    let mut state = fresh_state_with_player(70, 70);
+    state.round = 3;
+    give_player_relic(&mut state, RelicKind::ArtOfWar);
+    set_art_of_war_counter(&mut state, ART_OF_WAR_THIS_TURN_BIT);
+    let energy_before = state.player.energy;
+    let _ = dispatch_after_energy_reset(&mut state);
+    assert_eq!(state.player.energy, energy_before + 1);
+    assert_eq!(art_of_war_counter(&state), 0);
+}
+
 #[test]
 #[serial_test::serial(global_registry)]
 fn art_of_war_turn_end_shifts_this_turn_to_last_turn() {
@@ -4329,7 +4390,7 @@ fn mummified_hand_frees_one_hand_card_this_turn_without_mutating_base_cost() {
     let b = push_card(&mut state, 2, crate::cards::CardType::Attack);
     for uid in [a, b] {
         let idx = uid.0.get() as usize - 1;
-        state.cards[idx].cost = 1;
+        state.cards[idx].cost = crate::CardEnergyCost::new(1);
         state.player.hand.push(uid);
     }
     // Playing a Power (uid 3) triggers the relic.
@@ -4337,7 +4398,11 @@ fn mummified_hand_frees_one_hand_card_this_turn_without_mutating_base_cost() {
     let _ = dispatch_after_card_played(&mut state, &make_card_ctx(pow));
 
     let free = |uid: crate::CardUid| {
-        state.cards[uid.0.get() as usize - 1].combat_var(crate::cards::VarKey::FreeThisTurn)
+        i32::from(
+            state.cards[uid.0.get() as usize - 1]
+                .cost
+                .has(crate::LocalCostMod::FREE_THIS_TURN),
+        )
     };
     assert_eq!(
         free(a) + free(b),
@@ -4347,8 +4412,8 @@ fn mummified_hand_frees_one_hand_card_this_turn_without_mutating_base_cost() {
     // Regression (Regent seed 1005): the freed card's stored base cost must
     // stay 1 — `SetToFreeThisTurn` is a this-turn modifier cleared at turn
     // end, NOT a permanent `card.cost = 0` that survives discard → redraw.
-    assert_eq!(state.cards[a.0.get() as usize - 1].cost, 1);
-    assert_eq!(state.cards[b.0.get() as usize - 1].cost, 1);
+    assert_eq!(state.cards[a.0.get() as usize - 1].base_cost(), 1);
+    assert_eq!(state.cards[b.0.get() as usize - 1].base_cost(), 1);
 }
 
 #[test]
@@ -4362,18 +4427,18 @@ fn mummified_hand_skips_already_free_card() {
     let fresh = push_card(&mut state, 2, crate::cards::CardType::Attack);
     for uid in [already_free, fresh] {
         let idx = uid.0.get() as usize - 1;
-        state.cards[idx].cost = 1;
+        state.cards[idx].cost = crate::CardEnergyCost::new(1);
         state.player.hand.push(uid);
     }
-    state.cards[already_free.0.get() as usize - 1]
-        .set_combat_var(crate::cards::VarKey::FreeThisTurn, 1);
+    state.cards[already_free.0.get() as usize - 1].set_to_free_this_turn();
     let pow = push_card(&mut state, 3, crate::cards::CardType::Power);
     let _ = dispatch_after_card_played(&mut state, &make_card_ctx(pow));
     // C# excludes the already-free card (local cost 0), so only `fresh` can
     // be (re-)freed — the relic never wastes its pick on an already-free card.
-    assert_eq!(
-        state.cards[fresh.0.get() as usize - 1].combat_var(crate::cards::VarKey::FreeThisTurn),
-        1,
+    assert!(
+        state.cards[fresh.0.get() as usize - 1]
+            .cost
+            .has(crate::LocalCostMod::FREE_THIS_TURN),
         "the only non-free candidate is the one freed"
     );
 }
@@ -4407,7 +4472,7 @@ fn mummified_hand_skips_a_card_a_global_modifier_already_made_free() {
         (4, crate::cards::CardType::Attack),
     ] {
         let card = push_card(&mut state, uid, card_type);
-        state.cards[uid as usize - 1].cost = 1;
+        state.cards[uid as usize - 1].cost = crate::CardEnergyCost::new(1);
         state.player.hand.push(card);
         hand.push(card);
     }
@@ -4415,7 +4480,11 @@ fn mummified_hand_skips_a_card_a_global_modifier_already_made_free() {
     let _ = dispatch_after_card_played(&mut state, &make_card_ctx(pow));
 
     let free = |uid: crate::CardUid| {
-        state.cards[uid.0.get() as usize - 1].combat_var(crate::cards::VarKey::FreeThisTurn)
+        i32::from(
+            state.cards[uid.0.get() as usize - 1]
+                .cost
+                .has(crate::LocalCostMod::FREE_THIS_TURN),
+        )
     };
     assert_eq!(
         free(hand[3]),
@@ -4440,7 +4509,7 @@ fn power_cell_pulls_two_zero_cost_cards_from_draw_on_turn_one() {
     // Draw pile: three 0-cost Attacks (uids 1,2,3) + one cost-1 (uid 4).
     for raw in 1..=4 {
         let uid = push_card(&mut state, raw, crate::cards::CardType::Attack);
-        state.cards[uid.0.get() as usize - 1].cost = i8::from(raw == 4);
+        state.cards[uid.0.get() as usize - 1].cost = crate::CardEnergyCost::new(i8::from(raw == 4));
         state.player.draw.push(uid);
     }
     let _ = dispatch_before_side_turn_start(&mut state, Side::Player);
@@ -4449,7 +4518,7 @@ fn power_cell_pulls_two_zero_cost_cards_from_draw_on_turn_one() {
     assert_eq!(state.player.hand.len(), 2, "two cards pulled to hand");
     for &uid in &state.player.hand {
         assert_eq!(
-            state.cards[uid.0.get() as usize - 1].cost,
+            state.cards[uid.0.get() as usize - 1].local_cost(),
             0,
             "only 0-cost cards are eligible"
         );
@@ -4654,14 +4723,26 @@ fn kusarigama_skill_and_power_do_not_increment() {
     assert_eq!(hp, 30);
 }
 
+/// C# `Kusarigama.AfterSideTurnEnd` zeroes the count only when the owner's
+/// side ends its turn (Kusarigama.cs, both builds). An Attack auto-played on
+/// the enemy turn (Centennial Puzzle's draw into a Hellraiser Strike) still
+/// counts toward the next player turn. Random-loadout Ironclad v0.107.1 seed
+/// 3299: Rust reset it at the player-turn start and missed the 6 damage.
 #[test]
 #[serial_test::serial(global_registry)]
-fn kusarigama_before_side_turn_start_resets_counter() {
+fn kusarigama_counter_resets_when_the_player_turn_ends() {
     ensure_installed();
     let mut state = fresh_state_with_player(70, 70);
     give_player_relic(&mut state, RelicKind::Kusarigama);
     set_kusarigama_counter(&mut state, 2);
+    let _ = dispatch_after_turn_end(&mut state, Side::Enemy);
     let _ = dispatch_before_side_turn_start(&mut state, Side::Player);
+    assert_eq!(
+        kusarigama_counter(&state),
+        2,
+        "enemy turn end, player turn start"
+    );
+    let _ = dispatch_after_turn_end(&mut state, Side::Player);
     assert_eq!(kusarigama_counter(&state), 0);
 }
 
@@ -6080,7 +6161,44 @@ fn gremlin_horn_state(enemy_hp: i32) -> (CombatState, crate::CreatureUid) {
     give_player_relic(&mut state, RelicKind::GremlinHorn);
     state.player.energy = 2;
     let uid = gremlin_horn_push_enemy(&mut state, enemy_hp);
+    // A second, live enemy keeps the combat from ending on the first one's
+    // death: `PlayerCmd.GainEnergy` and `CardPileCmd.Draw` are no-ops once
+    // `CombatManager.IsEnding` (see `gremlin_horn_noop_on_the_last_enemy_death`).
+    let mut bystander = state
+        .creatures
+        .iter()
+        .find(|c| c.id == uid.0)
+        .cloned()
+        .expect("enemy");
+    bystander.id = NonZeroU32::new(uid.0.get() + 1).unwrap();
+    bystander.current_hp = 50;
+    state.creatures.push(bystander);
+    state.enemy_uids.push(crate::CreatureUid(
+        NonZeroU32::new(uid.0.get() + 1).unwrap(),
+    ));
     (state, uid)
+}
+
+/// The last enemy's death leaves no alive primary enemy, so
+/// `CombatManager.IsEnding` holds and Gremlin Horn's `PlayerCmd.GainEnergy`
+/// (PlayerCmd.cs:31) and `CardPileCmd.Draw` (CardPileCmd.cs:822) do nothing.
+#[test]
+#[serial_test::serial(global_registry)]
+fn gremlin_horn_noop_on_the_last_enemy_death() {
+    ensure_installed();
+    let mut state = fresh_state_with_player(80, 70);
+    give_player_relic(&mut state, RelicKind::GremlinHorn);
+    state.player.energy = 2;
+    let uid = gremlin_horn_push_enemy(&mut state, 9);
+    let _ = crate::damage::apply_damage(
+        &mut state,
+        crate::hooks::CreatureRef::Player,
+        uid,
+        9,
+        crate::hooks::ValueProps::NONE,
+        None,
+    );
+    assert_eq!(state.player.energy, 2, "the combat is ending: no energy");
 }
 
 #[test]
@@ -6796,6 +6914,65 @@ fn snecko_skull_then_unsettling_lamp_fold_is_additive_then_multiplicative() {
     );
 }
 
+/// GH #1150 — once captured, the Lamp doubles a debuff from the capturing
+/// card whatever its applier: C# `ModifyPowerAmountGivenMultiplicative`
+/// compares only `cardSource` (Misery copying a monster-applied debuff after a
+/// player-applied copy captured the trigger). The capture arm still needs the
+/// player as applier.
+#[test]
+#[serial_test::serial(global_registry)]
+fn unsettling_lamp_doubles_a_monster_applied_copy_once_captured() {
+    use std::num::NonZeroU32;
+    ensure_installed();
+    register_before_power_amount_changed(
+        RelicId::UnsettlingLamp,
+        on_before_power_amount_changed_unsettling_lamp as BeforePowerAmountChangedFn,
+    );
+    register_modify_power_amount_given(
+        RelicId::UnsettlingLamp,
+        on_modify_power_amount_given_unsettling_lamp as ModifyPowerAmountGivenFn,
+    );
+    let mut state = CombatState::default();
+    let enemy_a = CreatureUid::new(2).unwrap();
+    let enemy_b = CreatureUid::new(3).unwrap();
+    state.relics.push(crate::Relic {
+        id: NonZeroU32::new(1).unwrap(),
+        kind: crate::RelicKind::UnsettlingLamp,
+        counter: UNSETTLING_LAMP_ARMED,
+        is_wax: false,
+        is_melted: false,
+    });
+    let card = push_resolving_card(&mut state);
+    let monster_copy = crate::hooks::PowerAmountCtx {
+        source_card: Some(card),
+        ..crate::hooks::PowerAmountCtx::new(
+            Some(crate::hooks::CreatureRef::Enemy(enemy_a)),
+            crate::hooks::CreatureRef::Enemy(enemy_b),
+            crate::PowerKind::Weak,
+            2,
+        )
+    };
+    // Armed: a monster-applied copy neither captures nor is doubled.
+    assert_eq!(
+        on_before_power_amount_changed_unsettling_lamp(&mut state, &monster_copy),
+        EffectResult::NotImplemented
+    );
+    assert_eq!(unsettling_lamp_state(&state), Some(UNSETTLING_LAMP_ARMED));
+    assert_eq!(dispatch_modify_power_amount_given(&state, &monster_copy), 2);
+    // A player-applied copy captures the trigger ...
+    let player_copy = crate::hooks::PowerAmountCtx {
+        applier: Some(crate::hooks::CreatureRef::Player),
+        ..monster_copy
+    };
+    let _ = on_before_power_amount_changed_unsettling_lamp(&mut state, &player_copy);
+    assert_eq!(
+        unsettling_lamp_state(&state),
+        Some(UNSETTLING_LAMP_CAPTURED)
+    );
+    // ... and from then on the monster-applied copy is doubled too.
+    assert_eq!(dispatch_modify_power_amount_given(&state, &monster_copy), 4);
+}
+
 /// GH #365 — a POTION's debuff must neither be doubled nor burn the lamp's
 /// once-per-combat trigger.
 ///
@@ -6967,7 +7144,7 @@ fn push_resolving_card(state: &mut CombatState) -> crate::CardUid {
     state.cards.push(crate::cards::Card {
         uid,
         card_id: crate::cards::CardId::StrikeIronclad,
-        cost: 1,
+        cost: crate::CardEnergyCost::new(1),
         card_type: crate::cards::CardType::Attack,
         target_type: crate::cards::TargetType::Enemy,
         upgraded: false,
@@ -8144,7 +8321,7 @@ fn fiddle_vetoes_a_card_effect_draw_on_the_players_own_turn() {
         state.cards.push(crate::cards::Card {
             uid,
             card_id: crate::cards::CardId::StrikeIronclad,
-            cost: 1,
+            cost: crate::CardEnergyCost::new(1),
             card_type: crate::cards::CardType::Attack,
             target_type: crate::cards::TargetType::Enemy,
             ..crate::cards::Card::pod_defaults()
@@ -8211,6 +8388,38 @@ fn parrying_shield_damages_random_enemy_when_block_meets_threshold() {
         enemy_current_hp(&state, enemy),
         30 - 6,
         "ParryingShield deals 6 damage when block >= threshold"
+    );
+}
+
+/// Block a relic earlier in the turn-end walk gains counts: Joss Paper's
+/// threshold draw reshuffles the discard, The Abacus grants 6, and Parrying
+/// Shield then sees 9 + 6 (C# reads live Block in relic order; loadout Silent
+/// 1297 v0.107.1).
+#[test]
+#[serial_test::serial(global_registry)]
+fn parrying_shield_sees_block_an_earlier_turn_end_relic_gains() {
+    ensure_installed();
+    let mut state = fresh_state_with_player(70, 70);
+    give_player_relic(&mut state, RelicKind::JossPaper);
+    give_player_relic(&mut state, RelicKind::TheAbacus);
+    give_player_relic(&mut state, RelicKind::ParryingShield);
+    state.relics[0].counter = 5;
+    let card = crate::CardUid::new(u32::try_from(state.cards.len() + 1).unwrap()).unwrap();
+    state.cards.push(crate::cards::Card {
+        uid: card,
+        ..crate::cards::Card::pod_defaults()
+    });
+    state.player.discard.push(card);
+    state.player.block = 9;
+    state.combat_log.block_before_late_turn_end = 9;
+    let enemy = push_enemy(&mut state, 903, 30);
+
+    let _ = dispatch_after_turn_end(&mut state, Side::Player);
+    assert_eq!(state.player.block, 15, "The Abacus on the reshuffle");
+    assert_eq!(
+        enemy_current_hp(&state, enemy),
+        30 - 6,
+        "ParryingShield sees the Abacus block"
     );
 }
 
@@ -8524,10 +8733,10 @@ fn emotion_chip_triggers_passive_on_prior_hp_loss() {
     // `player.block` (no enemy roster needed).
     crate::orbs::channel_orb(&mut state, crate::orbs::Orb::frost());
     let block_before = state.player.block;
-    // Simulate HP loss "last turn": bump the counter directly.
+    // Simulate HP loss "last turn": arm the last-turn bit directly.
     for r in &mut state.relics {
         if r.kind == RelicKind::EmotionChip {
-            r.counter = 5;
+            r.counter = 1;
         }
     }
     let _ = dispatch_after_player_turn_start(&mut state);
@@ -8616,7 +8825,7 @@ fn emotion_chip_with_cables_fired(
     }
     for r in &mut state.relics {
         if r.kind == RelicKind::EmotionChip {
-            r.counter = 5;
+            r.counter = 1;
         }
     }
     let _ = dispatch_after_player_turn_start(&mut state);
@@ -8665,6 +8874,41 @@ fn emotion_chip_fires_plasma_v0107() {
     assert_eq!(state.player.energy, 1);
 }
 
+/// C# `LostHpInPreviousTurn` keeps the damage entries stamped with the
+/// player's previous `TurnNumber` (EmotionChip.cs, `HappenedLastPlayerTurn`).
+/// The number goes up only when the enemy side hands back to the player
+/// (CombatManager.cs `IncrementTurnNumber`), so a hit during this turn's own
+/// start (Royal Poison's turn-1 damage, an earlier relic in the same
+/// `AfterPlayerTurnStart` walk) is this turn's, and arms the chip for the next
+/// turn only (loadout Defect 8400 v0.111.0: Rust fired the Lightning twice
+/// under Gold-Plated Cables on turn 1).
+#[test]
+#[serial_test::serial(global_registry)]
+fn emotion_chip_ignores_a_hit_taken_this_turn_until_the_next() {
+    ensure_installed();
+    let mut state = fresh_state_with_player(80, 80);
+    give_player_relic(&mut state, RelicKind::EmotionChip);
+    crate::orbs::channel_orb(&mut state, crate::orbs::Orb::frost());
+    let _ = crate::combat_loop::apply_damage_to_player(
+        &mut state,
+        crate::hooks::CreatureRef::Nobody,
+        4,
+        crate::hooks::ValueProps::UNBLOCKABLE.union(crate::hooks::ValueProps::UNPOWERED),
+        None,
+    );
+    let _ = dispatch_after_player_turn_start(&mut state);
+    assert_eq!(state.player.block, 0, "the hit is this turn's");
+
+    crate::relic_effects::emotion_chip::on_player_turn_number_increment(&mut state);
+    let _ = dispatch_after_player_turn_start(&mut state);
+    assert!(state.player.block > 0, "next turn it was last turn's");
+
+    crate::relic_effects::emotion_chip::on_player_turn_number_increment(&mut state);
+    let block = state.player.block;
+    let _ = dispatch_after_player_turn_start(&mut state);
+    assert_eq!(state.player.block, block, "and the turn after, no longer");
+}
+
 #[test]
 #[serial_test::serial(global_registry)]
 fn emotion_chip_no_fire_without_prior_hp_loss() {
@@ -8705,7 +8949,7 @@ fn gambling_chip_round_1_opens_discard_and_draw_choice() {
     let mk_card = |uid_val: u32| crate::Card {
         uid: crate::CardUid(std::num::NonZeroU32::new(uid_val).unwrap()),
         card_id: crate::cards::CardId::StrikeIronclad,
-        cost: 1,
+        cost: crate::CardEnergyCost::new(1),
         card_type: crate::cards::CardType::Attack,
         target_type: crate::cards::TargetType::Enemy,
         upgraded: false,
@@ -8762,7 +9006,7 @@ fn gambling_chip_inert_round_2() {
     let mk_card = |uid_val: u32| crate::Card {
         uid: crate::CardUid(std::num::NonZeroU32::new(uid_val).unwrap()),
         card_id: crate::cards::CardId::StrikeIronclad,
-        cost: 1,
+        cost: crate::CardEnergyCost::new(1),
         card_type: crate::cards::CardType::Attack,
         target_type: crate::cards::TargetType::Enemy,
         upgraded: false,
@@ -8793,7 +9037,7 @@ fn gambling_chip_inert_without_relic() {
     let mk_card = |uid_val: u32| crate::Card {
         uid: crate::CardUid(std::num::NonZeroU32::new(uid_val).unwrap()),
         card_id: crate::cards::CardId::StrikeIronclad,
-        cost: 1,
+        cost: crate::CardEnergyCost::new(1),
         card_type: crate::cards::CardType::Attack,
         target_type: crate::cards::TargetType::Enemy,
         upgraded: false,
@@ -9031,10 +9275,9 @@ fn push_card_of_type(
     let raw = u32::try_from(state.cards.len() + 1).expect("fits");
     let uid = crate::CardUid::new(raw).expect("non-zero");
     state.cards.push(crate::Card {
-        local_energy_cost: None,
         uid,
         card_id: CardId::StrikeIronclad,
-        cost,
+        cost: crate::CardEnergyCost::new(cost),
         card_type,
         target_type: TargetType::None,
         upgraded: false,
@@ -9716,8 +9959,9 @@ fn mummified_hand_frees_favorable_hand_card() {
         .iter()
         .find(|c| c.uid == hand_card)
         .unwrap()
-        .combat_var(crate::cards::VarKey::FreeThisTurn);
-    assert_eq!(freed, 1, "the 1-cost hand card was made free this turn");
+        .cost
+        .has(crate::LocalCostMod::FREE_THIS_TURN);
+    assert!(freed, "the 1-cost hand card was made free this turn");
 }
 
 /// `MummifiedHand` multi-pool fallback: when no hand card currently
@@ -9739,7 +9983,7 @@ fn mummified_hand_full_hand_fallback_when_nothing_costs() {
         .iter_mut()
         .find(|c| c.uid == hand_card)
         .unwrap()
-        .cost = 0;
+        .cost = crate::CardEnergyCost::new(0);
     state.player.hand.push(hand_card);
     let power = push_card(&mut state, 2, crate::cards::CardType::Power);
     let result = dispatch_after_card_played(&mut state, &make_card_ctx(power));
@@ -9749,8 +9993,9 @@ fn mummified_hand_full_hand_fallback_when_nothing_costs() {
         .iter()
         .find(|c| c.uid == hand_card)
         .unwrap()
-        .combat_var(crate::cards::VarKey::FreeThisTurn);
-    assert_eq!(freed, 1, "the 0-cost card is freed via the full-hand pool");
+        .cost
+        .has(crate::LocalCostMod::FREE_THIS_TURN);
+    assert!(freed, "the 0-cost card is freed via the full-hand pool");
 }
 
 /// `Bookmark` (v0.107.1) reduces the cost of exactly ONE retained
@@ -9765,7 +10010,7 @@ fn bookmark_reduces_one_retained_card_cost() {
     let a = push_card(&mut state, 80, crate::cards::CardType::Attack);
     let b = push_card(&mut state, 81, crate::cards::CardType::Attack);
     for uid in [a, b] {
-        state.cards.iter_mut().find(|c| c.uid == uid).unwrap().cost = 2;
+        state.cards.iter_mut().find(|c| c.uid == uid).unwrap().cost = crate::CardEnergyCost::new(2);
         state.player.hand.push(uid);
     }
     after_flush_bookmark(&mut state);
@@ -9773,8 +10018,12 @@ fn bookmark_reduces_one_retained_card_cost() {
     // until-played bank. (`effective_card_cost` indexes `cards` by uid, which
     // these sparse test uids do not satisfy.)
     let local = |state: &CombatState, uid| {
-        let c = state.cards.iter().find(|c| c.uid == uid).unwrap();
-        i32::from(c.cost) - c.combat_var(crate::cards::VarKey::CostReductionUntilPlayed)
+        state
+            .cards
+            .iter()
+            .find(|c| c.uid == uid)
+            .unwrap()
+            .local_cost()
     };
     let cost_a = local(&state, a);
     let cost_b = local(&state, b);
@@ -9791,11 +10040,9 @@ fn bookmark_reduces_one_retained_card_cost() {
     // printed cost survives and playing the card retires it
     // (`AfterCardPlayedCleanup`).
     let reduced = if cost_a == 1 { a } else { b };
-    assert_eq!(
-        state.cards.iter().find(|c| c.uid == reduced).unwrap().cost,
-        2
-    );
-    state.restore_wire_cost_expiring_on_play(reduced);
+    let card = state.cards.iter_mut().find(|c| c.uid == reduced).unwrap();
+    assert_eq!(card.base_cost(), 2);
+    card.cost.after_card_played_cleanup();
     assert_eq!(local(&state, reduced), 2);
 }
 
@@ -9803,7 +10050,7 @@ fn bookmark_reduces_one_retained_card_cost() {
 /// (CombatManager.cs:1347-1349): a retained card that is free this turn still
 /// has local cost 0, so it is not eligible, and Bookmark does not roll. Rust
 /// ran it as an `AfterTurnEnd` relic after the cleanup had cleared
-/// FreeThisTurn (loadout Necrobinder v0.107.1 2032).
+/// FREE_THIS_TURN (loadout Necrobinder v0.107.1 2032).
 #[test]
 #[serial_test::serial(global_registry)]
 fn bookmark_runs_before_the_turn_cleanup_clears_free_this_turn() {
@@ -9814,8 +10061,8 @@ fn bookmark_runs_before_the_turn_cleanup_clears_free_this_turn() {
     let a = push_card(&mut state, 80, crate::cards::CardType::Attack);
     {
         let card = state.cards.iter_mut().find(|c| c.uid == a).unwrap();
-        card.cost = 2;
-        card.set_combat_var(crate::cards::VarKey::FreeThisTurn, 1);
+        card.cost = crate::CardEnergyCost::new(2);
+        card.set_to_free_this_turn();
     }
     state.player.hand.push(a);
     state.player.retain_this_turn.push(a);
@@ -9824,11 +10071,11 @@ fn bookmark_runs_before_the_turn_cleanup_clears_free_this_turn() {
     let _ = crate::combat_loop::end_player_turn_phase_two(&mut state);
     let card = state.cards.iter().find(|c| c.uid == a).unwrap();
     assert!(state.player.hand.contains(&a), "retained");
-    assert_eq!(card.combat_var(crate::cards::VarKey::FreeThisTurn), 0);
-    assert_eq!(
-        card.combat_var(crate::cards::VarKey::CostReductionUntilPlayed),
-        0,
-        "the free card was not eligible"
+    assert!(!card.cost.has(crate::LocalCostMod::FREE_THIS_TURN));
+    assert!(
+        !card.cost.has_local_modifiers(),
+        "the free card was not eligible: {:?}",
+        card.cost
     );
     assert_eq!(state.run_rng.combat_card_selection, rng_before, "no roll");
 }
@@ -9885,11 +10132,16 @@ fn bookmark_noop_without_costing_retained_card() {
     let mut state = fresh_state_with_player(70, 70);
     give_player_relic(&mut state, RelicKind::Bookmark);
     let z = push_card(&mut state, 80, crate::cards::CardType::Attack);
-    state.cards.iter_mut().find(|c| c.uid == z).unwrap().cost = 0;
+    state.cards.iter_mut().find(|c| c.uid == z).unwrap().cost = crate::CardEnergyCost::new(0);
     state.player.hand.push(z);
     after_flush_bookmark(&mut state);
     assert_eq!(
-        state.cards.iter().find(|c| c.uid == z).unwrap().cost,
+        state
+            .cards
+            .iter()
+            .find(|c| c.uid == z)
+            .unwrap()
+            .local_cost(),
         0,
         "0-cost retained card untouched"
     );
@@ -10122,4 +10374,84 @@ fn lunar_pastry_star_triggers_black_hole() {
         before - 3,
         "Black Hole fires on the gained star"
     );
+}
+
+/// C# `Hook.BeforeSideTurnEnd`'s normal walk (Hook.cs:1376-1409 v0.107.1,
+/// :1388-1417 v0.111.0) visits relics in equip order. Stone Calendar
+/// (equipped first) kills the last enemy before Ripple Basin's block, so
+/// Juggernaut finds no enemy and rolls nothing. Rust walked RelicId order:
+/// Ripple Basin's block came first and Juggernaut rolled `CombatTargets`
+/// (random-loadout Ironclad 5724 v0.107.1 @392: combat_targets C# 135,
+/// Rust 136).
+#[test]
+#[serial_test::serial(global_registry)]
+fn before_turn_end_relics_run_in_equip_order() {
+    ensure_installed();
+    let mut state = fresh_state_with_player(80, 80);
+    state.round = 7;
+    give_player_relic(&mut state, RelicKind::StoneCalendar);
+    give_player_relic(&mut state, RelicKind::RippleBasin);
+    let enemy = state.spawn_enemy(crate::MonsterKind::Nibbit);
+    if let Some(c) = state.creatures.iter_mut().find(|c| c.id == enemy.0) {
+        c.max_hp = 30;
+        c.current_hp = 30;
+    }
+    let player = state.player.creature_uid.expect("player");
+    crate::card_effects::apply_power_to_creature(
+        &mut state,
+        player,
+        crate::PowerKind::Juggernaut,
+        5,
+    );
+    let rolls = state.run_rng.combat_targets.counter();
+
+    let _ = dispatch_before_turn_end(&mut state, Side::Player);
+
+    assert_eq!(state.player.block, 4, "Ripple Basin still grants");
+    assert_eq!(
+        state.run_rng.combat_targets.counter(),
+        rolls,
+        "no Juggernaut roll after Stone Calendar's kill"
+    );
+}
+
+/// C# `Hook.ModifyHpLost` (Hook.cs:1886-1905 v0.107.1) adds a listener to the
+/// `modifiers` list only when it changes the truncated amount, and Buffer's
+/// stack is spent from that list (`BufferPower.AfterModifyingHpLostAfterOsty`).
+/// Tungsten Rod (`ModifyHpLostAfterOsty`) runs before Buffer
+/// (`ModifyHpLostAfterOstyLate`), so a 1-HP self-hit it reduces to 0 leaves
+/// Buffer untouched (Defect seed 5941 v0.107.1 @446). The self-damage shortcut
+/// folded Buffer first and spent the stack on every unblocked hit.
+#[test]
+#[serial_test::serial(global_registry)]
+fn a_hit_tungsten_rod_zeroes_keeps_the_buffer_stack() {
+    ensure_installed();
+    let mut state = fresh_state_with_player(100, 100);
+    give_player_relic(&mut state, RelicKind::TungstenRod);
+    let player_uid = state.player.creature_uid.unwrap();
+    crate::card_effects::apply_power_to_creature(
+        &mut state,
+        player_uid,
+        crate::PowerKind::Buffer,
+        1,
+    );
+    let self_hit = |amount| crate::hooks::Effect::DealHpLoss {
+        dealer: crate::hooks::CreatureRef::Player,
+        target: crate::hooks::CreatureRef::Player,
+        amount,
+        props: crate::hooks::ValueProps::UNPOWERED,
+    };
+    crate::hooks::apply_effect(&mut state, self_hit(1));
+    assert_eq!(state.player.current_hp, 100, "Tungsten Rod takes the 1");
+    assert_eq!(
+        state.player_power_amount(crate::PowerKind::Buffer),
+        1,
+        "Buffer did not change the amount, so it keeps its stack"
+    );
+    crate::hooks::apply_effect(&mut state, self_hit(3));
+    assert_eq!(
+        state.player.current_hp, 100,
+        "Buffer absorbs the 2 the Rod left"
+    );
+    assert_eq!(state.player_power_amount(crate::PowerKind::Buffer), 0);
 }

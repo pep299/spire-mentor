@@ -177,10 +177,11 @@ pub const fn relic_is_allowed_at(id: RelicId, csharp_total_floor: i32) -> bool {
 /// must not advance the rewards RNG.
 #[must_use]
 pub fn roll_relic_rarity(rng: &mut crate::dotnet_rng::Rng) -> RelicRarity {
-    let roll = rng.next_float(1.0);
-    if roll < 0.50 {
+    // `float` roll against `float` thresholds (RelicFactory.cs:92-93).
+    let roll = rng.next_float_f32();
+    if roll < 0.5_f32 {
         RelicRarity::Common
-    } else if roll < 0.83 {
+    } else if roll < 0.83_f32 {
         RelicRarity::Uncommon
     } else {
         RelicRarity::Rare
@@ -1264,6 +1265,16 @@ pub struct RunState {
     /// `sts2-rs-RP15`.
     pub last_combat_gold_proportion: f64,
 
+    /// The fixed-amount `GoldReward`s the just-won fight added to its room
+    /// (C# `CombatRoom.AddExtraReward`: a killed carrier's Heist gold, then
+    /// Royalties' at combat end), in insertion order. `exit_combat` queues
+    /// them; [`Self::grant_extra_reward_gold`] collects them right after the
+    /// room's base gold. `RewardsSet.GenerateWithoutOffering` sorts the set
+    /// by `RewardsSetIndex` (gold 1, potion 2, …) and the rewards are taken
+    /// in that order, so every gold reward lands before the potion. Empty
+    /// outside the combat-exit step.
+    pub pending_extra_reward_gold: Vec<i32>,
+
     /// The just-won combat's encounter gold bounds when the encounter
     /// overrides C# `EncounterModel.MinGoldReward`/`MaxGoldReward` (only
     /// `FakeMerchantEventEncounter`, a flat 300 — see
@@ -1299,6 +1310,18 @@ pub struct RunState {
     /// payload; listeners that need the full `Room` structure (when
     /// extended past `room_type`) read from here directly.
     pub current_room: Option<Room>,
+
+    /// The player stands in the act-2/3 opening Ancient's `EventRoom`.
+    ///
+    /// C# enters the Ancient as an `EventRoom` (`EventRoom.cs:81`), so its
+    /// `RunState.CurrentRoom` is no longer the boss's `CombatRoom`. Rust
+    /// keeps [`Self::current_room`] on the boss room (or `None` after the
+    /// act carry) until the next map move, so this flag is what tells a
+    /// `CurrentRoom is CombatRoom` check that the player is in an event room
+    /// instead: see [`Self::in_non_combat_room`]. Set by the run manager when
+    /// it fires the Ancient's `AfterRoomEntered`, cleared by
+    /// [`Self::enter_room`].
+    pub in_ancient_room: bool,
 
     /// The player's current HP outside of combat. Mirrors Python
     /// `RunState.current_hp` (`run_state.py:39`). Defaults to `80`
@@ -1906,6 +1929,12 @@ pub struct RunState {
     /// (the per-run mutable mirror of `ALL_ACTS`).
     pub acts: Vec<crate::acts::ActConfig>,
 
+    /// The act maps are co-op sized (one room fewer per act):
+    /// `RunManager::debug_use_coop_maps` shortened `acts`. Reconstruction
+    /// only (the live advisor rebuilding a co-op run); `false` everywhere
+    /// else.
+    pub coop_maps: bool,
+
     /// Card-reward rarity roller with rolling pity offset. Mirrors
     /// Python `RunState.card_rarity_odds` (`run_state.py:1410`). Reset
     /// rare-threshold offset on rare roll, growth-capped on non-rare;
@@ -2135,9 +2164,11 @@ impl Default for RunState {
             relics: Vec::new(),
             last_obtained_relic: None,
             last_combat_gold_proportion: 1.0,
+            pending_extra_reward_gold: Vec::new(),
             combat_gold_bounds_override: None,
             dusty_tome_setup_card: None,
             current_room: None,
+            in_ancient_room: false,
             // Python pin `sts2-rl-agent@01c094d:sts2_env/run/run_state.py:38-40`.
             current_hp: 80,
             max_hp: 80,
@@ -2215,6 +2246,7 @@ impl Default for RunState {
             // per-run mutable Vec so the future events-visited counter
             // can increment per act.
             acts: crate::acts::all_acts().to_vec(),
+            coop_maps: false,
             // Bead `sts2-rs-jyfvu`: pity-counter rarity roller defaults
             // to ascension 0 (identity at the current pin). Tests /
             // future ascension wiring construct via
@@ -2628,10 +2660,11 @@ impl RunState {
     /// driver, and the enum is already cross-referenced by
     /// `card_rewards.rs`. Bead `sts2-rs-ycria` (P9.2.a).
     pub fn roll_treasure_relic_rarity(&mut self) -> crate::card_rewards::RewardRarity {
-        let roll = self.rng.treasure_room.next_float(1.0);
-        if roll < 0.50 {
+        // `float` roll against `float` thresholds (RelicFactory.cs:92-93).
+        let roll = self.rng.treasure_room.next_float_f32();
+        if roll < 0.5_f32 {
             crate::card_rewards::RewardRarity::Common
-        } else if roll < 0.83 {
+        } else if roll < 0.83_f32 {
             crate::card_rewards::RewardRarity::Uncommon
         } else {
             crate::card_rewards::RewardRarity::Rare
@@ -2824,7 +2857,26 @@ impl RunState {
         }
         self.rest_site_taken.clear();
         self.current_room = Some(room);
+        self.in_ancient_room = false;
         let _ = crate::run_effects::dispatch_after_room_entered(self, room_type);
+    }
+
+    /// Whether C# `RunState.CurrentRoom` is a non-combat room (shop, rest
+    /// site, treasure, a live event, or the act-opening Ancient), i.e. the
+    /// negation of `CurrentRoom is CombatRoom`. An event FIGHT is a C#
+    /// `CombatRoom`: Rust keeps the `?` room's `Event` type through it, but
+    /// `finish_event_combat` tears the event down (`current_event = None`)
+    /// before the room rewards roll, so only a live event counts. A room-less
+    /// RunState (unit fixtures) is not a non-combat room.
+    pub fn in_non_combat_room(&self) -> bool {
+        if self.in_ancient_room {
+            return true;
+        }
+        match self.current_room.map(|r| r.room_type) {
+            Some(RoomType::Shop | RoomType::RestSite | RoomType::Treasure) => true,
+            Some(RoomType::Event) => self.current_event.is_some(),
+            _ => false,
+        }
     }
 
     /// Enter an event room: set [`Self::current_event`] to `event_id`
@@ -4566,9 +4618,12 @@ impl RunState {
     /// other character C# falls back to the player's own.
     #[must_use]
     pub fn sea_glass_character(&self) -> crate::potions::CharacterId {
-        use crate::potions::CharacterId::{Defect, Ironclad, Necrobinder, Regent, Silent};
+        use crate::potions::CharacterId::{Defect, Fool, Ironclad, Necrobinder, Regent, Silent};
+        // v0.113.0: The Fool joins `UnlockState.Characters`, last.
+        let fool = (self.game_version >= crate::GameVersion::V0_113_0).then_some(Fool);
         let others: Vec<_> = [Ironclad, Silent, Regent, Necrobinder, Defect]
             .into_iter()
+            .chain(fool)
             .filter(|c| *c != self.character_id)
             .collect();
         if others.is_empty() {
@@ -4635,13 +4690,17 @@ impl RunState {
     /// (`Pael.cs:173-178`) and the `ByrdonisNest` event.
     #[must_use]
     pub fn has_event_pet(&self) -> bool {
-        self.relics
+        self.relics.iter().any(|r| {
+            matches!(
+                r,
+                // v0.113.0 adds Wuppy and Byrdine (`AddsPet => true`); they
+                // exist in no earlier build's state.
+                RelicId::Byrdpip | RelicId::PaelsLegion | RelicId::Wuppy | RelicId::Byrdine
+            )
+        }) || self
+            .master_deck
             .iter()
-            .any(|r| matches!(r, RelicId::Byrdpip | RelicId::PaelsLegion))
-            || self
-                .master_deck
-                .iter()
-                .any(|c| c.card_id == crate::cards::CardId::ByrdonisEgg)
+            .any(|c| c.card_id == crate::cards::CardId::ByrdonisEgg)
     }
 
     /// Deck/run predicates the Ancient `GenerateInitialOptions` methods read.
@@ -4818,7 +4877,8 @@ impl RunState {
             return;
         }
         let mut rng = self.rng.named("spoils_map");
-        *act_map = crate::map_generator::generate_spoils_act_map(
+        *act_map = crate::map_generator::generate_spoils_act_map_for(
+            self.game_version,
             act_map.map_length - 1,
             &mut rng,
             i32::from(self.ascension_level),
@@ -4899,7 +4959,8 @@ impl RunState {
         let ascension_level = i32::from(self.ascension_level);
         let mut act_map = {
             let rng = self.rng.map_rng(act_idx_0_based);
-            crate::map_generator::generate_act_map(
+            crate::map_generator::generate_act_map_for(
+                self.game_version,
                 num_rooms,
                 rng,
                 ascension_level,
@@ -4981,6 +5042,14 @@ impl RunState {
     /// relic.modify_card_being_added_to_deck(self, card)`. Bead
     /// `sts2-rs-9wx7`.
     pub fn modify_card_being_added_to_deck(&mut self, card: &mut Card) {
+        // A deck card carries the run's game build's numbers (cost, damage,
+        // block, type, target, keywords), whichever factory minted it: run-side
+        // code reads deck cards directly (deck view, enchant / transform /
+        // removal eligibility), and only combat entry re-normalizes. Every
+        // deck add funnels through here, so this is the one place a path that
+        // built the card at the base build gets corrected. A no-op on the
+        // default build.
+        card.normalize_for_version(self.game_version);
         let _ = crate::run_effects::dispatch_modify_card_being_added_to_deck(self, card);
     }
 
@@ -5052,7 +5121,7 @@ impl RunState {
             }
             let rooms = self.master_deck[idx].combat_var(VarKey::Generic) + 1;
             self.master_deck[idx].set_combat_var(VarKey::Generic, rooms);
-            if rooms < 5 {
+            if rooms < self.dowsing_max_rooms() {
                 idx += 1;
                 continue;
             }
@@ -5073,6 +5142,28 @@ impl RunState {
             let _ = crate::run_effects::dispatch_on_card_added_to_deck(self, &ctx);
             // The deck shifted down over `idx`; re-check the same slot.
         }
+    }
+
+    /// `Dowsing.maxRooms`: 5 in v0.111.0, 4 from v0.113.0 (`Dowsing.cs:16`).
+    #[must_use]
+    pub fn dowsing_max_rooms(&self) -> i32 {
+        if self.game_version >= crate::GameVersion::V0_113_0 {
+            4
+        } else {
+            5
+        }
+    }
+
+    /// v0.113.0 `Dowsing.ModifyUnknownMapPointRoomTypes` (`Dowsing.cs:69-83`):
+    /// once a Dowsing quest card has entered 3 `?` rooms, the next `?` can no
+    /// longer be a Monster or an Elite (it guarantees the 4th is not a fight).
+    #[must_use]
+    pub fn dowsing_strips_fights(&self) -> bool {
+        self.game_version >= crate::GameVersion::V0_113_0
+            && self.master_deck.iter().any(|c| {
+                c.card_id == crate::cards::CardId::Dowsing
+                    && c.combat_var(crate::cards::VarKey::Generic) >= 3
+            })
     }
 
     /// Fire the `modify_merchant_card_creation_results` channel for
@@ -5147,6 +5238,14 @@ impl RunState {
     /// `gain_gold` has the same `if amount <= 0: return` guard at line
     /// 121, so the relic hooks never fire on debits. Bead `sts2-rs-xqvn`
     /// (initial surface), `sts2-rs-wag75` (gain-hook pipeline).
+    /// Collect the queued [`Self::pending_extra_reward_gold`], each as its
+    /// own `PlayerCmd.GainGold`. A no-op once drained.
+    pub fn grant_extra_reward_gold(&mut self) {
+        for amount in std::mem::take(&mut self.pending_extra_reward_gold) {
+            self.gain_gold(amount);
+        }
+    }
+
     pub fn gain_gold(&mut self, delta: i32) {
         // Bead `sts2-rs-w9vpp`: saturating_add at both the negative-delta
         // short-circuit and the post-`should_gain_gold` credit. No
@@ -5749,7 +5848,18 @@ impl RunState {
         // order); sort positional indices into them by the C# key, then map
         // back to the deck indices.
         let mut order: Vec<usize> = (0..candidates.len()).collect();
+        let version = self.game_version;
+        // v0.113.0 `CardModel.CompareTo` adds tie-breaks after the upgrade
+        // level (enchantment, affliction, cost, replays, base values).
+        let snapshot: Vec<crate::cards::Card> = if version >= crate::GameVersion::V0_113_0 {
+            candidates.iter().map(|&i| self.master_deck[i]).collect()
+        } else {
+            Vec::new()
+        };
         let cmp = |a: usize, b: usize| {
+            if version >= crate::GameVersion::V0_113_0 {
+                return crate::cards::card_model_compare_for(&snapshot[a], &snapshot[b], version);
+            }
             keyed[a]
                 .0
                 .cmp(keyed[b].0)
@@ -5758,8 +5868,15 @@ impl RunState {
         match event_rng {
             // v0.107.1: BattlewornDummy / DoorsOfLightAndDark draw the shuffle
             // from the event's own `base.Rng` stream rather than `Rng.Niche`.
-            Some(rng) => rng.stable_shuffle_by(order.as_mut_slice(), &cmp),
-            None => self.rng.niche.stable_shuffle_by(order.as_mut_slice(), &cmp),
+            Some(rng) => rng.stable_shuffle_by_for(version, order.as_mut_slice(), &cmp),
+            // Every no-event-rng caller (Whetstone, War Paint, War Hammer,
+            // Fragrant Mushroom, Sand Castle) moved from `Rng.Niche` to
+            // `PlayerRng.NonCombatGeneration` in v0.113.0.
+            None => self.rng.non_combat_or_niche().stable_shuffle_by_for(
+                version,
+                order.as_mut_slice(),
+                &cmp,
+            ),
         }
         let candidates: Vec<usize> = order.into_iter().map(|i| candidates[i]).collect();
         let take = count.min(candidates.len());
@@ -5806,7 +5923,13 @@ impl RunState {
             return 0;
         }
         let mut indices: Vec<usize> = (0..self.master_deck.len()).collect();
-        self.rng.niche.shuffle(&mut indices);
+        // v0.113.0 moved transforms onto `PlayerRng.Transformations` and
+        // shuffles onto a child Rng seeded by one parent read
+        // (`Rng.Shuffle`); earlier builds shuffle `Rng.Niche` in place.
+        let version = self.rng.game_version;
+        self.rng
+            .transformations_or_niche()
+            .shuffle_for(version, &mut indices);
         // Slice the first `take` of the shuffled index list. Sort
         // descending so we can remove in-place without shifting the
         // earlier indices we still plan to remove.
@@ -6045,7 +6168,15 @@ impl RunState {
         // via `RemoveDeckCard` actions. Default (parity) mode falls through
         // to the front-of-deck auto-removal the Python pin uses.
         if self.interactive_card_removal {
-            let take = count.min(self.master_deck.len());
+            // Each pick is its own `FromDeckForRemoval`, which offers only
+            // removable (non-Eternal) cards and returns empty with no select
+            // once none are left (`CardSelectCmd.cs:771-774`). Picks already
+            // queued will each take one of them first.
+            let removable = self
+                .removal_offer_order()
+                .len()
+                .saturating_sub(self.pending_deck_removals as usize);
+            let take = count.min(removable);
             self.pending_deck_removals += u32::try_from(take).unwrap_or(u32::MAX);
             return 0;
         }
@@ -6096,6 +6227,30 @@ pub const GUILTY_MAX_COMBATS: i32 = 5;
 
 #[cfg(test)]
 mod tests {
+
+    /// `RelicFactory.cs:92-93` rolls `float num = rng.NextFloat()` against
+    /// 0.5f / 0.83f. Seed 17972581's first draw 0.4999999857 is the float
+    /// 0.5 (Uncommon, f64 said Common); seed 19414603's 0.8299999859 is the
+    /// float 0.83f (Rare, f64 said Uncommon). The treasure-room roll shares
+    /// the thresholds.
+    #[test]
+    fn relic_rarity_roll_compares_in_f32() {
+        use crate::dotnet_rng::Rng;
+        assert_eq!(
+            roll_relic_rarity(&mut Rng::from_seed(17_972_581)),
+            RelicRarity::Uncommon
+        );
+        assert_eq!(
+            roll_relic_rarity(&mut Rng::from_seed(19_414_603)),
+            RelicRarity::Rare
+        );
+        let mut rs = RunState::new();
+        rs.rng.treasure_room = Rng::from_seed(17_972_581);
+        assert_eq!(
+            rs.roll_treasure_relic_rarity(),
+            crate::card_rewards::RewardRarity::Uncommon
+        );
+    }
 
     /// C# `Player.HasEventPet()` (`Player.cs:250-256`): a pet relic OR a
     /// `ByrdonisEgg` in the deck. Feeds Pael's `!HasEventPet()` PaelsLegion
@@ -9326,6 +9481,41 @@ mod tests {
         let a_ids: Vec<_> = a.master_deck.iter().map(|c| c.card_id).collect();
         let b_ids: Vec<_> = b.master_deck.iter().map(|c| c.card_id).collect();
         assert_eq!(a_ids, b_ids, "same seed → identical post-transform deck");
+    }
+
+    /// v0.113.0: `transform_cards` shuffles on `PlayerRng.Transformations`
+    /// with ONE parent read (child-Rng shuffle) and leaves `Rng.Niche` alone.
+    #[test]
+    fn transform_cards_v0113_uses_one_transformations_draw() {
+        let mut rs = RunState {
+            rng: crate::run_rng_set::RunRngSet::new_for(crate::GameVersion::V0_113_0, 0x42),
+            ..RunState::default()
+        };
+        for _ in 0..8 {
+            rs.master_deck
+                .push(mk_deck_card(crate::cards::CardId::StrikeIronclad, false));
+        }
+        let mut transformations = rs.rng.transformations.clone();
+        let mut niche = rs.rng.niche.clone();
+        assert_eq!(
+            rs.transform_cards(
+                2,
+                vec![
+                    mk_deck_card(crate::cards::CardId::AscendersBane, false),
+                    mk_deck_card(crate::cards::CardId::AscendersBane, false),
+                ],
+            ),
+            2
+        );
+        let _ = transformations.next_unsigned_long();
+        assert_eq!(
+            rs.rng.transformations.next_unsigned_long(),
+            transformations.next_unsigned_long()
+        );
+        assert_eq!(
+            rs.rng.niche.next_unsigned_long(),
+            niche.next_unsigned_long()
+        );
     }
 
     // ── transform_specific_cards — bead ab8uo (P9.3.a) ──

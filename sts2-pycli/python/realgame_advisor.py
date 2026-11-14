@@ -43,11 +43,13 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import json
 import logging
 import math
 import os
+import re
 import threading
 import time
 from datetime import UTC, datetime
@@ -57,10 +59,19 @@ from typing import Any
 import realgame_hand_select
 import runtime_paths
 from coop_coordination import apply_ally_wait
+from display_names import (
+    card_name,
+    potion_swap_label,
+    sanitize_advice,
+    sanitize_coach,
+    shop_option_label,
+)
 from enemy_labels import ally_label, enemy_label
 from realgame_adapter import (
+    UnsupportedCharacterError,
     UnsupportedGameVersionError,
     character_display_name,
+    check_supported_characters,
     envelope_game_version,
     run_ascension,
     to_headless_combat_play,
@@ -69,13 +80,18 @@ from realgame_advisor_mirror import AdvisorMirror
 from realgame_bridge import DEFAULT_HOST, DEFAULT_PORT, RealGameBridgeClient
 from realgame_coach import CoachGrader, GraderThread
 from realgame_control import BRIDGE_MESSAGE_TYPES, BugReportForward, ControlPlane, StaticSite
+from realgame_instinct import InstinctAdvisor, InstinctUnavailable
 from realgame_livetree import LiveRunTree
+from realgame_turn_plan import search_plan
 from realgame_workbench_log import WorkbenchRunLogger
+from sts2_client import BETA_GAME_VERSIONS
 from sts2_hint.calibration import calibrated_p_win
 from sts2_hint.recommender import (
+    CHANNEL_STABLE_IDX,
     CHOOSE_SKIP_STABLE_IDX,
     CHOOSE_STABLE_IDX_BASE,
     END_TURN_STABLE_IDX,
+    EVOKE_STABLE_IDX,
     POTION_STABLE_IDX_BASE,
     HintTag,
     RecommendConfig,
@@ -116,7 +132,12 @@ HONEST_SEARCH = {
 #: drop on them. ``coach: 2`` (v5.1) adds the fight recap and the death
 #: autopsy: the mod sends ``combat_ended`` and its Advisor-mode ``game_over``
 #: only to an advisor at 2 or above.
-ADVISOR_CAPABILITIES = {"coach": 2}
+ADVISOR_CAPABILITIES = {"coach": 2, "potion_swap": 1}
+
+#: Instinct, the e2e student (:mod:`realgame_instinct`): loaded on first use,
+#: so an advisor nobody asks for Instinct never reads its 21 MB of weights.
+#: ``--instinct-weights`` replaces it in :func:`main`.
+INSTINCT = InstinctAdvisor()
 
 #: Acts in a standard run; the fallback for a mod too old to send
 #: ``run_state.is_last_act``.
@@ -282,6 +303,48 @@ def _best_to_action(tag: HintTag, state: dict[str, Any]) -> dict[str, Any] | Non
     return None
 
 
+def option_move(tag: HintTag, state: dict[str, Any]) -> dict[str, Any]:
+    """What a combat option row DOES, in ``best``'s dialect (PROTOCOL.md §5).
+
+    ``action`` (``play`` / ``potion`` / ``end_turn``, and for the rarer rows
+    ``choose`` / ``skip`` / ``channel`` / ``evoke``) and, for a potion, the
+    bridge belt ``slot`` (:func:`_best_to_action`'s remap), so the HUD can ring
+    the potion or the End Turn button for any row, not only the best.
+    """
+    move = _best_to_action(tag, state)
+    if move is not None:
+        out: dict[str, Any] = {"action": move["action"]}
+        if "slot" in move:
+            out["slot"] = move["slot"]
+        return out
+    if tag.stable_idx == CHOOSE_SKIP_STABLE_IDX:
+        return {"action": "skip"}
+    if tag.stable_idx <= CHOOSE_STABLE_IDX_BASE:
+        return {"action": "choose"}
+    if POTION_STABLE_IDX_BASE - 5 < tag.stable_idx <= POTION_STABLE_IDX_BASE:
+        return {"action": "potion"}  # a potion the belt no longer shows: no slot
+    if tag.stable_idx == CHANNEL_STABLE_IDX:
+        return {"action": "channel"}
+    if tag.stable_idx == EVOKE_STABLE_IDX:
+        return {"action": "evoke"}
+    return {"action": "unknown"}
+
+
+def _veto_text(reason: str, state: dict[str, Any]) -> str:
+    """``hand[2]:EnergyCostTooHigh`` (``veto_unplayable``'s spelling) for the
+    HUD: ``Bash (energy cost too high)``."""
+    import re
+
+    m = re.fullmatch(r"hand\[(\d+)\]:(.*)", reason)
+    if m is None:
+        return reason
+    hand = state.get("hand") or []
+    i = int(m.group(1))
+    name = card_name(hand[i]) if 0 <= i < len(hand) else f"card {i}"
+    why = re.sub(r"(?<!^)(?=[A-Z])", " ", m.group(2)).lower()
+    return f"{name} ({why})"
+
+
 def wire_unplayable(state: dict[str, Any]) -> dict[int, str]:
     """Hand indices the GAME has already declared unplayable, and why.
 
@@ -378,6 +441,7 @@ def build_advice(
                 "card_index": t.stable_idx if t.stable_idx >= 0 else None,
                 "target_index": t.target_index,
                 **({"ally_index": t.ally_index} if t.ally_index is not None else {}),
+                **option_move(t, state),
                 "label": _tag_label(t, state),
                 "p_win": round(t.win_prob, 4),
                 "q": round(t.q, 4),
@@ -399,7 +463,8 @@ def build_advice(
         # Loud on purpose: every one of these is a live disagreement between
         # the mirror and the game, and this note is the only place it is
         # counted now that the play never reaches the refusal log.
-        note += f" · vetoed {len(vetoed)} the game calls unplayable ({', '.join(vetoed[:3])})"
+        named = ", ".join(_veto_text(v, state) for v in vetoed[:3])
+        note += f" · vetoed {len(vetoed)} the game calls unplayable ({named})"
     advice: dict[str, Any] = {
         "note": note,
         # The HUD's "est. win": the search's own number reads far too low
@@ -524,28 +589,72 @@ def compute_combat_advice(
             cs = result = None
     if result is None:
         cs = sts2_rs.state_from_dict(wire)
-        result = sts2_rs.mcts_recommend(
-            cs,
-            sims=call_cfg.sims,
-            c_puct=call_cfg.resolved_c_puct(),
-            depth=call_cfg.depth,
-            seed=call_cfg.seed,
-            threads=call_cfg.threads,
-            fair=call_cfg.fair,
-            rollout_policy=call_cfg.rollout_policy,
-            hidden_info=call_cfg.hidden_info,
-            draw_widening_c=call_cfg.resolved_draw_widening_c(),
-            endturn_widening_c=call_cfg.endturn_widening_c,
-            endturn_widening_alpha=call_cfg.endturn_widening_alpha,
-            common_random_numbers=call_cfg.common_random_numbers,
-            win_hp_carry=call_cfg.win_hp_carry,
-            win_potion_carry=call_cfg.win_potion_carry,
-        )
+        result = sts2_rs.mcts_recommend(cs, **_mcts_kwargs(call_cfg))
     tags = tags_from_result(result, wire["deck"]["hand"])
     pv = _pv_labels(list(result.get("pv") or [])[:4], state)
     advice = build_advice(tags, state, sims=sims, pv=pv, pick=result.get("pick"))
     rows = combat_rows(result, headless, advice)
+    try:
+        plan = search_plan(
+            cs,
+            list(result.get("pv") or []),
+            wire,
+            state,
+            advice.get("best"),
+            research=_plan_research(call_cfg),
+        )
+    except Exception as exc:  # a drawing must never cost the advice
+        logger.warning("turn plan failed: %s", exc)
+        plan = []
+    if plan:
+        advice["plan"] = plan
     return advice, cs, call_cfg, rows
+
+
+def _mcts_kwargs(call_cfg: RecommendConfig, sims: int | None = None) -> dict[str, Any]:
+    """``sts2_rs.mcts_recommend``'s keyword arguments for ``call_cfg``."""
+    return {
+        "sims": call_cfg.sims if sims is None else sims,
+        "c_puct": call_cfg.resolved_c_puct(),
+        "depth": call_cfg.depth,
+        "seed": call_cfg.seed,
+        "threads": call_cfg.threads,
+        "fair": call_cfg.fair,
+        "rollout_policy": call_cfg.rollout_policy,
+        "hidden_info": call_cfg.hidden_info,
+        "draw_widening_c": call_cfg.resolved_draw_widening_c(),
+        "endturn_widening_c": call_cfg.endturn_widening_c,
+        "endturn_widening_alpha": call_cfg.endturn_widening_alpha,
+        "common_random_numbers": call_cfg.common_random_numbers,
+        "win_hp_carry": call_cfg.win_hp_carry,
+        "win_potion_carry": call_cfg.win_potion_carry,
+    }
+
+
+#: The turn plan's re-searches (``realgame_turn_plan.search_plan``) run at an
+#: eighth of the decision's budget, never below this: they only order the
+#: rest of the turn, and they share a 0.5 s cap.
+PLAN_MIN_SIMS = 500
+PLAN_SIMS_DIVISOR = 8
+
+
+def _plan_research(call_cfg: RecommendConfig) -> Any:
+    """The turn plan's next-move search: the same honest search at an eighth of
+    the budget, from the fight as the plan has left it; its line, pick first."""
+    import sts2_rs
+
+    sims = max(PLAN_MIN_SIMS, int(call_cfg.sims) // PLAN_SIMS_DIVISOR)
+    kwargs = _mcts_kwargs(dataclasses.replace(call_cfg, sims=sims, c_puct=None))
+
+    def run(fight: Any) -> list[Any]:
+        result = sts2_rs.mcts_recommend(fight, **kwargs)
+        pick = next((r["action"] for r in result.get("actions") or [] if r.get("is_best")), None)
+        if not isinstance(pick, dict):
+            return []
+        pv = list(result.get("pv") or [])
+        return pv if pv and pv[0] == pick else [pick]
+
+    return run
 
 
 def _row_key(d: dict[str, Any]) -> tuple[Any, Any, Any]:
@@ -581,6 +690,11 @@ def combat_rows(
         if o.get("label"):
             row["action"] = o["label"]
         o["mean_final_hp"] = row.get("mean_final_hp")
+        # The HUD's name for the same number (PROTOCOL.md §5): expected HP at
+        # the END OF THE FIGHT through this move. Omitted when no playout
+        # through it reached the fight's end.
+        if row.get("mean_final_hp") is not None:
+            o["hp_mean"] = round(float(row["mean_final_hp"]), 1)
         o["hp_sd"] = row.get("hp_sd")
         o["hp_n"] = row.get("hp_n", 0)
     best = next((o for o in options if o.get("is_best")), None)
@@ -609,6 +723,9 @@ SCREEN_ADVICE_FOR = (
     "boss_relic",
     "treasure",
     "card_bundle",
+    # A full-belt potion reward (PROTOCOL.md v5.2): the mod asks it only of an
+    # advisor that advertises `capabilities.potion_swap`.
+    "potion_swap",
 )
 
 #: Surfaces answered by a DIFFERENT trained head than their own name suggests,
@@ -678,7 +795,115 @@ def warm_policy_async(policies: Any, character: str | None) -> None:
     threading.Thread(target=_load, name=f"warm-{key}", daemon=True).start()
 
 
-def _unranked(state: dict[str, Any], why: str) -> dict[str, Any]:
+def _decline_potion_swap(state: dict[str, Any]) -> dict[str, Any]:
+    """The full-belt swap with the run policy's swap head off: decline it.
+
+    What the engines do with ``STS2_RUNAI_POTION_SWAP`` off (the reward stays
+    on the screen), and what the mod did before it asked at all. Not a
+    ranking, so it says so; Instinct (trained with the swap on) ranks it.
+    """
+    import sts2_realgame
+
+    group = sts2_realgame.potion_swap_group(state.get("options") or [])
+    if not group:
+        return {"note": "no potion swap on this screen"}
+    decline = group[0]
+    # `best.label` stays the mod's own spelling: the takeover cross-checks it.
+    label = str(decline.get("label") or "decline")
+    belt = (state.get("run_state") or {}).get("potions") or state.get("potions") or []
+    return {
+        "note": "potion swap: the run policy's swap head is off, so the reward stays",
+        "options": [
+            {
+                "label": potion_swap_label(o, belt),
+                "is_best": o is decline,
+                "index": int(o["index"]),
+                "action": "choose",
+            }
+            for o in group
+        ],
+        "best": {"action": "choose", "index": int(decline["index"]), "label": label},
+    }
+
+
+def screen_labels(state: dict[str, Any], advice_for: str, decision: Any) -> list[str]:
+    """The run policy's option labels, as the player reads them.
+
+    The decision builders (:mod:`realgame_ppo`) label options for logs and
+    for the encoder, and three of those spellings are ids: a shop option's
+    ``label`` is the merchant entry's id (``SHRUG_IT_OFF``), a shop removal is
+    ``remove:<CARD_ID>``, and a Neow option is its relic's id. The screen's
+    own display names replace them here; every other surface's builder
+    already labels from names (and :func:`display_names.sanitize_advice`
+    guards the rest at the wire).
+    """
+    labels = [str(x) for x in decision.labels]
+    by_index = {
+        int(o.get("index", i)): o
+        for i, o in enumerate(state.get("options") or [])
+        if isinstance(o, dict) and isinstance(o.get("index", i), int)
+    }
+    deck = (state.get("run_state") or {}).get("master_deck") or []
+    for i, action in enumerate(decision.actions):
+        if i >= len(labels):
+            break
+        response = decision.responses[i] if i < len(decision.responses) else {}
+        option = by_index.get(response.get("index"))
+        if advice_for == "shop":
+            if action.get("action") == "shop_remove_card":
+                d = action.get("deck_idx")
+                if isinstance(d, int) and 0 <= d < len(deck):
+                    labels[i] = f"Remove {card_name(deck[d])}"
+            elif option is not None:
+                labels[i] = shop_option_label(option)
+        elif advice_for == "event" and option is not None:
+            import realgame_ppo
+
+            shown = realgame_ppo._strip_bbcode(option.get("label"))
+            if shown:
+                labels[i] = str(shown)
+        elif advice_for == "potion_swap" and option is not None:
+            belt = (state.get("run_state") or {}).get("potions") or state.get("potions") or []
+            labels[i] = potion_swap_label(option, belt)
+    return labels
+
+
+def _advisor_builders() -> dict[str, Any]:
+    """Builders for surfaces only the advisor is asked: not message types the
+    autopilot receives, which `realgame_ppo._PPO_NONCOMBAT_BUILDERS` keys."""
+    import realgame_ppo
+
+    return {"potion_swap": realgame_ppo._build_potion_swap}
+
+
+#: Prefix of the one structured line every `_unranked` answer logs (GH #980).
+#: `spire-mentor-mod/tools/ascension_climb.py` counts these per run from the
+#: archived advisor-log slice, so keep the two in step.
+UNRANKED_LOG_PREFIX = "unranked fallback"
+
+#: The engine's spelling for content it has no model of (`run_manager.rs`:
+#: ``unknown card id "KI_CHANT"``).
+_ENGINE_UNKNOWN_ID = re.compile(r'unknown (card|relic|potion) id "([A-Za-z0-9_]+)"')
+
+
+def engine_missing_content(exc: BaseException) -> str | None:
+    """The fallback reason when Instinct failed only because the engine lacks
+    a card / relic / potion on the screen, else ``None``.
+
+    A v0.113.0 card the engine does not model yet (The Fool's, offered to
+    another character by a mixed reward) reached Instinct as a bare
+    ``ValueError`` and the HUD said "Instinct hit an error" (live,
+    2026-11-13). It is a known gap, not a crash: name what is missing.
+    """
+    if not isinstance(exc, ValueError):
+        return None
+    m = _ENGINE_UNKNOWN_ID.search(str(exc))
+    if m is None:
+        return None
+    return f"the engine has no {m.group(1)} {m.group(2)} yet"
+
+
+def _unranked(state: dict[str, Any], why: str, trigger: str | None = None) -> dict[str, Any]:
     """An answer for a surface no head can rank -- honest, but still usable.
 
     Returning only a note would leave F7 sitting on the screen forever, which
@@ -690,7 +915,22 @@ def _unranked(state: dict[str, Any], why: str) -> dict[str, Any]:
     mod's default ``pause_on: "unsupported"`` F7 stops here and gives the
     player the screen, so the first-option pick only plays when they opted
     out of pausing (unattended runs).
+
+    ``trigger`` names which way in this was (GH #980): ``card_select``,
+    ``no_head:<advice_for>``, ``no_decision:<advice_for>`` or
+    ``inference_failed``. It goes into one structured log line with the
+    prompt key and source model, so a climb can count fallbacks per run and
+    `realgame_hand_select`'s direction tables can be extended from data.
     """
+    if trigger is not None:
+        logger.warning(
+            "%s trigger=%s prompt_key=%s source_model=%s :: %s",
+            UNRANKED_LOG_PREFIX,
+            trigger,
+            state.get("prompt_key") or "-",
+            state.get("source_model") or "-",
+            why,
+        )
     options = state.get("options") or state.get("cards") or state.get("nodes") or []
     if not options:
         return {"note": f"{why} (nothing to pick)", "hand_back": why}
@@ -708,6 +948,42 @@ def _unranked(state: dict[str, Any], why: str) -> dict[str, Any]:
             for i, label in enumerate(labels)
         ],
         "best": {"action": "choose", "index": 0, "label": labels[0]},
+        "hand_back": why,
+    }
+
+
+def _blitz_shop_answer(state: dict[str, Any]) -> dict[str, Any]:
+    """The Blitz merchant (v0.113.0): an admitted rule, never a net ranking.
+
+    `_unranked`'s first-option default would be "Leave shop" here -- three
+    free picks thrown away -- so `realgame_ppo.blitz_shop_choice` names the
+    pick instead, and the note says what it is. Still a hand-back surface:
+    nothing was trained on it (GH #874).
+    """
+    import realgame_ppo
+
+    pick, reason = realgame_ppo.blitz_shop_choice(state)
+    why = "Blitz shop: no net was trained on Blitz wares"
+    options = [o for o in state.get("options") or [] if isinstance(o, dict)]
+    labels = {
+        int(o.get("index", i)): realgame_ppo._strip_bbcode(
+            (o.get("item") or {}).get("title") or o.get("label") or f"option {i}"
+        )
+        for i, o in enumerate(options)
+    }
+    logger.warning(
+        "%s trigger=blitz_shop prompt_key=- source_model=- :: %s (%s)",
+        UNRANKED_LOG_PREFIX,
+        why,
+        reason,
+    )
+    return {
+        "note": f"{why} — {reason}, NOT a recommendation",
+        "options": [
+            {"label": str(label), "is_best": idx == pick, "index": idx, "action": "choose"}
+            for idx, label in labels.items()
+        ],
+        "best": {"action": "choose", "index": pick, "label": str(labels.get(pick, pick))},
         "hand_back": why,
     }
 
@@ -775,6 +1051,31 @@ def _searched_card_select_advice(
     return mirror.answer_card_select(state, cfg, sims)
 
 
+def is_fight_offer(state: dict[str, Any]) -> bool:
+    """A choose-a-card screen opened INSIDE a fight (Discovery, a Skill /
+    Attack / Power Potion): a card generated into this fight, not a deck pick.
+    The same screen out of a fight (Lead Paperweight) adds to the deck."""
+    return state.get("surface") == "choose_a_card" and state.get("combat") is not None
+
+
+def fight_offer_as_select(state: dict[str, Any]) -> dict[str, Any]:
+    """An in-fight choose-a-card as the in-combat ``card_select`` it is.
+
+    The game opens both through ``CardSelectCmd`` (``FromChooseACardScreen``),
+    and the fight mirror answers it the same way: replay what opened it
+    (``source_model``, sent by the mod since 0.10.0-beta.7) on a fork of the
+    carried fight and stand on the engine's own choice. Shared by both brains.
+    """
+    return {
+        **state,
+        "advice_for": "card_select",
+        "min_select": 1,
+        "max_select": 1,
+        "cancelable": bool(state.get("can_skip")),
+        "source": "FromChooseACardScreen",
+    }
+
+
 def compute_screen_advice(
     state: dict[str, Any],
     advice_for: str,
@@ -811,6 +1112,16 @@ def compute_screen_advice(
     import realgame_ppo
 
     state = realgame_ppo.apply_session_context(state, session)
+    if advice_for == "card_reward" and is_fight_offer(state):
+        # A card generated into the fight is a fight decision: the combat
+        # MCTS on the mirror's park, when the mirror can stand on it. The
+        # deck-pick head below is only the fallback (it asks "is this a good
+        # DECK card", the wrong question for a copy that lasts one fight).
+        searched = _searched_card_select_advice(fight_offer_as_select(state), mirror, cfg, sims)
+        if searched is not None:
+            return searched
+    if advice_for == "shop" and realgame_ppo.is_blitz_shop(state):
+        return _blitz_shop_answer(state)
     run_state = state.get("run_state") or {}
     character = character_display_name(run_state.get("character")) or "Ironclad"
     policy, error = policies.get(character)
@@ -838,9 +1149,13 @@ def compute_screen_advice(
         # surface the PPO driver learns to handle is one the advisor can
         # explain without a second dispatch to keep in sync.
         head, standin_note = _SURFACE_STANDINS.get(advice_for, (advice_for, ""))
-        builder = realgame_ppo._PPO_NONCOMBAT_BUILDERS.get(head)
+        if advice_for == "potion_swap" and not realgame_ppo._live_potion_swap_enabled():
+            return _decline_potion_swap(state)
+        builder = _advisor_builders().get(head) or realgame_ppo._PPO_NONCOMBAT_BUILDERS.get(head)
         if builder is None:
-            return _unranked(state, f"no trained head for {advice_for}")
+            return _unranked(
+                state, f"no trained head for {advice_for}", trigger=f"no_head:{advice_for}"
+            )
         build_state = state if head == advice_for else {**state, "type": head}
         decision = builder(build_state)
 
@@ -866,7 +1181,11 @@ def compute_screen_advice(
             ranked = realgame_hand_select.rank(state)
             if ranked is not None:
                 return ranked
-        return _unranked(state, f"{advice_for}: the net does not cover this surface")
+        return _unranked(
+            state,
+            f"{advice_for}: the net does not cover this surface",
+            trigger="card_select" if advice_for == "card_select" else f"no_decision:{advice_for}",
+        )
 
     if len(decision.actions) == 1:
         probs, value = [1.0], None
@@ -879,7 +1198,11 @@ def compute_screen_advice(
             # GH #315), and any backend can fail at inference. Advice must
             # always render, so degrade to the unranked shape.
             logger.warning("run-policy inference failed for %s: %s", advice_for, exc)
-            return _unranked(state, f"{advice_for}: run-policy inference failed ({exc})")
+            return _unranked(
+                state,
+                f"{advice_for}: run-policy inference failed ({exc})",
+                trigger="inference_failed",
+            )
 
     def _option_index(response: dict[str, Any], fallback: int) -> int:
         # card_reward answers with a bare `index`; card_select with an
@@ -914,11 +1237,12 @@ def compute_screen_advice(
     # of coordinates is not something a player can act on while looking at a
     # map that shows no coordinates.
     offered = state.get("nodes") or [] if advice_for == "map_select" else []
+    labels = screen_labels(state, advice_for, decision)
     options = []
     for i, p in enumerate(probs):
         response = decision.responses[i] if i < len(decision.responses) else {}
         option = {
-            "label": decision.labels[i] if i < len(decision.labels) else "?",
+            "label": labels[i] if i < len(labels) else "?",
             "visit_share": round(float(p), 4),
             "is_best": i == best_i,
             "index": _option_index(response, i),
@@ -943,6 +1267,10 @@ def compute_screen_advice(
         "index": _option_index(best_response, best_i),
         "label": options[best_i]["label"],
     }
+    if advice_for == "potion_swap" and best_i < len(decision.labels):
+        # The mod's own spelling (`discard <POTION_ID>`): the takeover
+        # cross-checks `best.label` against it (SimAdvisor.ReconcileIndex).
+        best["label"] = decision.labels[best_i]
     if carried is not None:
         note += " · target carried from the shop pick, not re-ranked here"
     if session is not None and advice_for == "shop":
@@ -951,7 +1279,7 @@ def compute_screen_advice(
         )
     if standin_note:
         note += f" · {standin_note}"
-    if state.get("surface") == "choose_a_card":
+    if is_fight_offer(state):
         # The card-pick head is the closest surface the champion was trained
         # on, but it was trained on "add this to my DECK". This card is
         # generated into the current fight and then gone, so its deck value
@@ -960,7 +1288,11 @@ def compute_screen_advice(
         note += " · scored as a deck pick; this copy only lasts the fight"
 
     advice = {"note": note, "options": options, "best": best}
-    if advice_for in _HAND_BACK_SURFACES and not trained_surface:
+    # A forced pick (single player's one chest relic) never asked the borrowed
+    # head anything, so there is no untrained decision to hand back: pausing
+    # there stopped "AI plays" at every chest.
+    forced = len(decision.actions) == 1
+    if advice_for in _HAND_BACK_SURFACES and not trained_surface and not forced:
         advice["hand_back"] = _HAND_BACK_SURFACES[advice_for]
 
     if advice_for == "map_select":
@@ -1048,6 +1380,47 @@ def _project_hp(
     return max(hp, 1.0)
 
 
+def route_graph(state: dict[str, Any]) -> dict[tuple[int, int], dict[str, Any]]:
+    """The act's map by coordinate, for a route walk, start and boss included.
+
+    The mod's ``map.nodes`` hold rows 1..N only: the act's start (row 0, the
+    Ancient) shows up just as the offered node at an act's entrance, and the
+    boss just as ``map.boss``. Without them the route at an entrance was empty
+    and every route ended a node short of the boss. The game links the start
+    to every row-1 node and the last row to the boss (StandardActMap.cs:221-232);
+    the last row's ``children`` already name the boss.
+    """
+    m = state.get("map") or {}
+    by_coord: dict[tuple[int, int], dict[str, Any]] = {}
+    for n in m.get("nodes") or []:
+        try:
+            by_coord[int(n["col"]), int(n["row"])] = n
+        except (KeyError, TypeError, ValueError):
+            continue
+    if not by_coord:
+        return by_coord
+    boss = m.get("boss")
+    if isinstance(boss, dict):
+        try:
+            coord = (int(boss["col"]), int(boss["row"]))
+        except (KeyError, TypeError, ValueError):
+            coord = None
+        if coord is not None and coord not in by_coord:
+            by_coord[coord] = {"col": coord[0], "row": coord[1], "type": "Boss", "children": []}
+    first_row = min(r for _, r in by_coord)
+    for n in state.get("nodes") or []:
+        try:
+            coord = (int(n["col"]), int(n["row"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if coord not in by_coord and coord[1] < first_row:
+            by_coord[coord] = {
+                **n,
+                "children": [{"col": c, "row": r} for (c, r) in by_coord if r == first_row],
+            }
+    return by_coord
+
+
 def _project_map_path(
     state: dict[str, Any],
     policy: Any,
@@ -1082,12 +1455,7 @@ def _project_map_path(
     if not graph or not (0 <= best_index < len(offered)):
         return []
 
-    by_coord: dict[tuple[int, int], dict[str, Any]] = {}
-    for n in graph:
-        try:
-            by_coord[int(n["col"]), int(n["row"])] = n
-        except (KeyError, TypeError, ValueError):
-            continue
+    by_coord = route_graph(state)
 
     run_state = state.get("run_state") or {}
     base_obs = realgame_ppo._base_obs(state, run_state)
@@ -1240,6 +1608,33 @@ def prune_tree(tree: dict[str, Any], min_visits: int = 2, max_nodes: int = 2000)
     return out
 
 
+class RequestRecorder:
+    """Every raw message from the mod, one JSON line each (``--record-requests``).
+
+    Verbatim and unwrapped, unlike :class:`AdvisorLog`: the point is a corpus
+    a test can feed back into the request handler, or into Instinct's run
+    graft, exactly as the mod sent it. Never raises into the serve loop.
+    """
+
+    def __init__(self, out_dir: Path) -> None:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        self.path = out_dir / f"requests-{stamp}.jsonl"
+        self._lock = threading.Lock()
+
+    def write(self, msg: dict[str, Any]) -> None:
+        try:
+            line = json.dumps(msg, ensure_ascii=False, default=str)
+            with self._lock, self.path.open("a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except Exception as exc:
+            logger.warning("request recorder: %s", exc)
+
+
+#: ``--record-requests``' recorder, or ``None``.
+RECORDER: RequestRecorder | None = None
+
+
 class AdvisorLog:
     """Append-only JSONL event log (advice + human actions), one file/session.
 
@@ -1340,6 +1735,8 @@ def build_coach(
         return wlog.log_name, log_idx
 
     def _send(record: dict[str, Any]) -> None:
+        # The same no-raw-ids guard as the advice (`display_names`).
+        record = sanitize_coach(record)
         client.send_action(
             {"action": "coach", "request_id": None, "state_id": None, "coach": record}
         )
@@ -1388,6 +1785,10 @@ def serve(args: argparse.Namespace) -> None:
     )
     log = AdvisorLog(Path(args.log_dir))
     logger.info("advisor log: %s", log.path)
+    if getattr(args, "record_requests", ""):
+        global RECORDER
+        RECORDER = RequestRecorder(Path(args.record_requests))
+        logger.info("recording raw requests to %s", RECORDER.path)
     wlog = WorkbenchRunLogger(args.workbench_logs)
     if args.workbench == "auto":
         ensure_workbench_running()
@@ -1494,9 +1895,21 @@ def _serve_connected(
     while True:
         msg = client.receive_state()
         mtype = msg.get("type")
+        if RECORDER is not None:
+            RECORDER.write(msg)
         warm_policy_async(policies, (msg.get("run_state") or {}).get("character"))
         control.note_message(msg)
 
+        if mtype == "advice_request" and client.newer_advice_request_pending(msg.get("advice_for")):
+            # A board that no longer exists: the mod already asked again (a
+            # teammate's next card, #1208) and drops any reply to this one.
+            # Answer the newer request instead of paying for this search.
+            logger.info(
+                "advice: skipped request %s (%s), a newer one is queued",
+                msg.get("request_id"),
+                msg.get("advice_for"),
+            )
+            continue
         if mtype == "advice_request":
             _handle_advice_request(
                 client, cfg, args, log, wlog, msg, policies, tree, mirror, session, coach
@@ -1513,6 +1926,7 @@ def _serve_connected(
             # Follow the world BEFORE logging: the mirror is only a mirror
             # while it is advanced through what actually happened.
             mirror.on_world_action(msg)
+            INSTINCT.on_human_action(msg)
             logger.info("human: %s", msg.get("detail") or msg.get("action"))
             log.write("action", msg)
             wlog.log_human_action(msg)
@@ -1532,6 +1946,7 @@ def _serve_connected(
                 # moving the board backwards, which is the case that would
                 # corrupt it silently.
                 mirror.on_rewind(msg)
+                INSTINCT.reset(mtype)
             control.on_bridge_message(msg)
             if coach is not None and mtype in ("snapshot_restored", "combat_undone"):
                 # AFTER the tree moved its active pointer: grades for nodes
@@ -1554,6 +1969,7 @@ def _serve_connected(
             tree.on_run_end(msg)
             LAST_COMBAT.clear()
             mirror.drop("run over")
+            INSTINCT.reset("run over")
             logger.info("advisor %s", mirror.note())
             session.clear()
             if coach is not None:
@@ -1644,6 +2060,46 @@ def _cache_for_coach(
         logger.warning("coach: caching advice failed: %s", exc)
 
 
+def advisor_capabilities() -> dict[str, Any]:
+    """``capabilities`` on every reply: the coach level, plus what Instinct plays.
+
+    ``instinct`` lists ``{character, game_version}`` pairs (PROTOCOL.md §5,
+    v5.2); the mod shows its Search / Instinct switch only for a run it
+    lists. Empty when no Instinct net loaded.
+    """
+    return {**ADVISOR_CAPABILITIES, "instinct": INSTINCT.capabilities()}
+
+
+def mark_instinct_unavailable(advice: dict[str, Any], reason: str) -> dict[str, Any]:
+    """The search's advice, answered in Instinct's place: say so, and why."""
+    out = dict(advice)
+    out["brain"] = "search"
+    out["instinct_unavailable"] = reason
+    note = out.get("note")
+    out["note"] = f"Search (Instinct: {reason})" + (f" · {note}" if note else "")
+    return out
+
+
+def mark_beta_build(advice: dict[str, Any], game_version: str | None) -> dict[str, Any]:
+    """Label advice on a partly ported beta build as approximate.
+
+    The engine runs the beta on the previous build's rules wherever it has not
+    ported the beta's changes yet, so the ranking can be off; the player
+    should know. Refusals and advisor errors (``hand_back``) carry no ranking
+    and stay as they are.
+    """
+    if game_version not in BETA_GAME_VERSIONS:
+        return advice
+    if any(k in advice for k in ("unsupported_game_version", "unsupported_character", "hand_back")):
+        return advice
+    out = dict(advice)
+    label = f"Beta {game_version}: approximate advice"
+    note = out.get("note")
+    out["note"] = label + (f" · {note}" if note else "")
+    out["beta_game_version"] = game_version
+    return out
+
+
 def refusal_advice(exc: UnsupportedGameVersionError) -> dict[str, Any]:
     """The advice for a board from a game build this advisor cannot simulate.
 
@@ -1675,6 +2131,7 @@ def note_game_version(session: dict[str, Any] | None, game_version: str, mirror:
         LAST_COMBAT.clear()
         if mirror is not None:
             mirror.drop(f"game build changed {previous} -> {game_version}")
+        INSTINCT.reset("game build changed")
     session["game_version"] = game_version
 
 
@@ -1713,12 +2170,38 @@ def _handle_advice_request(
         # built for it downstream (`to_headless_combat_play` -> `$.game_version`
         # -> `state_from_dict`); an unknown build is refused before any search.
         note_game_version(session, envelope_game_version(msg), mirror)
+        check_supported_characters(msg)
         state = dict(msg)
         state["type"] = advice_for
         is_boss = (state.get("room_type") or "") == "Boss"
         sims = args.boss_sims if is_boss else args.sims
         fight_cfg = fight_search_cfg(cfg, state)
-        if advice_for in SCREEN_ADVICE_FOR:
+        # The player's brain (PROTOCOL.md §5, v5.2). Instinct answers when it
+        # can read the position; otherwise the search below answers and says
+        # why, so autoplay never stalls on a position Instinct cannot read.
+        instinct_advice: dict[str, Any] | None = None
+        instinct_reason: str | None = None
+        if msg.get("brain") == "instinct":
+            try:
+                instinct_advice = INSTINCT.advise(
+                    state, advice_for, cfg=fight_cfg, mirror=mirror, session=session, sims=sims
+                )
+            except InstinctUnavailable as e:
+                instinct_reason = str(e)
+                logger.info("instinct unavailable (%s): %s", advice_for, e)
+            except Exception as e:
+                missing = engine_missing_content(e)
+                if missing is not None:
+                    instinct_reason = missing
+                    logger.info("instinct unavailable (%s): %s", advice_for, missing)
+                else:
+                    instinct_reason = "Instinct hit an error"
+                    logger.error("instinct failed: %s", e, exc_info=True)
+        if instinct_advice is not None:
+            advice = instinct_advice
+            if advice_for == "combat_action":
+                advice = apply_ally_wait(state, advice)
+        elif advice_for in SCREEN_ADVICE_FOR:
             advice = compute_screen_advice(
                 state,
                 advice_for,
@@ -1739,9 +2222,14 @@ def _handle_advice_request(
                     logger.warning("search-tree logging failed: %s", exc)
         else:
             raise ValueError(f"unsupported advice_for={advice_for!r}")
+        if instinct_reason is not None:
+            advice = mark_instinct_unavailable(advice, instinct_reason)
     except UnsupportedGameVersionError as e:
         logger.error("advice_request refused: %s", e)
         advice = refusal_advice(e)
+    except UnsupportedCharacterError as e:
+        logger.warning("advice_request refused: %s", e)
+        advice = {"note": str(e), "unsupported_character": e.raw}
     except Exception as e:
         # With the traceback: this handler renders "advisor error" into the
         # HUD and moves on, so without one a live failure leaves only a
@@ -1751,13 +2239,23 @@ def _handle_advice_request(
         logger.error("advice_request failed: %s", e, exc_info=True)
         advice = {"note": f"advisor error: {e}", "hand_back": "the advisor hit an error"}
 
+    # The wire boundary: no raw game id reaches the HUD, from either brain or
+    # any surface (`display_names.sanitize_advice`; the cross-checked
+    # `best.label` stays the mod's own spelling).
+    try:
+        advice = sanitize_advice(advice, advice_for, msg)
+    except Exception as exc:  # the guard must never cost the advice
+        logger.warning("advice label guard failed: %s", exc)
+    # An unreadable build was already answered (and refused) above.
+    with contextlib.suppress(UnsupportedGameVersionError):
+        advice = mark_beta_build(advice, envelope_game_version(msg))
     elapsed = time.monotonic() - t0
     reply = {
         "action": "advice",
         "request_id": request_id,
         "state_id": state_id,
         "advice": advice,
-        "capabilities": dict(ADVISOR_CAPABILITIES),
+        "capabilities": advisor_capabilities(),
     }
     try:
         client.send_action(reply)
@@ -1824,6 +2322,10 @@ _SMOKE_STATE: dict[str, Any] = {
         "nodes": [],
     },
 }
+
+
+class _SmokeSkip(Exception):
+    """A smoke step with nothing to check in this build."""
 
 
 def _smoke() -> int:
@@ -1901,6 +2403,29 @@ def _smoke() -> int:
         print(f"run policy FAIL: {e}")
 
     try:
+        # Instinct (the e2e student): the bundled weights, the tokenizer's
+        # baked-in tables and the forward, through 20 real decisions of the
+        # campaign run -- the same path a live request takes past the graft.
+        import sts2_rs
+
+        if not INSTINCT._weights.is_file():
+            # A build without the net (the public export ships none, and the
+            # spec says so loudly at build time): nothing to check here.
+            print(f"instinct SKIP (no net at {INSTINCT._weights})")
+            raise _SmokeSkip
+        if not INSTINCT.available:
+            raise RuntimeError(INSTINCT._error or "not loaded")
+        played = sts2_rs.e2e_selfplay(INSTINCT._student, 170000000, max_decisions=20)
+        if played.get("decisions") != 20 or played.get("error"):
+            raise RuntimeError(f"self-play stopped early: {played}")
+        print(f"instinct OK ({INSTINCT._weights.name}, 20 decisions)")
+    except _SmokeSkip:
+        pass
+    except Exception as e:
+        ok = False
+        print(f"instinct FAIL: {e}")
+
+    try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(("127.0.0.1", 0))
             print(f"socket OK (ephemeral port {s.getsockname()[1]})")
@@ -1969,6 +2494,21 @@ def main(argv: list[str] | None = None) -> int:
         else str(Path(__file__).resolve().parent.parent / "logs"),
         help="Directory for workbench-schema run logs (GameLogger JSONL; "
         "the workbench's /api/runs reads this). Empty string disables.",
+    )
+    parser.add_argument(
+        "--record-requests",
+        default="",
+        metavar="DIR",
+        help="Append every raw message the mod sends (advice requests with "
+        "their full envelope, human actions, rewinds) to DIR/requests-<time>"
+        ".jsonl, verbatim. The corpus Instinct's run graft is checked against "
+        "(realgame_instinct). Empty = off.",
+    )
+    parser.add_argument(
+        "--instinct-weights",
+        default="",
+        metavar="PATH",
+        help="Instinct's .e2ew weights (default: data/e2e/ under the data root).",
     )
     parser.add_argument(
         "--log-search-tree",
@@ -2089,6 +2629,9 @@ def main(argv: list[str] | None = None) -> int:
         cores,
         args.sims // max(1, args.threads),
     )
+    if args.instinct_weights:
+        global INSTINCT
+        INSTINCT = InstinctAdvisor(Path(args.instinct_weights))
     if args.smoke:
         return _smoke()
     try:

@@ -121,6 +121,8 @@ timeout = 600
 markers = [
   "slow: tests that take significant time (run on demand, not in `just test`)",
   "oracle: needs the C# oracle, i.e. the player's own game assembly in lib/ (skipped when absent; `-m 'not oracle'` is the game-free subset)",
+  "pending_run_level: strict xfail on builds whose run level is not ported yet (tests/conftest.py PENDING_BUILDS)",
+  "pending_e2e_tables: strict xfail on builds with no e2e static tables yet (tests/conftest.py PENDING_BUILDS)",
   "game_data: reads game-derived data (localization_eng/, sts2-wiki/data, card_db.json), training checkpoints or private deploy files; skipped when absent (see tests/conftest.py)",
 ]
 
@@ -227,6 +229,10 @@ exclude_lines = [
 # are lazy function-level imports, so the modules load fine without them
 # and the deps stay dev-only rather than bloating the deployed image.
 DEP004 = ["networkx", "onnx"]
+# `ppo/e2e/actionlog.py` imports `zstandard` inside try/except ImportError and
+# falls back to stdlib LZMA (the codec byte records which), so it is optional:
+# the campaign venv has no zstd binding and must not need one.
+DEP001 = ["zstandard"]
 
 [tool.deptry]
 # Script-style sibling modules under python/ (added to sys.path, not installed

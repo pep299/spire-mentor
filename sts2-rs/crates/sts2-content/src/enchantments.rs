@@ -147,16 +147,8 @@ pub fn apply_static_enchantment(
             // one that has to land; NON_REMOVABLE is the older local alias, kept
             // so existing readers of that flag still see it.
             added = CardKeywords::ETERNAL.with(CardKeywords::NON_REMOVABLE);
-            if let Some(mut model) = card.local_energy_cost {
-                // TezcatarasEmber.OnEnchant upgrades the unmodified base to
-                // zero; this is not an additional Absolute combat modifier.
-                if !model.costs_x {
-                    model.upgrade_base(-model.base);
-                    card.set_local_energy_cost(model);
-                }
-            } else {
-                card.cost = 0;
-            }
+            // `UpgradeBy(-GetWithModifiers(None))`: the base goes to 0.
+            card.cost.upgrade_by(-i32::from(card.base_cost()));
         }
         EnchantmentId::SoulsPower => {
             removed = CardKeywords::EXHAUST;
@@ -284,9 +276,9 @@ pub fn enchant_play_count_bonus(card: &Card) -> i32 {
 /// a card after its base effect resolves. At this pin the only enchantment
 /// with an `OnPlay` body is [`EnchantmentId::Inky`] (`Inky.cs:28-41`): it
 /// applies `1` Weak to the card's target — Blade of Ink's Shivs are its sole
-/// source. `target` is the single resolved enemy target (Shiv is
-/// `TargetType::Enemy`; C#'s `AllEnemies` branch is unreachable for any
-/// current Inky carrier).
+/// source. `target` is one resolved enemy target: the Shiv's own target, or,
+/// for a Shiv under Fan of Knives (C#'s `AllEnemies` arm), each enemy
+/// hittable after the attack resolved.
 ///
 /// Callers invoke this from a card's play handler *after* the damage/effect
 /// resolves, passing the resolved target — the generic per-card dispatch in
@@ -364,7 +356,7 @@ mod tests {
         Card {
             uid: uid(1),
             card_id: CardId::StrikeIronclad,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -426,7 +418,28 @@ mod tests {
         let mut c = strike_card();
         let (add, _) = apply_static_enchantment(&mut c, EnchantmentId::TezcatarasEmber, 1);
         assert!(add.contains(CardKeywords::NON_REMOVABLE));
-        assert_eq!(c.cost, 0);
+        assert_eq!(c.local_cost(), 0);
+    }
+
+    /// C# `CardModel.DowngradeInternal` resets the base cost to canonical
+    /// and then re-runs `Enchantment.ModifyCard`, whose `OnEnchant` zeroes
+    /// the base again: a Dampen-downgraded Tezcatara's Ember Strike still
+    /// costs 0 (random-loadout Ironclad 7505 v0.107.1).
+    #[test]
+    fn tezcataras_ember_survives_a_downgrade() {
+        for version in [
+            sts2_core::GameVersion::V0_107_1,
+            sts2_core::GameVersion::V0_111_0,
+        ] {
+            crate::relics::dispatch::ensure_installed();
+            let mut c = sts2_core::build_card_for_version(CardId::StrikeIronclad, false, version)
+                .expect("strike");
+            let _ = apply_static_enchantment(&mut c, EnchantmentId::TezcatarasEmber, 1);
+            assert!(c.upgrade_for(version));
+            assert!(c.downgrade_for(version));
+            assert_eq!(c.cost.base(), 0, "{version:?}: the enchant re-runs");
+            assert_eq!(c.local_cost(), 0, "{version:?}");
+        }
     }
 
     #[test]
@@ -442,9 +455,13 @@ mod tests {
         // `EnchantDamageMultiplicative` → 2× on a powered attack. It has NO
         // `OnEnchant` / cost behavior — enchanting must leave the cost alone.
         let mut c = strike_card();
-        assert_eq!(c.cost, 1);
+        assert_eq!(c.local_cost(), 1);
         apply_static_enchantment(&mut c, EnchantmentId::Instinct, 1);
-        assert_eq!(c.cost, 1, "Instinct must NOT change the card's cost");
+        assert_eq!(
+            c.local_cost(),
+            1,
+            "Instinct must NOT change the card's cost"
+        );
         // It registers as a 2× powered-attack damage multiplier.
         assert_eq!(enchant_damage_multiplicative_x100(&c, true), 200);
         assert_eq!(
@@ -684,7 +701,7 @@ mod tests {
     fn slither_rejects_x_cost_cards() {
         let spec = basic_strike_spec();
         let mut x_cost = strike_card();
-        x_cost.cost = -1; // X-cost sentinel
+        x_cost.cost = sts2_core::CardEnergyCost::new(-1); // X-cost sentinel
         assert!(
             !can_enchant_card(&spec, &x_cost, EnchantmentId::Slither),
             "Slither rejects X-cost (negative) cards"
@@ -692,7 +709,7 @@ mod tests {
         // A zero-cost card sits on the `>= 0` boundary and IS eligible
         // (kills `>=` → `<`, which would reject cost == 0).
         let mut zero_cost = strike_card();
-        zero_cost.cost = 0;
+        zero_cost.cost = sts2_core::CardEnergyCost::new(0);
         assert!(can_enchant_card(&spec, &zero_cost, EnchantmentId::Slither));
     }
 

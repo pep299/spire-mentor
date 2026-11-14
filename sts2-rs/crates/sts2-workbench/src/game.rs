@@ -297,6 +297,51 @@ impl Game {
         Ok(self.serialize())
     }
 
+    /// The e2e student's training run (`sts2_e2e::env::new_run_at`, the
+    /// campaign's `factory.new_run`): Ironclad, v0.111.0, Neow start, the
+    /// agent-decision flags, interactive potion swap ON and a ROLLED Act 1 —
+    /// unlike [`Self::start_faithful`], which pins swap off and Overgrowth.
+    /// The game build is forced to v0.111.0 whatever [`Self::game_version`]
+    /// says (the caller's session must be built in it).
+    #[cfg(feature = "e2e")]
+    pub fn start_e2e(&mut self, seed: i32, ascension: u8) -> Result<Value, GameError> {
+        self.start_e2e_seed(&ModeSeed::Int(seed), ascension)
+    }
+
+    /// [`Self::start_e2e`] for either kind of run-mode seed: an integer run
+    /// seed, or a game seed string (the seed checker), hashed the way the
+    /// v0.111.0 game hashes it.
+    #[cfg(feature = "e2e")]
+    pub fn start_e2e_seed(&mut self, seed: &ModeSeed, ascension: u8) -> Result<Value, GameError> {
+        let rm = match seed {
+            ModeSeed::Int(seed) => {
+                let seed = i64::from(*seed);
+                if !(0..1_i64 << 31).contains(&seed) {
+                    return err(format!("e2e seed {seed} outside [0, 2**31)"));
+                }
+                sts2_e2e::env::new_run_at(seed, ascension)
+            }
+            ModeSeed::Game(s) => match sts2_e2e::env::new_run_from_game_seed(s, ascension) {
+                Ok(rm) => rm,
+                Err(e) => return err(e),
+            },
+        };
+        ensure_content_installed();
+        self.character = crate::e2e::CHARACTER.to_string();
+        self.act1 = "roll".to_string();
+        self.rm = Some(rm);
+        self.option_actions.clear();
+        self.shop_removal_pick = false;
+        self.pre_action = None;
+        if self.record_card_plays {
+            self.set_record_card_plays(true);
+        }
+        if self.record_combat_log {
+            self.set_record_combat_log(true);
+        }
+        Ok(self.serialize())
+    }
+
     /// `RustGame.start_imported`: rebuild the run behind a state copied out of
     /// the live game. The run identity (seed, character, ascension) is REAL —
     /// constructed the same way — so the act maps, boss and pre-rolled
@@ -437,6 +482,26 @@ impl Game {
         // keeps comparing against the last hand-played action's snapshot.
         rmx::ensure_play_log_flag(rm, rcp, rcl);
         rm.take_action(action)
+    }
+
+    /// [`Self::take_native`] for a recorded native-action dict (which may be
+    /// the multi-pick `combat_resolve_choice_selection`, see
+    /// [`rmx::take_native_value`]).
+    ///
+    /// # Errors
+    ///
+    /// No run, or a dict neither parser accepts.
+    pub fn take_native_value(&mut self, action: &Value) -> Result<&'static str, String> {
+        let (rcp, rcl) = (self.record_card_plays, self.record_combat_log);
+        let rm = self.rm.as_mut().ok_or("no live run")?;
+        rmx::take_native_value(rm, action, rcp, rcl)
+    }
+
+    /// The display-log recording flags (`record_card_plays`,
+    /// `record_combat_log`) a native action re-arms before it applies.
+    #[must_use]
+    pub fn play_log_flags(&self) -> (bool, bool) {
+        (self.record_card_plays, self.record_combat_log)
     }
 
     /// Drop the run.
@@ -1496,12 +1561,27 @@ impl Game {
             Self::fill_smith(state, &smith_acts, &smith_ids);
             return;
         }
-        self.option_actions = if rest_acts.is_empty() {
-            acts
-        } else {
-            rest_acts
-        };
+        // The engine does not offer a DISABLED option (Smith with nothing to
+        // upgrade) as an action, but C# still shows it greyed: render every
+        // engine option at its idx (`is_enabled` false; picking it is
+        // rejected). With no enabled option left (MiniatureTent) the remaining
+        // actions — leave — follow.
         let engine_opts = rmx::rest_site_options(rm);
+        self.option_actions = if engine_opts.is_empty() {
+            if rest_acts.is_empty() {
+                acts
+            } else {
+                rest_acts
+            }
+        } else {
+            let mut v: Vec<RunAction> = (0..engine_opts.len())
+                .map(|idx| RunAction::RestOption { idx })
+                .collect();
+            if rest_acts.is_empty() {
+                v.extend(acts);
+            }
+            v
+        };
         let options: Vec<Value> = self
             .option_actions
             .iter()
@@ -1883,6 +1963,8 @@ fn graft_add_card(rm: &mut RunManager, card_id: &str) {
             c.card_id = cid;
             c
         });
+    let mut card = card;
+    card.normalize_for_version(rm.run_state.game_version);
     rm.run_state.master_deck.push(card);
 }
 
@@ -2084,6 +2166,49 @@ pub(crate) fn seed_json(seed: u64) -> Value {
         json!(seed)
     } else {
         json!(seed.to_string())
+    }
+}
+
+/// A run-mode run's seed as a session stores it (`Session::seed`): an
+/// integer run seed (`"123"`), or a game seed string (`"game:1SNVTCEXKR0Q"`,
+/// the seed checker's e2e runs).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ModeSeed {
+    Int(i32),
+    Game(String),
+}
+
+/// The session-seed prefix of a game seed string.
+pub const GAME_SEED_PREFIX: &str = "game:";
+
+impl ModeSeed {
+    /// Read a stored session seed; `None` when it is neither form.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.strip_prefix(GAME_SEED_PREFIX) {
+            Some(g) if !g.is_empty() => Some(ModeSeed::Game(g.to_string())),
+            Some(_) => None,
+            None => s.parse::<i32>().ok().map(ModeSeed::Int),
+        }
+    }
+
+    /// The form [`Self::parse`] reads back.
+    #[must_use]
+    pub fn session_string(&self) -> String {
+        match self {
+            ModeSeed::Int(i) => i.to_string(),
+            ModeSeed::Game(g) => format!("{GAME_SEED_PREFIX}{g}"),
+        }
+    }
+
+    /// An `i32` for the parts that want one (the native combat agent's
+    /// seed): the integer, or a stable hash of the game seed.
+    #[must_use]
+    pub fn as_i32(&self) -> i32 {
+        match self {
+            ModeSeed::Int(i) => *i,
+            ModeSeed::Game(g) => crate::runmode::hash_seed(g),
+        }
     }
 }
 

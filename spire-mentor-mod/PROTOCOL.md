@@ -1,4 +1,4 @@
-# Spire Mentor wire protocol (v5.1 / coach 2; v5 / coach; v3 = advisor mode; v2 = phase 1b)
+# Spire Mentor wire protocol (v5.3 / HUD numbers; v5.2 / brain; v5.1 / coach 2; v5 / coach; v3 = advisor mode; v2 = phase 1b)
 
 Newline-delimited JSON over a single-client TCP socket on `127.0.0.1:<port>`
 (default `9002`, see `SpireMentor.conf`). One JSON object per line.
@@ -279,6 +279,7 @@ separate "hand_select" message type.
 | `min_select` / `max_select` | int | |
 | `min_count` / `max_count` | int | **New, phase 1b.** Aliases of `min_select`/`max_select`, additive. |
 | `cancelable` | bool | **New, phase 1b.** `true` iff `min_select <= 0` -- see "cancel" in section 4. **This is a documented approximation, not the game's real cancelable flag**: the automation-facing `MegaCrit.Sts2.Core.TestSupport.ICardSelector.GetSelectedCards(options, minSelect, maxSelect)` signature does not pass the game's own `CardSelectorPrefs.Cancelable` at all (verified against `CardSelectCmd.cs` in the v0.107.1 decomp -- every `FromXxx` call site forwards only `minSelect`/`maxSelect`). A selection that is genuinely cancelable in-game with `min_select > 0` will report `cancelable:false` here; there is no game symbol reachable from this hook to fix that. |
+| `selected_count` | int | **New, 2026-11-09 (#1206).** Advisor-mode grid screens only (`NCardGridSelectionScreen` describer): how many cards this screen already has selected. `cards` never lists them. Most grids ask only "confirm" once a card is selected. An "up to N" combat pile pick (`screen: "NCombatPileCardSelectScreen"`, e.g. Neow's Fury) asks again after each pick while fewer than `max_select` are taken and cards remain. The advisor then continues its planned picks, or answers `{"action":"skip"}` to confirm what is taken. |
 
 If the option count is `<= min_select`, the mod auto-resolves without asking (unchanged from v1).
 
@@ -324,21 +325,23 @@ and a fresh re-send; the disabled button is never clicked.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `options` | array | `{index, id, action:"rest_option", label, description, enabled}` per option. Only options the game currently allows (`RestSiteOption.IsEnabled`) are offered, so `enabled` is always `true`; advisor mode offers the same set. |
+| `options` | array | `{index, option_index, id, action:"rest_option", label, description, enabled}` per option. Only options the game currently allows (`RestSiteOption.IsEnabled`) are offered, so `enabled` is always `true`; advisor mode offers the same set. `index` numbers the offered options (what `choose` answers). **New, 2026-11:** `option_index` is the option's slot in `NRestSiteRoom.Options` (`RestSiteOption.Generate` order, minus options already taken), which a disabled option still occupies — e.g. HEAL 0, a disabled SMITH 1, DIG 2 — and equals the sim engine's `rest_option` idx. Older builds omit it; consumers fall back to the position. |
 
 ### `shop`
 
 | Field | Type | Meaning |
 |---|---|---|
-| `options` | array | Index 0 is always `{index:0, id:"leave_shop", action:"leave_shop", ...}`; remaining entries are `{index, id:<action>, action:<action>, label, description, enabled, price, item?}` where `<action>` is `buy_card`\|`buy_relic`\|`buy_potion`\|`remove_card`\|`buy_item`. `item` (new, optional) is the full Card/Relic/Potion object for that slot when resolvable. |
+| `options` | array | Index 0 is always `{index:0, id:"leave_shop", action:"leave_shop", ...}`; remaining entries are `{index, id:<action>, action:<action>, label, description, enabled, price, item?}` where `<action>` is `buy_card`\|`buy_relic`\|`buy_potion`\|`remove_card`\|`buy_item`\|`blitz_choice`. `item` (new, optional) is the full Card/Relic/Potion object for that slot when resolvable. `on_sale` (bool, `buy_card` only, new 2026-11-12) is `MerchantCardEntry.IsOnSale`; `price` is already the discounted one. |
+| `stock` | array | **New 2026-11-12 (GH #1287).** Every merchant slot in shopfront order (`NMerchantInventory.GetAllSlots`), sold out or not: `{kind, label, price, stocked, affordable, on_sale?, item?, option?}`. `option` is the `options` index that buys the slot, present only when it can be bought now. The headless host lists the whole stock, so a client mirroring it addresses slots by this list. |
 | `player_gold` | int | **New.** Also available via `run_state.gold`, duplicated here for convenience. |
 | `purge_cost` | int | **New, optional.** Present iff a card-removal slot is stocked; its current price. |
+| `blitz_choices_remaining` | int | **New (v0.113.0 Blitz), optional.** Present iff this is the Blitz merchant: how many more wares the player may take (`MerchantInventory.BlitzChoicesRemaining`). Its wares are `action:"blitz_choice"`, `price` 0, label `blitz:<kind>`, `item` = `{blitz_kind, cursed, rare, title, description}` (`blitz_kind` = the game's `BlitzMerchantEntryType`; `cursed` = the ware also adds a random Curse). Choosing one opens its own follow-up screen (a card reward, a deck pick, a relic). |
 
 ### `event`
 
 | Field | Type | Meaning |
 |---|---|---|
-| `options` | array | `{index, id:"event_choice", action:"event_choice", label, description, enabled, event_id, text_key, relic_id}` per option. `text_key` is the option's loc-key prefix (`EventOption.TextKey`, e.g. `"NEOW.pages.INITIAL.options.WINGED_BOOTS"`; its tail is the option's enum id). `relic_id` is `EventOption.Relic?.Id.Entry` for relic-granting options, `""` otherwise. |
+| `options` | array | `{index, id:"event_choice", action:"event_choice", label, description, enabled, event_id, text_key, relic_id, will_kill_player, is_proceed}` per option. `text_key` is the option's loc-key prefix (`EventOption.TextKey`, e.g. `"NEOW.pages.INITIAL.options.WINGED_BOOTS"`; its tail is the option's enum id). `relic_id` is `EventOption.Relic?.Id.Entry` for relic-granting options, `""` otherwise. `is_proceed` (bool, new 2026-11-12) is `EventOption.IsProceed`: the button that leaves a finished event (absent from older mods). |
 
 A `choose` whose `index` is out of range, or names an option that has become
 locked by the time the reply arrives, gets `error:"invalid_index"` and a
@@ -665,6 +668,7 @@ carry, plus:
 |---|---|---|
 | `advice_for` | string | The v2 message type this request wraps (`combat_action`, `card_reward`, `map_select`, ...). The payload fields are those of that message type. |
 | `capabilities` | object | **New in v5 / coach.** What this mod build understands from the advisor: `{"coach": 1}` = it renders `coach` messages (section 5, "`coach`") and sends the v5 `human_action` kinds; `{"coach": 2}` (v5.1) = also renders `recap` / `autopsy` records and sends `combat_ended` / Advisor-mode `game_over`. Absent on older builds: treat as `{}` (no coach). |
+| `brain` | string | **New in v5.2.** The player's advisor brain: `"search"` (the default: MCTS for `combat_action`, the PPO run policy for screens) or `"instinct"` (the end-to-end net, no search, plays every decision). Always sent, on the player's requests and the AI partners' alike (`SpireMentorModConfig.AdvisorBrain`, toggled by the Spire Mentor badge's Brain switch, Shift+F8, the settings pages or the frame's `toggle_brain`). The mod does not filter: the advisor decides per request whether Instinct can answer (character, game build) and falls back to the search otherwise -- see "Advisor brain (v5.2)" below. Absent on older mods: treat as `"search"`. |
 | `combat_log` | array | The game's own combat-log entries recorded SINCE THE PREVIOUS request (`SimCombatLog.Drain()`): one row per `CombatHistoryEntry`, in the same shape the Rust engine emits (`sts2_core::event_log`), so the workbench renders a live game through the identical formatter it uses for a simulated one. Display only — the advisor never reads it. Empty outside combat. |
 
 Each `combat_log` row carries `kind` (`damage` / `block` / `power` /
@@ -736,6 +740,7 @@ Implemented `advice_for` values:
 | `boss_relic` | `options[]` from `NChooseARelicSelection`'s relic holders | same |
 | `treasure` | `options[]` from the chest's relic holders, `surface: "treasure"` | the **boss-relic** head — the same question, cheaper; the note says so |
 | `card_bundle` | `options[]`, each with its `cards[]`, from `NChooseABundleSelectionScreen` | the **card-pick** head, applied card-by-card; a composition, not a trained surface, and the note says so |
+| `potion_swap` | **v5.2.** `options[]`: one full-belt potion reward's swap group off `NRewardsScreen` -- see "Full-belt potion swap (v5.2)" below. Sent only to an advisor with `capabilities.potion_swap >= 1` | the advisor's potion-swap decision |
 
 `card_reward` also carries `surface: "choose_a_card"` when it comes from the
 in-combat generator (`NChooseACardSelectionScreen` — Skill Potion and friends).
@@ -761,7 +766,8 @@ than consumed there.
 
 The post-combat loot screen (`NRewardsScreen`) is answered **mod-side** without
 a round trip — "claim everything, then proceed" is not a judgement call — so it
-never appears as an `advice_request`.
+never appears as an `advice_request`, except for a potion only a full belt
+blocks, which is asked as `potion_swap` (v5.2, below).
 
 ### `advice` -- inbound, new; rendered, never executed
 
@@ -800,11 +806,151 @@ never appears as an `advice_request`.
 | `advice.pv` | array of string | Principal variation, rendered as the "line:" row. |
 | `advice.hand_back` | string | **New (GH #874).** Present when the answer is not really the AI deciding: an unranked surface (`best` is the first option, "NOT a recommendation"), a borrowed head (`treasure`, `card_bundle` — GH #379), no run-policy net, an inference failure, an advisor error. The value is a short player-facing reason. Under the mod's `pause_on: "unsupported"` (the default) F7 autoplay stops on it and hands the decision to the player; everything else (HUD, `best`, F6) is unchanged. Absent on a real recommendation and on older advisors. The mod applies the same verdict itself to what it answers without a round trip (the crystal sphere's reveals did, until they got a policy in GH #872). |
 | `capabilities` | object | **New in v5 / coach.** Top level of the `advice` message, next to `advice` (not inside it). What this advisor build understands: `{"coach": 1}` = it accepts the v5 `human_action` kinds (`end_turn`, non-combat choices) and grades them; `{"coach": 2}` (v5.1) = also accepts `combat_ended` / Advisor-mode `game_over` and answers them with `recap` / `autopsy` records. Absent on older advisors: treat as `{}`. The mod reads it from every reply (`SimAdvisor.AdvisorCoachCapability`) and also accepts `advice.capabilities`. |
+| `capabilities.instinct` | array | **New in v5.2.** Top level, next to `capabilities.coach`: `[{"character": "Ironclad", "game_version": "v0.111.0"}, ...]`, the characters and game builds this advisor's Instinct can play. Absent or empty on older advisors and on an advisor with no Instinct net. The mod reads it from every reply (also from `advice.capabilities`) and uses it only to show the brain switch, matching the run's character and envelope `game_version` case-insensitively (`AdvisorBrainRules.Eligible`). |
+| `capabilities.potion_swap` | int | **New in v5.2.** Top level (also accepted in `advice.capabilities`): `1` = this advisor answers `advice_for: "potion_swap"`. Absent / `0` on older advisors: the mod never sends that request and answers the loot screen mod-side exactly as before (`PotionSwapAdvice.CapabilityOf`). |
+| `advice.brain` | string | **New in v5.2.** `"instinct"` when the end-to-end net answered; `"search"` or absent otherwise. |
+| `advice.instinct_unavailable` | string | **New in v5.2.** Present when the request asked for `"instinct"` but the search answered instead: a short player-facing reason (e.g. `"Instinct can't read this event yet"`, another character, another build). The advisor also puts it into `advice.note`. |
 | `advice.unsupported_game_version` | string \| any | **New (GH #800).** Present only on a **refusal**: the request's envelope `game_version` (section 1) names a build the advisor has no engine for. The value is that `game_version` as sent; `advice.note` is the player-facing explanation (the build, the supported builds, what to do), and there is no `best` / `options` / `p_win` -- nothing to render or execute. A missing or `"v0.107.1"` `game_version` is never refused. |
 
 An `advice` message is **never executed** -- it only feeds the HUD and the
 action log. Phase 7's takeover hotkey executes the recommendation through
 the normal game-side paths, not through this message.
+
+### Turn plan, per-option moves and HP, display names (v5.3) -- additive
+
+Every field below is optional; an older advisor sends none of them, and the
+HUD draws what is there.
+
+```json
+"advice":{
+  "best":{"action":"play","card_index":1,"label":"Defend"},
+  "options":[
+    {"stable_idx":1,"card_index":1,"target_index":null,"action":"play",
+     "label":"Defend","p_win":1.0,"q":1.188,"visits":720,"visit_share":0.36,
+     "hp_mean":52.7,"mean_final_hp":52.72,"hp_sd":4.59,"hp_n":720, ...},
+    {"stable_idx":-100,"card_index":null,"target_index":null,"action":"potion","slot":1,
+     "label":"Blood Potion", ...},
+    {"stable_idx":-1,"card_index":null,"target_index":null,"action":"end_turn",
+     "label":"End turn", ...}],
+  "plan":[
+    {"action":"play","card_index":1,"label":"Defend"},
+    {"action":"play","card_index":0,"target_index":0,"label":"Strike → Fuzzy Wurm Crawler"},
+    {"action":"play","card_index":3,"label":"Defend"},
+    {"action":"end_turn","label":"End turn"}]}
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `advice.options[].action` | string | **New in v5.3, combat only (both brains).** What the row does, in `best.action`'s dialect: `play`, `potion`, `end_turn`; rarely `choose` / `skip` (a pending in-fight choice), `channel` / `evoke`, or `unknown`. Lets the HUD ring the potion slot or the End Turn button, and colour rows by kind, for every row and not only the best. `card_index` / `target_index` / `ally_index` are unchanged. |
+| `advice.options[].slot` | int | **New in v5.3, combat only.** On a `potion` row: the bridge belt slot (`potions[].slot`), remapped exactly as `best.slot` is (the engine counts held potions densely). Absent on other rows, and on a potion row whose potion the belt no longer shows. |
+| `advice.options[].hp_mean` | number | **New in v5.3, Search combat only.** Expected player HP **at the end of the fight** through this move: the mean final HP of the search's playouts through it that reached the fight's end (a death counts as 0), one decimal. The same number as the older `mean_final_hp` (full precision), which rides with `hp_sd` (its standard deviation) and `hp_n` (how many playouts it averages; small `hp_n` = noisy). Absent when no playout through the move resolved the fight (`hp_n` 0), and always absent for Instinct (a policy has no value). It is a search statistic, not a forecast: the playouts are the search's own and its line is optimistic (the recap's GH #856 note), so it reads best as a comparison between rows. No extra search runs for it. |
+| `advice.estimate` | object | **New (GH #1222), Instinct only.** The win probe's read of the position: `{p_run, p_fight, hp_loss, hp_now}`. `p_run` = P(win the run), `p_fight` = P(win this fight) (null outside a fight), `hp_loss` = `{q10, q25, q50, q75, q90}`, quantiles of the HP the fight costs from here, end-of-fight heals included (so it can be negative), clamped to `hp_now` (null outside a fight). Every number means "if Instinct plays every move from here"; it comes from a small net on the student's own state embedding, not from a search. The mod draws it as the advice panel's headline in place of the search's win chance: "Run 34% · Fight 93%", the run as the bar, then "This fight: −9 HP (−2 HP to −20 HP)" (`InstinctEstimateText`, SimHud, and the frame via `FrameLink`); `advice.note` does not repeat it. Absent when the weights carry no probe, and on a forced step. |
+| `advice.plan[]` | array | **New in v5.3, combat only (both brains).** This turn's moves in order, to number the cards 1, 2, 3: `{action, card_index?, target_index?, ally_index?, slot?, label}`. `action` is `play` / `potion` / `end_turn`; `card_index` indexes the hand **exactly as this request sent it** (the same indexing as `options[].card_index` and `best.card_index`), and is NOT shifted for the cards played before it: step 3's index is the position that card has in this request's hand now, so the HUD can number the cards it is showing; `slot` is the bridge belt slot (as `best`). Step 1 is always `best`. The plan holds only moves mapped with certainty: it stops **after** a card that draws, generates, discards, upgrades or reorders cards in hand, opens a choice, or ends the fight (that card is still a step, the next one is not), stops **before** a move it cannot map (a choice, an index the current hand does not have, a move the engine refuses), and ends with `end_turn` when the line reaches it. A plan of one step is common (a draw card first, or `End turn`). Absent when there is no executable `best`. **Search:** the principal variation, then -- the honest search's PV is one ply deep, its deeper nodes keep no state to name a move against -- the same search at an eighth of the decision's budget (min 500 sims) from the fight as the plan has left it, one search per further step, within a 0.5 s wall-clock cap (the plan ends where the cap leaves it). **Instinct:** the student's greedy rollout through the turn on the rebuilt run. When `best` is not the line's first move (the mod's unplayable veto moved the crown), the plan is `best` alone. |
+
+`advice.path[]` (map, above) is now also sent by **Instinct** (v5.3): the
+student's own MAP choice walked hop by hop -- at every fork a copy of the
+rebuilt run is placed on the hop's node with the projected HP, and the student
+is asked again -- with the same schema, the same HP projection and the same
+`route … floors → N HP` note as the search's. It ends at the act's last row.
+
+**No raw game ids (v5.3).** Every human-facing string the advisor sends --
+`note`, `hand_back`, `instinct_unavailable`, `pv[]`, `options[].label`,
+`plan[].label`, `best.label`, and in `coach` records every `label`, `you`,
+`ai`, `why`, `hand` and `name` -- uses the game's display names
+(`Shrug It Off`, not `SHRUG_IT_OFF`): from the payload's names where it has
+them (a `shop` option's `item.name`; its `label` is the merchant entry's id),
+else from the English localization tables, with a final guard at the wire.
+One exception, for the takeover's cross-check: on a screen where the mod
+checks `best.label` against its own option labels (`card_reward`,
+`card_select`, `card_bundle`, `boss_relic`, `treasure`, `rest_site`,
+`potion_swap`, the Fake Merchant `event`), a `best.label` that is the mod's own
+spelling of an option is sent unchanged. Today that matters only for
+`potion_swap`, whose mod labels are `decline` / `discard <POTION_ID>`: its
+`options[].label` read `Keep your potions (leave Skill Potion)` /
+`Discard Gambler's Brew for Skill Potion`, but `best.label` stays
+`discard GAMBLERS_BREW` until the mod spells those labels with the potion's
+title (then it is a display name, and passes through as is).
+
+### Advisor brain (v5.2) -- additive
+
+Instinct is the e2e PPO net (today the Ironclad one, on v0.111.0 and the v0.113.0 beta) answering
+every decision with no search; Search is everything above. The player picks
+one; the default stays Search.
+
+- **Mod -> advisor:** every `advice_request` carries `brain`. The mod never
+  withholds `"instinct"` for a run Instinct cannot play: the advisor decides.
+- **Advisor -> mod:** every reply carries `capabilities.instinct`; an Instinct
+  answer sets `advice.brain: "instinct"`; a request for Instinct that the
+  search answered sets `advice.instinct_unavailable` (and says the same in
+  `advice.note`) -- the fallback is never silent.
+- **Instinct's options** carry the net's probability in `visit_share` (and
+  also `prob`), and no `p_win` / `q` / `visits` / `wins` / `losses` / `ties`.
+  `best` is shaped as for Search, so F6 / F7 / Autobattle execute it
+  unchanged. With no `q` / `p_win` the HUD draws no eval bar and bars the rows
+  by share, as for screen advice.
+- **Switching** cancels the request in flight and re-asks for the position at
+  once. The mod stamps each request with its `brain` and drops a reply whose
+  request was stamped with the other brain (`AdvisorBrainRules.IsStale`); it
+  does not key on `advice.brain`, which legitimately differs on a fallback.
+- **HUD:** an Instinct answer is tagged "Instinct" (advice panel, status line,
+  F5 peek); a fallback is tagged "Search (Instinct: <reason>)". The badge's
+  Brain switch (Search / Instinct) shows the current brain; it is shown where
+  `capabilities.instinct` names the run's character and build, and also while
+  Instinct is chosen anywhere else, so it can be switched back.
+
+Degrade: an older advisor ignores `brain` and answers with the search, sends
+no `capabilities.instinct` (no switch shown) and no `advice.brain`; an older
+mod sends no `brain`, which the advisor reads as `"search"`.
+
+Unattended runs pick the brain in `SpireMentor.conf`: `"advisor_brain":
+"search" | "instinct"` overrides the player's setting for that session (not
+saved over it) until someone switches brain in game; absent / `null` = the
+player's setting (`SimConfig.AdvisorBrain`; `tools/ascension_climb.py
+--advisor-brain`).
+
+### Full-belt potion swap (v5.2) -- additive
+
+The loot screen (`NRewardsScreen`) is still answered mod-side -- claim every
+claimable reward, then proceed -- with one exception. Once nothing claimable
+is left and a potion reward is still on the screen that only a full belt
+blocks (no free slot, but no hook such as Sozu refuses it:
+`SimPotionRules.BlockedOnlyByFullBelt`), and the advisor advertised
+`capabilities.potion_swap >= 1`, the mod sends:
+
+```json
+{"type":"advice_request", "advice_for":"potion_swap", "state_id":..., "request_id":"a91",
+ "brain":"search", "capabilities":{"coach":2}, "run_state":{...}, "map":{...},
+ "options":[
+   {"index":0, "id":"PotionReward", "action":"potion_swap", "label":"decline",
+    "description":"...", "enabled":true, "reward":{<Potion object>},
+    "reward_button":0, "discard_slot":null},
+   {"index":1, "id":"PotionReward", "action":"potion_swap", "label":"discard FIRE_POTION",
+    "description":"...", "enabled":true, "reward":{<Potion object>},
+    "reward_button":0, "discard_slot":0},
+   ...one per belt slot]}
+```
+
+The options are the autopilot's `potion_swap` group on `reward_screen` (GH
+#1069; section 3), reindexed from 0 and for ONE blocked reward at a time (the
+first on screen; `reward_button` is always 0): `discard_slot: null` leaves the
+potion on the screen, `discard_slot: k` discards the held potion in belt slot
+`k` (`PotionCmd.Discard`, the game's own potion-popup discard) and claims the
+reward into the freed slot. The advisor answers as for any screen:
+`best: {"action": "choose", "index": i, "label": <the option's label>}`;
+`skip` means decline. F6 / F7 execute it (`SimScreenAdvice.ChoosePotionSwap`);
+a declined reward is never asked again on that screen, so the next describe
+moves on to the next blocked potion or to proceed. A second blocked potion is
+a second request, asked once the first is settled. Discarding by hand changes
+the belt, which re-describes: the reward is then claimable and the loot
+screen claims it mod-side.
+
+**Autobattle stops on it** (it is not local and not in combat:
+`Autobattle.IsStop`). Giving up a held potion for another is a run-level
+choice like a card reward, not a loot click, so the player makes it.
+
+Not reported as a `human_action` in v5.2 (no grade); the coach's capture
+ignores this `decision_type`. Without the capability nothing changes: the
+blocked potion is not claimable, so the mod-side loot answer proceeds past it.
 
 ### `human_action` -- outbound, new
 
@@ -1169,6 +1315,7 @@ The payload is a **normal outbound message**, not an export format:
 |---|---|
 | A fight is in progress | `SimCombatHandler.BuildCombatState` stamped `type: advice_request`, `advice_for: combat_action` -- byte-identical to what the advisor lane sends for that board |
 | A screen is open | `SimScreenAdvice.Describe().State` stamped `type: advice_request` and that screen's `advice_for` |
+| (both of the above) | also the player's `brain` (section 5, v5.2), so a pasted state reproduces the request -- Instinct or Search |
 | A run with neither | `{"type": "run_snapshot"}` + the section-1 envelope |
 
 Reusing the wire dialect is the point: the consumer has ONE parser, and a

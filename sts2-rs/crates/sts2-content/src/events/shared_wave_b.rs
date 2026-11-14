@@ -211,7 +211,8 @@ fn round_tea_party_pick_fight(state: &mut RunState) -> EventOutcome {
 /// pulled relic is not cross-engine-validated at this pin.
 fn round_tea_party_continue_fight(state: &mut RunState) -> EventOutcome {
     let lost = state.lose_hp(ROUND_TEA_PARTY_FIGHT_DAMAGE);
-    let rarity = state.roll_reward_relic_rarity();
+    // No earlier `base.Rng` read: the v0.113.0 rarity is read #1.
+    let rarity = super::event_relic_rarity(state, "ROUND_TEA_PARTY", 0);
     if let Some(id) = state.pop_relic_from_grab_bag(rarity) {
         state.grant_event_relic(id);
     }
@@ -320,7 +321,7 @@ fn sown_can_enchant(c: &sts2_core::cards::Card) -> bool {
     !matches!(c.card_type, CardType::Status | CardType::Curse)
         && !c.is_quest()
         && c.enchantments.is_empty()
-        && (c.cost >= 0 || c.is_x_cost())
+        && (c.base_cost() >= 0 || c.is_x_cost())
 }
 
 fn sapphire_seed_plant(state: &mut RunState) -> EventOutcome {
@@ -407,7 +408,7 @@ fn self_help_card_eligible(
 ) -> bool {
     c.card_type == card_type
         && c.enchantments.is_empty()
-        && (c.cost >= 0 || c.is_x_cost())
+        && (c.base_cost() >= 0 || c.is_x_cost())
         && !c.is_quest()
         // `Nimble.CanEnchant` → `CardModel.GainsBlock` (GH #1021).
         && (enchantment != sts2_core::cards::EnchantmentId::Nimble || c.gains_block_for(version))
@@ -1441,8 +1442,9 @@ fn this_or_that_ornate(state: &mut RunState) -> EventOutcome {
     // `relics` and `deck_size` vs C# (seed PARITY11 Ironclad: C# gained
     // PetrifiedToad + a Clumsy curse; Rust gained neither). Same
     // roll-then-front-pull shape as `unrest_site_kill`. Bead
-    // `sts2-rs-thisorthat-ornate`.
-    let rarity = state.roll_reward_relic_rarity();
+    // `sts2-rs-thisorthat-ornate`. v0.113.0: rarity on the event stream,
+    // after `CalculateVars`' gold roll.
+    let rarity = super::event_relic_rarity(state, "THIS_OR_THAT", 1);
     let granted = state.pop_relic_from_grab_bag(rarity);
     if let Some(id) = granted {
         state.obtain_relic(id);
@@ -1733,7 +1735,7 @@ fn tinker_time_take_rng(state: &mut RunState) -> Rng {
 fn tinker_time_choose_card_type(state: &mut RunState) -> EventOutcome {
     let mut rng = tinker_time_take_rng(state);
     let mut types = [CardType::Attack, CardType::Skill, CardType::Power];
-    rng.shuffle(&mut types);
+    rng.shuffle_for(state.game_version, &mut types);
     state.event_state.rng = Some(rng);
     state.event_state.scratch = vec![tt_type_code(types[0]), tt_type_code(types[1])];
     state.event_state.page = 1;
@@ -1745,7 +1747,7 @@ fn tinker_time_choose_card_type(state: &mut RunState) -> EventOutcome {
 fn tinker_time_pick_type(state: &mut RunState, chosen: CardType) -> EventOutcome {
     let mut riders = tt_riders_for(chosen);
     let mut rng = tinker_time_take_rng(state);
-    rng.shuffle(&mut riders);
+    rng.shuffle_for(state.game_version, &mut riders);
     state.event_state.rng = Some(rng);
     state.event_state.scratch = vec![i16::from(riders[0].to_u8()), i16::from(riders[1].to_u8())];
     state.event_state.page = 2;
@@ -2036,8 +2038,15 @@ fn trial_merchant_guilty(state: &mut RunState) -> EventOutcome {
     // `MerchantGuilty` (`Trial.cs:145-153`): Regret, then two
     // `RelicFactory.PullNextRelicFromFront(Owner)` obtains.
     trial_add_curse(state, CardId::Regret);
+    // v0.113.0 rolls the rarities on the event stream (`PullNextRelicFromFront(
+    // Owner, base.Rng)`), right after the defendant roll (read #1).
+    let mut rng = (state.game_version >= sts2_core::GameVersion::V0_113_0).then(|| {
+        let mut rng = state.rng.named(TRIAL_STREAM);
+        let _ = rng.next_int_exclusive(0, 3);
+        rng
+    });
     for _ in 0..TRIAL_COUNT {
-        super::act2_hive::ranwid_grant_front_relic(state);
+        super::act2_hive::ranwid_grant_front_relic(state, rng.as_mut());
     }
     EventOutcome::finished("Guilty: gained Regret and two relics.")
 }
@@ -2073,17 +2082,15 @@ fn trial_nondescript_guilty(state: &mut RunState) -> EventOutcome {
     // character pool, `ForNonCombatWithDefaultOdds` (base odds, no pity, no
     // upgrade roll). OfferCustom populates them in list order on
     // `PlayerRng.Rewards`, so roll both here; each is a real `CardReward`
-    // (`IsCardReward`), so the card-reward hooks see the slate.
+    // (`IsCardReward`, CardReward.cs:115), so the creation-option hooks
+    // (Dingy Rug / Prismatic Gem, CardFactory.cs:218) widen its pool and the
+    // card-reward hooks see the slate.
     trial_add_curse(state, CardId::Doubt);
     for _ in 0..TRIAL_COUNT {
-        let ids = crate::cards::spec_index::roll_character_reward_options_no_upgrade(
+        let cards = crate::cards::spec_index::roll_noncombat_card_reward_cards_no_upgrade(
             state,
             TRIAL_REWARD_CARDS,
         );
-        let cards: Vec<sts2_core::Card> = ids
-            .into_iter()
-            .filter_map(|id| card_pod_from_id(id, false))
-            .collect();
         let cards = state.offer_card_slate(cards, true);
         state
             .pending_rewards
@@ -2097,37 +2104,20 @@ fn trial_nondescript_innocent(state: &mut RunState) -> EventOutcome {
     // `FromDeckForTransformation(2)` → `TransformToRandom(item, base.Rng)` per
     // pick — event-stream reads #2 and #3 (the defendant roll was #1).
     // Interactive hosts queue the picks (rolled only once each resolves);
-    // otherwise transform the first two deck cards off the same reads, the
-    // MorphicGrove shape.
+    // otherwise transform the first two transformable deck cards off the same
+    // reads. With 2 or fewer transformable cards the select opens no screen
+    // and takes them all (`transform_from_deck`).
     trial_add_curse(state, CardId::Doubt);
-    if state.interactive_card_transform {
-        for k in 0..TRIAL_COUNT {
-            state
-                .pending_deck_transforms
-                .push(sts2_core::PendingDeckTransform {
-                    event_stream_roll: Some((TRIAL_STREAM, 1 + k as u32)),
-                    ..Default::default()
-                });
-        }
+    let picks: Vec<sts2_core::PendingDeckTransform> = (0..TRIAL_COUNT)
+        .map(|k| sts2_core::PendingDeckTransform {
+            event_stream_roll: Some((TRIAL_STREAM, 1 + k as u32)),
+            ..Default::default()
+        })
+        .collect();
+    if crate::run_callbacks::transform_from_deck(state, &picks)
+        == crate::run_callbacks::DeckTransformOutcome::Queued
+    {
         return EventOutcome::finished("Innocent: gained Doubt, pick 2 cards to transform.");
-    }
-    for k in 0..TRIAL_COUNT {
-        let Some(original) = state.master_deck.first().map(|c| c.card_id) else {
-            break;
-        };
-        let Some(new_id) = crate::cards::spec_index::roll_transform_replacement_event_stream(
-            state,
-            state.character_id,
-            original,
-            TRIAL_STREAM,
-            1 + k as u32,
-        ) else {
-            break;
-        };
-        if let Some(card) = card_pod_from_id(new_id, false) {
-            state.master_deck.remove(0);
-            state.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::EventGain);
-        }
     }
     EventOutcome::finished("Innocent: gained Doubt, transformed 2 cards.")
 }
@@ -2292,7 +2282,8 @@ fn unrest_site_kill(state: &mut RunState) -> EventOutcome {
     // owner))` — DIRECT obtain, no reward screen. The rarity is
     // `RollRarity(PlayerRng.Rewards)` (one float: <0.5 Common,
     // <0.83 Uncommon, else Rare), then a front pull from the grab bag.
-    let rarity = state.roll_reward_relic_rarity();
+    // v0.113.0: rarity is read #1 of the event's own stream.
+    let rarity = super::event_relic_rarity(state, "UNREST_SITE", 0);
     let granted = state.pop_relic_from_grab_bag(rarity);
     if let Some(id) = granted {
         state.obtain_relic(id);
@@ -2550,7 +2541,7 @@ fn wood_carvings_snake(state: &mut RunState) -> EventOutcome {
         if let Some(card) = state.master_deck.iter_mut().find(|c| {
             !matches!(c.card_type, CardType::Status | CardType::Curse)
                 && c.enchantments.is_empty()
-                && c.cost >= 0
+                && c.base_cost() >= 0
         }) {
             card.enchantments.push((EnchantmentId::Slither, 1));
         }
@@ -2622,17 +2613,40 @@ fn zen_weaver_allowed(state: &RunState) -> bool {
     state.gold >= ZEN_WEAVER_MIN_GOLD
 }
 
+/// v0.113.0 Breathing Techniques: 25 gold for ONE Enlightenment
+/// (`BreathingTechniquesCost` 50 -> 25, `new CardModel[2]` -> `[1]`).
+pub const ZEN_WEAVER_BREATHING_COST_V0113: i32 = 25;
+
+/// Breathing Techniques `(cost, Enlightenment count)` for the run's build.
+fn zen_weaver_breathing_terms(state: &RunState) -> (i32, usize) {
+    if state.game_version >= sts2_core::GameVersion::V0_113_0 {
+        (ZEN_WEAVER_BREATHING_COST_V0113, 1)
+    } else {
+        (ZEN_WEAVER_BREATHING_COST, 2)
+    }
+}
+
 fn zen_weaver_breathing(state: &mut RunState) -> EventOutcome {
-    // C# `ZenWeaver.BreathingTechniques`: `LoseGold(50)`, then two
+    // C# `ZenWeaver.BreathingTechniques`: `LoseGold(cost)`, then `count`
     // `CreateCard<Enlightenment>` added to the deck. Unconditional adds.
-    state.gold = state.gold.saturating_sub(ZEN_WEAVER_BREATHING_COST);
-    for _ in 0..2 {
-        if let Some(card) = card_pod_from_id(CardId::Enlightenment, false) {
+    let (cost, count) = zen_weaver_breathing_terms(state);
+    state.gold = state.gold.saturating_sub(cost);
+    for _ in 0..count {
+        if let Some(mut card) = card_pod_from_id(CardId::Enlightenment, false) {
+            if state.game_version >= sts2_core::GameVersion::V0_113_0 {
+                // v0.113.0 Enlightenment drops `CanonicalKeywords => [Exhaust]`
+                // (decomp Enlightenment.cs). Zen Weaver is its only source, so
+                // the override is stamped here; `normalize_for_version` keeps a
+                // non-default override.
+                card.keyword_override = Some(crate::cards::spec_index::keyword_override_from(
+                    crate::cards::types::CardKeywords::NONE,
+                ));
+            }
             state.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::EventGain);
         }
     }
     EventOutcome::finished(format!(
-        "Paid {ZEN_WEAVER_BREATHING_COST}g, gained 2 Enlightenment cards."
+        "Paid {cost}g, gained {count} Enlightenment card(s)."
     ))
 }
 
@@ -2702,7 +2716,12 @@ const ZEN_WEAVER_OPTIONS: &[EventOptionSpec] = &[
             "BreathingTechniquesCost",
             EventVarSpec::Int(ZEN_WEAVER_BREATHING_COST as i64),
         )],
-        vars_fn: None,
+        vars_fn: Some(|s| {
+            vec![(
+                "BreathingTechniquesCost",
+                zen_weaver_breathing_terms(s).0.into(),
+            )]
+        }),
         title_vars_fn: None,
         handler: zen_weaver_breathing,
     },
@@ -2771,6 +2790,27 @@ mod tests {
 
     fn fresh_state() -> RunState {
         RunState::new()
+    }
+
+    /// v0.113.0 Breathing Techniques: 25 gold, ONE Enlightenment, which no
+    /// longer exhausts. Earlier builds keep 50 gold / two exhausting copies.
+    #[test]
+    fn zen_weaver_breathing_v0113_is_one_card_for_25_gold() {
+        for (version, cost, count, exhausts) in [
+            (sts2_core::GameVersion::V0_111_0, 50, 2, true),
+            (sts2_core::GameVersion::V0_113_0, 25, 1, false),
+        ] {
+            let mut rs = fresh_state();
+            rs.game_version = version;
+            rs.gold = 200;
+            let deck = rs.master_deck.len();
+            let _ = zen_weaver_breathing(&mut rs);
+            assert_eq!(rs.gold, 200 - cost, "{version:?}");
+            assert_eq!(rs.master_deck.len(), deck + count, "{version:?}");
+            let card = rs.master_deck.last().unwrap();
+            assert_eq!(card.card_id, CardId::Enlightenment);
+            assert_eq!(card.keyword_override.is_none(), exhausts, "{version:?}");
+        }
     }
 
     /// `ZenWeaver.GenerateInitialOptions` swaps a removal the player cannot
@@ -2937,7 +2977,7 @@ mod tests {
         wood_carvings_snake(&mut rs);
         // First eligible card gains 1 Slither stack.
         assert_eq!(
-            rs.master_deck[0].enchantments.as_slice(),
+            rs.master_deck[0].enchantments.to_vec(),
             &[(sts2_core::cards::EnchantmentId::Slither, 1)]
         );
     }
@@ -3050,7 +3090,7 @@ mod tests {
             .find(|c| c.card_id == CardId::DefendIronclad)
             .expect("defend still in deck");
         assert_eq!(
-            defend.enchantments.as_slice(),
+            defend.enchantments.to_vec(),
             &[(
                 sts2_core::cards::EnchantmentId::Nimble,
                 SELF_HELP_BOOK_ENCHANT_AMOUNT
@@ -3068,7 +3108,7 @@ mod tests {
         // First Attack (slot 1) gets Sharp; the Skill at slot 0 untouched.
         assert!(rs.master_deck[0].enchantments.is_empty());
         assert_eq!(
-            rs.master_deck[1].enchantments.as_slice(),
+            rs.master_deck[1].enchantments.to_vec(),
             &[(
                 sts2_core::cards::EnchantmentId::Sharp,
                 SELF_HELP_BOOK_ENCHANT_AMOUNT
@@ -3248,7 +3288,7 @@ mod tests {
         assert!(outcome.finished);
         assert!(rs.pending_deck_enchants.is_empty());
         assert_eq!(
-            rs.master_deck[0].enchantments.as_slice(),
+            rs.master_deck[0].enchantments.to_vec(),
             &[(sts2_core::cards::EnchantmentId::Sown, 1)]
         );
     }
@@ -4066,7 +4106,7 @@ mod tests {
         let outcome = self_help_book_read_entire(&mut rs);
         assert!(outcome.finished);
         assert_eq!(
-            rs.master_deck[power_idx].enchantments.as_slice(),
+            rs.master_deck[power_idx].enchantments.to_vec(),
             &[(
                 sts2_core::cards::EnchantmentId::Swift,
                 SELF_HELP_BOOK_ENCHANT_AMOUNT
@@ -4170,12 +4210,12 @@ mod tests {
         seed_deck(&mut rs, 1); // slot 1: fresh Strike, fully eligible
         wood_carvings_snake(&mut rs);
         assert_eq!(
-            rs.master_deck[0].enchantments.as_slice(),
+            rs.master_deck[0].enchantments.to_vec(),
             &[(EnchantmentId::Sown, 1)],
             "the already-enchanted front card is skipped (all && clauses hold; no || )"
         );
         assert_eq!(
-            rs.master_deck[1].enchantments.as_slice(),
+            rs.master_deck[1].enchantments.to_vec(),
             &[(EnchantmentId::Slither, 1)],
             "the fresh Strike behind it gains Slither"
         );
@@ -4250,6 +4290,83 @@ mod tests {
         assert_eq!(rs.event_state.page, TRIAL_PAGE_VERDICT);
     }
 
+    /// `NondescriptGuilty`'s two rewards are real `CardReward`s
+    /// (Trial.cs:183; `CardReward` stamps `IsCardReward`, CardReward.cs:115),
+    /// rolled through `CardFactory.CreateForReward`, which folds
+    /// `Hook.ModifyCardRewardCreationOptions` (CardFactory.cs:218): Dingy Rug
+    /// (DingyRug.cs:23) adds the colorless pool and Prismatic Gem
+    /// (PrismaticGem.cs:38) every character pool. Rust rolled the bare
+    /// character pool (Defect 6613 / Necrobinder 6601, v0.111.0).
+    #[test]
+    fn trial_guilty_rewards_see_the_creation_option_hooks() {
+        use sts2_core::potions::CharacterId;
+        crate::cards::dispatch::ensure_installed();
+        crate::relics::dispatch::ensure_installed();
+        let offered = |relic: RelicId, seed: i32| -> Vec<CardId> {
+            let mut rs = RunState::new();
+            rs.rng = sts2_core::run_rng_set::RunRngSet::new(seed);
+            rs.character_id = CharacterId::Defect;
+            rs.game_version = sts2_core::GameVersion::V0_111_0;
+            rs.relics.push(relic);
+            assert!(trial_nondescript_guilty(&mut rs).finished);
+            rs.pending_rewards
+                .iter()
+                .filter_map(|r| match r {
+                    Reward::Card(c) => Some(c.options.clone()),
+                    _ => None,
+                })
+                .flatten()
+                .collect()
+        };
+        let pool_of = crate::cards::spec_index::character_for_card_id;
+        let rug: Vec<CardId> = (0..40)
+            .flat_map(|s| offered(RelicId::DingyRug, s))
+            .collect();
+        assert!(
+            rug.iter().any(|&id| pool_of(id).is_none()),
+            "Dingy Rug widens the Trial's reward pool to colorless"
+        );
+        let gem: Vec<CardId> = (0..40)
+            .flat_map(|s| offered(RelicId::PrismaticGem, s))
+            .collect();
+        assert!(
+            gem.iter()
+                .any(|&id| matches!(pool_of(id), Some(c) if c != CharacterId::Defect)),
+            "Prismatic Gem widens the Trial's reward pool to other characters"
+        );
+        // Every slate is exactly the hooked no-upgrade roller's draw.
+        for seed in 0..8 {
+            let mut rs = RunState::new();
+            rs.rng = sts2_core::run_rng_set::RunRngSet::new(seed);
+            rs.character_id = CharacterId::Defect;
+            rs.game_version = sts2_core::GameVersion::V0_111_0;
+            rs.relics.push(RelicId::DingyRug);
+            let mut want = rs.clone();
+            trial_add_curse(&mut want, CardId::Doubt);
+            let expected: Vec<CardId> = (0..TRIAL_COUNT)
+                .flat_map(|_| {
+                    crate::cards::spec_index::roll_noncombat_card_reward_cards_no_upgrade(
+                        &mut want,
+                        TRIAL_REWARD_CARDS,
+                    )
+                })
+                .map(|c| c.card_id)
+                .collect();
+            assert_eq!(offered_from(&mut rs), expected, "seed {seed}");
+        }
+        fn offered_from(rs: &mut RunState) -> Vec<CardId> {
+            assert!(trial_nondescript_guilty(rs).finished);
+            rs.pending_rewards
+                .iter()
+                .filter_map(|r| match r {
+                    Reward::Card(c) => Some(c.options.clone()),
+                    _ => None,
+                })
+                .flatten()
+                .collect()
+        }
+    }
+
     #[test]
     fn trial_verdicts_apply_their_c_sharp_effects() {
         crate::cards::dispatch::ensure_installed();
@@ -4283,6 +4400,11 @@ mod tests {
 
         let mut rs = RunState::new();
         rs.interactive_card_transform = true;
+        // Doubt + 2 Strikes: more than the 2 the select takes, so it opens a screen.
+        for _ in 0..2 {
+            rs.master_deck
+                .push(card_pod_from_id(CardId::StrikeIronclad, false).unwrap());
+        }
         assert!(trial_nondescript_innocent(&mut rs).finished);
         assert_eq!(count(&rs, CardId::Doubt), 1);
         let rolls: Vec<_> = rs
@@ -4301,6 +4423,36 @@ mod tests {
         assert!(trial_merchant_innocent(&mut rs).finished);
         assert_eq!(count(&rs, CardId::Shame), 1);
         assert_eq!(rs.pending_deck_upgrades, 2, "pick 2 to upgrade");
+    }
+
+    /// Innocent's 2-card transform select opens no screen when the deck
+    /// holds 2 or fewer transformable cards (`list.Count <= MinSelect`,
+    /// CardSelectCmd.cs): the lone Strike and the Doubt just added both
+    /// transform, off event-stream reads #2 and #3, in deck order.
+    #[test]
+    fn trial_nondescript_innocent_takes_every_card_when_only_two_are_transformable() {
+        crate::cards::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.character_id = sts2_core::CharacterId::Ironclad;
+        rs.interactive_card_transform = true;
+        rs.master_deck
+            .push(card_pod_from_id(CardId::StrikeIronclad, false).unwrap());
+        let roll = |rs: &RunState, id, k| {
+            crate::cards::spec_index::roll_transform_replacement_event_stream(
+                rs,
+                sts2_core::CharacterId::Ironclad,
+                id,
+                TRIAL_STREAM,
+                k,
+            )
+            .unwrap()
+        };
+        let first = roll(&rs, CardId::StrikeIronclad, 1);
+        let second = roll(&rs, CardId::Doubt, 2);
+        assert!(trial_nondescript_innocent(&mut rs).finished);
+        assert!(rs.pending_deck_transforms.is_empty(), "no screen opens");
+        let ids: Vec<CardId> = rs.master_deck.iter().map(|c| c.card_id).collect();
+        assert_eq!(ids, [first, second]);
     }
 
     #[test]

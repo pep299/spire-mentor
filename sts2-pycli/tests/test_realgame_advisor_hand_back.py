@@ -114,6 +114,16 @@ class TestUncoveredSurfacesHandBack:
         assert advice["best"]["index"] == 1
         assert advice["hand_back"] == ra._HAND_BACK_SURFACES[advice_for]
 
+    def test_a_single_chest_relic_is_taken_not_handed_back(self) -> None:
+        # Single player's chest offers one relic: nothing to decide, so no
+        # head is borrowed and autoplay must not stop there (it did: AI plays
+        # switched itself off at every chest).
+        state = _relics("treasure")
+        state["options"] = state["options"][:1]
+        advice = ra.compute_screen_advice(state, "treasure", _StubPolicies(_StubPolicy([1.0])))
+        assert advice["best"]["index"] == 0
+        assert "hand_back" not in advice
+
     def test_no_net_hands_back(self) -> None:
         advice = ra.compute_screen_advice(
             _rest_site(), "rest_site", _StubPolicies(None, "checkpoint missing")
@@ -126,6 +136,53 @@ class TestUncoveredSurfacesHandBack:
         advice = ra.compute_screen_advice(_rest_site(), "rest_site", _StubPolicies(policy))
         assert advice["hand_back"]
         assert "inference failed" in advice["hand_back"]
+
+
+def _climb_counter() -> Any:
+    """`ascension_climb.count_unranked`, the per-run counter (GH #980)."""
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / "spire-mentor-mod" / "tools" / "ascension_climb.py"
+    spec = importlib.util.spec_from_file_location("ascension_climb_under_test", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # @dataclass resolves its own module by name
+    spec.loader.exec_module(module)
+    return module.count_unranked
+
+
+class TestUnrankedIsCountedPerRun:
+    """Every `_unranked` answer logs one structured line naming its trigger,
+    and the climb's per-run counter reads exactly that line (GH #980)."""
+
+    def test_each_trigger_is_logged_and_counted(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level("WARNING", logger=ra.logger.name)
+        ra.compute_screen_advice(
+            {"type": "crystal_sphere", "options": [{"label": "Cell (0,0)"}]},
+            "crystal_sphere",
+            _StubPolicies(_StubPolicy([1.0])),
+        )
+        failing = _StubPolicy([], raises=RuntimeError("budget exceeded"))
+        ra.compute_screen_advice(_rest_site(), "rest_site", _StubPolicies(failing))
+        ra.compute_screen_advice(_rest_site(), "rest_site", _StubPolicies(failing))
+
+        assert _climb_counter()(caplog.text) == {
+            "no_head:crystal_sphere": 1,
+            "inference_failed": 2,
+        }
+
+    def test_the_line_names_the_prompt_and_source(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level("WARNING", logger=ra.logger.name)
+        state = {"options": [{"label": "A"}], "prompt_key": "TO_EXHAUST", "source_model": "X"}
+        ra._unranked(state, "card_select: the net does not cover this surface", "card_select")
+        assert "trigger=card_select prompt_key=TO_EXHAUST source_model=X" in caplog.text
+
+    def test_a_ranked_run_counts_nothing(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level("WARNING", logger=ra.logger.name)
+        ra.compute_screen_advice(_rest_site(), "rest_site", _StubPolicies(_StubPolicy([0.7, 0.3])))
+        assert _climb_counter()(caplog.text) == {}
 
 
 class _Client:

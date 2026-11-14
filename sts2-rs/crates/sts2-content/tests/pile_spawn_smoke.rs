@@ -43,10 +43,9 @@ fn fresh_state_with_enemy() -> (CombatState, CreatureUid) {
 fn push_play(state: &mut CombatState, card_id: CardId, damage: i32, block: i32) -> CardUid {
     let uid = CardUid::new(u32::try_from(state.cards.len() + 1).expect("u32")).expect("nz");
     state.cards.push(Card {
-        local_energy_cost: None,
         uid,
         card_id,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Skill,
         target_type: TargetType::None,
         upgraded: false,
@@ -109,7 +108,7 @@ fn synthesis_deals_damage_and_applies_free_power() {
         state.cards.push(Card {
             uid,
             card_id: CardId::Wound,
-            cost: -1,
+            cost: sts2_core::CardEnergyCost::new(-1),
             card_type: CardType::Status,
             target_type: TargetType::None,
             upgraded: false,
@@ -146,7 +145,7 @@ fn storm_of_steel_replaces_hand_with_shivs() {
         state.cards.push(Card {
             uid,
             card_id: CardId::StrikeSilent,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,

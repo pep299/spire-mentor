@@ -35,6 +35,10 @@ use super::shared_wave_b::{
     SUNKEN_TREASURY, TABLET_OF_TRUTH, TANX, TEZCATARA, THE_LANTERN_KEY, THIS_OR_THAT, TINKER_TIME,
     TRIAL, UNREST_SITE, VAKUU, WELLSPRING, WOOD_CARVINGS, ZEN_WEAVER,
 };
+use super::v0113::{
+    MUSEUM_OF_TORTURE, SHRINE_OF_THE_WARLORD, THERMAE_NONUPEIPE, WATERFALL_OF_OBVIOUS_SECRETS,
+    WUPPY_IN_TROUBLE,
+};
 use super::EventSpec;
 
 /// Resolve an [`EventId`] to its static [`EventSpec`].
@@ -126,6 +130,11 @@ pub fn spec_for(id: EventId) -> &'static EventSpec {
         EventId::WaterloggedScriptorium => &WATERLOGGED_SCRIPTORIUM,
         EventId::WelcomeToWongos => &WELCOME_TO_WONGOS,
         EventId::WhisperingHollow => &WHISPERING_HOLLOW,
+        EventId::MuseumOfTorture => &MUSEUM_OF_TORTURE,
+        EventId::ShrineOfTheWarlord => &SHRINE_OF_THE_WARLORD,
+        EventId::ThermaeNonupeipe => &THERMAE_NONUPEIPE,
+        EventId::WaterfallOfObviousSecrets => &WATERFALL_OF_OBVIOUS_SECRETS,
+        EventId::WuppyInTrouble => &WUPPY_IN_TROUBLE,
     }
 }
 
@@ -352,6 +361,10 @@ fn preview_visible_part(state: &mut RunState, idx: usize) -> Option<bool> {
     let option_id = present(state)?.get(idx)?.option_id;
     Some(match id {
         EventId::CrystalSphere => super::act2_hive::crystal_sphere_apply_visible(state, option_id),
+        // The LOCKED grab (EndlessConveyor.cs: `GrabSomethingOffTheBelt` is
+        // disabled below 40 gold) cannot be taken, so it previews nothing;
+        // resolving it would eat the hidden next dish.
+        EventId::EndlessConveyor => !present(state)?.get(idx)?.enabled,
         _ => false,
     })
 }
@@ -562,11 +575,16 @@ pub fn bind_pending_event_callback(state: &mut RunState) {
 /// on the shared run state — the work `EventModel.BeginEvent` does before
 /// the first page renders, whatever option is then picked. Only
 /// FakeMerchant draws shared RNG there
-/// ([`super::act2_hive::fake_merchant_before_event_started`]).
+/// ([`super::act2_hive::fake_merchant_before_event_started`]); Endless
+/// Conveyor rolls its first dish off its own stream against the entry state
+/// ([`super::act2_hive::endless_conveyor_before_event_started`]).
 pub fn begin_event(state: &mut RunState, event_id: EventId) {
     state.enter_event_room(event_id);
     if event_id == EventId::FakeMerchant {
         super::act2_hive::fake_merchant_before_event_started(state);
+    }
+    if event_id == EventId::EndlessConveyor {
+        super::act2_hive::endless_conveyor_before_event_started(state);
     }
 }
 
@@ -579,6 +597,9 @@ pub fn begin_event_in_entered_room(state: &mut RunState, event_id: EventId) {
     state.bind_event(event_id);
     if event_id == EventId::FakeMerchant {
         super::act2_hive::fake_merchant_before_event_started(state);
+    }
+    if event_id == EventId::EndlessConveyor {
+        super::act2_hive::endless_conveyor_before_event_started(state);
     }
 }
 

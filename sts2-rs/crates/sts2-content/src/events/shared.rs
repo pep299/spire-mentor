@@ -454,7 +454,15 @@ fn aroma_let_go(state: &mut RunState) -> EventOutcome {
     // C# LetGo: `CardSelectCmd.FromDeckForTransformation` pick-1 →
     // `CardCmd.TransformToRandom(card, base.Rng)`. CanonicalVars is
     // empty (no CalculateVars roll), so the transform is read #1 of
-    // the event's own stream — skip 0.
+    // the event's own stream — skip 0. With nothing transformable the
+    // select returns empty and opens no screen (CardSelectCmd.cs).
+    let Some(first) = state
+        .master_deck
+        .iter()
+        .position(crate::cards::spec_index::card_is_transformable_in_deck)
+    else {
+        return EventOutcome::finished("No card could be transformed.");
+    };
     if state.interactive_card_transform {
         state
             .pending_deck_transforms
@@ -464,22 +472,22 @@ fn aroma_let_go(state: &mut RunState) -> EventOutcome {
             });
         EventOutcome::finished("Pick a card to transform.")
     } else {
-        // Auto mode: transform the first deck card off the same stream.
-        if let Some(original) = state.master_deck.first().map(|c| c.card_id) {
-            if let Some(new_id) = crate::cards::spec_index::roll_transform_replacement_event_stream(
-                state,
-                state.character_id,
-                original,
-                AROMA_OF_CHAOS_STREAM,
-                0,
-            ) {
-                if let Some(card) = crate::cards::spec_index::card_pod_from_id(new_id, false) {
-                    state.master_deck.remove(0);
-                    state.add_card_to_deck_with_hooks(
-                        card,
-                        sts2_core::relic_effects::AddSource::EventGain,
-                    );
-                }
+        // Auto mode: transform the first transformable deck card off the
+        // same stream.
+        let original = state.master_deck[first].card_id;
+        if let Some(new_id) = crate::cards::spec_index::roll_transform_replacement_event_stream(
+            state,
+            state.character_id,
+            original,
+            AROMA_OF_CHAOS_STREAM,
+            0,
+        ) {
+            if let Some(card) = crate::cards::spec_index::card_pod_from_id(new_id, false) {
+                state.master_deck.remove(first);
+                state.add_card_to_deck_with_hooks(
+                    card,
+                    sts2_core::relic_effects::AddSource::EventGain,
+                );
             }
         }
         EventOutcome::finished("Transformed a card.")
@@ -632,7 +640,9 @@ pub fn battleworn_dummy_resume(
             let _ = state.upgrade_random_cards_stable_with_rng(2, &mut rng);
         }
         BattlewornDummySetting::Setting3 => {
-            let rarity = state.roll_reward_relic_rarity();
+            // v0.113.0: `PullNextRelicFromFront(Owner, base.Rng)` — read #1 of
+            // the event stream (Setting 3 draws nothing else from it).
+            let rarity = super::event_relic_rarity(state, BATTLEWORN_DUMMY_STREAM, 0);
             if let Some(id) = state.pop_relic_from_grab_bag(rarity) {
                 if state.game_version >= sts2_core::GameVersion::V0_111_0 {
                     // v0.111.0: the relic is OFFERED (`new RelicReward(relic,
@@ -874,8 +884,17 @@ fn colorful_philosophers_generate_options(
     state: &RunState,
     spec: &EventSpec,
 ) -> Vec<EventOptionInfo> {
-    let mut pools: Vec<usize> = (0..COLORFUL_PHILOSOPHERS_POOLS.len())
-        .filter(|&i| COLORFUL_PHILOSOPHERS_POOLS[i] != state.character_id)
+    // v0.113.0 `CardPoolColorOrder` inserts the Fool pool after Regent; its
+    // option is the LAST spec entry (index 5) so older builds keep 0..5.
+    let order: &[usize] = if state.game_version >= sts2_core::GameVersion::V0_113_0 {
+        &[0, 1, 2, 5, 3, 4]
+    } else {
+        &[0, 1, 2, 3, 4]
+    };
+    let mut pools: Vec<usize> = order
+        .iter()
+        .copied()
+        .filter(|&i| COLORFUL_PHILOSOPHER_POOL_OF_OPTION[i] != state.character_id)
         .collect();
     let mut rng = event_rng(state, COLORFUL_PHILOSOPHERS_STREAM);
     let keep = pools.len().min(3);
@@ -938,6 +957,21 @@ fn colorful_philosophers_defect(state: &mut RunState) -> EventOutcome {
     colorful_philosophers_offer(state, sts2_core::potions::CharacterId::Defect)
 }
 
+fn colorful_philosophers_fool(state: &mut RunState) -> EventOutcome {
+    colorful_philosophers_offer(state, sts2_core::potions::CharacterId::Fool)
+}
+
+/// The pool each [`PHILOSOPHER_OPTIONS`] entry offers, by spec index: the
+/// v0.107.1 [`COLORFUL_PHILOSOPHERS_POOLS`] order, then The Fool (v0.113.0+).
+const COLORFUL_PHILOSOPHER_POOL_OF_OPTION: [sts2_core::potions::CharacterId; 6] = [
+    COLORFUL_PHILOSOPHERS_POOLS[0],
+    COLORFUL_PHILOSOPHERS_POOLS[1],
+    COLORFUL_PHILOSOPHERS_POOLS[2],
+    COLORFUL_PHILOSOPHERS_POOLS[3],
+    COLORFUL_PHILOSOPHERS_POOLS[4],
+    sts2_core::potions::CharacterId::Fool,
+];
+
 /// One option per pool, in [`COLORFUL_PHILOSOPHERS_POOLS`] order (the
 /// presenter indexes this list by that order). Loc keys are
 /// `"COLORFUL_PHILOSOPHERS.pages.INITIAL.options." + EnergyColorName.ToUpperInvariant()`.
@@ -991,6 +1025,17 @@ const PHILOSOPHER_OPTIONS: &[EventOptionSpec] = &[
         vars_fn: None,
         title_vars_fn: None,
         handler: colorful_philosophers_defect,
+    },
+    // v0.113.0 only (see `colorful_philosophers_generate_options`).
+    EventOptionSpec {
+        option_id: "fool",
+        loc_key: "COLORFUL_PHILOSOPHERS.pages.INITIAL.options.FOOL",
+        default_label: "Fool Philosopher",
+        default_description: "Common, Uncommon and Rare Fool card rewards.",
+        default_vars: &[("Cards", EventVarSpec::Int(3))],
+        vars_fn: None,
+        title_vars_fn: None,
+        handler: colorful_philosophers_fool,
     },
 ];
 
@@ -1152,7 +1197,7 @@ fn darv_relic_options(state: &RunState) -> [RelicId; 3] {
         .filter(|(keep, _)| *keep)
         .map(|(_, relics)| rng_next_item(&mut rng, relics))
         .collect();
-    rng.shuffle(&mut source);
+    rng.shuffle_for(state.game_version, &mut source);
 
     if rng.next_bool() {
         [source[0], source[1], RelicId::DustyTome]
@@ -1399,6 +1444,12 @@ fn doors_light(state: &mut RunState) -> EventOutcome {
     // `base.Rng`; this is the FIRST (and only) `base.Rng` read of the event
     // (CanonicalVars = `CardsVar(2)`, no entry roll) → fresh `event_rng` at
     // cursor 0 matches.
+    if state.game_version >= sts2_core::GameVersion::V0_113_0 {
+        // v0.113.0 `Light`: `CardSelectCmd.FromDeckForUpgrade(prefs(1))` — the
+        // player upgrades ONE card of their choice, no event-stream read.
+        let _ = state.upgrade_random_cards(1);
+        return EventOutcome::finished("Upgrade 1 card.");
+    }
     let mut rng = event_rng(state, DOORS_OF_LIGHT_AND_DARK_STREAM);
     let _ = state.upgrade_random_cards_stable_with_rng(2, &mut rng);
     EventOutcome::finished("Upgraded 2 cards.")
@@ -1422,7 +1473,14 @@ const DOORS_OPTIONS: &[EventOptionSpec] = &[
         default_label: "Door of Light",
         default_description: "Upgrade 2 random cards",
         default_vars: &[("Cards", EventVarSpec::Int(2))],
-        vars_fn: None,
+        // v0.113.0 drops `CardsVar(2)` from `CanonicalVars`.
+        vars_fn: Some(|s| {
+            if s.game_version >= sts2_core::GameVersion::V0_113_0 {
+                Vec::new()
+            } else {
+                vec![("Cards", 2.into())]
+            }
+        }),
         title_vars_fn: None,
         handler: doors_light,
     },
@@ -1670,8 +1728,8 @@ pub const HUNGRY_FOR_MUSHROOMS: EventSpec = EventSpec {
 /// it, so WingCharm / Glitter / FresnelLens / the eggs see the card before
 /// `CardPileCmd.Add`. No `IsCardReward` flag (no `CardReward` wrapper), so
 /// SilverCrucible / SilkenTress return early (see `offer_card_slate`).
-fn add_created_for_reward_card(state: &mut RunState, card: &sts2_core::cards::Card) {
-    let mut cards = state.offer_card_slate(vec![*card], false);
+pub(super) fn add_created_for_reward_card(state: &mut RunState, card: sts2_core::cards::Card) {
+    let mut cards = state.offer_card_slate(vec![card], false);
     if let Some(card) = cards.pop() {
         state.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::EventGain);
     }
@@ -1680,7 +1738,7 @@ fn add_created_for_reward_card(state: &mut RunState, card: &sts2_core::cards::Ca
 fn infested_study(state: &mut RunState) -> EventOutcome {
     if let Some(id) = crate::cards::spec_index::roll_infested_study_card(state) {
         if let Some(card) = crate::cards::spec_index::card_pod_from_id(id, false) {
-            add_created_for_reward_card(state, &card);
+            add_created_for_reward_card(state, card);
         }
     }
     EventOutcome::finished("Gained a random Power card.")
@@ -1689,7 +1747,7 @@ fn infested_study(state: &mut RunState) -> EventOutcome {
 fn infested_touch_core(state: &mut RunState) -> EventOutcome {
     if let Some(id) = crate::cards::spec_index::roll_infested_touch_core_card(state) {
         if let Some(card) = crate::cards::spec_index::card_pod_from_id(id, false) {
-            add_created_for_reward_card(state, &card);
+            add_created_for_reward_card(state, card);
         }
     }
     EventOutcome::finished("Gained a random 0-cost card.")
@@ -2150,10 +2208,30 @@ mod tests {
         assert!(rs.relics.is_empty());
     }
 
+    /// `FromDeckForTransformation` returns empty with no select when no deck
+    /// card is transformable (an Eternal Forbidden Grimoire).
+    #[test]
+    fn aroma_let_go_without_a_transformable_card_queues_no_pick() {
+        crate::cards::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.interactive_card_transform = true;
+        rs.master_deck = vec![crate::cards::spec_index::card_pod_from_id(
+            sts2_core::cards::CardId::ForbiddenGrimoire,
+            false,
+        )
+        .unwrap()];
+        let outcome = (AROMA_OF_CHAOS.options[0].handler)(&mut rs);
+        assert!(outcome.finished);
+        assert!(rs.pending_deck_transforms.is_empty());
+    }
+
     #[test]
     fn aroma_let_go_interactive_queues_event_stream_transform() {
         let mut rs = RunState::new();
         rs.interactive_card_transform = true;
+        let mut strike = sts2_core::cards::Card::pod_defaults();
+        strike.card_id = sts2_core::cards::CardId::StrikeIronclad;
+        rs.master_deck.push(strike);
         let outcome = (AROMA_OF_CHAOS.options[0].handler)(&mut rs);
         assert!(outcome.finished);
         assert_eq!(rs.pending_deck_transforms.len(), 1);
@@ -2222,6 +2300,40 @@ mod tests {
             niche_before,
             "v0.107.1 draws the shuffle from the event stream, not the niche stream",
         );
+    }
+
+    /// v0.113.0 `DoorsOfLightAndDark.Light` (`DoorsOfLightAndDark.cs:23`) is
+    /// `CardSelectCmd.FromDeckForUpgrade(prefs(1))` -- a player pick reading no
+    /// RNG. Under agent decisions (PPO env, e2e env, workbench, run_parity
+    /// lockstep) the door queues one pick and draws from neither the rewards
+    /// stream nor the event stream (PR #1319 review finding 1).
+    #[test]
+    fn doors_light_v0113_agent_mode_queues_one_pick_and_reads_no_rng() {
+        crate::cards::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.game_version = sts2_core::GameVersion::V0_113_0;
+        rs.set_agent_decisions();
+        rs.master_deck.clear();
+        for _ in 0..4 {
+            rs.master_deck.push(
+                crate::cards::spec_index::card_pod_from_id(
+                    sts2_core::cards::CardId::StrikeIronclad,
+                    false,
+                )
+                .expect("strike exists"),
+            );
+        }
+        let rewards_before = rs.rng.rewards.counter();
+        let niche_before = rs.rng.niche.counter();
+        let outcome = doors_light(&mut rs);
+        assert!(outcome.finished);
+        assert_eq!(rs.pending_deck_upgrades, 1, "one FromDeckForUpgrade pick");
+        assert!(
+            rs.master_deck.iter().all(|c| !c.upgraded),
+            "nothing auto-upgraded"
+        );
+        assert_eq!(rs.rng.rewards.counter(), rewards_before, "no rewards read");
+        assert_eq!(rs.rng.niche.counter(), niche_before, "no niche read");
     }
 
     /// The two event-local upgrade streams are seeded by distinct event Ids
@@ -2456,7 +2568,7 @@ mod tests {
         assert!(rs.pending_rewards.is_empty(), "no phantom card reward");
         let added = rs.master_deck.last().map(|c| c.card_id).unwrap();
         assert_eq!(
-            crate::cards::spec_index::card_pod_from_id(added, false).map(|c| c.cost),
+            crate::cards::spec_index::card_pod_from_id(added, false).map(|c| c.base_cost()),
             Some(0),
             "TouchCore grants a 0-cost (non-X) card",
         );
@@ -2667,7 +2779,16 @@ mod tests {
                 EventId::ColorfulPhilosophers,
                 "ColorfulPhilosophers",
                 // One option per colour; three of them are presented (GH #817).
-                &["necrobinder", "ironclad", "regent", "silent", "defect"],
+                // "fool" is offered only at v0.113.0+ (see
+                // `colorful_philosophers_offers_fool_only_from_v0113`).
+                &[
+                    "necrobinder",
+                    "ironclad",
+                    "regent",
+                    "silent",
+                    "defect",
+                    "fool",
+                ],
             ),
             (
                 &COLOSSAL_FLOWER,
@@ -3275,6 +3396,31 @@ mod colorful_philosophers_tests {
                     )
                 );
             }
+        }
+    }
+
+    /// v0.113.0 `CardPoolColorOrder` inserts the Fool pool after Regent: five
+    /// other pools, then removals at `NextInt(5)` and `NextInt(4)` down to
+    /// three. Before v0.113.0 "fool" never appears.
+    #[test]
+    fn colorful_philosophers_offers_fool_only_from_v0113() {
+        for seed in 0..40 {
+            let mut rs = rs_for(CharacterId::Silent, seed);
+            rs.game_version = sts2_core::GameVersion::V0_113_0;
+            let mut others = vec!["necrobinder", "ironclad", "regent", "fool", "defect"];
+            let mut rng = rs.rng.named("COLORFUL_PHILOSOPHERS");
+            while others.len() > 3 {
+                let n = others.len() as i32;
+                others.remove(rng.next_int_exclusive(0, n) as usize);
+            }
+            let opts = (COLORFUL_PHILOSOPHERS.generate_options)(&rs, &COLORFUL_PHILOSOPHERS);
+            let ids: Vec<&str> = opts.iter().map(|o| o.option_id).collect();
+            assert_eq!(ids, others, "seed {seed}");
+        }
+        for seed in 0..40 {
+            let rs = rs_for(CharacterId::Silent, seed);
+            let opts = (COLORFUL_PHILOSOPHERS.generate_options)(&rs, &COLORFUL_PHILOSOPHERS);
+            assert!(opts.iter().all(|o| o.option_id != "fool"));
         }
     }
 

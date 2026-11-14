@@ -6,6 +6,7 @@
 // surfaces. Bodies moved verbatim from SimHotkeys (2026-08-21).
 
 using System;
+using System.Collections.Generic;
 using Godot;
 
 namespace SpireMentor;
@@ -22,7 +23,11 @@ internal static class SimActions
 
     /// <summary>F9 / F10 and the toolbar -/+: one whole speed down / up
     /// (SpeedSteps).</summary>
-    public static void StepSpeed(int direction) => SimSpeed.Step(direction);
+    public static void StepSpeed(int direction)
+    {
+        SimSpeed.Step(direction);
+        SpireMentorModConfig.RememberSpeed();
+    }
 
     /// <summary>Copy this position to the clipboard for the workbench's
     /// live-state import (SimStateCopy).</summary>
@@ -82,6 +87,38 @@ internal static class SimActions
     public static void ToggleAutobattle(string surface) =>
         RequireAdvisor(surface, () => SimAdvisor.Instance.ToggleAutobattle());
 
+    /// <summary>Advisor brain (Shift+F8 / toolbar / frame), toggled: Search
+    /// &lt;-&gt; Instinct (SimAdvisor.SetBrain). A preference, not a takeover,
+    /// so it needs no Advisor mode: set with the AI off, it applies from the
+    /// next advice.</summary>
+    public static void ToggleBrain(string surface) => SimAdvisor.Instance.ToggleBrain(surface);
+
+    /// <summary>"Partner: go" (Shift+F6 / toolbar), co-op with AI partners:
+    /// every partner that is waiting for you this turn (your first play, your
+    /// end turn, your setup play) plays the rest of it now. Needs no coach:
+    /// each partner runs on its own advisor.</summary>
+    public static void PartnersGo(string surface)
+    {
+        var released = new List<string>();
+        foreach (SimAiPartner partner in SimAiPartner.All)
+        {
+            if (partner.Brain.Go())
+            {
+                released.Add(partner.Label);
+            }
+        }
+        if (released.Count > 0)
+        {
+            SimActionLog.Note($"{surface}: {string.Join(", ", released)} plays now.");
+        }
+        else
+        {
+            SimActionLog.Note(SimAiPartner.All.Count == 0
+                ? $"{surface}: no AI partner in this run."
+                : $"{surface}: no AI partner is waiting for you.");
+        }
+    }
+
     /// <summary>
     /// F8 / the on-off button: AI off &lt;-&gt; on in the current style
     /// (CoachStyle.ToggleOnOff). From Autopilot: stop the AI, hand the game
@@ -116,6 +153,80 @@ internal static class SimActions
     }
 
     /// <summary>
+    /// The badge's Mode switch: Off / Coach / Hints / AI plays
+    /// (MentorModes.Plan). Every step is a verb F8 / F7 / Shift+F7 already
+    /// take: stop a config-armed Autopilot (as F8 does), set mode and style,
+    /// then autobattle off and F7 autoplay on / off. The lit segment does
+    /// nothing.
+    /// </summary>
+    public static void SetMentorMode(MentorMode target, string surface)
+    {
+        bool armed = SimRuntime.AdvisorAutoplayArmed;
+        bool autobattle = SimAdvisor.Instance.AutobattleOn;
+        MentorModePlan? plan = MentorModes.Plan(target, (SimModeLite)(int)SimRuntime.Mode,
+            SimRuntime.Style, armed, autobattle);
+        if (plan is not { } p)
+        {
+            return;
+        }
+        GD.Print($"[SpireMentor] {surface}: mode -> {target}.");
+        if (p.StopAutopilot)
+        {
+            // Stop the slayer FIRST, as F8 does, so its card selector and
+            // non-interactive mode are released before the mode flips.
+            MainFile.StopAutopilot();
+        }
+        SimRuntime.SetModeAndStyle((SimMode)(int)p.Mode, p.Style);
+        if (p.StopAutopilot)
+        {
+            SimActionLog.Note($"Autopilot stopped; you have the controls ({CoachStyle.ModeName(p.Mode, p.Style)}).");
+        }
+        else if (p.Mode == SimModeLite.Off)
+        {
+            SimActionLog.Note("AI off.");
+        }
+        if (p.DisarmAutoplay && SimRuntime.AdvisorAutoplayArmed)
+        {
+            SimAdvisor.Instance.ToggleAutoPlay();
+        }
+        if (p.StopAutobattle && SimAdvisor.Instance.AutobattleOn)
+        {
+            SimAdvisor.Instance.ToggleAutobattle();
+        }
+        if (p.ArmAutoplay && !SimRuntime.AdvisorAutoplayArmed)
+        {
+            SimAdvisor.Instance.ToggleAutoPlay();
+        }
+        else if (p.Mode == SimModeLite.Advisor && !p.StopAutopilot)
+        {
+            SimActionLog.Note(p.Style == AdviceStyle.Coach
+                ? "Coach: nothing shows before you act -- F5 peeks at the AI's next pick."
+                : "Hints: the AI's opinion shows while you decide.");
+        }
+    }
+
+    /// <summary>
+    /// The "AI is playing — Stop" button: whatever has the AI playing, stop
+    /// it. F7 autoplay and autobattle stop (F7 / Shift+F7); a config-armed
+    /// Autopilot hands the controls back (F8).
+    /// </summary>
+    public static void StopAi(string surface)
+    {
+        if (SimRuntime.Mode == SimMode.Autopilot)
+        {
+            ToggleAdvisor();
+        }
+        else if (SimAdvisor.Instance.AutobattleOn)
+        {
+            ToggleAutobattle(surface);
+        }
+        else if (SimRuntime.AdvisorAutoplayArmed)
+        {
+            ToggleAutoplay(surface);
+        }
+    }
+
+    /// <summary>
     /// The style button: Hints &lt;-&gt; Coach (CoachStyle.SwitchStyle). Never
     /// changes the mode, so it can't turn the AI (or its process) off.
     /// </summary>
@@ -124,6 +235,9 @@ internal static class SimActions
         (SimModeLite mode, AdviceStyle nextStyle) =
             CoachStyle.SwitchStyle((SimModeLite)(int)SimRuntime.Mode, SimRuntime.Style);
         SimRuntime.SetModeAndStyle((SimMode)(int)mode, nextStyle);
+        // The style switched last is the one the coach starts in next time.
+        SpireMentorModConfig.StartInCoachStyle = nextStyle == AdviceStyle.Coach;
+        SpireMentorModConfig.SaveSoon();
         GD.Print($"[SpireMentor] Style -> {CoachStyle.StyleLabel(nextStyle)}");
         SimActionLog.Note(nextStyle == AdviceStyle.Coach
             ? "Coach: nothing shows before you act -- F5 peeks at the AI's next pick."
@@ -148,7 +262,7 @@ internal static class SimActions
         {
             GD.Print("[SpireMentor] F5 peeks in Coach mode.");
             SimToolbar.Instance.SetNote("F5 peeks in Coach mode");
-            SimActionLog.Note("F5 peeks in Coach mode (F8 turns the AI on; the toolbar's style button picks Hints or Coach).");
+            SimActionLog.Note("F5 peeks in Coach mode (click the Spire Mentor badge and pick Coach).");
             return;
         }
         SimAdvisor.Instance.Peek();

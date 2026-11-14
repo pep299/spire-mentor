@@ -42,17 +42,17 @@ use crate::runstate::{RoomType, RunState};
 
 /// Python `BASE_MONSTER = 0.10`. Probability `?` rolls a monster fight
 /// on first visit; grows by this much per skipped roll.
-pub const BASE_MONSTER: f64 = 0.10;
+pub const BASE_MONSTER: f32 = 0.10;
 /// Python `BASE_ELITE = -1.00`. Sentinel meaning "impossible until a
 /// modifier boosts the odds positive". Today no modifier path lands an
 /// Elite via `?` — the field is reserved for parity.
-pub const BASE_ELITE: f64 = -1.00;
+pub const BASE_ELITE: f32 = -1.00;
 /// Python `BASE_TREASURE = 0.02`. Probability `?` rolls a treasure
 /// chest on first visit.
-pub const BASE_TREASURE: f64 = 0.02;
+pub const BASE_TREASURE: f32 = 0.02;
 /// Python `BASE_SHOP = 0.03`. Probability `?` rolls a merchant on
 /// first visit.
-pub const BASE_SHOP: f64 = 0.03;
+pub const BASE_SHOP: f32 = 0.03;
 
 /// C# room-type ordering used by the fallback selector when
 /// `RoomType::Event` is excluded from the candidate set. Lower number
@@ -85,10 +85,10 @@ pub fn fallback_order(rt: RoomType) -> u8 {
 // containing `RunState` keep its derived `Eq`.
 pub struct UnknownMapPointOdds {
     /// Live odds per room type — the value compared against the roll.
-    pub current: BTreeMap<RoomType, f64>,
+    pub current: BTreeMap<RoomType, f32>,
     /// Reset / growth base — what each `current[type]` snaps back to
     /// on roll and grows by on skip.
-    base: BTreeMap<RoomType, f64>,
+    base: BTreeMap<RoomType, f32>,
 }
 
 impl Default for UnknownMapPointOdds {
@@ -99,7 +99,7 @@ impl Default for UnknownMapPointOdds {
 
 impl PartialEq for UnknownMapPointOdds {
     fn eq(&self, other: &Self) -> bool {
-        fn bits_match(a: &BTreeMap<RoomType, f64>, b: &BTreeMap<RoomType, f64>) -> bool {
+        fn bits_match(a: &BTreeMap<RoomType, f32>, b: &BTreeMap<RoomType, f32>) -> bool {
             if a.len() != b.len() {
                 return false;
             }
@@ -169,8 +169,9 @@ impl UnknownMapPointOdds {
         // RestSite < Treasure < Event), which differs from Python's
         // insertion order (Monster, Elite, Treasure, Shop). Match
         // Python exactly by iterating in insertion order.
-        let roll_val = rng.next_float(1.0);
-        let mut cumulative = 0.0;
+        // C# sums and compares in `float` (UnknownMapPointOdds.cs:140-157).
+        let roll_val = rng.next_float_f32();
+        let mut cumulative = 0.0_f32;
         for rt in [
             RoomType::Monster,
             RoomType::Elite,
@@ -267,6 +268,11 @@ impl RunState {
         // return `{Event}` (GoldenCompass), so their order does not matter.
         if self.lantern_key_redirects_to_war_historian() {
             room_types = std::iter::once(RoomType::Event).collect();
+        }
+        // v0.113.0 Dowsing quest card: strips Monster/Elite after 3 rooms.
+        if self.dowsing_strips_fights() {
+            room_types.remove(&RoomType::Monster);
+            room_types.remove(&RoomType::Elite);
         }
 
         // Roll.
@@ -433,5 +439,31 @@ mod tests {
             .current
             .insert(RoomType::Monster, 1.0);
         assert_eq!(rs.resolve_unknown_room(BTreeSet::new()), RoomType::Monster);
+    }
+
+    /// `UnknownMapPointOdds.Roll` (`UnknownMapPointOdds.cs:140-175`) sums the
+    /// odds in `float` and compares a `float` roll with `<=`. Each seed's
+    /// first draw sits just above a cumulative boundary (0.1, 0.12, 0.15) in
+    /// double but rounds onto it in float, so C# picks the earlier room.
+    #[test]
+    fn roll_compares_float_cumulative_odds() {
+        let candidates: BTreeSet<RoomType> = [
+            RoomType::Monster,
+            RoomType::Elite,
+            RoomType::Treasure,
+            RoomType::Shop,
+            RoomType::Event,
+        ]
+        .into_iter()
+        .collect();
+        for (seed, want) in [
+            (59_306_271_u64, RoomType::Monster),
+            (16_718_349, RoomType::Treasure),
+            (25_847_251, RoomType::Shop),
+        ] {
+            let mut odds = UnknownMapPointOdds::new();
+            let mut r = Rng::from_seed(seed);
+            assert_eq!(odds.roll(&mut r, &candidates), want, "seed {seed}");
+        }
     }
 }

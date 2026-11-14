@@ -42,8 +42,9 @@ _ALLOWED_MISSING = {"singlestaricon", "energyprefix"}
 # A capitalised "[VarName]" left in the rendered output means a template token
 # survived strip-but-not-substitute — i.e. the payload sent no vars dict at all
 # (the original shop-relic bug shape). Lowercase bracket tokens are synthetic
-# icons and are checked via the stderr warning path instead.
-_BRACKET_RESIDUE = re.compile(r"\[[A-Z][A-Za-z0-9]*\]")
+# icons and are checked via the stderr warning path instead. ``[E]`` is the
+# host's rendering of the game's energy icon (GH #1324), not a template token.
+_BRACKET_RESIDUE = re.compile(r"\[(?!E\])[A-Z][A-Za-z0-9]*\]")
 _MISSING_WARNING = re.compile(r"missing template var:\s*(\S+)")
 
 
@@ -116,8 +117,8 @@ def test_no_potion_offer_shows_placeholder(content):
 
 
 #: Signet Ring's ``GoldVar`` per game build (``SignetRing.cs``: 999 at v0.107.1,
-#: 888 at v0.111.0).
-_SIGNET_RING_GOLD = {"v0.107.1": "999", "v0.111.0": "888"}
+#: 888 at v0.111.0 and v0.113.0).
+_SIGNET_RING_GOLD = {"v0.107.1": "999", "v0.111.0": "888", "v0.113.0": "888"}
 
 
 def test_signet_ring_offer_shows_gold_number(content):

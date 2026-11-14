@@ -128,10 +128,9 @@ fn build_hook_smoke_fixture() -> HookSmokeFixture {
     let a_card_uid = CardUid::new(1).expect("non-zero");
     let a_card_id = CardId::StrikeIronclad;
     state.cards.push(Card {
-        local_energy_cost: None,
         uid: a_card_uid,
         card_id: a_card_id,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: false,

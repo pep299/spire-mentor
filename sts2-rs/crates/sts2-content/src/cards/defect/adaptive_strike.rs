@@ -23,9 +23,14 @@ pub(crate) fn play_adaptive_strike(
         .play
         .last()
         .expect("AdaptiveStrike: dispatch contract guarantees a Play-pile entry");
-    let mut clone = state.cards[src_uid.0.get() as usize - 1];
-    clone.set_cost_this_combat(0);
-    let _ = sts2_core::card_effects::spawn_card_into_pile(state, clone, PileKind::Discard);
+    // `CreateClone()` deep-copies the live cost modifiers, then
+    // `EnergyCost.SetThisCombat(0)` appends an Absolute 0 that folds last
+    // (loadout Defect 1035: the clone reads 0 after turn end).
+    let mut clone = state.cards[src_uid.0.get() as usize - 1].create_clone();
+    clone.cost.set_this_combat(0, false);
+    let copy = sts2_core::card_effects::spawn_card_into_pile(state, clone, PileKind::Discard);
+    // `CreateClone` keeps the source's Retain / Sly flags.
+    state.inherit_clone_flags(src_uid, copy);
     EffectResult::Resolved
 }
 

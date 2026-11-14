@@ -74,6 +74,8 @@ pub mod allocator;
 // removed is the artifact and the code that applied it, not the mechanism.
 
 pub mod combat_surrogate;
+pub mod e2e;
+pub mod e2e_train;
 pub mod heuristic_agent;
 pub mod mcts_combat_agent;
 pub mod ppo_agent;
@@ -210,7 +212,7 @@ fn build_encounter_state(
         cards_arena.push(Card {
             uid,
             card_id: spec.id,
-            cost: spec.cost,
+            cost: sts2_core::CardEnergyCost::new(spec.cost),
             card_type: spec.card_type,
             target_type: spec.target_type,
             upgraded: false,
@@ -249,12 +251,13 @@ fn build_encounter_state(
         creature_uid: None,
         pet_uid: None,
         shivs_played_this_turn: 0,
-        cards_played_this_turn: [0; 5],
+        cards_played_this_turn: [0; 6],
         powered_hits_this_turn: 0,
         powered_hits_by_target_this_turn: smallvec::SmallVec::new(),
         powered_hits_at_card_play_start: 0,
         attack_command_suppressed_this_play: false,
         vigor_latch_card: None,
+        fool: None,
         generated_cards_this_combat: 0,
         skills_played_this_turn: 0,
         card_plays_started_this_turn: 0,
@@ -318,7 +321,7 @@ fn build_encounter_state(
         pending_snecko_cost_randomize: false,
         pending_cluster_resume: None,
         pending_collect_resume: None,
-        pending_play_phase_tail: false,
+        pending_play_phase_tail: None,
         pending_hand_draw_resume: None,
         pending_relic_hand_draw_resume: None,
         pending_wlp_retain_resume: false,
@@ -348,6 +351,7 @@ fn build_encounter_state(
         is_elite: false,
         is_boss: false,
         act_index: 1,
+        total_floor: 0,
         active_attack: None,
         energy_wasted: 0,
         cards_drawn: 0,
@@ -1596,10 +1600,10 @@ impl PyCombatState {
         // `last_attack_skill_played` and `card_play_log` hold uids the
         // reconstruction has just reallocated, and
         // `chains_bound_card_played_this_turn` IS on the wire, so reality
-        // must keep winning on it. `unmovable_card_block_plays` is safe:
-        // its tags are `player_card_plays_this_combat` sequence numbers,
-        // which travel with it, so the fresh state's future plays continue
-        // the same numbering — Unmovable rebuilt without it doubled EVERY
+        // must keep winning on it. `unmovable_card_block_plays` is safe
+        // between plays: every finished play's tag is the uid-free
+        // `UNMOVABLE_EARLIER_PLAY` (only a play still resolving holds its
+        // card's uid) — Unmovable rebuilt without it doubled EVERY
         // block card instead of only the turn's first (30 of the 140
         // on-play `$.player.block` divergences on the v27wr sweep).
         {
@@ -1679,23 +1683,14 @@ impl PyCombatState {
         // scaling accumulator (Rampage / Claw / RitualDagger). Carry them
         // by pile+position, exactly as the draw-pile pins are: a pile whose
         // length changed (or whose card at the position changed identity)
-        // is unreconstructable and drops its carries. Wire-owned vars are
-        // excluded — the three cost banks and the two wire-cost stamps
-        // belong to the `persistent_cost` channel, and
-        // `WitherFakeUpgradeLevel` is re-derived from wire `base_damage` —
-        // and a var the fresh card already carries (the Rust dialect
-        // round-trips `combat_vars`) keeps the wire's value: reality wins.
+        // is unreconstructable and drops its carries. The energy cost is not
+        // a var at all (`Card::cost`, rebuilt from the wire's cost fields), and
+        // the one wire-owned var, `WitherFakeUpgradeLevel`, is re-derived from
+        // wire `base_damage`. A var the fresh card already carries (the Rust
+        // dialect round-trips `combat_vars`) keeps the wire's value: reality
+        // wins.
         {
-            const WIRE_OWNED: &[VarKey] = &[
-                VarKey::StompCostReductionThisTurn,
-                VarKey::PinpointCostReductionThisTurn,
-                VarKey::SneckoCostDeltaThisTurn,
-                VarKey::SneckoRollLive,
-                VarKey::WireTransientCostThisTurn,
-                VarKey::WireCostExpiringOnPlay,
-                VarKey::WireCostStable,
-                VarKey::WitherFakeUpgradeLevel,
-            ];
+            const WIRE_OWNED: &[VarKey] = &[VarKey::WitherFakeUpgradeLevel];
             let pile_pairs = [
                 (&self.inner.player.hand[..], &carried.inner.player.hand[..]),
                 (&self.inner.player.draw[..], &carried.inner.player.draw[..]),
@@ -1747,7 +1742,6 @@ impl PyCombatState {
                             !(*k == VarKey::RampageDamage
                                 && dst.card_id == sts2_core::cards::CardId::Rampage)
                         })
-                        .copied()
                         .collect();
                     if !vars.is_empty() {
                         copies.push((fresh_uid, vars));
@@ -2049,7 +2043,13 @@ impl PyCombatState {
                 .filter(|value| !value.is_none())
                 .map(|value| value.extract::<i32>())
                 .transpose()?
-                .unwrap_or(i32::from(card.cost));
+                .unwrap_or_else(|| {
+                    if card.base_cost() < 0 {
+                        i32::from(card.base_cost())
+                    } else {
+                        card.local_cost().max(0)
+                    }
+                });
             let mut value =
                 sts2_wire::emit::combat::card_to_value_with_cost(&self.inner, &card, cost);
             let mut flags = value
@@ -3120,7 +3120,9 @@ pub const SRC_HASH: &str = env!("STS2_PY_SRC_HASH");
 ///
 /// `version` is the feature version (1 = the deployed net's 32 / 24
 /// features, 2 = 96 / 32, 3 = v1's 32 / 24 with telegraphed attacks at their
-/// displayed number and form-aware "enemy HP removed"). Version 2 reads the
+/// displayed number and form-aware "enemy HP removed", 4 = v1 plus the
+/// character and affliction block, 44 / 29, 5 = v4 plus the orb / Osty card
+/// mechanics block, 56 / 43). Version 2 reads the
 /// act from `monster_act`
 /// (`{species: act}`) and `encounter_act` (`[[act, [species, ...]], ...]`),
 /// each by default the engine's encounter tables ([`monster_acts`],
@@ -3169,12 +3171,13 @@ fn feature_spec_for(
     encounter_act: Option<Vec<(u8, Vec<String>)>>,
 ) -> PyResult<sts2_mcts::rollout_net::FeatureSpec> {
     use sts2_mcts::rollout_net::{
-        FeatureSpec, FeatureVersion, FEATURES_V1, FEATURES_V3, FEATURES_V4,
+        FeatureSpec, FeatureVersion, FEATURES_V1, FEATURES_V3, FEATURES_V4, FEATURES_V5,
     };
     match FeatureVersion::from_number(version) {
         Some(FeatureVersion::V1) => Ok(FEATURES_V1),
         Some(FeatureVersion::V3) => Ok(FEATURES_V3),
         Some(FeatureVersion::V4) => Ok(FEATURES_V4),
+        Some(FeatureVersion::V5) => Ok(FEATURES_V5),
         Some(FeatureVersion::V2) => {
             let by_name: std::collections::HashMap<&str, sts2_core::MonsterKind> =
                 sts2_core::MonsterKind::ALL_KNOWN
@@ -3800,6 +3803,7 @@ fn src_hash() -> String {
         sts2_wire::SRC_HASH,
         sts2_cli::SRC_HASH,
         sts2_vocab::SRC_HASH,
+        sts2_e2e::SRC_HASH,
         env!("STS2_WORKSPACE_HASH"),
     ])
 }
@@ -4769,6 +4773,18 @@ pub fn sts2_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // The `OnnxPolicy.distribution` twin: same contract, `tract` instead of
     // `onnxruntime`, so the advisor bundle needs neither it nor `numpy`.
     m.add_class::<crate::ppo_policy::PyPpoNetPolicy>()?;
+    // Instinct, the e2e Ironclad student, for the mod's advisor.
+    m.add_class::<crate::e2e::PyE2eStudent>()?;
+    m.add_class::<crate::e2e::PyE2eDriver>()?;
+    m.add_class::<crate::e2e::PyE2ePeek>()?;
+    m.add_class::<crate::e2e_train::PyE2eTrainEnv>()?;
+    m.add_class::<crate::e2e_train::PyE2eRareMap>()?;
+    m.add(
+        "E2eEnvRaise",
+        py.get_type::<crate::e2e_train::E2eEnvRaise>(),
+    )?;
+    m.add_function(wrap_pyfunction!(crate::e2e::e2e_new_run, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::e2e::e2e_selfplay, m)?)?;
     m.add(
         "PpoBudgetExceeded",
         py.get_type::<ppo_policy::PpoBudgetExceeded>(),
@@ -6427,9 +6443,8 @@ mod tests {
             assert_eq!(cs.inner.player.draw.len(), draw_before - 8);
             assert!(cs.inner.player.hand.contains(&power));
             assert_eq!(
-                cs.inner.cards[power.get() as usize - 1]
-                    .combat_var(sts2_core::cards::VarKey::FreeThisTurn),
-                1,
+                cs.inner.cards[power.get() as usize - 1].local_cost(),
+                0,
                 "the later BeforeHandDraw listener ran after selection"
             );
             assert_start_tail_once(&mut cs);

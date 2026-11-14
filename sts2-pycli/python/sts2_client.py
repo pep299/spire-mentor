@@ -33,7 +33,11 @@ PROJECT = os.path.join(REPO_ROOT, "src", "Sts2Headless", "Sts2Headless.csproj")
 #: The default build: stable Steam. Moves when the beta goes stable.
 DEFAULT_GAME_VERSION = "v0.107.1"
 #: Every build the oracle can be compiled for (mirrors the csproj check).
-SUPPORTED_GAME_VERSIONS: tuple[str, ...] = ("v0.107.1", "v0.111.0")
+SUPPORTED_GAME_VERSIONS: tuple[str, ...] = ("v0.107.1", "v0.111.0", "v0.113.0")
+#: Steam beta builds whose content the engine has only partly ported: the
+#: advisor answers on them, and labels the answer approximate (GH #1303).
+#: Empty since v0.113.0's port landed (#1319 run level, #1330 The Fool's cards).
+BETA_GAME_VERSIONS: frozenset[str] = frozenset()
 GAME_VERSION_ENV = "STS2_GAME_VERSION"
 
 
@@ -173,6 +177,46 @@ def rs_engine_call(fn: Any, /, *args: Any, version: str | None = None, **kwargs:
     """
     ver = normalize_game_version(version) if version else GAME_VERSION
     return fn(*args, game_version=ver, **kwargs)
+
+
+class GameVersionMismatch(AssertionError):
+    """An engine object simulates another game build than the one asked for.
+
+    An ``AssertionError``, not a ``ValueError``: fight builders read a
+    ``ValueError`` as "this row does not build" and skip the row, so a version
+    mix must not look like one.
+    """
+
+
+def require_game_version(version: str) -> str:
+    """:func:`normalize_game_version`, raising :class:`GameVersionMismatch`.
+
+    For a build a caller asks an engine object for: an unsupported one must
+    not surface as the ``ValueError`` fight builders skip a row on.
+    """
+    try:
+        return normalize_game_version(version)
+    except ValueError as exc:
+        raise GameVersionMismatch(str(exc)) from exc
+
+
+def check_game_version(obj: Any, version: str | None = None, *, what: str = "engine object") -> Any:
+    """Return ``obj`` once its ``game_version`` getter reads ``version``.
+
+    ``version`` defaults to the selected :data:`GAME_VERSION`. ``RunManager``
+    and ``CombatState`` both carry the getter. Rust never reads
+    ``STS2_GAME_VERSION``, so an engine call without ``game_version=`` builds
+    v0.107.1 whatever the selection; reading the build back is what catches it.
+
+    Raises:
+        GameVersionMismatch: ``obj`` simulates another build, has no getter,
+            or ``version`` names no supported build.
+    """
+    ver = require_game_version(version) if version else GAME_VERSION
+    got = getattr(obj, "game_version", None)
+    if got != ver:
+        raise GameVersionMismatch(f"{what} simulates {got!r}, expected {ver!r}")
+    return obj
 
 
 # A drained stderr line that means the WORLD threw, not that it logged. The C#
@@ -712,9 +756,9 @@ class Game:
                 ``"underdocks"``, or ``"roll"`` to reproduce the real lobby's
                 seed-driven pick off the ``act_selection`` stream. STS2 ships
                 TWO acts at index 0 and the roll happens in ``StartRunLobby``,
-                which this harness bypasses; leaving this None keeps the
-                historical default (``GetDefaultList()`` => Overgrowth), which
-                is what made every act-1 parity number so far vacuous.
+                which this harness bypasses. None means ``"roll"``, as in the
+                real game with everything unlocked and discovered (it used to
+                mean Overgrowth on every seed).
             interactive_potion_swap: GH #1069. A potion reward that finds a
                 full belt parks as a ``potion_swap`` decision (discard a held
                 potion to take it, or decline), as the real reward screen

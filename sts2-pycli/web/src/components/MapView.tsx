@@ -1,9 +1,11 @@
 import { useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type SVGProps } from "react";
 import type { MapRow, MapGraph, FullMap, FullMapNode, PathPlan, BossNode } from "../api";
 import { assetUrl } from "../api";
+import { markFor, useAdviceMarks } from "../advice/useAdviceMarks";
 import { useHints } from "../hints/useHints";
 import "../skins/map.css";
 import { nodeMeta, bossArt } from "./mapArt";
+import { usePhone } from "../phone";
 
 const coordKey = (c: { col: number; row: number }) => `${c.col},${c.row}`;
 /** Undirected edge key so the plan-route highlight matches drawn edges. */
@@ -270,7 +272,7 @@ function InkDefs({ fid }: { fid: string }) {
  *
  * ``rich`` (the parchment map screen / overlay) draws the act boss as a large
  * ink silhouette at the top of the scroll instead of a small node stamp. */
-function FullMapGraph({ fm, selectable, onSelect, jumpTargets, onJump, scale = 1, showPlan = true, rich = false }: {
+function FullMapGraph({ fm, selectable, onSelect, jumpTargets, onJump, scale = 1, colScale, showPlan = true, rich = false, gameVersion }: {
   fm: FullMap;
   selectable?: Set<string>;
   onSelect?: (col: number, row: number) => void;
@@ -279,18 +281,29 @@ function FullMapGraph({ fm, selectable, onSelect, jumpTargets, onJump, scale = 1
   jumpTargets?: Map<string, { idx: number; floor: number | null }>;
   onJump?: (idx: number) => void;
   scale?: number;
+  /** The column pitch's own scale, where it differs from `scale` (a narrow
+   *  phone: the columns close up to the sheet, the rows keep their scale). */
+  colScale?: number;
   /** Draw the run-AI's planned route to the boss. Off during unadvised live
    *  play — see {@link MapView}. */
   showPlan?: boolean;
   rich?: boolean;
+  /** Game build: picks the boss art overlay (see `bossArt`). */
+  gameVersion?: string | null;
 }) {
   // Filter ids are document-global; namespace them so the map screen and the
   // docked minimap (both mounted at once) each own their own definitions.
   const fid = useId().replace(/[^a-zA-Z0-9]/g, "");
-  const COL = (rich ? RICH_COLW : COLW) * scale;
+  // The run policy's mark on the node to pick next (advice/marks.ts).
+  const { marks } = useAdviceMarks();
+  const COL = (rich ? RICH_COLW : COLW) * (colScale ?? scale);
   const ROW = (rich ? RICH_ROWH : ROWH) * scale;
   const R = (rich ? RICH_R : R_BASE) * scale;
   const fs = (px: number) => px * scale;
+  // On a phone the lattice sits at its narrow fit floor, where the hit disc
+  // (R + 9) comes out ~32 px across. The disc is invisible, so it is padded up
+  // to a 44 px diameter; the narrowest pitch (44 px, `MIN_COL_FIT`) keeps neighbours apart.
+  const phone = usePhone() !== null;
   const nodes: FullMapNode[] = (fm.rows || []).flat();
   if (fm.boss && !nodes.some((n) => n.row === fm.boss!.row && n.col === fm.boss!.col)) {
     nodes.push({ ...fm.boss, children: [] });
@@ -466,7 +479,7 @@ function FullMapGraph({ fm, selectable, onSelect, jumpTargets, onJump, scale = 1
           // WHICH boss stands here: at A10 the node one row above the act boss
           // is the second boss, a different encounter with its own art.
           const b = bossFor(n);
-          const art = bossArt(b, n.icon);
+          const art = bossArt(b, n.icon, gameVersion);
           const second = sameCoord(fm.second_boss, n);
           const role = second ? "the act's second boss" : "the act boss";
           return (
@@ -534,7 +547,7 @@ function FullMapGraph({ fm, selectable, onSelect, jumpTargets, onJump, scale = 1
             {canSelect && <title>Go to {n.type ?? "node"} ({n.col},{n.row}){skipHere ? " — keeps an elite-skip option" : ""}</title>}
             {jump && <title>Jump to floor {jump.floor ?? "?"}</title>}
             {/* larger transparent hit target for easier clicking */}
-            {(canSelect || jump) && <circle r={R + 9 * scale} fill="transparent" />}
+            {(canSelect || jump) && <circle data-hit r={Math.max(R + 9 * scale, phone && rich ? 22 : 0)} fill="transparent" />}
             {/* visited/current nodes are lassoed in ink — a heavy hand-drawn
                 brush loop, the game's own marking. The shipped map_ping.png is
                 a hairline WHITE ring: on parchment it read as a pale glow halo,
@@ -555,6 +568,26 @@ function FullMapGraph({ fm, selectable, onSelect, jumpTargets, onJump, scale = 1
               transform={`rotate(${jit(n.col, n.row, 13, 180)})`}
               stroke={INK} strokeWidth={0.26 * R} strokeLinecap="round"
               strokeDasharray={`${0.55 * R} ${0.34 * R}`} opacity={0.8} />}
+            {/* The AI's pick: a gold ring, breathing, and its step number —
+                the same mark the cards and the screens' options wear. */}
+            {canSelect && (() => {
+              const mk = markFor(marks, "select_map_node", { col: n.col, row: n.row });
+              if (!mk) return null;
+              return (
+                <g className={`gsm-advice gsm-advice--${mk.tier}`} pointerEvents="none" data-testid="map-advice">
+                  {/* The shared mark look (responsive.css --mark-*, .wb-mark-badge). */}
+                  <circle r={R * 1.95} fill="none" style={{ stroke: "var(--mark-gold)" }}
+                    strokeWidth={(mk.tier === "best" ? 0.28 : 0.16) * R} />
+                  {mk.order != null && (
+                    <g transform={`translate(${R * 1.5},${-R * 1.5})`}>
+                      <circle r={R * 0.72} style={{ fill: "var(--mark-gold)" }} stroke="oklch(32% 0.05 75)" strokeWidth={0.12 * R} />
+                      <text textAnchor="middle" dy={R * 0.3} fontSize={R * 0.9} fontWeight={800}
+                        style={{ fontFamily: "var(--font)" }} fill="oklch(20% 0.02 70)">{mk.order}</text>
+                    </g>
+                  )}
+                </g>
+              );
+            })()}
             <g className={`gsm-node-art${faded ? " gsm-node-future" : ""}`}>
               {(() => {
                 // The game's own room stamp, printed into the paper by the
@@ -685,11 +718,15 @@ const LEGEND: { label: string; rel: string; coin?: boolean }[] = [
 const PARCH_PAD_X = 46;
 
 /** The smallest the lattice is drawn. 0.6 keeps the stamps legible on a sheet
- *  that has the width for it; on a phone-width sheet (< 760px) 0.5 — the act
- *  still overhangs and scrolls sideways, but by a short pan rather than a
- *  screen's worth. */
+ *  that has the width for it; on a phone-width sheet (< 760px) 0.5, and there
+ *  the COLUMNS close up further (`MIN_COL_FIT`) so the act fits the paper
+ *  and never scrolls sideways. */
 const MIN_FIT = 0.6;
 const MIN_FIT_NARROW = 0.5;
+/** The tightest column pitch on a phone-width sheet, as a scale of
+ *  `RICH_COLW`: 44 px, one tap disc (`FullMapGraph`'s 22 px radius). Only a
+ *  sheet under ~7 x 44 px of paper still scrolls sideways. */
+const MIN_COL_FIT = 44 / RICH_COLW;
 
 /** Mirrors `--gsm-sheet-inset` in map.css: the parchment layers are 1920 px
  *  wide but the hide itself starts this far in on each side, so the paper the
@@ -719,7 +756,7 @@ function regionFor(actName: string | null): string {
   return "overgrowth";
 }
 
-export default function MapView({ rows, graphs, currentIdx, selectable, onSelect, onJump, scale = 1, compact = false, live = false }: {
+export default function MapView({ rows, graphs, currentIdx, selectable, onSelect, onJump, scale = 1, compact = false, live = false, gameVersion }: {
   rows: MapRow[]; graphs: MapGraph[]; currentIdx: number;
   selectable?: Set<string>; onSelect?: (col: number, row: number) => void;
   /** Replay: seek the timeline to a map decision step (click a visited node / floor row). */
@@ -732,6 +769,9 @@ export default function MapView({ rows, graphs, currentIdx, selectable, onSelect
    *  about a decision you have not made yet and follows the hints switch.
    *  Replay is review of a finished run — its route always renders. */
   live?: boolean;
+  /** Game build the map belongs to: a later build's new bosses draw from
+   *  its art overlay (see `bossArt`). */
+  gameVersion?: string | null;
 }) {
   // The ⤳ route is the run-AI telling you which way to go: unprompted
   // advice on the map screen, and just as much of a spoiler as the policy
@@ -762,6 +802,7 @@ export default function MapView({ rows, graphs, currentIdx, selectable, onSelect
   // torn deckle. Quantised to 1/50 so a resize can't oscillate and so a
   // replay capture at a given viewport renders identically every time.
   const [fit, setFit] = useState(1);
+  const [colFit, setColFit] = useState<number | undefined>(undefined);
   const natW = graph?.full_map ? richExtent(graph.full_map).w : 0;
   useLayoutEffect(() => {
     if (compact || !natW) return;
@@ -773,7 +814,11 @@ export default function MapView({ rows, graphs, currentIdx, selectable, onSelect
       const avail = el.clientWidth * (1 - 2 * SHEET_INSET) - padX * 2;
       if (avail <= 0) return;
       const floor = el.clientWidth < 760 ? MIN_FIT_NARROW : MIN_FIT;
-      setFit(Math.max(floor, Math.min(1.12, Math.round((avail / natW) * 50) / 50)));
+      const next = Math.max(floor, Math.min(1.12, Math.round((avail / natW) * 50) / 50));
+      setFit(next);
+      // A narrow sheet at the floor: the columns alone close up to the paper.
+      const narrow = el.clientWidth < 760 && avail / natW < next;
+      setColFit(narrow ? Math.max(MIN_COL_FIT, Math.floor((avail / natW) * 200) / 200) : undefined);
     };
     measure();
     window.addEventListener("resize", measure);
@@ -834,7 +879,7 @@ export default function MapView({ rows, graphs, currentIdx, selectable, onSelect
       <div className="gs-map gs-map--compact" style={{ padding: 8, ...parchVars }}>
         {graph
           ? <FullMapGraph fm={graph.full_map} selectable={selectable} onSelect={onSelect}
-              jumpTargets={jumpTargets} onJump={onJump} scale={scale} showPlan={showPlan} />
+              jumpTargets={jumpTargets} onJump={onJump} scale={scale} showPlan={showPlan} gameVersion={gameVersion} />
           : <ReconstructedRows rows={rows} currentIdx={currentIdx} onJump={onJump} />}
       </div>
     );
@@ -877,7 +922,7 @@ export default function MapView({ rows, graphs, currentIdx, selectable, onSelect
           <div ref={bodyRef} className="gsm-parch-body">
             {graph
               ? <FullMapGraph fm={graph.full_map} selectable={selectable} onSelect={onSelect}
-                  jumpTargets={jumpTargets} onJump={onJump} scale={fit} showPlan={showPlan} rich />
+                  jumpTargets={jumpTargets} onJump={onJump} scale={fit} colScale={colFit} showPlan={showPlan} rich gameVersion={gameVersion} />
               : <ReconstructedRows rows={rows} currentIdx={currentIdx} onJump={onJump} />}
           </div>
           {/* … and its two torn deckle edges pinned OVER it, so an act taller

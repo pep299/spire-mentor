@@ -22,27 +22,45 @@ use super::prelude::*;
 /// spurious `cost: 1 → 0` entry from `card_upgrades_generated` (C#
 /// Stoke has no spec-level OnUpgrade).
 pub(crate) fn play_stoke(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
-    use sts2_core::potions::CharacterId;
     let to_exhaust: Vec<sts2_core::CardUid> = state.player.hand.iter().copied().collect();
-    let count: usize = to_exhaust.len();
-    for uid in to_exhaust {
-        // C# Stoke.cs:19 exhausts the hand via `CardCmd.Exhaust`, which fires
-        // `AfterCardExhausted` on both the power and relic-effects buses. The
-        // prior raw `move_card` (Hand→Exhaust) silently skipped those hooks
-        // (round-6 STOKE). Mirror Cinder's `exhaust_hand_card`.
-        exhaust_hand_card(state, uid);
-    }
+    let count = u8::try_from(to_exhaust.len()).unwrap_or(u8::MAX);
     if count == 0 {
         return EffectResult::Resolved;
     }
+    // C# Stoke.cs:24-27 exhausts the hand via `CardCmd.Exhaust`, which fires
+    // `AfterCardExhausted` on both the power and relic-effects buses (round-6
+    // STOKE), and awaits each: a Dark Embrace draw that suspended on a
+    // reshuffle pick finishes, pick included, before the next exhaust and the
+    // generation (Ironclad 5998 v0.107.1 @378, the generated cards landed
+    // ahead of the draws).
+    let tail = if current_upgraded(state) {
+        sts2_core::DrawThen::StokePlus(count)
+    } else {
+        sts2_core::DrawThen::Stoke(count)
+    };
+    crate::cards::draw_then::exhaust_then(state, &to_exhaust, tail);
+    EffectResult::Resolved
+}
+/// The rest of Stoke's `OnPlay` after its exhausts (Stoke.cs:28-33):
+/// generate `count` cards from the owner's pool, upgrade them on Stoke+, and
+/// add them to the hand.
+pub(crate) fn generate_stoke_cards(state: &mut CombatState, count: u8, upgraded: bool) {
+    use sts2_core::potions::CharacterId;
     // C# `Owner.Character.CardPool` — for Stoke that's always Ironclad
     // (Stoke is in the Ironclad pool). Fall back to the player's
     // current character if set, else Ironclad — defensive: this card
     // can only be played by Ironclad anyway.
     let character = state.player.character.unwrap_or(CharacterId::Ironclad);
-    let upgrade_all = current_upgraded(state);
+    // Exhausting the hand can down the last enemy (Charon's Ashes); then
+    // `CardCmd.Upgrade` is a no-op (`CombatManager.IsEnding`,
+    // CardCmd.cs:267-270, GH #1150).
+    let upgrade_all = upgraded && !sts2_core::combat_loop::combat_is_ending(state);
     let uids = crate::cards::colorless::create_character_cards_into_arena(
-        state, character, count, None, false,
+        state,
+        character,
+        usize::from(count),
+        None,
+        false,
     );
     for uid in uids {
         if upgrade_all {
@@ -68,7 +86,6 @@ pub(crate) fn play_stoke(state: &mut CombatState, _t: Option<CreatureUid>) -> Ef
         // …). The hand-rolled dispatch covered only the entered-combat bus.
         sts2_core::card_effects::fire_card_generation_listeners(state, uid, pile, true);
     }
-    EffectResult::Resolved
 }
 
 #[must_use]

@@ -70,6 +70,7 @@ const fn class_str_from_character(c: Option<CharacterId>) -> &'static str {
         Some(CharacterId::Defect) => "defect",
         Some(CharacterId::Necrobinder) => "necrobinder",
         Some(CharacterId::Regent) => "regent",
+        Some(CharacterId::Fool) => "fool",
     }
 }
 
@@ -116,26 +117,41 @@ pub fn card_to_value_with_cost(state: &CombatState, card: &Card, effective_cost:
     set(&mut d, "kind", kind);
     set(&mut d, "upgraded", card.upgraded);
     set(&mut d, "cost_override", effective_cost);
-    // The instance's own cost, separate from the effective one above, plus
-    // the per-instance scratch that explains the difference. Emitting only
-    // the effective cost made every transient discount permanent on rebuild;
-    // see `ParsedCard::base_cost`.
-    set(&mut d, "base_cost", i32::from(card.cost));
-    let [local, after_turn, after_play, after_both] = card.local_costs_after_expiration();
-    d.insert(
-        "public_costs".to_owned(),
-        serde_json::json!({
-            "local": local, "afterTurn": after_turn, "afterPlay": after_play,
-            "afterTurnAndPlay": after_both,
-        }),
-    );
-    if let Some(model) = card.local_energy_cost {
-        d.insert("local_cost".to_owned(), local_cost_value(model));
+    // The instance's own cost (C# `GetWithModifiers(Local)`, the same number
+    // the C# producers send as `base_cost`), separate from the effective one
+    // above. `cost_mods` carries the model behind it — the base and the
+    // ordered local modifiers with their lifetimes — so a rebuild expires
+    // each modifier on schedule instead of keeping a this-turn discount for
+    // good. It also preserves modifier order when the public folded view is
+    // sent back after normalization.
+    let own_cost = if card.base_cost() < 0 {
+        i32::from(card.base_cost())
+    } else {
+        card.local_cost().max(0)
+    };
+    set(&mut d, "base_cost", own_cost);
+    {
+        let mut cm = obj();
+        set(&mut cm, "base", i32::from(card.base_cost()));
+        let mods: Vec<Value> = card
+            .cost
+            .mods()
+            .iter()
+            .map(|m| Value::from(vec![i32::from(m.amount()), i32::from(m.flags())]))
+            .collect();
+        cm.insert("mods".to_owned(), Value::Array(mods));
+        d.insert("cost_mods".to_owned(), Value::Object(cm));
     }
+    let [local, after_turn, after_play, after_both] = card.local_costs_after_expiration();
+    d.insert("public_costs".to_owned(), serde_json::json!({"local": local, "afterTurn": after_turn, "afterPlay": after_play, "afterTurnAndPlay": after_both}));
+    d.insert(
+        "local_cost".to_owned(),
+        local_cost_value(card.public_local_energy_cost()),
+    );
     if !card.combat_vars.is_empty() {
         let mut cv = obj();
         for (key, value) in &card.combat_vars {
-            set(&mut cv, var_key_wire_name(*key), *value);
+            set(&mut cv, var_key_wire_name(key), value);
         }
         d.insert("combat_vars".to_owned(), Value::Object(cv));
     }
@@ -157,7 +173,31 @@ pub fn card_to_value_with_cost(state: &CombatState, card: &Card, effective_cost:
     if let Some(v) = sts2_content::cards::preview::calculated_value(state, card, None) {
         set(&mut d, "calculated_value", v);
     }
-    // Keyword and single-turn grants are public card attributes in every pile.
+    // Instance keyword flags, in the C# producers' vocabulary
+    // (`VALID_CARD_FLAGS`), so the mirror's `_card_key` can compare them —
+    // with neither side emitting flags, the diff was structurally BLIND to
+    // every keyword divergence. ONLY the override/registry-derived subset is
+    // emitted: the C# producer names flags only on HAND cards and never
+    // names the free riders at all, so a model-derived emission (FREE_THIS_TURN,
+    // GhostSeed's EtherealThisCombat) is knowledge only the mirror's own
+    // model holds — emitting it manufactured a per-decision tuple desync on
+    // every generated-free card (the v29wr hand/discard explosion: mirror
+    // `('free_turn',)` vs world `()`). The vars still DO their behavioral
+    // work; they are just not part of the comparison vocabulary.
+    //
+    // The keyword `retain` stays unemitted, as it has since this block
+    // landed. That IS an asymmetry — the adapter maps the C# keyword onto a
+    // `retain` flag — but it is pre-existing, orthogonal to GH #370, and
+    // making it symmetric would start surfacing engine-vs-C# Retain-registry
+    // divergences as fresh desyncs. Worth doing deliberately, not as a side
+    // effect of this change.
+    //
+    // The Sly/Retain trio is emitted only for cards IN HAND, because that is
+    // where the adapter computes flags — the C# producers ship keywords on
+    // pile cards too, but `_flags_for_card` is called for the hand alone. An
+    // asymmetric emit here would manufacture a per-decision desync on every
+    // Well-Laid-Plans / Hand-Trick / MasterPlanner card, which is exactly the
+    // failure the paragraph above records for the free riders. GH #370.
     {
         let mut flags: Vec<&str> = Vec::new();
         // GH #372. Two independent sources make a card Ethereal and the emit
@@ -224,7 +264,7 @@ pub fn card_to_value_with_cost(state: &CombatState, card: &Card, effective_cost:
     // than invent a shape no consumer parses.
     if let Some((id, amount)) = card.enchantments.first() {
         set(&mut d, "enchantment", id.wire_name());
-        set(&mut d, "enchantment_amount", *amount);
+        set(&mut d, "enchantment_amount", amount);
     }
     // Per-card affliction (Bound/Devoured/…): additive optional fields
     // so afflicted cards survive the round-trip — without them a
@@ -241,6 +281,19 @@ pub fn card_to_value_with_cost(state: &CombatState, card: &Card, effective_cost:
         }
     }
     Value::Object(d)
+}
+
+/// `cards_played_this_turn` on the wire: the historical five buckets
+/// (Attack..Status), plus the Quest bucket only when it is non-zero, so every
+/// existing producer, consumer and golden keeps its shape (GH #1111; the
+/// parser accepts both lengths).
+fn play_buckets_wire(buckets: &[u32; 6]) -> Vec<u32> {
+    let quest = sts2_core::cards::CardType::Quest.index();
+    if buckets[quest] == 0 {
+        buckets[..quest].to_vec()
+    } else {
+        buckets.to_vec()
+    }
 }
 
 fn pile_to_value(
@@ -310,6 +363,15 @@ pub fn run_rng_counters(state: &CombatState) -> Value {
     set(&mut d, "rewards", rng.rewards.counter());
     set(&mut d, "shops", rng.shops.counter());
     set(&mut d, "transformations", rng.transformations.counter());
+    // v0.113.0 `PlayerRng.NonCombatGeneration`; emitted only for the builds
+    // that have it so older wire goldens keep their key set.
+    if rng.game_version >= sts2_core::GameVersion::V0_113_0 {
+        set(
+            &mut d,
+            "non_combat_generation",
+            rng.non_combat_generation.counter(),
+        );
+    }
     Value::Object(d)
 }
 
@@ -603,10 +665,10 @@ fn emit_seat_history(
             log.extra_turns_taken_this_combat,
         );
     }
-    // Earlier plays' gains only, as the mod sends them: a gain tagged with
-    // the current play count is the resolving play's own (the count bumps when
-    // a play finishes), which C# Unmovable never counts against that play and
-    // which a rebuilt board could not tell from an earlier play's.
+    // Earlier plays' gains only, as the mod sends them: a gain still tagged
+    // with its card's uid is a resolving play's own (the tag is retired when
+    // the play finishes), which C# Unmovable never counts against that play
+    // and which a rebuilt board could not tell from an earlier play's.
     let earlier = log
         .unmovable_card_block_plays
         .iter()
@@ -739,6 +801,12 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
     }
     if state.is_boss {
         set(&mut d, "is_boss", true);
+    }
+    if state.total_floor != 0 {
+        set(&mut d, "total_floor", i32::from(state.total_floor));
+    }
+    if let Some(f) = state.player.fool.as_deref() {
+        set(&mut d, "fool_state", crate::fool_state::encode(state, f));
     }
     // Wire schema uses `turn`, which mirrors `round` in this Rust port
     // (Python sim splits them; the wire field name predates the merge).
@@ -891,7 +959,7 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
         set(
             &mut player,
             "cards_played_this_turn",
-            state.player.cards_played_this_turn.to_vec(),
+            play_buckets_wire(&state.player.cards_played_this_turn),
         );
     }
     let log = &state.combat_log;
@@ -899,7 +967,7 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
         set(
             &mut player,
             "cards_started_this_turn",
-            log.cards_started_this_turn.to_vec(),
+            play_buckets_wire(&log.cards_started_this_turn),
         );
     }
     if log.public_block_history
@@ -1172,6 +1240,31 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
         // species-`roll_intent` path instead of a `MonsterAi`.
         if let Some(ai) = &c.ai {
             set(&mut m, "move_state", ai.current_state_id());
+            // The move machine's per-instance state (#1181), which the next
+            // roll reads (`CannotRepeat` / `UseOnlyOnce` / cooldowns read the
+            // log) and `move_state` alone loses. `log` is in C#'s
+            // `StateLog` convention (`MonsterAi::wire_move_log`), which the C#
+            // producers send too; `forced` / `counter` / `forced_next` are
+            // engine-only and keep a native round-trip exact.
+            let mut a = obj();
+            a.insert(
+                "log".to_owned(),
+                Value::Array(
+                    ai.wire_move_log()
+                        .iter()
+                        .map(|id| Value::from(*id))
+                        .collect(),
+                ),
+            );
+            set(&mut a, "performed_first_move", ai.performed_first_move());
+            set(&mut a, "performed", ai.performed_at_least_once());
+            set(&mut a, "forced", ai.current_forced());
+            set(&mut a, "counter", ai.counter());
+            a.insert(
+                "forced_next".to_owned(),
+                ai.forced_next_state().map_or(Value::Null, Value::from),
+            );
+            m.insert("ai".to_owned(), Value::Object(a));
             // Hidden AI counters the wire dialect discloses (2026-08-02):
             // emit them so a native round-trip keeps what the C# producers
             // now ship. The Fabricator's counter IS the last-spawned bot
@@ -1323,7 +1416,7 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
                     set(
                         &mut m,
                         "cards_played_this_turn",
-                        a.cards_played_this_turn.to_vec(),
+                        play_buckets_wire(&a.cards_played_this_turn),
                     );
                 }
                 if !a.potions.is_empty() {
@@ -1744,8 +1837,11 @@ pub fn card_block_preview(state: &CombatState) -> Vec<Option<i32>> {
             .map_or(0, |c| c.base_block);
         if base > 0 {
             let staged = staged_for_play(state, *card_uid);
+            // A face preview has no `cardPlay`: Stretch answers it unspent.
+            let stretched = sts2_core::fool::stretch_preview_state(&staged, *card_uid);
             out.push(Some(sts2_core::card_effects::modify_player_block_move(
-                &staged, base,
+                stretched.as_ref().unwrap_or(&staged),
+                base,
             )));
         } else {
             out.push(None);
@@ -1838,7 +1934,12 @@ pub const MAX_FORECAST_STEPS: usize = u8::MAX as usize;
 /// not the monster has moved yet, so the list never repeats the telegraph.
 /// `certainty` is the product of the weight shares of the random picks on
 /// the way (`1.0` along a fixed pattern). Intent dicts have the
-/// [`intent_to_value`] shape, baked against the current board. `move_id` is
+/// [`intent_to_value`] shape, baked against the current board. The three
+/// moves whose numbers C# computes at telegraph time (TestSubject
+/// MULTI_CLAW's hit count, TheForgotten DREAD, WaterfallGiant EXPLODE) carry
+/// the number the game will show at that step, counting the predicted moves
+/// before it, not the move table's (#1181,
+/// [`sts2_content::monsters::forecast`]). `move_id` is
 /// the engine's move-state id: hidden state, for a privileged consumer only.
 /// An enemy without an AI, or with one parked on a branch state, has `[]`.
 /// Dead enemies keep their AI's forecast; consumers mask them with the
@@ -1863,25 +1964,35 @@ pub fn enemy_intent_forecast(state: &CombatState, k: usize) -> Result<Value, Emi
             c.ai.as_ref()
                 .map(|ai| ai.forecast_after_current(k, state))
                 .unwrap_or_default();
-        let rows: Vec<Value> = steps
-            .iter()
-            .map(|s| {
-                let mut d = obj();
-                set(&mut d, "step", s.step);
-                set(&mut d, "certainty", f64::from(s.certainty));
-                set(&mut d, "move_id", s.move_id);
-                d.insert(
-                    "intents".to_owned(),
-                    Value::Array(
-                        s.intents
-                            .iter()
-                            .map(|intent| intent_to_value(*intent, state, dealer))
-                            .collect(),
-                    ),
-                );
-                Value::Object(d)
-            })
-            .collect();
+        // The moves performed before each step: the current telegraph (the
+        // coming enemy turn performs it), then the earlier steps.
+        let mut prior: Vec<&str> =
+            c.ai.as_ref()
+                .and_then(|ai| ai.current_move_opt())
+                .map(|m| m.id)
+                .into_iter()
+                .collect();
+        let mut rows: Vec<Value> = Vec::with_capacity(steps.len());
+        for s in &steps {
+            let intents = sts2_content::monsters::forecast::forecast_step_intents(
+                state, dealer, &prior, s.move_id, &s.intents,
+            );
+            let mut d = obj();
+            set(&mut d, "step", s.step);
+            set(&mut d, "certainty", f64::from(s.certainty));
+            set(&mut d, "move_id", s.move_id);
+            d.insert(
+                "intents".to_owned(),
+                Value::Array(
+                    intents
+                        .iter()
+                        .map(|intent| intent_to_value(*intent, state, dealer))
+                        .collect(),
+                ),
+            );
+            rows.push(Value::Object(d));
+            prior.push(s.move_id);
+        }
         out.push(Value::Array(rows));
     }
     Ok(Value::Array(out))

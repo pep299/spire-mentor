@@ -1,4 +1,7 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { markClass, useAdviceMarks } from "../advice/useAdviceMarks";
+import { buildMarks, choiceOptions, markIndex, type Mark } from "../advice/marks";
+import { MarkBadge } from "../advice/AdviceContext";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { api, type ChoiceRankRow, type Step, type ChooseHandler, type Card } from "../api";
 import CardFrame from "./CardFrame";
 import { cardBoxHeight } from "../cardGeometry";
@@ -86,6 +89,18 @@ export default function CardSelect({ step, onChoose }: { step: Step; onChoose?: 
   // upgrade preview both come down a size, and the padding/gaps with them —
   // see OPTION_CARD_W / PV_CARD_W for why these particular numbers.
   const short = useMediaQuery(SHORT_QUERY);
+  // The run policy's marks: a select_cards option names one or several cards
+  // (its indices), and each of them wears the option's mark.
+  const { marks, showNumbers } = useAdviceMarks();
+  const cardMarks = new Map<number, Mark>();
+  for (const m of marks.values()) {
+    const hit = /^select_cards\|indices=([\d,]+)$/.exec(m.key);
+    if (!hit) continue;
+    for (const i of hit[1].split(",").map(Number)) {
+      const have = cardMarks.get(i);
+      if (!have || (have.tier !== "best" && m.tier === "best")) cardMarks.set(i, m);
+    }
+  }
   // No hover means the preview can only ever be filled by a PICK, so its
   // empty state has nothing to hold still for — see UpgradeComparison.
   const touch = useMediaQuery(TOUCH_QUERY);
@@ -127,13 +142,28 @@ export default function CardSelect({ step, onChoose }: { step: Step; onChoose?: 
   const focusIdx = hovered ?? picked[picked.length - 1] ?? chosen[0] ?? null;
   const focus = focusIdx == null ? undefined : cards.find((c) => c.index === focusIdx);
 
+  // NO CONFIRM BUTTON where the pick itself can say "done" (owner, 2026-11-13;
+  // a mis-tap is taken back with Undo / the history):
+  //  - one card to pick: the tap picks it. On a touchscreen an upgrade's
+  //    before/after preview can only be seen by tapping, so there the first
+  //    tap shows it and a second tap on the same card commits;
+  //  - exactly N cards: the N-th tap commits;
+  //  - a RANGE (up to N): only the player knows when they are done, so that
+  //    one keeps a button ("Done").
+  const needsDone = max > 1 && min < max;
+  const previewFirst = max === 1 && isUpgrade && touch;
   const toggle = (idx: number) => {
     if (!onChoose) return;
-    setPicked((cur) => {
-      if (cur.includes(idx)) return cur.filter((i) => i !== idx);
-      if (max === 1) return [idx];
-      return cur.length < max ? [...cur, idx] : cur;
-    });
+    const cur = picked;
+    if (max === 1) {
+      if (previewFirst && !cur.includes(idx)) { setPicked([idx]); return; }
+      setPicked([idx]);
+      void submit([idx]);
+      return;
+    }
+    const next = cur.includes(idx) ? cur.filter((i) => i !== idx) : cur.length < max ? [...cur, idx] : cur;
+    setPicked(next);
+    if (!needsDone && next.length === max) void submit(next);
   };
   // The engine's ``select_cards`` verb treats a SINGLE submitted index on a
   // sequential multi-pick choice (max > 1) as an incremental accumulate step
@@ -142,7 +172,7 @@ export default function CardSelect({ step, onChoose }: { step: Step; onChoose?: 
   // look stuck (the dialog never closes). Follow up with ``skip_select``
   // (finalize with whatever's accumulated so far) to complete it. 0 or 2+
   // checked cards already resolve in one shot (true skip / atomic multi-select).
-  const submit = async () => {
+  const submit = async (picked: number[]) => {
     if (!onChoose) return;
     if (picked.length === 0) {
       await onChoose("skip_select", {});
@@ -185,6 +215,18 @@ export default function CardSelect({ step, onChoose }: { step: Step; onChoose?: 
       .catch(() => {}); // 409 off-choice / search failure → silently omit
     return () => { alive = false; };
   }, [resetKey, advEnabled, hints.on]);
+  // The fight's own choice ranking rings the cards like every other pick (the
+  // raw search % only with engine numbers on).
+  const rankMarks = useMemo(
+    () => (ranking.size > 0 ? markIndex(buildMarks(choiceOptions([...ranking.values()]))) : null),
+    [ranking]);
+  if (rankMarks) {
+    for (const c of cards) {
+      const m = rankMarks.get(`choice:${c.index}`);
+      if (m && !cardMarks.has(c.index)) cardMarks.set(c.index, m);
+    }
+  }
+  const skipMark = rankMarks?.get("choice:skip") ?? null;
 
   return (
     <div style={{ padding: pad, display: "flex", flexDirection: "column", gap }}>
@@ -213,6 +255,7 @@ export default function CardSelect({ step, onChoose }: { step: Step; onChoose?: 
             onMouseLeave={isUpgrade ? () => setHovered(null) : undefined}>
             <CardFrame card={c} width={cardW}
               best={picked.includes(c.index) || chosen.includes(c.index)}
+              mark={cardMarks.get(c.index)?.tier} step={cardMarks.get(c.index)?.order}
               dim={(onChoose != null && picked.length >= max && !picked.includes(c.index)) ||
                 (chosen.length > 0 && !chosen.includes(c.index))}
               onClick={onChoose ? () => toggle(c.index) : undefined} />
@@ -221,23 +264,32 @@ export default function CardSelect({ step, onChoose }: { step: Step; onChoose?: 
             )}
             {adv.byKey.has(`choice:${c.index}`) ? (
               <DecisionWinChip c={adv.byKey.get(`choice:${c.index}`)!} adv={adv} />
-            ) : (
+            ) : showNumbers ? (
               <SearchChip c={ranking.get(`choice:${c.index}`)} />
-            )}
+            ) : null}
           </div>
         ))}
       </div>
       {onChoose && (
         <div style={{ display: "flex", gap: 12 }}>
-          <button disabled={picked.length < min} onClick={submit}>Confirm ({picked.length})</button>
+          {needsDone && (
+            <button className="gs-select-btn" disabled={picked.length < min} onClick={() => void submit(picked)}>Done ({picked.length})</button>
+          )}
+          {previewFirst && picked.length === 1 && (
+            <span style={{ alignSelf: "center", color: "var(--muted)", fontFamily: "var(--game-font)" }}>tap the card again to {context === "upgrade" ? "upgrade it" : "choose it"}</span>
+          )}
           {skippable && (
             <div style={{ textAlign: "center" }}>
-              <button onClick={() => onChoose("skip_select", {})}>Skip</button>
+              <button className={`gs-select-btn ${markClass(skipMark).trim()}`.trim()} style={{ position: "relative" }}
+                onClick={() => onChoose("skip_select", {})}>
+                <MarkBadge mark={skipMark} />
+                Skip
+              </button>
               {adv.byKey.has("choice:skip") ? (
                 <DecisionWinChip c={adv.byKey.get("choice:skip")!} adv={adv} />
-              ) : (
+              ) : showNumbers ? (
                 <SearchChip c={ranking.get("choice:skip")} />
-              )}
+              ) : null}
             </div>
           )}
         </div>
@@ -343,11 +395,15 @@ function Labeled({ label, footer, children }: { label: string; footer?: string; 
  *  DecisionWinChip supersedes it. */
 function SearchChip({ c }: { c: ChoiceRankRow | undefined }) {
   if (!c || c.win_prob == null) return null;
+  // The e2e advisor ranked this choice: its policy probability, not a search.
+  const e2e = c.prob != null;
   return (
     <div
-      title={
-        "Combat-MCTS win probability from one search over this choice — the same " +
-        `search the deployed run-AI uses here (${c.visits} visits; q ${c.q?.toFixed(2) ?? "—"}).`
+      title={e2e
+        ? "Instinct's probability for this option — one forward of the net, " +
+          "a policy probability, not a win chance."
+        : "Combat-MCTS win probability from one search over this choice — the same " +
+          `search the deployed run-AI uses here (${c.visits} visits; q ${c.q?.toFixed(2) ?? "—"}).`
       }
       style={{
         fontFamily: "var(--game-font)",
@@ -357,7 +413,7 @@ function SearchChip({ c }: { c: ChoiceRankRow | undefined }) {
         fontWeight: c.is_best ? 600 : 400,
       }}
     >
-      {c.is_best ? "★ " : ""}search {(c.win_prob * 100).toFixed(1)}%
+      {c.is_best ? "★ " : ""}{e2e ? "Instinct" : "search"} {(c.win_prob * 100).toFixed(1)}%
     </div>
   );
 }

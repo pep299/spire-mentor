@@ -636,6 +636,28 @@ pub enum RelicKind {
     /// Combat-inert marker; run-side pickup behavior:
     /// `neow_relics::listener_hefty_tablet` (bead `sts2-rs-w6hdj`).
     HeftyTablet,
+    // ── v0.113.0-only: The Fool's relics (`RelicId::V0113_ONLY`). Their
+    // combat listeners live in `crate::fool`. They are left out of the
+    // `"relic"` registry (`sts2-wire`), whose sorted rows are a combat-ctx
+    // embedding; see [`RelicKind::is_v0113_only`].
+    /// v0.113.0 Fool relic, see [`RelicId::SongBow`].
+    SongBow,
+    /// v0.113.0 Fool relic, see [`RelicId::Storyteller`].
+    Storyteller,
+    /// v0.113.0 Fool relic, see [`RelicId::BizarreLamp`].
+    BizarreLamp,
+    /// v0.113.0 Fool relic, see [`RelicId::ConductorsBaton`].
+    ConductorsBaton,
+    /// v0.113.0 Fool relic, see [`RelicId::ExerciseMat`].
+    ExerciseMat,
+    /// v0.113.0 Fool relic, see [`RelicId::Fertilizer`].
+    Fertilizer,
+    /// v0.113.0 Fool relic, see [`RelicId::Ocarina`].
+    Ocarina,
+    /// v0.113.0 Fool relic, see [`RelicId::Twine`].
+    Twine,
+    /// v0.113.0 Fool relic, see [`RelicId::WhittlingKnife`].
+    WhittlingKnife,
 }
 }
 
@@ -974,6 +996,28 @@ impl RelicId {
             // `RelicKind` so its universe (combat encoders, digests) stays
             // the v0.107.1 one.
             Self::DowsingRod | Self::NeowsSacrifice => None,
+            // v0.113.0-only event relics: no combat-side kind yet. Their
+            // combat hooks (BathTowel heal, TormentousCollar Weak, Wuppy's
+            // damage redirect, ...) are not modelled; see the v0.113.0
+            // run-lane progress notes.
+            Self::ObsidianVice
+            | Self::Thumbscrew
+            | Self::TormentousCollar
+            | Self::MightyWings
+            | Self::BathTowel
+            | Self::BathRobes
+            | Self::Wuppy
+            | Self::Byrdine => None,
+            // v0.113.0 Fool relics: combat listeners in `crate::fool`.
+            Self::SongBow => Some(RelicKind::SongBow),
+            Self::Storyteller => Some(RelicKind::Storyteller),
+            Self::BizarreLamp => Some(RelicKind::BizarreLamp),
+            Self::ConductorsBaton => Some(RelicKind::ConductorsBaton),
+            Self::ExerciseMat => Some(RelicKind::ExerciseMat),
+            Self::Fertilizer => Some(RelicKind::Fertilizer),
+            Self::Ocarina => Some(RelicKind::Ocarina),
+            Self::Twine => Some(RelicKind::Twine),
+            Self::WhittlingKnife => Some(RelicKind::WhittlingKnife),
         }
     }
 }
@@ -1326,7 +1370,34 @@ impl RelicKind {
             RelicKind::PhialHolster => "PHIAL_HOLSTER",
             RelicKind::NeowsBones => "NEOWS_BONES",
             RelicKind::HeftyTablet => "HEFTY_TABLET",
+            RelicKind::SongBow => "SONG_BOW",
+            RelicKind::Storyteller => "STORYTELLER",
+            RelicKind::BizarreLamp => "BIZARRE_LAMP",
+            RelicKind::ConductorsBaton => "CONDUCTORS_BATON",
+            RelicKind::ExerciseMat => "EXERCISE_MAT",
+            RelicKind::Fertilizer => "FERTILIZER",
+            RelicKind::Ocarina => "OCARINA",
+            RelicKind::Twine => "TWINE",
+            RelicKind::WhittlingKnife => "WHITTLING_KNIFE",
         }
+    }
+
+    /// The v0.113.0-only kinds (The Fool's relics). Callers that must keep
+    /// the v0.111.0 universe (the `"relic"` embedding registry) skip these.
+    #[must_use]
+    pub const fn is_v0113_only(self) -> bool {
+        matches!(
+            self,
+            RelicKind::SongBow
+                | RelicKind::Storyteller
+                | RelicKind::BizarreLamp
+                | RelicKind::ConductorsBaton
+                | RelicKind::ExerciseMat
+                | RelicKind::Fertilizer
+                | RelicKind::Ocarina
+                | RelicKind::Twine
+                | RelicKind::WhittlingKnife
+        )
     }
 }
 
@@ -1428,11 +1499,13 @@ mod tests {
             );
         }
         assert_eq!(names.len(), RelicKind::ALL.len());
-        let reachable: std::collections::BTreeSet<&'static str> = RelicId::all()
-            .iter()
-            .filter_map(|id| id.to_relic_kind())
-            .map(RelicKind::python_name)
-            .collect();
+        // Every build's universe: the v0.113.0 Fool relics are kinds too.
+        let reachable: std::collections::BTreeSet<&'static str> =
+            RelicId::all_for(crate::GameVersion::V0_113_0)
+                .iter()
+                .filter_map(|id| id.to_relic_kind())
+                .map(RelicKind::python_name)
+                .collect();
         for &kind in RelicKind::ALL {
             assert!(
                 reachable.contains(kind.python_name()),

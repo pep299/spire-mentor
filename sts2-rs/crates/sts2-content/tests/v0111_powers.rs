@@ -273,6 +273,32 @@ fn player_doom_after_legacy_constrict_v0111() {
     assert!(hp_after <= 0 && over, "hp {hp_after}, over {over}");
 }
 
+/// v0.107.1: Regen ticks in `AfterSideTurnEnd` (RegenPower.cs:17-24) beside
+/// Constrict (ConstrictPower.cs:15), and C# walks them in application order
+/// (Hook.cs:1411-1426). Constrict 9 lands on the legacy surface FIRST, then
+/// Regen 5 on the mirror: 80 -> 71 -> 76. Walking the mirror first heals
+/// at full HP (no-op), then hits: 71 (random-loadout Necrobinder 5777 @59).
+#[test]
+fn legacy_constrict_before_mirror_regen_v0107() {
+    let (mut state, _) = fresh(GameVersion::V0_107_1);
+    let p = player_uid(&state);
+    let next = state.powers.iter().map(|pw| pw.id.get()).max().unwrap_or(0) + 1;
+    let id = std::num::NonZeroU32::new(next).expect("non-zero");
+    state.powers.push(sts2_core::Power {
+        id,
+        kind: PowerKind::Constrict,
+        amount: 9,
+        counter: 0,
+        applier: None,
+        skip_next_tick: false,
+    });
+    state.player.powers.push(sts2_core::PowerUid(id));
+    give(&mut state, p, PowerKind::Regen, 5);
+    hooks::dispatch_before_turn_end(&mut state, &TurnSideCtx { side: Side::Player });
+    hooks::dispatch_after_turn_end(&mut state, &TurnSideCtx { side: Side::Player });
+    assert_eq!(hp(&state, p), 76);
+}
+
 /// Disintegration applied BEFORE Doom still damages AFTER the Doom check:
 /// it rides `AfterSideTurnEndLate` (DisintegrationPower.cs:15), which C# runs
 /// after every `AfterSideTurnEnd` listener. 80 HP, Disintegration 9, Doom 75:
@@ -372,6 +398,72 @@ fn juggling_clones_after_play_v0107() {
 #[test]
 fn juggling_clones_before_play_v0111() {
     assert_eq!(juggled_fiend_fire(GameVersion::V0_111_0), (0, 4));
+}
+
+/// v0.113.0 `JugglingPower.cs:38-69`: counted in `BeforeCardPlayed`, cloned
+/// in `AfterCardPlayed`, so the copy again survives Fiend Fire's exhaust.
+#[test]
+fn juggling_clones_after_play_v0113() {
+    assert_eq!(juggled_fiend_fire(GameVersion::V0_113_0), (1, 3));
+}
+
+fn juggling_counter(state: &CombatState) -> i32 {
+    state
+        .player_power_uids()
+        .into_iter()
+        .filter_map(|pid| state.powers.get_by_id(pid.0))
+        .find(|pw| pw.kind == PowerKind::Juggling)
+        .map_or(-1, |pw| pw.counter)
+}
+
+/// v0.113.0 `JugglingPower` keeps `attacksPlayedThisTurn` and `cardToClone`
+/// as two separate Data fields (JugglingPower.cs). The power's counter is the
+/// plain count even while the remembered 3rd Attack is still resolving (here
+/// paused at Headbutt's discard pick), and the clone still lands once the
+/// play finishes.
+#[test]
+fn juggling_counter_is_the_plain_count_mid_play_v0113() {
+    let (mut state, _) = fresh(GameVersion::V0_113_0);
+    let p = player_uid(&state);
+    give(&mut state, p, PowerKind::Juggling, 1);
+    for pid in state.player_power_uids() {
+        if let Some(pw) = state.powers.get_mut_by_id(pid.0) {
+            if pw.kind == PowerKind::Juggling {
+                pw.counter = 2;
+            }
+        }
+    }
+    let strike = add_to_hand(&mut state, CardId::StrikeIronclad);
+    let defend = add_to_hand(&mut state, CardId::DefendIronclad);
+    state.player.hand.clear();
+    state.player.discard.push(strike);
+    state.player.discard.push(defend);
+    let headbutt = add_to_hand(&mut state, CardId::Headbutt);
+    let step = sts2_core::combat_loop::play_card(&mut state, 0, Some(0));
+    assert_eq!(step, sts2_core::StepResult::PendingChoice);
+    assert_eq!(
+        juggling_counter(&state),
+        3,
+        "no card uid packed into the counter"
+    );
+    let _ = sts2_core::apply(
+        &mut state,
+        Action::ResolveChoice {
+            selection: smallvec::smallvec![0],
+        },
+    );
+    assert_eq!(juggling_counter(&state), 3);
+    let hand: Vec<CardUid> = state.player.hand.to_vec();
+    assert_eq!(
+        hand.len(),
+        1,
+        "the Headbutt clone reaches the hand: {hand:?}"
+    );
+    assert_ne!(hand[0], headbutt);
+    assert_eq!(
+        sts2_core::card_by_uid(&state.cards, hand[0]).map(|c| c.card_id),
+        Some(CardId::Headbutt)
+    );
 }
 
 /// Strike as the turn's 3rd Attack under Juggling(1) and Calamity(1), the two
@@ -501,12 +593,12 @@ fn well_laid_plans_keeps_whole_hand_v0111() {
 }
 
 // ── FeralPower ────────────────────────────────────────────────────────────
-// The IsDupe guard (`FeralPower.cs:51`) only matters on the auto-play path:
-// the hand-play path excludes dupes in both builds (see `finish_card_play`).
+// The IsDupe guard (`FeralPower.cs:51`) is new in v0.111.0, on every play
+// path: v0.107.1's `ModifyCardPlayResultPileTypeAndPosition` redirects a dupe.
 
 fn add_zero_cost_to_hand(state: &mut CombatState, card_id: CardId) -> CardUid {
     let uid = add_to_hand(state, card_id);
-    state.cards[uid.get() as usize - 1].cost = 0;
+    state.cards[uid.get() as usize - 1].cost = sts2_core::CardEnergyCost::new(0);
     uid
 }
 
@@ -538,6 +630,35 @@ fn feral_slot_goes_to_the_outer_card_of_a_nested_auto_play() {
     );
     assert!(state.player.discard.contains(&ftl), "FTL discarded");
     assert!(!state.player.hand.contains(&ftl), "FTL not returned");
+}
+
+/// v0.107.1 `FeralPower.ModifyCardPlayResultPileTypeAndPosition` has no
+/// `IsDupe` check, so a hand-played 0-cost dupe Attack returns to the hand top
+/// instead of leaving combat. v0.111.0 added `!card.IsDupe` (FeralPower.cs:51)
+/// and the dupe is removed (Defect random loadout v0.107.1 seed 5354).
+#[test]
+fn feral_dupe_check_is_new_in_v0111() {
+    for version in [GameVersion::V0_107_1, GameVersion::V0_111_0] {
+        let (mut state, _) = fresh(version);
+        let p = player_uid(&state);
+        give(&mut state, p, PowerKind::Feral, 1);
+        let dupe = add_zero_cost_to_hand(&mut state, CardId::StrikeIronclad);
+        state.cards[dupe.get() as usize - 1].set_combat_var(sts2_core::cards::VarKey::IsDupe, 1);
+        let _ = add_to_hand(&mut state, CardId::DefendIronclad);
+
+        let _ = sts2_core::combat_loop::play_card(&mut state, 0, Some(0));
+
+        let in_hand = state.player.hand.first() == Some(&dupe);
+        let anywhere = state.player.hand.contains(&dupe)
+            || state.player.discard.contains(&dupe)
+            || state.player.play.contains(&dupe)
+            || state.player.exhaust.contains(&dupe);
+        if version == GameVersion::V0_107_1 {
+            assert!(in_hand, "{version:?}: the dupe returns to hand[0]");
+        } else {
+            assert!(!anywhere, "{version:?}: the dupe leaves combat");
+        }
+    }
 }
 
 /// Feral returns the card to (Hand, Top); with a full hand `CardPileCmd.Add`
@@ -920,6 +1041,44 @@ fn one_for_all_adds_to_auto_played_card_v0111() {
     );
 }
 
+/// v0.113.0 `OneForAllPower.ModifyDamageAdditive` checks an auto-play's
+/// `Resources.EnergyValue` instead of skipping the energy test, so Havoc's
+/// auto-played 1-cost Strike no longer gets the bonus (Defect fuzz seed 623:
+/// Mayhem auto-played a 2-cost FlakCannon, C# 8 per hit, Rust 12).
+#[test]
+fn one_for_all_skips_auto_played_card_with_energy_value_v0113() {
+    let (mut state, enemy) = fresh(GameVersion::V0_113_0);
+    let p = player_uid(&state);
+    give(&mut state, p, PowerKind::OneForAll, 3);
+    let havoc = add_to_hand(&mut state, CardId::Havoc);
+    let strike = add_to_hand(&mut state, CardId::StrikeIronclad);
+    state.player.hand.retain(|u| *u != strike);
+    state.player.draw.insert(0, strike);
+    let idx = state
+        .player
+        .hand
+        .iter()
+        .position(|u| *u == havoc)
+        .expect("havoc in hand");
+    let before = hp(&state, enemy);
+    let _ = sts2_core::apply(
+        &mut state,
+        Action::PlayCard {
+            hand_index: u8::try_from(idx).expect("fits"),
+            target: None,
+        },
+    );
+    assert!(
+        state.player.exhaust.contains(&strike),
+        "Havoc auto-played the Strike"
+    );
+    assert_eq!(
+        before - hp(&state, enemy),
+        6,
+        "no bonus for a 1-cost auto-play"
+    );
+}
+
 // ── Temporary Dexterity / Focus subclasses (new) ──────────────────────────
 
 /// `FadePower : TemporaryDexterityPower`: the owner's turn end removes it and
@@ -1070,4 +1229,78 @@ fn diamond_diadem_power_is_inert_v0111() {
             "{v}"
         );
     }
+}
+
+/// Pael's Eye + Ambergris on the same end of turn. v0.111.0 fires every
+/// `AfterTakingExtraTurn` (Pael's Eye latches AND Ambergris spends a stack);
+/// v0.113.0 `Hook.ShouldTakeExtraTurn` returns Pael's Eye as the single
+/// source (`ShouldTakeExtraTurnEarly`, Hook.cs:2707-2727) and only it runs
+/// its after-hook (Hook.cs:1415-1425), so the Ambergris stack is kept.
+fn paels_and_ambergris(version: GameVersion) -> (i32, i32) {
+    let (mut state, _) = fresh(version);
+    state.relics.push(sts2_core::Relic {
+        id: std::num::NonZeroU32::new(1).expect("nz"),
+        kind: sts2_core::RelicKind::PaelsEye,
+        counter: sts2_core::RelicKind::PaelsEye.initial_counter(),
+        is_wax: false,
+        is_melted: false,
+    });
+    let p = player_uid(&state);
+    give(&mut state, p, PowerKind::Ambergris, 1);
+    let _ = sts2_core::apply(&mut state, Action::EndTurn);
+    assert_eq!(state.phase, CombatPhase::PlayerPlayPhase);
+    (
+        state.player_power_amount(PowerKind::Ambergris),
+        state.relics[0].counter & 1,
+    )
+}
+
+#[test]
+fn paels_eye_and_ambergris_both_spent_v0111() {
+    assert_eq!(paels_and_ambergris(GameVersion::V0_111_0), (0, 1));
+}
+
+#[test]
+fn paels_eye_is_the_only_extra_turn_source_v0113() {
+    assert_eq!(paels_and_ambergris(GameVersion::V0_113_0), (1, 1));
+}
+
+/// DrawCardsNextTurnPower: +N on the next turn-start draw, then gone. v0.113.0
+/// removes it in `AfterModifyingHandDraw` (DrawCardsNextTurnPower.cs:31-34)
+/// instead of `AfterSideTurnStart`; the observable draw is the same.
+fn draw_cards_next_turn(version: GameVersion) -> (usize, i32) {
+    let (mut state, enemy) = fresh(version);
+    if let Some(c) = state.creatures.iter_mut().find(|c| c.id == enemy.0) {
+        c.max_hp = 999;
+        c.current_hp = 999;
+    }
+    state.player.max_hp = 999;
+    state.player.current_hp = 999;
+    for _ in 0..15 {
+        let mut card = sts2_core::lookup_card_factory()
+            .and_then(|f| f(CardId::DefendIronclad, false))
+            .expect("card factory has the card");
+        let uid = CardUid::new(u32::try_from(state.cards.len() + 1).expect("fits")).expect("nz");
+        card.uid = uid;
+        state.cards.push(card);
+        state.player.draw.push(uid);
+    }
+    let p = player_uid(&state);
+    give(&mut state, p, PowerKind::DrawCardsNextTurn, 2);
+    let _ = sts2_core::apply(&mut state, Action::EndTurn);
+    assert_eq!(state.phase, CombatPhase::PlayerPlayPhase);
+    (
+        state.player.hand.len(),
+        state.player_power_amount(PowerKind::DrawCardsNextTurn),
+    )
+}
+
+#[test]
+fn draw_cards_next_turn_v0111() {
+    assert_eq!(draw_cards_next_turn(GameVersion::V0_111_0), (7, 0));
+}
+
+#[test]
+fn draw_cards_next_turn_v0113() {
+    assert_eq!(draw_cards_next_turn(GameVersion::V0_113_0), (7, 0));
 }

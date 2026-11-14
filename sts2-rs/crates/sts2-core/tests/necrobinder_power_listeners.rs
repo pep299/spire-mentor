@@ -250,8 +250,21 @@ fn galvanic_self_damage_lands_before_oblivion_shroud_block() {
     push_player_power(&mut state, PowerKind::Shroud, 3);
     state.player.block = 3;
 
+    // The played Power card is Galvanized (GalvanicPower.BeforeCombatStart).
+    let card_uid = CardUid::new(state.cards.len() as u32 + 1).expect("nonzero");
+    state.cards.push(Card {
+        uid: card_uid,
+        card_type: CardType::Power,
+        affliction: Some(sts2_core::card_afflictions::CardAffliction::new(
+            sts2_core::card_afflictions::CardAfflictionKind::Galvanized,
+            6,
+        )),
+        ..Card::pod_defaults()
+    });
+
     hooks::dispatch_before_card_played_powers(&mut state, 0, false);
     let ctx = CardCtx {
+        card_uid: Some(card_uid),
         card_type: Some(CardType::Power),
         ..CardCtx::default()
     };
@@ -540,6 +553,8 @@ fn push_ethereal_card(state: &mut CombatState) -> CardUid {
 fn veilpiercer_makes_owned_ethereal_card_cost_zero() {
     let mut state = CombatState::default();
     let eth = push_ethereal_card(&mut state);
+    // Veilpiercer frees only a Hand/Play card (VeilpiercerPower.cs).
+    state.player.hand.push(eth);
     push_player_power(&mut state, PowerKind::Veilpiercer, 2);
 
     let eth_ctx = CardCostCtx {
@@ -588,6 +603,7 @@ fn veilpiercer_discounts_cards_made_ethereal_by_hex_or_this_combat() {
         uid: plain_uid,
         ..Card::pod_defaults()
     });
+    state.player.hand.push(plain_uid);
     let ctx = CardCostCtx {
         owner: CreatureRef::Player,
         card_id: Some(CardId::StrikeIronclad),
@@ -617,8 +633,13 @@ fn veilpiercer_discounts_cards_made_ethereal_by_hex_or_this_combat() {
         .unwrap()
         .set_combat_var(sts2_core::cards::VarKey::EtherealThisCombat, 0);
 
-    // Hex makes every owned card Ethereal → free.
+    // Hex makes every Hexed card Ethereal → free.
     push_player_power(&mut state, PowerKind::Hex, 2);
+    state.cards[plain_uid.get() as usize - 1].affliction =
+        Some(sts2_core::card_afflictions::CardAffliction::new(
+            sts2_core::card_afflictions::CardAfflictionKind::Hexed,
+            2,
+        ));
     assert_eq!(
         hooks::dispatch_modify_card_cost(&state, &ctx),
         0,
@@ -674,7 +695,9 @@ fn danse_macabre_reads_live_cost_after_veilpiercer_runs_out() {
     state.player.max_hp = 50;
     let _ = state.init_player_creature();
     let eth = push_ethereal_card(&mut state);
-    state.cards[0].cost = 3;
+    // Veilpiercer frees only a Hand/Play card (VeilpiercerPower.cs).
+    state.player.hand.push(eth);
+    state.cards[0].cost = sts2_core::CardEnergyCost::new(3);
     push_player_power(&mut state, PowerKind::Veilpiercer, 1);
     push_player_power(&mut state, PowerKind::DanseMacabre, 6);
     assert_eq!(
@@ -706,7 +729,9 @@ fn danse_macabre_before_veilpiercer_sees_the_free_cost() {
     state.player.max_hp = 50;
     let _ = state.init_player_creature();
     let eth = push_ethereal_card(&mut state);
-    state.cards[0].cost = 3;
+    // Veilpiercer frees only a Hand/Play card (VeilpiercerPower.cs).
+    state.player.hand.push(eth);
+    state.cards[0].cost = sts2_core::CardEnergyCost::new(3);
     push_player_power(&mut state, PowerKind::DanseMacabre, 6);
     push_player_power(&mut state, PowerKind::Veilpiercer, 1);
 
@@ -719,6 +744,43 @@ fn danse_macabre_before_veilpiercer_sees_the_free_cost() {
         state.player.block, 0,
         "DanseMacabre ran while the card was free"
     );
+}
+
+/// GH #1150: a REPLAY of the play (extra plays / Echo) re-reads the cost live.
+/// The first iteration spent the last Veilpiercer charge with DanseMacabre
+/// listed first (so it saw 0); the replay sees the restored cost 3.
+#[test]
+fn danse_macabre_on_a_replay_reads_the_cost_after_veilpiercer_ran_out() {
+    let mut state = CombatState::default();
+    state.player.current_hp = 50;
+    state.player.max_hp = 50;
+    let _ = state.init_player_creature();
+    let eth = push_ethereal_card(&mut state);
+    state.cards[0].cost = sts2_core::CardEnergyCost::new(3);
+    push_player_power(&mut state, PowerKind::DanseMacabre, 6);
+    push_player_power(&mut state, PowerKind::Veilpiercer, 1);
+
+    hooks::dispatch_before_card_played_powers_for_card(&mut state, 0, true, Some(eth));
+    assert_eq!(state.player.block, 0, "first play: still free");
+    hooks::dispatch_before_card_played_powers_on_replay(&mut state, 0, true, eth);
+    assert_eq!(state.player.block, 6, "replay: live cost 3 >= 2");
+}
+
+/// A replay while Veilpiercer still holds the card at 0 grants nothing.
+#[test]
+fn danse_macabre_on_a_replay_under_live_veilpiercer_sees_the_free_cost() {
+    let mut state = CombatState::default();
+    state.player.current_hp = 50;
+    state.player.max_hp = 50;
+    let _ = state.init_player_creature();
+    let eth = push_ethereal_card(&mut state);
+    state.cards[0].cost = sts2_core::CardEnergyCost::new(3);
+    push_player_power(&mut state, PowerKind::DanseMacabre, 6);
+    push_player_power(&mut state, PowerKind::Veilpiercer, 3);
+
+    hooks::dispatch_before_card_played_powers_for_card(&mut state, 0, true, Some(eth));
+    hooks::dispatch_before_card_played_powers_on_replay(&mut state, 0, true, eth);
+    assert_eq!(state.player.block, 0);
 }
 
 /// Push an Ethereal card POD and append its uid to the draw pile (front-drawn).
@@ -1402,6 +1464,57 @@ fn pagestorm_applied_before_chains_binds_its_nested_draw_first() {
     );
 }
 
+/// GH #1150: Pagestorm (applied first) draws on the Ethereal card, the draw
+/// reshuffles into a Stratagem pick and suspends. C# `Hook.AfterCardDrawn`
+/// awaits Pagestorm's whole draw, pick included, before Chains of Binding sees
+/// the Ethereal card: the resumed draw's Y takes the one `Bound`, and the
+/// Ethereal card finds the cap reached. Rust checked the Ethereal card at the
+/// suspension.
+#[test]
+fn chains_waits_for_a_pagestorm_draw_suspended_on_a_stratagem_pick() {
+    let mut state = CombatState::default();
+    state.player.current_hp = 80;
+    state.player.max_hp = 80;
+    push_player_power(&mut state, PowerKind::Pagestorm, 1);
+    push_player_power(&mut state, PowerKind::ChainsOfBinding, 1);
+    push_player_power(&mut state, PowerKind::Stratagem, 1);
+    let eth = push_ethereal_into_draw(&mut state);
+    let mut plain = || {
+        let uid = CardUid::new(state.cards.len() as u32 + 1).expect("nonzero");
+        state.cards.push(Card {
+            uid,
+            ..Card::pod_defaults()
+        });
+        uid
+    };
+    let (x, y) = (plain(), plain());
+    state.player.discard.extend([x, y]);
+    let bound = |state: &CombatState, uid: CardUid| {
+        state.cards[uid.get() as usize - 1]
+            .affliction
+            .is_some_and(|af| af.kind == sts2_core::card_afflictions::CardAfflictionKind::Bound)
+    };
+
+    state.draw_into_hand(1);
+    assert!(state.pending_choice.is_some(), "Stratagem pick open");
+    assert!(!bound(&state, eth), "Chains waits for Pagestorm's draw");
+
+    let mut sel = smallvec::SmallVec::<[u8; 4]>::new();
+    sel.push(0);
+    let _ = sts2_core::apply(
+        &mut state,
+        sts2_core::Action::ResolveChoice { selection: sel },
+    );
+    assert!(state.pending_choice.is_none());
+    assert_eq!(state.player.hand.len(), 3, "Ethereal + pick + resumed draw");
+    let drawn = *state.player.hand.last().expect("resumed draw");
+    assert!(bound(&state, drawn), "the resumed draw takes the Bound");
+    assert!(
+        !bound(&state, eth),
+        "the Ethereal card finds the cap reached"
+    );
+}
+
 /// The other application order: Chains listens first, so the Ethereal card is
 /// Bound before Pagestorm draws, and the nested draw finds the cap reached.
 #[test]
@@ -1457,4 +1570,142 @@ fn chains_applied_first_goes_first_wherever_its_uid_is_listed() {
             .is_some_and(|af| af.kind == sts2_core::card_afflictions::CardAfflictionKind::Bound)
     });
     assert_eq!(bound, [true, true, true, false, false]);
+}
+
+/// Draw pile `[A, Status, X, Y]` drawn 2 by the hand draw under Iteration(2) +
+/// ChainsOfBinding(2), the powers applied in `order`. Returns which of
+/// `[A, Status, X, Y]` ended up `Bound`.
+fn bound_after_iteration_chains_draw(order: [PowerKind; 2]) -> [bool; 4] {
+    let mut state = CombatState::default();
+    state.player.current_hp = 80;
+    for kind in order {
+        push_player_power(&mut state, kind, 2);
+    }
+    let mut card = |card_type: CardType| {
+        let uid = CardUid::new(state.cards.len() as u32 + 1).expect("nonzero");
+        state.cards.push(Card {
+            uid,
+            card_type,
+            ..Card::pod_defaults()
+        });
+        state.player.draw.push(uid);
+        uid
+    };
+    let a = card(CardType::Attack);
+    let status = card(CardType::Status);
+    let (x, y) = (card(CardType::Attack), card(CardType::Attack));
+
+    state.draw_into_hand(2);
+    assert_eq!(state.player.hand.as_slice(), &[a, status, x, y]);
+    [a, status, x, y].map(|uid| {
+        state.cards[uid.get() as usize - 1]
+            .affliction
+            .is_some_and(|af| af.kind == sts2_core::card_afflictions::CardAfflictionKind::Bound)
+    })
+}
+
+/// Iteration applied before Chains of Binding: its nested draw on the turn's
+/// first Status card (IterationPower.cs:18-29) runs to completion before
+/// `ChainsOfBindingPower.AfterCardDrawn` checks the Status card, so X takes
+/// the second `Bound` and the Status card finds the cap reached (Defect
+/// v0.107.1 5533 @595: C# bound the Void Iteration drew, Rust the Dazed).
+#[test]
+fn iteration_applied_before_chains_binds_its_nested_draw_first() {
+    assert_eq!(
+        bound_after_iteration_chains_draw([PowerKind::Iteration, PowerKind::ChainsOfBinding]),
+        [true, false, true, false],
+    );
+}
+
+/// The other order: Chains binds the Status card before Iteration draws.
+#[test]
+fn chains_applied_before_iteration_binds_the_status_card() {
+    assert_eq!(
+        bound_after_iteration_chains_draw([PowerKind::ChainsOfBinding, PowerKind::Iteration]),
+        [true, true, false, false],
+    );
+}
+
+/// Push a non-Ethereal cost-`cost` card of `card_type`, held in the hand.
+fn push_hand_card(state: &mut CombatState, card_type: CardType, cost: i8) -> CardUid {
+    let uid = CardUid::new(state.cards.len() as u32 + 1).expect("nonzero card uid");
+    state.cards.push(Card {
+        uid,
+        card_type,
+        cost: sts2_core::CardEnergyCost::new(cost),
+        ..Card::pod_defaults()
+    });
+    state.player.hand.push(uid);
+    uid
+}
+
+/// C# `FreePowerPower.BeforeCardPlayed` (FreePowerPower.cs:44-62) decrements
+/// INSIDE the `Hook.BeforeCardPlayed` listener walk, and
+/// `DanseMacabrePower.BeforeCardPlayed` (DanseMacabrePower.cs:24) reads
+/// `EnergyCost.GetResolved()` live. A DanseMacabre listed AFTER a FreePower
+/// this play removes sees the card's real cost 3 and grants its block
+/// (random-loadout Necrobinder 6868 v0.111.0: Eternal Armor, cs=44 rs=40).
+#[test]
+fn danse_macabre_reads_live_cost_after_free_power_runs_out() {
+    let mut state = CombatState::default();
+    state.player.current_hp = 50;
+    state.player.max_hp = 50;
+    let _ = state.init_player_creature();
+    let card = push_hand_card(&mut state, CardType::Power, 3);
+    push_player_power(&mut state, PowerKind::FreePower, 1);
+    push_player_power(&mut state, PowerKind::DanseMacabre, 4);
+    assert_eq!(
+        hooks::effective_card_cost(&state, card),
+        0,
+        "free under FreePower"
+    );
+
+    hooks::dispatch_before_card_played_powers_for_card(&mut state, 0, false, Some(card));
+    assert!(
+        !state.powers.iter().any(|p| p.kind == PowerKind::FreePower),
+        "the play spends the last FreePower stack in the walk"
+    );
+    assert_eq!(
+        state.player.block, 4,
+        "DanseMacabre sees the restored cost 3"
+    );
+}
+
+/// The mirror order: a DanseMacabre listed BEFORE the FreePower runs while
+/// the card still costs 0, so it grants nothing; the FreePower is still spent.
+#[test]
+fn danse_macabre_before_free_power_sees_the_free_cost() {
+    let mut state = CombatState::default();
+    state.player.current_hp = 50;
+    state.player.max_hp = 50;
+    let _ = state.init_player_creature();
+    let card = push_hand_card(&mut state, CardType::Power, 3);
+    push_player_power(&mut state, PowerKind::DanseMacabre, 4);
+    push_player_power(&mut state, PowerKind::FreePower, 1);
+
+    hooks::dispatch_before_card_played_powers_for_card(&mut state, 0, false, Some(card));
+    assert!(!state.powers.iter().any(|p| p.kind == PowerKind::FreePower));
+    assert_eq!(
+        state.player.block, 0,
+        "DanseMacabre ran while the card was free"
+    );
+}
+
+/// A Free* stack only answers its own card type, and a stack above 1 is
+/// decremented, not removed (`PowerCmd.Decrement`).
+#[test]
+fn free_attack_in_the_walk_spends_one_stack_of_its_own_type_only() {
+    let mut state = CombatState::default();
+    state.player.current_hp = 50;
+    state.player.max_hp = 50;
+    let _ = state.init_player_creature();
+    let skill = push_hand_card(&mut state, CardType::Skill, 1);
+    let attack = push_hand_card(&mut state, CardType::Attack, 1);
+    let fa = push_player_power(&mut state, PowerKind::FreeAttack, 2);
+    let amount = |s: &CombatState| s.powers.iter().find(|p| p.id == fa.0).map(|p| p.amount);
+
+    hooks::dispatch_before_card_played_powers_for_card(&mut state, 1, false, Some(skill));
+    assert_eq!(amount(&state), Some(2), "a Skill leaves FreeAttack alone");
+    hooks::dispatch_before_card_played_powers_for_card(&mut state, 0, false, Some(attack));
+    assert_eq!(amount(&state), Some(1), "an Attack spends one stack");
 }

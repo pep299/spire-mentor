@@ -11,7 +11,7 @@
 //! `discard`, `shuffle`, `discard_pile_into_draw_pile`, `try_add_to_hand`.
 
 use crate::dotnet_rng::Rng as CombatRng;
-use crate::{CardUid, PlayerCombatState};
+use crate::{CardEnergyCost, CardUid, PlayerCombatState};
 use smallvec::SmallVec;
 
 // Bead sts2-rs-ov4 (P6-1): the ~580-variant `CardId` enum was bulk-scraped
@@ -75,27 +75,24 @@ pub const fn run_persistent_scaled_stat(id: CardId) -> Option<RunScaledStat> {
 // `CardInstance.combat_vars: dict[str, int]` in `sts2_env/cards/base.py`.
 // Concrete keys are added as the corresponding cards are ported in
 // downstream beads (Rampage, Claw, Genetic Algorithm, Ritual Dagger, ...).
+//
+// The discriminants are explicit: they feed the search hashes (`hashing.rs`
+// hashes each key), so a removed key leaves a gap rather than renumbering
+// every key after it. The gaps are the energy-cost keys the card cost model
+// replaced (`crate::energy_cost`). The one move is `StarCostFreeThisTurn`,
+// 31 -> 4, which gives a gated key its own "may be nonzero" bit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum VarKey {
     /// Stacked extra damage for Rampage. Python: `combat_vars["damage"]`.
-    RampageDamage,
+    RampageDamage = 0,
     /// Claw's running buff to all subsequent Claw plays. Python:
     /// `combat_vars["claw"]`.
-    ClawBuff,
+    ClawBuff = 1,
     /// Genetic Algorithm permanent block bonus. Python:
     /// `combat_vars["block"]`.
-    GeneticAlgorithmBlock,
+    GeneticAlgorithmBlock = 2,
     /// Ritual Dagger / Rite of the Quill scaling damage.
-    RitualDaggerDamage,
-    /// Per-card "free this turn" flag (non-zero = treat play-time cost as
-    /// 0). Set by `InfernalBlade` when it spawns a random Attack into hand
-    /// (bead `sts2-rs-c68o`); cleared at end-of-turn cleanup for every
-    /// pile. Mirrors C# `CardModel.SetToFreeThisTurn()` at
-    /// `sts2-wiki/decompiled/v0.103.2/MegaCrit.Sts2.Core.Models.Cards/
-    /// InfernalBlade.cs:27`. The Python pin's simplified `infernal_blade`
-    /// inlines a 0-cost Strike instead of toggling a flag; we follow the
-    /// C# canonical behaviour (random Attack + free-this-turn).
-    FreeThisTurn,
+    RitualDaggerDamage = 3,
     /// Per-card "ethereal this combat" flag (non-zero = treat the card
     /// as Ethereal at end-of-turn cleanup even if its `CardId` is not in
     /// the static ethereal registry). Set by `MusicBox` when it spawns
@@ -104,53 +101,25 @@ pub enum VarKey {
     /// `combat_loop::end_player_turn_phase_two`. Mirrors C#
     /// `CardModel.IsEthereal` per-instance bit (Python pin inlines a
     /// `_ethereal: bool` attribute on `CardInstance`).
-    EtherealThisCombat,
+    EtherealThisCombat = 5,
     /// Per-card "star cost is 0 for the rest of combat" flag (non-zero =
     /// treat the card's star cost as 0 in the legal-action gate and on the
     /// play-time star spend). Set by `TouchOfInsanity` (and its
     /// `MakeFreeInHand` choice resolver), which makes one cost-bearing hand
     /// card free for the combat. Mirrors the star half of C#
     /// `CardModel.SetToFreeThisCombat()` → `SetStarCostThisCombat(0)`
-    /// (`CardModel.cs:984`); the energy half is the directly-stamped
-    /// `cost = 0`. Combat-lasting (lives on `combat_vars`, reset at
-    /// end-of-combat) — unlike [`VarKey::FreeThisTurn`], which is cleared at
-    /// end-of-turn. Bead `sts2-rs-starcost-free-combat`.
-    StarCostFreeThisCombat,
+    /// (`CardModel.cs:984`); the energy half is a local cost modifier
+    /// ([`Card::set_to_free_this_combat`]). Combat-lasting (lives on
+    /// `combat_vars`, reset at end-of-combat) — unlike
+    /// [`VarKey::StarCostFreeThisTurn`]. Bead `sts2-rs-starcost-free-combat`.
+    StarCostFreeThisCombat = 6,
     /// MakeItSo's `effect_vars["cards"]` interval — every N Skills
     /// played this turn, the watched MakeItSo card returns to hand.
     /// Mirrors Python `sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L790`.
     /// Bead `sts2-rs-j9x8`. Default value (`3`) is set by the MakeItSo
     /// factory; the late-effect reads it via `combat_var(MakeItSoInterval)`
     /// and falls back to `3` when the slot is unset.
-    MakeItSoInterval,
-    /// Stomp's per-turn energy-cost reduction (running total of `-1`s
-    /// applied this turn). Stomp costs 1 less for each Attack the owner
-    /// plays this turn (C# `Stomp.BeforeCardPlayed` →
-    /// `EnergyCost.AddThisTurn(-1)`); this slot records how much has been
-    /// shaved off `Card::cost` so far so the player-turn-start reset can
-    /// add it back. Mirrors C#'s `AddThisTurn` auto-reset semantics.
-    /// Bead `sts2-rs-stomp`.
-    StompCostReductionThisTurn,
-    /// Pinpoint's per-turn energy-cost reduction (running total of `-1`s
-    /// applied this turn). Pinpoint costs 1 less for each Skill the owner
-    /// plays this turn (C# `Pinpoint.AfterCardPlayed` →
-    /// `EnergyCost.AddThisTurn(-1)`, floored at 0); this slot banks how much
-    /// has been shaved off `Card::cost` so the player-turn-start reset can add
-    /// it back. Same shape as `StompCostReductionThisTurn` (Skill-triggered
-    /// instead of Attack-triggered). Silent's Pinpoint.
-    PinpointCostReductionThisTurn,
-    /// Snecko Oil's per-card cost delta for this turn (running total of
-    /// `roll - prior_cost`). Snecko Oil randomizes each non-X-cost card in
-    /// hand to a cost in `0..=3` via C# `EnergyCost.SetThisTurnOrUntilPlayed`,
-    /// which auto-reverts at the owner's next turn start. This slot banks
-    /// how much the absolute set shifted `Card::cost` so
-    /// [`crate::CombatState::restore_snecko_costs_for_turn_start`] can undo
-    /// it (mirrors the `StompCostReductionThisTurn` reset shape). Without
-    /// the revert the randomized cost persisted across the turn boundary
-    /// (coverage sweep: `potion:SNECKO_OIL` player.energy C#=2 rust=1 after
-    /// a STRIKE whose cost should have reverted to its base). Bead
-    /// `sts2-rs-2e9q2` follow-up.
-    SneckoCostDeltaThisTurn,
+    MakeItSoInterval = 7,
     /// Records the player TURN number (`CombatState::turn_number`, C#
     /// `PlayerCombatState.TurnNumber`) on which a self-returning Attack
     /// (Bolas / ThrummingHatchet) was last played — the name predates the
@@ -161,13 +130,13 @@ pub enum VarKey {
     /// not the round). The turn-start sweep in
     /// `combat_loop::start_player_turn` reads this slot; `0` (unset) means
     /// "never played", so it never matches. Bead `sts2-rs-219ds`.
-    ReturnIfPlayedRound,
+    ReturnIfPlayedRound = 11,
     /// Marker (non-zero = flag set) indicating this card was downgraded by
     /// the DAMPEN power. Set when Dampen is applied via `MagiKnight`'s
     /// `DampenPower.AfterApplied` to track which upgraded cards to re-upgrade
     /// when Dampen is removed (mirror C# `DampenPower.cs:downgradedCardsToOldUpgradeLevels`).
     /// Bead `sts2-rs-mw4fy`.
-    DampenDowngradedMarker,
+    DampenDowngradedMarker = 12,
     /// Marker (non-zero = flag set): this card is a DUPE — C#
     /// `CardModel.IsDupe`, set on `CreateDupe()` products (HistoryCourse's
     /// transient replay). Three behavioral consequences, all C#-anchored:
@@ -181,7 +150,7 @@ pub enum VarKey {
     /// hand-played, also vanishes instead of discarding (sweep seed 5192:
     /// discard cs=13 rs=14). Rust card clones copy `combat_vars`, so the
     /// propagation is automatic. Bead `sts2-rs-ummci` follow-up.
-    IsDupe,
+    IsDupe = 13,
     /// Marker (non-zero = flag set): this card was GENERATED mid-combat
     /// (spawned status/token, Stoke/Discovery/Calamity generation, clone)
     /// rather than coming from the run deck — the Rust analogue of C#'s
@@ -192,19 +161,11 @@ pub enum VarKey {
     /// chokepoints (`spawn_card_into_pile`,
     /// `spawn_card_into_draw_pile_random_position`,
     /// `create_character_cards_into_arena`). Bead `sts2-rs-a4096`.
-    GeneratedInCombat,
-    /// Marker (non-zero = flag set): this card's `cost` currently holds an
-    /// ABSOLUTE local cost modifier (C# `LocalCostModifier.Absolute`) —
-    /// Confused's per-draw `SetThisCombat(roll)` or SneckoOil's
-    /// `SetThisTurnOrUntilPlayed(roll)` — rather than its (possibly
-    /// delta-shifted) base. `Card::upgrade` consults it to reproduce C#
-    /// `CardEnergyCost.UpgradeBy`'s clamp (`CardEnergyCost.cs:189-198`):
-    /// when an in-combat upgrade LOWERS the base cost, every absolute
-    /// modifier above the new base is clamped down to it — so a
-    /// BoneTea/BlessingOfTheForge upgrade of a Confused/Snecko-rolled
-    /// MIND_BLAST / TANK / BODY_SLAM lands at the new base 0, not
-    /// `roll + delta` (sweep seeds 1170/4720/4330). Bead `sts2-rs-i77h0`.
-    CostAbsolutelySet,
+    ///
+    /// The value says how: [`GENERATED_FRESH`] for a new card,
+    /// [`GENERATED_AS_CLONE`] for a [`Card::create_clone`] copy (C#
+    /// `IsClone`). Readers that only need "not from the deck" test `!= 0`.
+    GeneratedInCombat = 14,
     /// Thrash's accumulated decimal-fold REMAINDER, numerator. C#
     /// `Thrash.Damage.BaseValue` is a `decimal` that grows by the un-floored
     /// `ModifyDamage` of each exhausted attack (`Thrash.cs:67`). Rust keeps the
@@ -213,33 +174,17 @@ pub enum VarKey {
     /// later play deals `(base_damage + rem) × modifiers` with a single floor —
     /// matching C#'s `(int)` truncation only at HP application. Den 0 ⇒ treat as
     /// 1. Bead `sts2-rs-thrash-decimal`.
-    ThrashFoldRemNum,
+    ThrashFoldRemNum = 16,
     /// Thrash's accumulated decimal-fold REMAINDER, denominator (see
     /// [`VarKey::ThrashFoldRemNum`]). Stored 0 when unset ⇒ treated as 1.
-    ThrashFoldRemDen,
-    /// Per-card "free until played" energy-cost marker (non-zero = treat
-    /// play-time ENERGY cost as 0, fed as base into the modify_card_cost
-    /// listener walk exactly like [`VarKey::FreeThisTurn`]). Unlike
-    /// `FreeThisTurn` it has a CROSS-TURN lifetime: it survives the
-    /// end-of-turn `clear_per_turn_card_vars` sweep and is cleared only
-    /// `WhenPlayed` (the same late `AfterCardPlayedCleanup` site that clears
-    /// `FreeThisTurn`) or at end-of-combat (the whole `combat_vars` reset).
-    /// Mirrors C# `CardEnergyCost.SetUntilPlayed(0)` — an Absolute(0) modifier
-    /// with the `WhenPlayed` expiry bit only (NO `EndOfTurn` bit), distinct
-    /// from `SetThisTurnOrUntilPlayed`'s `EndOfTurn | WhenPlayed`
-    /// (`CardEnergyCost.cs:103`). Energy-only — it does NOT zero star cost
-    /// (the C# call is on `EnergyCost`, not `SetToFree`). Set by RocketPunch's
-    /// `AfterCardGeneratedForCombat` reaction (`RocketPunch.cs`): when the
-    /// player generates a Status card, every RocketPunch the player holds
-    /// becomes free until played. Bead `sts2-rs-rocketpunch-statusgen`.
-    FreeUntilPlayed,
+    ThrashFoldRemDen = 17,
     /// Per-instance FakeUpgrade level for the v0.107.1 `Wither` status card
     /// (C# `Wither._fakeUpgradeLevel`). Each `FakeUpgrade()` increments this
     /// and `DynamicVars.Damage.UpgradeValueBy(3m)`, so the turn-end self-damage
     /// is `3 + 3 * level`. The Aeonglass boss (bead `.2`) syncs the level on
     /// every Wither in hand each turn via its `WitherUpgradeCount`. Stored 0
     /// when unset ⇒ base 3 damage. Bead `sts2-rs-v0107-content-port-wb8lk.5`.
-    WitherFakeUpgradeLevel,
+    WitherFakeUpgradeLevel = 19,
     /// Marker (non-zero = flag set): this card has been COLLECTED by a
     /// two-phase batch auto-play (`combat_loop::auto_play_n_from_draw_top` —
     /// DistilledChaos / Cascade) into the Play pile during phase 1 but has NOT
@@ -253,7 +198,7 @@ pub enum VarKey {
     /// sibling from a genuinely-started-but-unfinished NESTED enclosing play
     /// (Catastrophe), which never carries the flag. Bead `sts2-rs-1sew4`
     /// (DistilledChaos/Nostalgia/BeatDown follow-up, Ironclad seed 5513).
-    PendingBatchAutoPlay,
+    PendingBatchAutoPlay = 20,
     /// Captured star-X hit count for an AUTO-PLAYED `HasStarCostX` card
     /// (Stardust), stored as `stars + 1` so `0` (the unset default) is
     /// distinguishable from a genuine 0-star capture. C# `CardCmd.AutoPlay`
@@ -263,7 +208,7 @@ pub enum VarKey {
     /// (manual play spends them in `SpendResources` before `OnPlay`). Stamped
     /// by the auto-play resolver before the effect dispatch; read + cleared by
     /// `play_stardust`. regent-legal-action Fix B (seed 2010).
-    AutoPlayStarX,
+    AutoPlayStarX = 21,
     /// C# `Resources.EnergyValue` of an X-cost play when it differs from the
     /// captured X in `energy_spent`, stored as `value + 1` (`0` = unset: the
     /// play's `EnergyValue` is `energy_spent`). Only the Whispering Earring
@@ -273,124 +218,40 @@ pub enum VarKey {
     /// AFTER that spend (CardEnergyCost.cs:134-139), while the X stays the
     /// spent amount. Read through [`play_energy_value`] by RightHandHand and
     /// IvoryTile; cleared by every other play.
-    AutoPlayEnergyValue,
-    /// How much of this card's cost came from an END-OF-TURN-expiring
-    /// modifier that a *foreign* producer had already applied when the state
-    /// was reconstructed — the amount
-    /// [`crate::CombatState::restore_wire_transient_costs_for_turn_start`]
-    /// adds back at the owner's next turn start.
-    ///
-    /// The engine banks its own such discounts per effect
-    /// (`StompCostReductionThisTurn`, `PinpointCostReductionThisTurn`,
-    /// `SneckoCostDeltaThisTurn`), so a Rust-produced state needs nothing
-    /// here. The C# dialects have no equivalent taxonomy: they send the
-    /// card's current cost and, separately, what that cost becomes once the
-    /// turn's modifiers wear off (`persistent_cost`). Without banking the
-    /// difference, a reconstructed Stomp keeps its per-Attack shave forever
-    /// — 163 of its 175 cost divergences on the v8 mirror sweep landed on the
-    /// `end_turn` that should have restored it.
-    ///
-    /// Set only by the state reconstruction, and only for a card carrying no
-    /// engine-owned this-turn bank; the two representations are mutually
-    /// exclusive by construction and a producer sending both is a schema
-    /// error, not something to reconcile.
-    WireTransientCostThisTurn,
-    /// How much of this card's cost came from a WHEN-PLAYED-expiring modifier
-    /// that a *foreign* producer had already applied — the amount
-    /// [`crate::CombatState::restore_wire_cost_expiring_on_play`] adds back
-    /// the moment the card is played.
-    ///
-    /// Sibling of [`Self::WireTransientCostThisTurn`], and a genuinely
-    /// different boundary rather than a duplicate of it. The game's "costs N
-    /// this turn" helpers are `SetThisTurnOrUntilPlayed` /
-    /// `AddThisTurnOrUntilPlayed` — `EndOfTurn | WhenPlayed`, *whichever comes
-    /// first* — and the decomp explicitly flags the pure-`EndOfTurn` variants
-    /// "BE CAREFUL USING THIS! … most effects that say 'this turn' really mean
-    /// 'this turn or until played'." So a discount restored only at the turn
-    /// boundary survives on the very card that spent it: 169 of the 1569
-    /// divergences on the v15 mirror sweep were a just-played card sitting in
-    /// the discard pile still shaved to 0.
-    ///
-    /// Set only by the state reconstruction, from the producer's
-    /// `played_cost`. Both banks may be live at once on one card — a
-    /// `EndOfTurn | WhenPlayed` modifier is counted by each — so whichever
-    /// edge arrives first restores the cost and clears BOTH.
-    WireCostExpiringOnPlay,
-    /// This card's cost once BOTH transient edges have passed — played AND
-    /// turn-ended — as an absolute value, from the producer's `stable_cost`.
-    ///
-    /// Consulted only when one of the two wire banks above is non-zero. The
-    /// ambiguity to watch for runs the OTHER way from what that suggests: the
-    /// var defaults to 0, so an absent `stable_cost` would read back as a
-    /// legitimate-looking `0` and re-bank the surviving half to `0 - cost`.
-    /// `parse_card` refuses a wire that sends any of the trio without all
-    /// three, which is what makes that unreachable.
-    ///
-    /// It exists because the two banks alone cannot describe the card — though
-    /// not because they collide. One `EndOfTurn | WhenPlayed` modifier arrives
-    /// as `(base, base)`; two separate modifiers arrive as `(M2(base),
-    /// M1(base))`, which differ unless both are no-ops. What the pair cannot
-    /// say is how much of the shave SURVIVES the first edge: for the shared
-    /// modifier the whole shave is already restored and the remaining bank must
-    /// recompute to zero, while for two independent modifiers the unexpired
-    /// half must stay. Leaving the other bank alone would restore a shared
-    /// shave twice.
-    WireCostStable,
+    AutoPlayEnergyValue = 22,
     /// Generic counter slot used by future enchantments / cards. Reserved
     /// so downstream beads don't need to extend this enum just for a
     /// one-off; collisions are caller-managed.
-    Generic,
-    /// A Snecko Oil roll (C# `SetThisTurnOrUntilPlayed`) is live on this card,
-    /// and who owns [`VarKey::CostAbsolutelySet`] when it expires:
-    /// [`SNECKO_ROLL_RAISED_FLAG`] or [`SNECKO_ROLL_FLAG_PREOWNED`].
-    ///
-    /// `SneckoCostDeltaThisTurn` cannot carry this, because a roll equal to
-    /// the prior cost banks a zero delta and looks exactly like "no roll". C#
-    /// adds the Absolute modifier whatever the roll (`CardEnergyCost.cs:197-
-    /// 203`) and drops it at either expiry edge (`:331-345`), so the zero-delta
-    /// roll must release the flag too (GH #759). Under Confused (SneckoEye) the
-    /// card already carries `SetThisCombat(roll)`, which outlives the Snecko
-    /// modifier, so the flag stays when it was set before the roll.
-    ///
-    /// Appended after `Generic` so no existing discriminant moves.
-    SneckoRollLive,
-    /// Energy-cost reduction that lasts until the card is played — the
-    /// running total of C# `EnergyCost.AddUntilPlayed(-1)` (a `Relative`,
-    /// `WhenPlayed` local modifier, `CardEnergyCost.cs:258`). Banked by the
-    /// Bookmark relic and the SlumberingEssence enchantment on both builds,
-    /// and by v0.111.0 RocketPunch once per player-generated Status card
-    /// (`RocketPunch.cs:49`) instead of v0.107.1's `SetUntilPlayed(0)`
-    /// ([`VarKey::FreeUntilPlayed`]). Folded into the local base cost before the
-    /// global `modify_card_cost` walk and cleared on play with the other
-    /// `WhenPlayed` riders.
-    CostReductionUntilPlayed,
+    Generic = 26,
     /// v0.111.0 Midnight: how many of the combat's exhausts this card's cost
     /// already reflects. Every exhaust bumps it along with the cost, and a
     /// Midnight entering combat is shaved by the exhausts it has not yet
     /// counted (C# `AfterCardEnteredCombat`). A copy (C# `CreateClone`, which
     /// keeps the cost modifiers and skips the catch-up) carries the count, so
     /// it is not shaved twice.
-    MidnightExhaustsCounted,
+    MidnightExhaustsCounted = 29,
     /// Per-combat "used" bits of the card's enchantments (Vigorous, Glam,
     /// Swift, Sown: `enchantment_hooks`). They lived on [`VarKey::Generic`],
     /// where MadScience keeps its packed TinkerTime variant, so a Glam
     /// MadScience changed rider after its first play and its replay hit as
     /// another variant. Appended so no existing discriminant moves.
-    EnchantmentUsed,
-    /// The STAR half of C# `SetToFreeThisTurn` (`CardModel.cs:1267-1271`:
-    /// `EnergyCost.SetThisTurnOrUntilPlayed(0)` + `SetStarCostThisTurn(0)`),
-    /// kept after a Snecko Oil roll clears [`VarKey::FreeThisTurn`]: the roll
-    /// only overrides the ENERGY cost (`SneckoOil.cs` `EnergyCost.Set…`), so the
-    /// star cost stays 0 this turn. A `ThisTurn` cost, so it clears on play
-    /// (`CardModel.cs:1998`) and at turn end, alongside `FreeThisTurn`.
-    /// Appended so no existing discriminant moves.
-    StarCostFreeThisTurn,
+    EnchantmentUsed = 30,
+    /// The STAR half of C# `SetToFreeThisTurn` (`CardModel.SetToFreeThisTurn`:
+    /// `EnergyCost.SetThisTurnOrUntilPlayed(0)` + `SetStarCostThisTurn(0)`);
+    /// the energy half is a local cost modifier ([`Card::set_to_free_this_turn`]).
+    /// A Snecko Oil roll overrides only the ENERGY cost, so the star cost stays
+    /// 0 this turn. A `ThisTurn` cost, so it clears on play
+    /// (`CardModel.AfterCardPlayedCleanup`) and at turn end.
+    ///
+    /// Discriminant 4 (the retired energy-side `FreeThisTurn`'s) so the key
+    /// the presence gate reads owns its "may be nonzero" bit.
+    StarCostFreeThisTurn = 4,
     /// Momentum's running damage bonus (C# `Momentum._extraDamage`, grown by
     /// `Amount` in every `OnPlay` and returned by `EnchantDamageAdditive`).
     /// It shared [`VarKey::RampageDamage`] with Rampage's own growth, so a
     /// Momentum Rampage counted both twice (GH #1021). Appended so no existing
     /// discriminant moves.
-    MomentumDamage,
+    MomentumDamage = 32,
     /// Banshee's Cry: how many of the combat's Ethereal plays this card's cost
     /// already reflects. Each Ethereal play bumps it along with the -2 shave
     /// (C# `AfterCardPlayed`), and a Banshee's Cry entering combat is shaved 2
@@ -398,7 +259,7 @@ pub enum VarKey {
     /// `BansheesCry.cs:42-55`). A copy (C# `CreateClone`, which keeps the cost
     /// modifiers and skips the catch-up) carries the count, so it is not shaved
     /// twice. Appended so no existing discriminant moves.
-    BansheesCryEtherealCounted,
+    BansheesCryEtherealCounted = 33,
     /// C# `CardModel.ExhaustOnNextPlay` left set on a card whose forced-exhaust
     /// auto-play (Havoc, `CardPileCmd.AutoPlayFromDrawPile` `forceExhaust`) was
     /// blocked: `MoveToResultPileWithoutPlaying` exhausts it WITHOUT clearing
@@ -408,43 +269,50 @@ pub enum VarKey {
     /// same turn's end therefore exhausts once more instead of landing in
     /// discard. Cleared at end-of-turn cleanup. Appended so no existing
     /// discriminant moves.
-    ExhaustOnNextPlay,
-    /// The part of the card's `AddThisCombat` reductions (Melancholy,
-    /// Banshee's Cry) that took its cost below 0. C# keeps those as Relative
-    /// local modifiers and clamps only the final cost
-    /// (`CardEnergyCost.GetWithModifiers`, `Math.Max(0, num)` after the
-    /// global hooks), so a 3-cost Melancholy after four deaths sits at -1
-    /// and a +1 surcharge (Borrowed Time) still leaves it at 0. `cost` stays
-    /// clamped at 0; this holds the rest and is subtracted from the local
-    /// base ([`Card::add_cost_this_combat`]). Appended so no existing
-    /// discriminant moves.
-    CostDebtThisCombat,
-    /// A Flatten's live Snecko roll: `1 +` the turn's Osty-attack count when
-    /// the roll landed (0 = no live roll). Flatten's `SetThisTurn(0)` on an
-    /// Osty attack and the roll's `SetThisTurnOrUntilPlayed` are both
-    /// Absolute local modifiers applied in insertion order
-    /// (`CardEnergyCost.GetWithModifiers`), so the roll beats a zero from an
-    /// earlier attack and loses to one from a later attack
-    /// ([`crate::hooks::card_cost_locally_zeroed`]). Cleared with the roll.
+    ExhaustOnNextPlay = 34,
+    /// C# `Regret.CardsInHand`: the hand size this Regret stored in its
+    /// `BeforeSideTurnEnd`, which it does only while it is in the hand
+    /// (Regret.cs:31-42). A Regret drawn after that point (an orb-kill draw)
+    /// keeps the value it had, normally 0, and `OnTurnEndInHand` deals that
+    /// and resets it. Appended so no existing discriminant moves.
+    RegretCardsInHand = 39,
+    /// A discarded Sly card whose auto-play a suspended `DiscardAndDraw`
+    /// owes: its 1-based place in the discard order, played once the draw
+    /// carrying [`crate::PendingDrawResume::then_play_sly`] finishes. Kept on
+    /// the card, not in `CombatState`, which sits at clippy's
+    /// large-stack-array limit. Appended so no existing discriminant moves.
+    SlyOwedAfterDraw = 40,
+    /// On a Nightmare snapshot only: the single-turn flags C#'s
+    /// `CardModel.CreateClone` copied from the picked card
+    /// (`HasSingleTurnRetain` = 1, `HasSingleTurnSly` = 2, a Local Sly keyword
+    /// = 4: [`crate::CombatState::clone_flags_of`]). The player's
+    /// `retain_this_turn` / `sly_this_turn` / `sly_this_combat` lists hold
+    /// them for live cards;
+    /// the snapshot is in no pile, so the flush's `EndOfTurnCleanup` never
+    /// clears them and the next-turn copies inherit them. Appended so no
+    /// existing discriminant moves.
+    CloneTurnFlags = 41,
+    /// A card an exhaust loop (Flak Cannon, Stoke, Fiend Fire) still owes a
+    /// `CardCmd.Exhaust` while an earlier exhaust's draw is suspended on a
+    /// reshuffle select: its 1-based place in the card's snapshot. C# awaits
+    /// each exhaust, so the rest run once that draw finishes. Kept on the
+    /// card, not in `CombatState`, which sits at clippy's large-stack-array
+    /// limit. Appended so no existing discriminant moves.
+    ExhaustOwedAfterDraw = 42,
+    /// A drawn card whose normal `AfterCardDrawn` pass waits for the
+    /// Hellraiser auto-play its Early pass parked on a select (C#
+    /// `Hook.AfterCardDrawn` awaits the Early pass first, Hook.cs:346-362).
+    /// Bit flags: 1 owed, 2 hand draw, 4 auto-played. Kept on the card, not
+    /// in `CombatState`, which sits at clippy's large-stack-array limit.
     /// Appended so no existing discriminant moves.
-    FlattenOstyAttacksAtRoll,
-    /// Relative cost added while a local zero was live (free this turn, free
-    /// until played, Flatten after an Osty attack). C# folds local modifiers
-    /// in insertion order, so Transfigure's `AddThisCombat(1)` on a
-    /// Discovery-made free card reads `Absolute(0) + 1 = 1` until the zero
-    /// expires ([`crate::hooks::card_cost_locally_zeroed`] is the base it is
-    /// added to). Cleared with the free-this-turn / until-played riders.
-    /// Appended so no existing discriminant moves.
-    CostAddedAfterLocalZero,
+    AfterCardDrawnDeferred = 43,
+    /// A drawn card whose `Hook.AfterCardDrawn` walk is parked on a nested
+    /// draw's choice (`PendingDrawResume::then_after_drawn`): the power
+    /// listener it suspended in, the last of its snapshot, and its flags,
+    /// packed. Kept on the card, not in `CombatState`, which sits at clippy's
+    /// large-stack-array limit. Appended so no existing discriminant moves.
+    AfterCardDrawnWalk = 44,
 }
-
-/// [`VarKey::SneckoRollLive`]: the Snecko roll raised `CostAbsolutelySet`, so
-/// its expiry clears the flag.
-pub const SNECKO_ROLL_RAISED_FLAG: i32 = 1;
-/// [`VarKey::SneckoRollLive`]: another absolute modifier (Confused's
-/// `SetThisCombat`) already owned `CostAbsolutelySet`, so the flag outlives
-/// the Snecko roll.
-pub const SNECKO_ROLL_FLAG_PREOWNED: i32 = 2;
 
 // Bead sts2-rs-k2y (P6-8): persistent card enchantments (`Card::enchantments`).
 // Mirrors `sts2_env/cards/enchantments.py` at pin `01c094d` — these survive
@@ -703,25 +571,36 @@ pub enum CardTag {
     OstyAttack = 3,
     /// Shiv-family tag (e.g. Silent's generated `Shiv`).
     Shiv = 4,
+    /// v0.113.0 Fool melody note `Wah` (`CardTag.Wah`, read by `MelodyCmd`).
+    Wah = 5,
+    /// v0.113.0 Fool melody note `Cho` (`CardTag.Cho`).
+    Cho = 6,
+    /// v0.113.0 Fool melody note `Ki` (`CardTag.Ki`).
+    Ki = 7,
+    /// v0.113.0 Fool arrow-shooting card (`CardTag.Shoot`).
+    Shoot = 8,
 }
 
 impl CardTag {
     /// Bit position used by [`CardTags`] for this tag.
     #[inline]
     #[must_use]
-    pub const fn bit(self) -> u8 {
-        1u8 << (self as u8)
+    pub const fn bit(self) -> u16 {
+        1u16 << (self as u8)
     }
+
+    /// The three melody notes, in `CardTag` order (Wah, Cho, Ki).
+    pub const MELODY: [CardTag; 3] = [CardTag::Wah, CardTag::Cho, CardTag::Ki];
 }
 
 /// Bit-packed set of [`CardTag`]s. Mirrors Python's
 /// `CardInstance.tags: frozenset[CardTag]`.
 ///
-/// Five variants today fit in a `u8`; widen to `u16` when the Python pin
-/// grows the `CardTag` enum past 8 entries.
+/// A `u16`: v0.113.0's four Fool tags (Wah / Cho / Ki / Shoot) took the
+/// enum past 8 variants.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(transparent)]
-pub struct CardTags(pub u8);
+pub struct CardTags(pub u16);
 
 impl CardTags {
     /// Empty set.
@@ -755,6 +634,14 @@ impl CardTags {
         self.0 == 0
     }
 
+    /// `true` if the set holds any melody note tag (`Wah`/`Cho`/`Ki`) —
+    /// C# `MelodyCmd.IsMelodyCard`. Only Fool cards (v0.113.0+) carry them.
+    #[inline]
+    #[must_use]
+    pub const fn has_melody(self) -> bool {
+        self.contains(CardTag::Wah) || self.contains(CardTag::Cho) || self.contains(CardTag::Ki)
+    }
+
     /// Iterate over the contained tags in [`CardTag`] discriminant order.
     /// Allocates a small fixed-size buffer; intended for tests / debug.
     #[must_use]
@@ -766,6 +653,10 @@ impl CardTags {
             CardTag::Minion,
             CardTag::OstyAttack,
             CardTag::Shiv,
+            CardTag::Wah,
+            CardTag::Cho,
+            CardTag::Ki,
+            CardTag::Shoot,
         ] {
             if self.contains(tag) {
                 out.push(tag);
@@ -779,10 +670,13 @@ impl CardTags {
 // Card POD + supporting enums
 // ---------------------------------------------------------------------------
 
-/// Card type. Mirrors `sts2_env/core/enums.py::CardType`.
+/// Card type. Mirrors C# `CardType` (`Entities.Cards/CardType.cs`) minus
+/// its `None` placeholder.
 ///
-/// `Quest` is intentionally omitted for Phase 1 — token deck only contains
-/// the standard five buckets. Phase 6 may add it.
+/// `Quest` is the type of the four Quest cards (ByrdonisEgg, LanternKey,
+/// SpoilsMap and v0.111.0's Dowsing — each `base(.., CardType.Quest, ..)`).
+/// It used to be folded into `Skill`, which made every `== Skill` check
+/// match them where C#'s `Type == CardType.Skill` does not (GH #1111).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CardType {
     Attack,
@@ -790,6 +684,7 @@ pub enum CardType {
     Power,
     Curse,
     Status,
+    Quest,
 }
 
 impl CardType {
@@ -797,7 +692,7 @@ impl CardType {
     /// per-turn cards-played counter in
     /// [`crate::PlayerCombatState::cards_played_this_turn`] (bead
     /// `sts2-rs-r6l9`). Matches enum declaration order:
-    /// `Attack=0`, `Skill=1`, `Power=2`, `Curse=3`, `Status=4`.
+    /// `Attack=0`, `Skill=1`, `Power=2`, `Curse=3`, `Status=4`, `Quest=5`.
     #[must_use]
     pub const fn index(self) -> usize {
         match self {
@@ -806,6 +701,7 @@ impl CardType {
             CardType::Power => 2,
             CardType::Curse => 3,
             CardType::Status => 4,
+            CardType::Quest => 5,
         }
     }
 }
@@ -912,10 +808,13 @@ impl KeywordOverride {
     }
 }
 
-// The "may be nonzero" mask has 24 bits. VarKey has 26 variants, so the two
-// last share a bit with the first two (WireCostStable with RampageDamage,
-// Generic with ClawBuff): a superset filter, so that only costs a false
-// "maybe". No key a sweep gates on aliases.
+// The "may be nonzero" mask has 24 bits and keys map to `discriminant % 24`.
+// VarKey's discriminants are explicit and run to 43 (the cost keys that the
+// `CardEnergyCost` model replaced left gaps, kept so the remaining keys hash
+// as before), so the keys at 24 and above share a bit with a lower one
+// (Generic with GeneticAlgorithmBlock, EnchantmentUsed with
+// StarCostFreeThisCombat, ...): a superset filter, so that only costs a false
+// "maybe". No key a sweep gates on aliases (`gate_keys_do_not_alias`).
 impl crate::inline_kv::InlineKvKey for VarKey {
     const FILL: Self = VarKey::RampageDamage;
     #[inline]
@@ -937,21 +836,25 @@ impl crate::inline_kv::InlineKvKey for EnchantmentId {
 /// the PROVABLE worst case, not just the typical one: slots are never
 /// reclaimed (clearing a var writes 0 in place — the live prefix is
 /// equality/hash-visible), so a card accumulates one slot per distinct key
-/// it EVER touches in a combat. The maximum distinct-key set is 16: the 11
-/// generic flags any card can carry (`FreeThisTurn`, `EtherealThisCombat`,
-/// `StarCostFreeThisCombat`, `SneckoCostDeltaThisTurn`, `SneckoRollLive`,
-/// `CostAbsolutelySet`, `IsDupe`, `GeneratedInCombat`,
-/// `PendingBatchAutoPlay`, `DampenDowngradedMarker`, `EnchantmentUsed`) +
-/// the wire-reconstruction cost trio + at most 2 card-specific keys on one
-/// card (Thrash's remainder pair; every other card-specific key excludes
-/// the rest — `Generic` is one of them now that the enchantment bits moved
-/// to `EnchantmentUsed`: MadScience's variant, Dowsing's and Guilty's
-/// counters). The previous capacity 8 sized for "1–2 scaling keys + a few
-/// flags" and panicked mid-run on a legitimate 9th distinct key (GH #474:
-/// Ironclad A10 seed 41100016, `CostAbsolutelySet` via net_search forks).
+/// it EVER touches in a combat. The guard test's worst case is 16 keys: the
+/// generic flags any card can carry plus Thrash's remainder pair (every
+/// other card-specific key excludes the rest — `Generic` is one of them now
+/// that the enchantment bits moved to `EnchantmentUsed`: MadScience's
+/// variant, Dowsing's and Guilty's counters). The cost keys no longer live
+/// here: cost is the `CardEnergyCost` model on `Card::cost`. The previous
+/// capacity 8 sized for "1–2 scaling keys + a few flags" and panicked mid-run
+/// on a legitimate 9th distinct key (GH #474: Ironclad A10 seed 41100016).
 /// Overflow still panics loudly (see [`crate::inline_kv`]); the guard test
 /// is `combat_vars_capacity_holds_worst_case_distinct_key_set`.
 pub type CombatVars = crate::inline_kv::InlineKv<VarKey, 16>;
+
+/// [`VarKey::GeneratedInCombat`] value of a card generated fresh mid-combat.
+pub const GENERATED_FRESH: i32 = 1;
+/// [`VarKey::GeneratedInCombat`] value of a [`Card::create_clone`] copy (C#
+/// `CardModel.IsClone`). A clone is generated mid-combat too, so it reuses
+/// that flag's slot rather than adding a key: the inline var store's
+/// worst-case key count stays at its capacity of 16.
+pub const GENERATED_AS_CLONE: i32 = 2;
 
 /// `Card::enchantments` storage: fixed-capacity `Copy` map (was
 /// `SmallVec<[(EnchantmentId, i32); 2]>` with rare heap spill). Capacity 6:
@@ -1040,11 +943,12 @@ impl LocalCostFunction {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct LocalEnergyCost {
     pub base: i32,
     pub costs_x: bool,
     pub functions: [LocalCostFunction; 4],
+    pub native: CardEnergyCost,
 }
 
 impl LocalEnergyCost {
@@ -1054,10 +958,35 @@ impl LocalEnergyCost {
             base,
             costs_x,
             functions: [LocalCostFunction::default(); 4],
+            native: CardEnergyCost::new(if costs_x {
+                -1
+            } else {
+                i8::try_from(base).expect("base cost fits i8")
+            }),
         }
     }
 
     pub fn append(&mut self, modifier: LocalCostModifier) {
+        let amount = i8::try_from(modifier.amount).expect("modifier amount fits i8");
+        let flags = (if modifier.kind == LocalCostModifierKind::Absolute {
+            crate::LocalCostMod::ABSOLUTE
+        } else {
+            0
+        }) | (if modifier.reduce_only {
+            crate::LocalCostMod::REDUCE_ONLY
+        } else {
+            0
+        }) | (if modifier.expiration & 2 != 0 {
+            crate::LocalCostMod::END_OF_TURN
+        } else {
+            0
+        }) | (if modifier.expiration & 4 != 0 {
+            crate::LocalCostMod::WHEN_PLAYED
+        } else {
+            0
+        });
+        self.native
+            .push(crate::LocalCostMod::from_parts(amount, flags).expect("known modifier flags"));
         for (function, expired) in self.functions.iter_mut().zip([0, 2, 4, 6]) {
             if modifier.expiration & expired == 0 {
                 function.append(modifier);
@@ -1107,6 +1036,7 @@ impl LocalEnergyCost {
     }
 
     pub fn upgrade_base(&mut self, delta: i32) {
+        self.native.upgrade_by(delta);
         self.base = self.base.saturating_add(delta);
         if delta >= 0 {
             return;
@@ -1148,8 +1078,12 @@ impl LocalEnergyCost {
 pub struct Card {
     pub uid: CardUid,
     pub card_id: CardId,
-    pub cost: i8,
-    pub local_energy_cost: Option<LocalEnergyCost>,
+    /// C# `CardModel.EnergyCost`: the base cost and the ordered local
+    /// modifiers (see [`crate::energy_cost`]). Read it through
+    /// [`Self::base_cost`] / [`Self::local_cost`] /
+    /// [`crate::hooks::effective_card_cost`]; modify it only through the
+    /// C#-named setters on [`CardEnergyCost`].
+    pub cost: CardEnergyCost,
     pub card_type: CardType,
     pub target_type: TargetType,
     pub upgraded: bool,
@@ -1218,17 +1152,19 @@ pub struct Card {
 }
 
 // Layout tripwire: the card arena (`CombatState.cards: Vec<Card>`) is
-// memcpy-cloned 2–3× per MCTS simulation, so every byte here is hot. The legacy 224 =
-// 40 (scalar fields) + 132 (CombatVars, cap 16) + 52 (CardEnchantments,
-// cap 6). The 160→224 growth is the deliberate GH #474 capacity raise
-// (clone bench 2026-08-18: combatstate_clone_grown_arena_48 3.03→3.05µs,
-// +0.5%; the isolated card_arena_clone_48 memcpy 94→116ns).
-// Exact observed energy modifiers add a fixed Copy function model; no heap
-// allocation or per-card clone traversal is introduced.
+// memcpy-cloned 2–3× per MCTS simulation, so every byte here is hot. 176 =
+// 56 (scalar fields, the 18-byte `CardEnergyCost` included) + 84
+// (CombatVars, cap 16, split keys/values layout) + 36 (CardEnchantments,
+// cap 6). The 160→224 growth was the deliberate GH #474 capacity raise; the
+// cost model's ordered modifier list (replacing the `i8` cost and its
+// combat vars) would have taken it to 240, and `InlineKv`'s split
+// keys/values layout (no per-entry padding) brings it back to 176. Card is
+// also held inline by `PendingPlay`, so it feeds `size_of::<CombatState>()`
+// (8120 here, 8168 before the cost model).
 // If this fires, you grew `Card` — decide deliberately (and re-run the
 // grown-arena clone bench in sts2-bench) rather than letting it drift.
 const _: () = assert!(
-    core::mem::size_of::<Card>() == 224 + core::mem::size_of::<Option<LocalEnergyCost>>(),
+    core::mem::size_of::<Card>() == 176,
     "size_of::<Card>() changed — see the comment above this assert"
 );
 
@@ -1247,8 +1183,7 @@ impl Card {
         Card {
             uid: CardUid::new(1).expect("non-zero"),
             card_id: CardId::StrikeIronclad,
-            cost: 1,
-            local_energy_cost: None,
+            cost: CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -1323,216 +1258,75 @@ impl Card {
     /// Set / overwrite a `combat_vars` slot. Inserts a new entry if absent.
     #[inline]
     pub fn set_combat_var(&mut self, key: VarKey, value: i32) {
-        let old = self.combat_vars.get(key);
         self.combat_vars.set(key, value);
-        if self.local_energy_cost.is_some() {
-            let modifier = match key {
-                VarKey::FreeThisTurn if value != 0 => Some(LocalCostModifier {
-                    kind: LocalCostModifierKind::Absolute,
-                    amount: 0,
-                    reduce_only: false,
-                    expiration: 6,
-                }),
-                VarKey::FreeUntilPlayed if value != 0 => Some(LocalCostModifier {
-                    kind: LocalCostModifierKind::Absolute,
-                    amount: 0,
-                    reduce_only: false,
-                    expiration: 4,
-                }),
-                VarKey::CostReductionUntilPlayed if value > old => Some(LocalCostModifier {
-                    kind: LocalCostModifierKind::Relative,
-                    amount: old - value,
-                    reduce_only: false,
-                    expiration: 4,
-                }),
-                _ => None,
-            };
-            if let Some(modifier) = modifier {
-                self.add_local_cost_modifier(modifier);
+    }
+
+    #[must_use]
+    pub fn local_costs_after_expiration(&self) -> [i32; 4] {
+        [0, 2, 4, 6].map(|expired| {
+            let mut cost = self.cost;
+            if expired & 2 != 0 {
+                cost.end_of_turn_cleanup();
             }
+            if expired & 4 != 0 {
+                cost.after_card_played_cleanup();
+            }
+            if cost.base() < 0 {
+                i32::from(cost.base())
+            } else {
+                cost.local().max(0)
+            }
+        })
+    }
+
+    #[must_use]
+    pub fn public_local_energy_cost(&self) -> LocalEnergyCost {
+        let mut model = LocalEnergyCost::new(i32::from(self.base_cost()), self.is_x_cost());
+        for modifier in self.cost.mods() {
+            model.append(LocalCostModifier {
+                kind: if modifier.is_absolute() {
+                    LocalCostModifierKind::Absolute
+                } else {
+                    LocalCostModifierKind::Relative
+                },
+                amount: i32::from(modifier.amount()),
+                reduce_only: modifier.is_reduce_only(),
+                expiration: match modifier.expiry() {
+                    crate::CostExpiry::Combat => 0,
+                    crate::CostExpiry::Turn => 2,
+                    crate::CostExpiry::Played => 4,
+                    crate::CostExpiry::TurnOrPlayed => 6,
+                },
+            });
         }
+        model
     }
 
     pub fn set_local_energy_cost(&mut self, model: LocalEnergyCost) {
-        self.local_energy_cost = Some(model);
-        self.cost = i8::try_from(model.costs()[0]).expect("local card cost fits i8");
-        for key in [
-            VarKey::StompCostReductionThisTurn,
-            VarKey::PinpointCostReductionThisTurn,
-            VarKey::SneckoCostDeltaThisTurn,
-            VarKey::SneckoRollLive,
-            VarKey::CostReductionUntilPlayed,
-            VarKey::CostDebtThisCombat,
-            VarKey::CostAddedAfterLocalZero,
-            VarKey::WireTransientCostThisTurn,
-            VarKey::WireCostExpiringOnPlay,
-            VarKey::WireCostStable,
-        ] {
-            self.combat_vars.zero(key);
-        }
-        if model.functions[0].absolute_offset == i32::MAX {
-            self.combat_vars.zero(VarKey::CostAbsolutelySet);
-        } else {
-            self.combat_vars.set(VarKey::CostAbsolutelySet, 1);
-        }
-    }
-
-    /// Finish construction of a fresh POD before combat listeners can mutate
-    /// its cost. A legacy card with collapsed cost banks keeps that model.
-    pub fn initialize_local_energy_cost(&mut self, version: crate::GameVersion) {
-        if version < crate::GameVersion::V0_111_0 {
-            return;
-        }
-        if self.local_energy_cost.is_some()
-            || [
-                VarKey::CostAbsolutelySet,
-                VarKey::StompCostReductionThisTurn,
-                VarKey::PinpointCostReductionThisTurn,
-                VarKey::SneckoCostDeltaThisTurn,
-                VarKey::SneckoRollLive,
-                VarKey::WireTransientCostThisTurn,
-                VarKey::WireCostExpiringOnPlay,
-                VarKey::WireCostStable,
-            ]
-            .into_iter()
-            .any(|key| self.combat_var(key) != 0)
-        {
-            return;
-        }
-        let costs_x = self.is_x_cost();
-        let mut model =
-            LocalEnergyCost::new(if costs_x { 0 } else { i32::from(self.cost) }, costs_x);
-        for (key, expiration) in [(VarKey::FreeThisTurn, 6), (VarKey::FreeUntilPlayed, 4)] {
-            if self.combat_var(key) != 0 {
-                model.append(LocalCostModifier {
-                    kind: LocalCostModifierKind::Absolute,
-                    amount: 0,
-                    reduce_only: false,
-                    expiration,
-                });
-            }
-        }
-        let reduction = self.combat_var(VarKey::CostReductionUntilPlayed);
-        if reduction != 0 {
-            model.append(LocalCostModifier {
-                kind: LocalCostModifierKind::Relative,
-                amount: -reduction,
-                reduce_only: false,
-                expiration: 4,
-            });
-        }
-        self.set_local_energy_cost(model);
+        self.cost = model.native;
     }
 
     pub fn add_local_cost_modifier(&mut self, modifier: LocalCostModifier) {
-        let mut model = self.local_energy_cost.unwrap_or_else(|| {
-            let mut model = LocalEnergyCost::new(i32::from(self.cost), self.is_x_cost());
-            let costs = self.local_costs_after_expiration();
-            for (function, cost) in model.functions.iter_mut().zip(costs) {
-                function.offset = cost - model.base;
-            }
-            model
-        });
-        model.append(modifier);
-        self.set_local_energy_cost(model);
-    }
-
-    pub fn add_combat_cost(&mut self, amount: i8) {
-        if self.local_energy_cost.is_some() {
-            self.add_local_cost_modifier(LocalCostModifier {
-                kind: LocalCostModifierKind::Relative,
-                amount: i32::from(amount),
-                reduce_only: false,
-                expiration: 0,
-            });
+        let amount = i8::try_from(modifier.amount).expect("local modifier amount fits i8");
+        let flags = (if modifier.kind == LocalCostModifierKind::Absolute {
+            crate::LocalCostMod::ABSOLUTE
         } else {
-            self.cost = self.cost.saturating_add(amount);
-            if amount < 0 {
-                self.cost = self.cost.max(0);
-            }
-        }
-    }
-
-    pub fn expire_local_energy_cost(&mut self, expiration: u8) {
-        if let Some(mut model) = self.local_energy_cost {
-            model.expire(expiration);
-            self.set_local_energy_cost(model);
-        }
-    }
-
-    /// Local energy costs at current, turn-expired, play-expired and both
-    /// boundaries. Global power/relic cost hooks are deliberately excluded.
-    #[must_use]
-    pub fn local_costs_after_expiration(&self) -> [i32; 4] {
-        if let Some(model) = self.local_energy_cost {
-            return model.costs();
-        }
-        let local = |card: &Self| {
-            if card.cost < 0 {
-                i32::from(card.cost)
-            } else if card.combat_var(VarKey::FreeThisTurn) != 0
-                || card.combat_var(VarKey::FreeUntilPlayed) != 0
-            {
-                card.combat_var(VarKey::CostAddedAfterLocalZero)
-            } else {
-                (i32::from(card.cost)
-                    - card.combat_var(VarKey::CostReductionUntilPlayed)
-                    - card.combat_var(VarKey::CostDebtThisCombat))
-                .max(0)
-            }
-        };
-        let expire = |card: &mut Self, turn: bool| {
-            if turn {
-                for key in [
-                    VarKey::StompCostReductionThisTurn,
-                    VarKey::PinpointCostReductionThisTurn,
-                ] {
-                    card.cost = card.cost.saturating_add(card.combat_var(key) as i8);
-                    card.combat_vars.zero(key);
-                }
-                card.combat_vars.zero(VarKey::FreeThisTurn);
-            } else {
-                card.combat_vars.zero(VarKey::FreeThisTurn);
-                card.combat_vars.zero(VarKey::FreeUntilPlayed);
-                card.combat_vars.zero(VarKey::CostReductionUntilPlayed);
-            }
-            card.combat_vars.zero(VarKey::CostAddedAfterLocalZero);
-            card.expire_snecko_roll();
-            let (key, other) = if turn {
-                (
-                    VarKey::WireTransientCostThisTurn,
-                    VarKey::WireCostExpiringOnPlay,
-                )
-            } else {
-                (
-                    VarKey::WireCostExpiringOnPlay,
-                    VarKey::WireTransientCostThisTurn,
-                )
-            };
-            let bank = card.combat_var(key);
-            if bank != 0 {
-                card.cost = card.cost.saturating_add(bank as i8);
-                card.combat_vars.zero(key);
-                if card.combat_var(other) != 0 {
-                    card.set_combat_var(
-                        other,
-                        card.combat_var(VarKey::WireCostStable) - i32::from(card.cost),
-                    );
-                }
-            }
-        };
-        let mut after_turn = *self;
-        expire(&mut after_turn, true);
-        let mut after_play = *self;
-        expire(&mut after_play, false);
-        let mut after_both = after_turn;
-        expire(&mut after_both, false);
-        [
-            local(self),
-            local(&after_turn),
-            local(&after_play),
-            local(&after_both),
-        ]
+            0
+        }) | (if modifier.reduce_only {
+            crate::LocalCostMod::REDUCE_ONLY
+        } else {
+            0
+        }) | (if modifier.expiration & 2 != 0 {
+            crate::LocalCostMod::END_OF_TURN
+        } else {
+            0
+        }) | (if modifier.expiration & 4 != 0 {
+            crate::LocalCostMod::WHEN_PLAYED
+        } else {
+            0
+        });
+        self.cost
+            .push(crate::LocalCostMod::from_parts(amount, flags).expect("known modifier flags"));
     }
 
     /// C# `CardModel.CreateClone()` of this card: a field-for-field copy that
@@ -1545,256 +1339,71 @@ impl Card {
     /// (Bolas.cs:41-46, ThrummingHatchet.cs:35-40), so the copy loses the
     /// `ReturnIfPlayedRound` stamp. Callers spawn the result (which assigns the
     /// new uid).
+    ///
+    /// The copy is marked as a clone ([`Self::is_clone`], C#
+    /// `CardModel.IsClone`: `CreateClone` sets `_cloneOf`, CardModel.cs).
+    /// Every clone a C# `IsClone` reader can see goes through here: Stomp /
+    /// Pinpoint copies (Juggling, Nightmare, Dual Wield, Music Box, Burning
+    /// Sticks) and Heirloom Hammer's Sovereign Blade (SwordSage). The cards
+    /// that copy THEMSELVES (Anger, Undeath, Adaptive Strike) still copy the
+    /// raw POD: no `IsClone` reader looks at them in either build, and the
+    /// extra var slots would only move the search hashes (GH #1094).
     #[must_use]
     pub fn create_clone(&self) -> Self {
         let mut clone = *self;
         clone.set_combat_var(VarKey::ReturnIfPlayedRound, 0);
+        clone.set_combat_var(VarKey::GeneratedInCombat, GENERATED_AS_CLONE);
+        // The original's owed on-draw pass is its own: a clone was never
+        // drawn (Juggling cloning a parked Hellraiser play).
+        clone.combat_vars.zero(VarKey::AfterCardDrawnDeferred);
+        clone.combat_vars.zero(VarKey::AfterCardDrawnWalk);
         clone
     }
 
-    /// C# `EnergyCost.AddUntilPlayed(-amount)`: bank `amount` more energy off
-    /// this card until it is played ([`VarKey::CostReductionUntilPlayed`]).
-    pub fn add_cost_reduction_until_played(&mut self, amount: i32) {
-        if self.local_energy_cost.is_some() {
-            self.add_local_cost_modifier(LocalCostModifier {
-                kind: LocalCostModifierKind::Relative,
-                amount: -amount,
-                reduce_only: false,
-                expiration: 4,
-            });
-            return;
-        }
-        let banked = self.combat_var(VarKey::CostReductionUntilPlayed);
-        self.set_combat_var(VarKey::CostReductionUntilPlayed, banked + amount);
+    /// C# `CardModel.IsClone` (`CloneOf != null`): this card was made by
+    /// [`Self::create_clone`] (or is a copy of such a card). Stomp, Pinpoint
+    /// and Banshee's Cry skip their entered-combat cost catch-up for a clone.
+    #[must_use]
+    pub fn is_clone(&self) -> bool {
+        self.combat_var(VarKey::GeneratedInCombat) == GENERATED_AS_CLONE
     }
 
-    /// C# `EnergyCost.AddThisCombat(delta)`: a Relative local modifier for the
-    /// rest of combat, unclamped until the final cost read. `cost` holds the
-    /// part at or above 0 and [`VarKey::CostDebtThisCombat`] the part below
-    /// it, so a later `+n` pays the debt off first. X-cost cards are skipped.
-    pub fn add_cost_this_combat(&mut self, delta: i32) {
-        if self.local_energy_cost.is_some() {
-            self.add_local_cost_modifier(LocalCostModifier {
-                kind: LocalCostModifierKind::Relative,
-                amount: delta,
-                reduce_only: false,
-                expiration: 0,
-            });
-            return;
-        }
-        if self.is_x_cost() {
-            return;
-        }
-        let debt = self.combat_var(VarKey::CostDebtThisCombat);
-        let raw = i32::from(self.cost) - debt + delta;
-        if raw >= 0 {
-            self.cost = i8::try_from(raw).unwrap_or(i8::MAX);
-            self.combat_vars.zero(VarKey::CostDebtThisCombat);
-        } else {
-            self.cost = 0;
-            self.set_combat_var(VarKey::CostDebtThisCombat, -raw);
-        }
+    /// C# `EnergyCost.GetWithModifiers(CostModifiers.None)`: the base cost,
+    /// before any local modifier. `-1` is an X cost (or, on a Curse /
+    /// Status, unplayable).
+    #[inline]
+    #[must_use]
+    pub const fn base_cost(&self) -> i8 {
+        self.cost.base()
     }
 
-    /// C# `CardModel.SetToFreeThisCombat` (TouchOfInsanity): energy cost 0 and
-    /// star cost 0 for the rest of combat. `EnergyCost.SetThisCombat(0)` adds an
-    /// *Absolute* local modifier ([`VarKey::CostAbsolutelySet`]) AFTER any live
-    /// Snecko Oil roll, and `GetWithModifiers` applies local modifiers in order
-    /// (CardEnergyCost.cs:110-115), so the later Absolute(0) owns the cost and the
-    /// roll's expiry reveals 0, not the pre-roll base. Drop the Snecko bank so
-    /// [`Self::expire_snecko_roll`] does not subtract it from the new 0 (a -1
-    /// cost reads as X-cost and drained all energy: Defect full seed 3863).
-    pub fn set_free_this_combat(&mut self) {
-        self.set_combat_var(VarKey::StarCostFreeThisCombat, 1);
-        self.set_cost_this_combat(0);
+    /// C# `EnergyCost.GetWithModifiers(CostModifiers.Local)` before its
+    /// final clamp: the base folded through the card's local modifiers. A
+    /// negative base is returned as is. The playable cost adds the global
+    /// hooks on top ([`crate::hooks::effective_card_cost`]).
+    #[inline]
+    #[must_use]
+    pub fn local_cost(&self) -> i32 {
+        self.cost.local()
     }
 
-    /// C# `EnergyCost.SetThisCombat(cost)` (`CardEnergyCost.cs:238-244`): an
-    /// Absolute local modifier that lasts the combat. Local modifiers apply in
-    /// insertion order (`CardEnergyCost.cs:110-115`), so this later Absolute
-    /// owns the cost even while an earlier Snecko Oil roll is live, and the
-    /// roll's expiry (on play or at end of turn) reveals `cost`. Drop the
-    /// Snecko bank so [`Self::expire_snecko_roll`] does not shift the new
-    /// cost. MomentumStrike played at a Snecko-rolled 0 stayed 0 in C# but
-    /// came back as 1 here (Defect-1000 act-3 `hand_costs`, GH #1054).
-    ///
-    /// The same ordering supersedes the relative `AddThisTurn(-n)` shaves
-    /// Stomp / Pinpoint banked earlier this turn: once `EndOfTurnCleanup`
-    /// drops them (`CardEnergyCost.cs:331-335`) the Absolute still yields
-    /// `cost`, so their banks are dropped too or the next turn-start restore
-    /// re-adds them (Ironclad-2031: Touch-of-Insanity'd Stomp C# 0, Rust 2).
-    ///
-    /// It also supersedes the earlier local riders the collapsed model keeps
-    /// beside `cost`: the `SetThisTurnOrUntilPlayed(0)` / `SetUntilPlayed(0)`
-    /// Absolutes ([`VarKey::FreeThisTurn`], [`VarKey::FreeUntilPlayed`]) and an
-    /// `AddUntilPlayed(-n)` reduction ([`VarKey::CostReductionUntilPlayed`]) —
-    /// all folded BEFORE this Absolute, so it owns the cost (loadout Defect
-    /// v0.107.1 2008: a RocketPunch made free until played, then drawn under
-    /// Confused, cost the Confused roll in C#, 0 in Rust). `SetToFreeThisTurn`'s
-    /// star half survives (it is a separate star cost).
-    pub fn set_cost_this_combat(&mut self, cost: i8) {
-        if self.local_energy_cost.is_some() {
-            self.add_local_cost_modifier(LocalCostModifier {
-                kind: LocalCostModifierKind::Absolute,
-                amount: i32::from(cost),
-                reduce_only: false,
-                expiration: 0,
-            });
-            return;
-        }
-        self.cost = cost;
-        // The later Absolute also supersedes the earlier Relative
-        // `AddThisCombat` reductions.
-        self.combat_vars.zero(VarKey::CostDebtThisCombat);
-        self.set_combat_var(VarKey::CostAbsolutelySet, 1);
-        self.set_combat_var(VarKey::SneckoCostDeltaThisTurn, 0);
-        self.set_combat_var(VarKey::SneckoRollLive, 0);
-        self.set_combat_var(VarKey::StompCostReductionThisTurn, 0);
-        self.set_combat_var(VarKey::PinpointCostReductionThisTurn, 0);
-        if self.combat_vars.maybe_nonzero(VarKey::FreeThisTurn)
-            && self.combat_var(VarKey::FreeThisTurn) != 0
-        {
+    /// C# `CardModel.SetToFreeThisTurn` (`CardModel.cs:1267-1271`):
+    /// `EnergyCost.SetThisTurnOrUntilPlayed(0)` plus `SetStarCostThisTurn(0)`
+    /// ([`VarKey::StarCostFreeThisTurn`], kept only on a card that has a star
+    /// cost to zero).
+    pub fn set_to_free_this_turn(&mut self) {
+        self.cost.set_this_turn_or_until_played(0, false);
+        if crate::card_has_star_cost(self.card_id) {
             self.set_combat_var(VarKey::StarCostFreeThisTurn, 1);
-            self.combat_vars.zero(VarKey::FreeThisTurn);
         }
-        self.combat_vars.zero(VarKey::FreeUntilPlayed);
-        self.combat_vars.zero(VarKey::CostReductionUntilPlayed);
     }
 
-    /// C# `EnergyCost.SetThisTurnOrUntilPlayed(cost, reduceOnly: true)`
-    /// (`CardEnergyCost.cs:197-203`): an Absolute modifier that drops at the
-    /// owner's end-of-turn cleanup or when the card is played. It rides the
-    /// same banked-delta slots as a Snecko Oil roll (the identical C#
-    /// modifier), so [`Self::expire_snecko_roll`] reverts it on either edge.
-    /// Reduce-only: a card already at or below `cost` is left alone. X-cost
-    /// cards are skipped.
-    ///
-    /// An earlier `AddUntilPlayed(-n)` reduction
-    /// ([`VarKey::CostReductionUntilPlayed`]) folds BEFORE this Absolute
-    /// (local modifiers apply in insertion order, `CardEnergyCost.cs:110-115`;
-    /// reduce-only Absolute = `min(current, cost)`, `LocalCostModifier.cs:91`),
-    /// so both the reduce-only test and the result see the reduced cost: a
-    /// 3-cost Reap retained with a 1-reduction (2) reads `min(2, 1) = 1`, not
-    /// `1 - 1 = 0`. The collapsed model subtracts the reduction after `cost`,
-    /// so `cost` is set to `cost + reduction`; past turn end (the reduction is
-    /// `WhenPlayed` only) the cap's expiry restores the old `cost` and the
-    /// reduction applies again, as in C#. Loadout Necrobinder v0.107.1 1386.
-    pub fn set_this_turn_or_until_played_reduce_only(&mut self, cost: i8) {
-        if self.local_energy_cost.is_some() {
-            if !self.is_x_cost() {
-                self.add_local_cost_modifier(LocalCostModifier {
-                    kind: LocalCostModifierKind::Absolute,
-                    amount: i32::from(cost),
-                    reduce_only: true,
-                    expiration: 6,
-                });
-            }
-            return;
-        }
-        if self.is_x_cost() {
-            return;
-        }
-        let reduction = self.combat_var(VarKey::CostReductionUntilPlayed);
-        if i32::from(self.cost) - reduction <= i32::from(cost) {
-            return;
-        }
-        let new_cost = i32::from(cost) + reduction;
-        let delta = new_cost - i32::from(self.cost);
-        self.cost = i8::try_from(new_cost).unwrap_or(i8::MAX);
-        let banked = self.combat_var(VarKey::SneckoCostDeltaThisTurn);
-        self.set_combat_var(
-            VarKey::SneckoCostDeltaThisTurn,
-            banked.saturating_add(delta),
-        );
-        if self.combat_var(VarKey::SneckoRollLive) == 0 {
-            let owner = if self.combat_var(VarKey::CostAbsolutelySet) != 0 {
-                SNECKO_ROLL_FLAG_PREOWNED
-            } else {
-                SNECKO_ROLL_RAISED_FLAG
-            };
-            self.set_combat_var(VarKey::SneckoRollLive, owner);
-        }
-        self.set_combat_var(VarKey::CostAbsolutelySet, 1);
-    }
-
-    /// C# `EnergyCost.SetThisCombat(cost, reduceOnly: true)` (Enlightenment+,
-    /// `CardEnergyCost.cs:238-244`): `cost` caps the card for the rest of
-    /// combat. X-cost cards are skipped.
-    ///
-    /// The modifier is appended after any live this-turn-or-until-played
-    /// rider (plain Enlightenment, a Snecko Oil roll), and local modifiers
-    /// fold in order (`CardEnergyCost.cs:110-115`, reduce-only Absolute =
-    /// `min(current, cost)`, `LocalCostModifier.cs:91`). So the displayed
-    /// cost is `min(cost_now, cap)` and, once the rider expires, the cap
-    /// still applies to the revealed cost: re-bank the rider so
-    /// [`Self::expire_snecko_roll`] reveals `min(revealed, cap)` and keeps
-    /// `CostAbsolutelySet`. Plain-then-upgraded Enlightenment left a 2-cost
-    /// Cinder at 1 in C# but back at 2 here after it was played
-    /// (Ironclad-2026 act 3).
-    pub fn set_this_combat_reduce_only(&mut self, cost: i8) {
-        if self.local_energy_cost.is_some() {
-            if !self.is_x_cost() {
-                self.add_local_cost_modifier(LocalCostModifier {
-                    kind: LocalCostModifierKind::Absolute,
-                    amount: i32::from(cost),
-                    reduce_only: true,
-                    expiration: 0,
-                });
-            }
-            return;
-        }
-        if self.is_x_cost() {
-            return;
-        }
-        let live = self.combat_var(VarKey::SneckoRollLive);
-        let banked = self.combat_var(VarKey::SneckoCostDeltaThisTurn);
-        if live == 0 && banked == 0 {
-            // An earlier `AddUntilPlayed(-n)` reduction folds before the cap
-            // (see `set_this_turn_or_until_played_reduce_only`): C# shows
-            // `min(cost - n, cap)` until the card is played, then `min(cost,
-            // cap)`. Keep the cap in `cost` and shrink the bank to the part of
-            // the reduction still visible under it.
-            let reduction = self.combat_var(VarKey::CostReductionUntilPlayed);
-            let capped = self.cost.min(cost);
-            if reduction != 0 {
-                let shown = (i32::from(self.cost) - reduction).min(i32::from(cost));
-                self.set_combat_var(VarKey::CostReductionUntilPlayed, i32::from(capped) - shown);
-            }
-            self.cost = capped;
-            return;
-        }
-        let displayed = i32::from(self.cost.min(cost));
-        let revealed = (i32::from(self.cost) - banked).min(i32::from(cost));
-        self.cost = displayed as i8;
-        self.set_combat_var(VarKey::SneckoCostDeltaThisTurn, displayed - revealed);
-        self.set_combat_var(VarKey::SneckoRollLive, SNECKO_ROLL_FLAG_PREOWNED);
-        self.set_combat_var(VarKey::CostAbsolutelySet, 1);
-    }
-
-    /// Expire this card's Snecko Oil roll, if one is live: C#'s
-    /// `SetThisTurnOrUntilPlayed` modifier dropping at `EndOfTurnCleanup` or
-    /// `AfterCardPlayedCleanup` (`CardEnergyCost.cs:331-345`). Subtracts the
-    /// banked delta (possibly 0) and releases `CostAbsolutelySet` unless
-    /// another absolute modifier owned it before the roll (GH #759).
-    ///
-    /// A bank without the [`VarKey::SneckoRollLive`] marker (a state that
-    /// predates it) expires as a roll that raised the flag.
-    pub fn expire_snecko_roll(&mut self) {
-        if self.local_energy_cost.is_some() {
-            return;
-        }
-        let live = self.combat_var(VarKey::SneckoRollLive);
-        let banked = self.combat_var(VarKey::SneckoCostDeltaThisTurn);
-        if live == 0 && banked == 0 {
-            return;
-        }
-        self.cost = self.cost.saturating_sub(banked as i8);
-        self.set_combat_var(VarKey::SneckoCostDeltaThisTurn, 0);
-        self.set_combat_var(VarKey::SneckoRollLive, 0);
-        self.combat_vars.zero(VarKey::FlattenOstyAttacksAtRoll);
-        if live != SNECKO_ROLL_FLAG_PREOWNED {
-            self.set_combat_var(VarKey::CostAbsolutelySet, 0);
-        }
+    /// C# `CardModel.SetToFreeThisCombat` (`CardModel.cs:1273-1277`):
+    /// `EnergyCost.SetThisCombat(0)` plus `SetStarCostThisCombat(0)`
+    /// ([`VarKey::StarCostFreeThisCombat`]).
+    pub fn set_to_free_this_combat(&mut self) {
+        self.cost.set_this_combat(0, false);
+        self.set_combat_var(VarKey::StarCostFreeThisCombat, 1);
     }
 
     /// Look up an enchantment stack, returning the current amount or 0.
@@ -1882,23 +1491,21 @@ impl Card {
     pub fn is_upgradable(&self) -> bool {
         // C# `IsUpgradable => !IsUpgraded && CurrentUpgradeLevel <
         // MaxUpgradeLevel`. Curses/statuses override `MaxUpgradeLevel => 0`,
-        // but so do the three `CardType.Quest` cards (`ByrdonisEgg`,
-        // `LanternKey`, `SpoilsMap` — `MaxUpgradeLevel => 0`), which the Rust
-        // model mistypes as `CardType::Skill` (the enum has no `Quest`
-        // variant). Without this guard those Quest cards slip into
-        // `WarPaint`/`upgrade_random_cards_of_type`'s Skill candidate set,
-        // shifting the `Rng.Niche` Fisher-Yates and upgrading the wrong
-        // cards (A9P1: SpoilsMap counted as a 7th WarPaint candidate).
+        // but so do the Quest cards (`ByrdonisEgg`, `LanternKey`,
+        // `SpoilsMap`, `Dowsing` — `MaxUpgradeLevel => 0`). Before GH #1111
+        // they were typed `Skill` and slipped into `WarPaint`'s Skill
+        // candidate set (A9P1: SpoilsMap counted as a 7th candidate); the
+        // guard stays because an upgrade path need not filter by type.
         !self.upgraded
             && !matches!(self.card_type, CardType::Curse | CardType::Status)
             && !self.is_quest()
     }
 
-    /// C# `CardType.Quest`, which the Rust `CardType` enum has no variant
-    /// for: the four Quest cards (`ByrdonisEgg`, `LanternKey`, `SpoilsMap`,
-    /// and v0.111.0's `Dowsing` — each `base(.., CardType.Quest, ..)`) are
-    /// modelled as Skills, so callers that mirror a C# `Type != Quest` gate
-    /// test this instead.
+    /// C# `Type == CardType.Quest`: the four Quest cards (`ByrdonisEgg`,
+    /// `LanternKey`, `SpoilsMap`, and v0.111.0's `Dowsing` — each
+    /// `base(.., CardType.Quest, ..)`). Their specs carry
+    /// [`CardType::Quest`] (GH #1111); this keys on the id so it also holds
+    /// for a hand-built `Card` whose `card_type` was left at a default.
     #[must_use]
     pub fn is_quest(&self) -> bool {
         matches!(
@@ -1932,6 +1539,8 @@ impl Card {
             CardId::DemonicShield
             | CardId::Entrench
             | CardId::Fisticuffs
+            // v0.113.0 `HarmonicShield`: a `CalculatedBlockVar` (5 x melodies).
+            | CardId::HarmonicShield
             | CardId::Mimic
             | CardId::Mirage
             | CardId::Sacrifice
@@ -1993,19 +1602,10 @@ impl Card {
         let Some(new) = factory(self.card_id, self.upgraded, version) else {
             return;
         };
-        // v0.111.0: a cost an effect SET this combat (Confused / Snecko's
-        // `EnergyCost.SetThisCombat(roll)`, decomp ConfusedPower.cs:42) is a
-        // local absolute modifier, not the build's base cost, so it is never
-        // re-based even when the roll happens to equal the v0.107.1 cost. An
-        // in-combat upgrade (Bellows, `upgrade_for`) normalizes first and was
-        // turning a rolled 1 on BeaconOfHope+ into the build's 2 (Ironclad mid
-        // seed 1809, hand_costs[0] cs=1 rs=2). The default build never gets
-        // here.
-        if self.local_energy_cost.is_none()
-            && self.cost == old.cost
-            && self.combat_var(VarKey::CostAbsolutelySet) == 0
-        {
-            self.cost = new.cost;
+        // Only the BASE is a build value: an effect's cost (Confused /
+        // Snecko's roll, a this-combat shave) is a local modifier and stays.
+        if self.cost.base() == old.cost.base() {
+            self.cost.set_base(new.cost.base());
         }
         if self.base_damage == old.base_damage {
             self.base_damage = new.base_damage;
@@ -2030,10 +1630,45 @@ impl Card {
         if version.is_default() {
             return self.downgrade();
         }
-        self.downgrade_with(|id, up| crate::build_card_for_version(id, up, version))
+        let keeps_outside_keywords = version >= crate::GameVersion::V0_113_0;
+        let outside = keeps_outside_keywords.then(|| self.outside_keyword_diff_for(version));
+        if !self.downgrade_with(|id, up| crate::build_card_for_version(id, up, version)) {
+            return false;
+        }
+        // v0.113 `DowngradeInternal` (CardModel.cs:2348-2352): the canonical
+        // Local set UNION `_keywordsAddedFromOutside` EXCEPT
+        // `_keywordsRemovedFromOutside` — an `ApplyKeyword`'d Ethereal (Ghost
+        // Seed) or Retain survives the downgrade (the Ghost Seed fix).
+        if let Some((ethereal, added, removed)) = outside {
+            if ethereal != 0 {
+                self.set_combat_var(VarKey::EtherealThisCombat, ethereal);
+            }
+            if added != 0 || removed != 0 {
+                let base_kw = self.keyword_override.unwrap_or_else(|| {
+                    crate::card_effects::registry_keyword_override(self.card_id)
+                });
+                self.keyword_override = Some(KeywordOverride((base_kw.0 | added) & !removed));
+            }
+        }
+        true
     }
 
-    fn upgrade_with(&mut self, factory: impl Fn(CardId, bool) -> Option<Card>) -> bool {
+    /// The keywords outside effects added to / removed from this (upgraded)
+    /// card, relative to its upgraded factory build, plus its applied
+    /// `EtherealThisCombat` — C#'s `_keywordsAddedFromOutside` /
+    /// `_keywordsRemovedFromOutside` (v0.113).
+    fn outside_keyword_diff_for(&self, version: crate::GameVersion) -> (i32, u8, u8) {
+        let ethereal = self.combat_var(VarKey::EtherealThisCombat);
+        let Some(current) = self.keyword_override else {
+            return (ethereal, 0, 0);
+        };
+        let built = crate::build_card_for_version(self.card_id, self.upgraded, version)
+            .and_then(|c| c.keyword_override)
+            .unwrap_or_else(|| crate::card_effects::registry_keyword_override(self.card_id));
+        (ethereal, current.0 & !built.0, built.0 & !current.0)
+    }
+
+    pub(crate) fn upgrade_with(&mut self, factory: impl Fn(CardId, bool) -> Option<Card>) -> bool {
         // C# `CardCmd.Upgrade` skips a card that isn't `IsUpgradable`
         // (`CardCmd.cs:273-276`), and every gameplay upgrade goes through it
         // (Bellows, Bone Tea, Armaments+, Apotheosis, the potions, the rest
@@ -2086,43 +1721,20 @@ impl Card {
     /// [`Self::upgrade_for`]: `base` / `upgraded` are the un-upgraded and
     /// upgraded factory builds of this card's id.
     fn apply_upgrade_delta(&mut self, base: &Card, upgraded: &Card) {
-        let cost_delta = upgraded.cost - base.cost;
-        if let Some(mut model) = self.local_energy_cost {
-            model.upgrade_base(i32::from(cost_delta));
-            self.set_local_energy_cost(model);
-        } else if self.combat_var(VarKey::CostAbsolutelySet) != 0 {
-            // C# `CardEnergyCost.UpgradeBy` (CardEnergyCost.cs:179-200):
-            // the upgrade mutates the BASE; an Absolute local modifier
-            // (Confused/SneckoOil roll, held in `self.cost` in the
-            // collapsed model) keeps owning the evaluated cost, except
-            // that a LOWERED base clamps every absolute modifier above
-            // it down to the new base. Re-point any banked Snecko
-            // delta at the new base so the WhenPlayed / turn-start
-            // expiry restores to it (C#: dropping the modifier reveals
-            // `_base`).
-            if cost_delta < 0 {
-                let new_base = upgraded.cost.max(0);
-                self.cost = self.cost.min(new_base);
-                if self.combat_var(VarKey::SneckoRollLive) != 0
-                    || self.combat_var(VarKey::SneckoCostDeltaThisTurn) != 0
-                {
-                    self.set_combat_var(
-                        VarKey::SneckoCostDeltaThisTurn,
-                        i32::from(self.cost) - i32::from(new_base),
-                    );
-                }
-            }
-            // cost_delta >= 0: the absolute modifier still owns the
-            // evaluated cost — leave `self.cost` untouched.
-        } else if base.cost >= 0 {
-            // C# resolves `max(0, base + this-combat modifiers)`: upgrading a
-            // card its discounts already took to 0 keeps it at 0. A negative
-            // `cost` is the X-cost sentinel, so the sum must not go below 0
-            // (act23 Necrobinder:1014: Banshee's Cry at 0 upgraded to -2 and
-            // the play spent all 4 energy as an X cost).
-            self.cost = self.cost.saturating_add(cost_delta).max(0);
+        // C# `OnUpgrade` calls `EnergyCost.UpgradeBy(n)`: the base moves (and
+        // a lowered base clamps the Absolute modifiers above it); the Relative
+        // modifiers stay.
+        let cost_delta = i32::from(upgraded.cost.base()) - i32::from(base.cost.base());
+        if self.cost.base() >= 0 {
+            self.cost.upgrade_by(cost_delta);
         } else {
-            self.cost = self.cost.saturating_add(cost_delta);
+            // X cost / unplayable: C# skips `CostsX`; a negative base never
+            // takes a delta in practice, kept additive as before.
+            self.cost.set_base(
+                self.cost
+                    .base()
+                    .saturating_add(i8::try_from(cost_delta).unwrap_or(0)),
+            );
         }
         self.base_damage = self
             .base_damage
@@ -2176,7 +1788,10 @@ impl Card {
         self.downgrade_with(|id, up| crate::lookup_card_factory().and_then(|f| f(id, up)))
     }
 
-    fn downgrade_with(&mut self, factory: impl Fn(CardId, bool) -> Option<Card>) -> bool {
+    pub(crate) fn downgrade_with(
+        &mut self,
+        factory: impl Fn(CardId, bool) -> Option<Card>,
+    ) -> bool {
         if !self.upgraded {
             return false;
         }
@@ -2193,28 +1808,26 @@ impl Card {
         // added (Ghost Seed's / Music Box's Ethereal, modelled as this combat
         // var) is gone and nothing re-applies it.
         self.combat_vars.zero(VarKey::EtherealThisCombat);
+        // It then re-runs `Enchantment?.ModifyCard()`: Tezcatara's Ember's
+        // `OnEnchant` (`EnergyCost.UpgradeBy(-GetWithModifiers(None))`) zeroes
+        // the canonical base `ResetForDowngrade` just restored, so a Dampened
+        // Ember card still costs 0 (random-loadout Ironclad 7505 v0.107.1). The
+        // other enchantments' `OnEnchant` only add keywords, which Rust reads
+        // off the enchantment itself.
+        if self.has_enchantment(EnchantmentId::TezcatarasEmber) && !self.is_x_cost() {
+            self.cost.upgrade_by(-i32::from(self.cost.base()));
+        }
         true
     }
 
     fn revert_upgrade_delta(&mut self, base: &Card, upgraded: &Card) {
-        if let Some(mut model) = self.local_energy_cost {
-            model.upgrade_base(i32::from(base.cost) - i32::from(upgraded.cost));
-            self.set_local_energy_cost(model);
-        } else if self.card_id == CardId::BansheesCry
-            && base.cost >= 0
-            && self.combat_var(VarKey::CostAbsolutelySet) == 0
-        {
-            // C# `ResetForDowngrade` restores `_base = Canonical` and keeps the
-            // `AddThisCombat(-2)` modifiers, so the cost re-resolves to
-            // `max(0, 9 - 2n)` (CardEnergyCost.cs GetWithModifiers). The
-            // collapsed `cost` already floored at 0; adding the +2 delta back
-            // to that floor over-charged (loadout Necrobinder 1006, Dampen).
-            let shaved = self
-                .combat_var(VarKey::BansheesCryEtherealCounted)
-                .saturating_mul(2);
-            self.cost = i8::try_from((i32::from(base.cost) - shaved).max(0)).unwrap_or(0);
+        // C# `ResetForDowngrade`: `_base = Canonical`, the modifiers stay (an
+        // Absolute keeps owning the cost).
+        if self.cost.base() >= 0 && base.cost.base() >= 0 {
+            self.cost.reset_for_downgrade(base.cost.base());
         } else {
-            self.cost = self.cost.saturating_sub(upgraded.cost - base.cost);
+            let delta = upgraded.cost.base().saturating_sub(base.cost.base());
+            self.cost.set_base(self.cost.base().saturating_sub(delta));
         }
         self.base_damage = self
             .base_damage
@@ -2264,9 +1877,7 @@ impl Card {
     /// `VarKey`, so the equivalent is the broader combat-vars reset.
     pub fn reset_combat_vars(&mut self) {
         self.combat_vars.clear();
-        if let Some(model) = self.local_energy_cost {
-            self.set_local_energy_cost(LocalEnergyCost::new(model.base, model.costs_x));
-        }
+        self.cost.clear_modifiers();
         self.energy_spent = 0;
     }
 
@@ -2280,7 +1891,7 @@ impl Card {
     #[inline]
     #[must_use]
     pub const fn is_x_cost(&self) -> bool {
-        self.cost == -1 && !matches!(self.card_type, CardType::Curse | CardType::Status)
+        self.cost.base() == -1 && !matches!(self.card_type, CardType::Curse | CardType::Status)
     }
 }
 
@@ -2323,7 +1934,7 @@ impl CardId {
 /// The card ids [`CardStore`] tracks presence of (J02), one bit each. Every
 /// one gates an O(cards) sweep that acts only on cards with that id: the
 /// Stomp / Pinpoint discounts and their turn-start restores, Melancholy's
-/// on-death discount, the Bolas / ThrummingHatchet return-to-hand scan, and
+/// on-death discount, the Bolas / ThrummingHatchet / Bounce return-to-hand scan, and
 /// Banshee's Cry's Ethereal-play discount.
 const fn card_gate_bit(id: CardId) -> u8 {
     match id {
@@ -2333,15 +1944,32 @@ const fn card_gate_bit(id: CardId) -> u8 {
         CardId::Bolas => 1 << 3,
         CardId::ThrummingHatchet => 1 << 4,
         CardId::BansheesCry => 1 << 5,
+        // v0.113.0 Fool: returns to hand like Bolas (`Bounce.cs`).
+        CardId::Bounce => 1 << 6,
         _ => 0,
     }
 }
 
-/// The OR of [`card_gate_bit`] over `cards`.
+/// The gate bit for "this card carries `CardTag::Shoot`" (v0.113.0 Fool):
+/// [`crate::fool::shoot_slot_pending`] asks whether any arena card does on
+/// every play start and every arrow getter, in every v0.113 fight. Disjoint
+/// from every [`card_gate_bit`] id bit.
+const SHOOT_TAG_GATE_BIT: u8 = 1 << 7;
+
+/// Every gate bit `card` sets: its id bit plus the Shoot-tag bit.
+#[inline]
+const fn card_gate_bits(card: &Card) -> u8 {
+    card_gate_bit(card.card_id)
+        | if card.tags.contains(CardTag::Shoot) {
+            SHOOT_TAG_GATE_BIT
+        } else {
+            0
+        }
+}
+
+/// The OR of [`card_gate_bits`] over `cards`.
 fn card_gate_bits_of(cards: &[Card]) -> u8 {
-    cards
-        .iter()
-        .fold(0, |acc, c| acc | card_gate_bit(c.card_id))
+    cards.iter().fold(0, |acc, c| acc | card_gate_bits(c))
 }
 
 /// Vector-backed arena over [`Card`]. Indexed by [`CardUid`] in pile
@@ -2425,7 +2053,7 @@ impl CardStore {
     /// Append a card (the next arena row).
     #[inline]
     pub fn push(&mut self, card: Card) {
-        self.gate_bits |= card_gate_bit(card.card_id);
+        self.gate_bits |= card_gate_bits(&card);
         self.cards.push(card);
     }
 
@@ -2459,6 +2087,25 @@ impl CardStore {
             held,
             self.cards.iter().any(|c| c.card_id == id),
             "CardStore gate bit for {id:?} disagrees with the arena scan"
+        );
+        held
+    }
+
+    /// True iff some arena card carries `CardTag::Shoot`, answered by one bit
+    /// test.
+    ///
+    /// # Panics
+    /// In debug builds, if the stored bit disagrees with an arena scan (a
+    /// `tags` write bypassed the store).
+    #[inline]
+    #[must_use]
+    pub fn holds_shoot_tag(&self) -> bool {
+        let held = self.gate_bits & SHOOT_TAG_GATE_BIT != 0;
+        #[cfg(debug_assertions)]
+        assert_eq!(
+            held,
+            self.cards.iter().any(|c| c.tags.contains(CardTag::Shoot)),
+            "CardStore Shoot-tag gate bit disagrees with the arena scan"
         );
         held
     }
@@ -2767,7 +2414,23 @@ pub fn emit_pile_trace(
 /// [`draw`] itself, [`discard_pile_into_draw_pile`]) maintain the
 /// invariant in the common path.
 pub fn shuffle(player: &mut PlayerCombatState, rng: &mut CombatRng) {
+    shuffle_for(player, rng, crate::GameVersion::V0_107_1);
+}
+
+/// [`shuffle`] for game build `version`. v0.113.0 `UnstableShuffle` draws
+/// one `NextUnsignedLong` seed off `rng` and shuffles on a child `Rng`
+/// ([`crate::dotnet_rng::Rng::shuffle_for`]), so even a 0/1-card pile costs
+/// that one draw.
+pub fn shuffle_for(
+    player: &mut PlayerCombatState,
+    rng: &mut CombatRng,
+    version: crate::GameVersion,
+) {
+    let child_seeded = version >= crate::GameVersion::V0_113_0;
     if player.draw.len() < 2 {
+        if child_seeded && !player.deferred_draw_order {
+            let _ = rng.next_unsigned_long();
+        }
         return;
     }
     // Bead `sts2-rs-09x5n` (F2 `HiddenInfoMode::BeliefDraw`, lightspeed
@@ -2790,7 +2453,7 @@ pub fn shuffle(player: &mut PlayerCombatState, rng: &mut CombatRng) {
     }
     // Fast path: no pins -> identical to the legacy single-call shuffle.
     if player.pinned_top.is_empty() && player.pinned_bottom.is_empty() {
-        rng.shuffle(player.draw.as_mut_slice());
+        rng.shuffle_for(version, player.draw.as_mut_slice());
         return;
     }
     // Drop stale pin entries (not currently in draw). This is the
@@ -2810,8 +2473,8 @@ pub fn shuffle(player: &mut PlayerCombatState, rng: &mut CombatRng) {
             middle.push(uid);
         }
     }
-    if middle.len() >= 2 {
-        rng.shuffle(middle.as_mut_slice());
+    if middle.len() >= 2 || child_seeded {
+        rng.shuffle_for(version, middle.as_mut_slice());
     }
     // Reconstruct `top + middle + bot` in place.
     player.draw.clear();
@@ -3385,12 +3048,13 @@ fn reshuffle_rank(card_id: CardId) -> u16 {
     use std::sync::OnceLock;
     static RANKS: OnceLock<Vec<u16>> = OnceLock::new();
     let ranks = RANKS.get_or_init(|| {
-        // The UNION of every build's cards (GH #792): v0.111.0-only ids
-        // (`CardId::V0111_ONLY`) sit past `all()` in declaration order, so
-        // the table must cover them. Adding names only shifts ranks
-        // uniformly; the relative order of v0.107.1 cards, which is all the
-        // sort compares, is unchanged.
-        let all = CardId::all_for(crate::GameVersion::V0_111_0);
+        // The UNION of every build's cards (GH #792): build-only ids
+        // (`CardId::V0111_ONLY`, `V0113_ONLY`) sit past `all()` in
+        // declaration order, so the table must cover them — keyed on the
+        // LATEST build, or a v0.113 card (MyShinies) indexes past the end.
+        // Adding names only shifts ranks uniformly; the relative order of
+        // older cards, which is all the sort compares, is unchanged.
+        let all = CardId::all_for(crate::GameVersion::V0_113_0);
         let mut by_name: Vec<CardId> = all.clone();
         by_name.sort_by(|a, b| card_model_entry(*a).cmp(card_model_entry(*b)));
         let mut table = vec![0u16; all.len()];
@@ -3416,6 +3080,265 @@ pub fn card_model_compare(a: &Card, b: &Card) -> std::cmp::Ordering {
     reshuffle_rank(a.card_id)
         .cmp(&reshuffle_rank(b.card_id))
         .then_with(|| u8::from(a.upgraded).cmp(&u8::from(b.upgraded)))
+}
+
+/// [`card_model_compare`] for the given build. v0.113.0 `CardModel.CompareTo`
+/// (`CardModel.cs:2473-2526`) breaks the `(ModelId, CurrentUpgradeLevel)` tie
+/// further ([`CardModelKeyV0113`]); earlier builds stop at the upgrade level.
+#[must_use]
+pub fn card_model_compare_for(
+    a: &Card,
+    b: &Card,
+    version: crate::GameVersion,
+) -> std::cmp::Ordering {
+    if version >= crate::GameVersion::V0_113_0 {
+        CardModelKeyV0113::of(a).cmp(&CardModelKeyV0113::of(b))
+    } else {
+        card_model_compare(a, b)
+    }
+}
+
+/// The secondary key of the `CardSelectCmd.FromCombatPile` Draw-pile grid
+/// sort, after `Rarity`: v0.111.0 `orderby c.Rarity, c.Id` (the ordinal
+/// `ModelId` entry, CardSelectCmd.cs:493), v0.113.0 `orderby x.Rarity, x`
+/// (the full `CardModel.CompareTo`, CardSelectCmd.cs:320). Both sorts are
+/// stable. Missing uids compare equal.
+#[must_use]
+pub fn draw_select_tiebreak(
+    cards: &CardStore,
+    a: CardUid,
+    b: CardUid,
+    version: crate::GameVersion,
+) -> std::cmp::Ordering {
+    let (Some(ca), Some(cb)) = (
+        cards.get(a.get() as usize - 1),
+        cards.get(b.get() as usize - 1),
+    ) else {
+        return std::cmp::Ordering::Equal;
+    };
+    if version >= crate::GameVersion::V0_113_0 {
+        card_model_compare_for(ca, cb, version)
+    } else {
+        card_model_entry(ca.card_id).cmp(card_model_entry(cb.card_id))
+    }
+}
+
+/// Byte capacity of a [`ModelEntrySlug`]; the longest enchantment /
+/// affliction entry (`SLUMBERING_ESSENCE`) is 18.
+const MODEL_ENTRY_SLUG_LEN: usize = 24;
+
+/// C# `ModelId.Entry` slug of a type name, `RoyallyApproved` ->
+/// `ROYALLY_APPROVED` (an underscore before every inner capital), held
+/// NUL-padded on the stack. The entries contain no NUL, so comparing the
+/// padded arrays is the ordinal string compare, and the all-zero `NONE`
+/// (C# `ModelId.Compare(null, x)`: null first) sorts before every entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ModelEntrySlug([u8; MODEL_ENTRY_SLUG_LEN]);
+
+impl ModelEntrySlug {
+    const NONE: Self = Self([0; MODEL_ENTRY_SLUG_LEN]);
+
+    /// The slug of `id`'s `Debug` name (its C# type name).
+    fn of(id: &impl std::fmt::Debug) -> Self {
+        struct Writer {
+            buf: [u8; MODEL_ENTRY_SLUG_LEN],
+            len: usize,
+        }
+        impl Writer {
+            fn push(&mut self, b: u8) {
+                debug_assert!(self.len < MODEL_ENTRY_SLUG_LEN, "model entry slug overflow");
+                if let Some(slot) = self.buf.get_mut(self.len) {
+                    *slot = b;
+                    self.len += 1;
+                }
+            }
+        }
+        impl std::fmt::Write for Writer {
+            fn write_str(&mut self, part: &str) -> std::fmt::Result {
+                for b in part.bytes() {
+                    if self.len > 0 && b.is_ascii_uppercase() {
+                        self.push(b'_');
+                    }
+                    self.push(b.to_ascii_uppercase());
+                }
+                Ok(())
+            }
+        }
+        let mut w = Writer {
+            buf: [0; MODEL_ENTRY_SLUG_LEN],
+            len: 0,
+        };
+        let _ = std::fmt::Write::write_fmt(&mut w, format_args!("{id:?}"));
+        Self(w.buf)
+    }
+
+    /// The slug as text (tests and diagnostics).
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        let end = self.0.iter().position(|&b| b == 0).unwrap_or(self.0.len());
+        std::str::from_utf8(&self.0[..end]).unwrap_or("")
+    }
+}
+
+/// The full v0.113.0 `CardModel.CompareTo` sort key of one card
+/// (`CardModel.cs:2473-2526`), in field order: `ModelId` (ordinal entry, as
+/// [`reshuffle_rank`]), `CurrentUpgradeLevel`,
+/// `ModelId.Compare(Enchantment?.Id)` (null first, then ordinal entry),
+/// `ModelId.Compare(Affliction?.Id)`, `EnergyCost.GetResolved()`,
+/// `BaseReplayCount`, then each shared `DynamicVar.BaseValue` in ordinal key
+/// order ([`compare_vars_v0113`]). Allocation-free and `Copy`, so a sort
+/// computes it once per card instead of per comparison.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CardModelKeyV0113 {
+    rank: u16,
+    upgrade: u8,
+    enchantment: ModelEntrySlug,
+    affliction: ModelEntrySlug,
+    resolved_cost: i32,
+    replay: i32,
+    vars: [VarBaseValue; 2],
+}
+
+impl CardModelKeyV0113 {
+    /// The key a uid with no backing `Card` sorts by: before every real card
+    /// (rank `0`), tied with the other missing uids.
+    pub const MISSING: Self = Self {
+        rank: 0,
+        upgrade: 0,
+        enchantment: ModelEntrySlug::NONE,
+        affliction: ModelEntrySlug::NONE,
+        resolved_cost: 0,
+        replay: 0,
+        vars: [VarBaseValue::int(0); 2],
+    };
+
+    #[must_use]
+    pub fn of(c: &Card) -> Self {
+        let resolved_cost = if c.is_x_cost() {
+            c.energy_spent
+        } else {
+            c.local_cost().max(0)
+        };
+        Self {
+            rank: reshuffle_rank(c.card_id),
+            upgrade: u8::from(c.upgraded),
+            enchantment: c
+                .enchantments
+                .first()
+                .map_or(ModelEntrySlug::NONE, |(id, _)| ModelEntrySlug::of(&id)),
+            affliction: c
+                .affliction
+                .map_or(ModelEntrySlug::NONE, |a| ModelEntrySlug::of(&a.kind)),
+            resolved_cost,
+            replay: c.base_replay_count,
+            vars: compare_vars_v0113(c),
+        }
+    }
+
+    /// The key of `uid`'s card, [`Self::MISSING`] without one.
+    #[must_use]
+    pub fn of_uid(cards: &CardStore, uid: CardUid) -> Self {
+        cards
+            .get(uid.get() as usize - 1)
+            .map_or(Self::MISSING, Self::of)
+    }
+}
+
+/// A C# `DynamicVar.BaseValue` (a `decimal`) as an exact fraction
+/// `num / den` (`den > 0`), ordered by value.
+#[derive(Clone, Copy, Debug)]
+pub struct VarBaseValue {
+    num: i64,
+    den: i64,
+}
+
+impl VarBaseValue {
+    const fn int(v: i32) -> Self {
+        Self {
+            num: v as i64,
+            den: 1,
+        }
+    }
+}
+
+impl Ord for VarBaseValue {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (i128::from(self.num) * i128::from(other.den))
+            .cmp(&(i128::from(other.num) * i128::from(self.den)))
+    }
+}
+
+impl PartialOrd for VarBaseValue {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for VarBaseValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for VarBaseValue {}
+
+/// The `DynamicVar.BaseValue`s v0.113.0 `CardModel.CompareTo` walks in
+/// ordinal key order (`DynamicVars.Keys.Order(StringComparer.Ordinal)`,
+/// CardModel.cs:2514-2524), reduced to the ones that can differ between two
+/// copies of the same card at the same upgrade level. Every other var is
+/// static per (card, upgrade), so it never breaks a tie.
+///
+/// The vars C# mutates on the instance (decomp v0.113.0):
+/// - `Block` / `Damage` (`Block` sorts first): Claw, Maul, The Ball,
+///   The Scythe, Kingly Punch, Genetic Algorithm and Sovereign Blade's
+///   `AddDamage` grow `base_block`/`base_damage` in Rust too.
+/// - Rampage `Damage += Increase` (Rampage.cs:51): Rust keeps the growth in
+///   [`VarKey::RampageDamage`].
+/// - Thrash's `decimal` `Damage` (Thrash.cs:75): the integer part is
+///   `base_damage`, the fraction the `ThrashFoldRem{Num,Den}` vars.
+/// - Wither `FakeUpgrade` `Damage.UpgradeValueBy(3)` (Wither.cs:100):
+///   [`VarKey::WitherFakeUpgradeLevel`].
+/// - Guilty `Combats = 5 - CombatsSeen` (Guilty.cs:36) and Dowsing
+///   `Rooms = Max(1, 4 - RoomsEntered)` (Dowsing.cs:41): the counts ride in
+///   [`VarKey::Generic`]; neither card has another var.
+///
+/// Not modelled: Show Off's `AimPower` (the card is not ported) and
+/// Sovereign Blade's `HitCount` (`SetRepeats` has no caller).
+#[must_use]
+pub fn compare_vars_v0113(c: &Card) -> [VarBaseValue; 2] {
+    let block = VarBaseValue::int(c.base_block);
+    let damage = match c.card_id {
+        CardId::Rampage => VarBaseValue::int(
+            c.base_damage
+                .saturating_add(c.combat_var(VarKey::RampageDamage)),
+        ),
+        CardId::Thrash => {
+            let den = i64::from(c.combat_var(VarKey::ThrashFoldRemDen)).max(1);
+            VarBaseValue {
+                num: i64::from(c.base_damage) * den
+                    + i64::from(c.combat_var(VarKey::ThrashFoldRemNum)),
+                den,
+            }
+        }
+        CardId::Wither => VarBaseValue::int(
+            c.base_damage
+                .saturating_add(3 * c.combat_var(VarKey::WitherFakeUpgradeLevel).max(0)),
+        ),
+        CardId::Guilty => {
+            return [
+                VarBaseValue::int(5 - c.combat_var(VarKey::Generic)),
+                VarBaseValue::int(0),
+            ];
+        }
+        CardId::Dowsing => {
+            return [
+                VarBaseValue::int((4 - c.combat_var(VarKey::Generic)).max(1)),
+                VarBaseValue::int(0),
+            ];
+        }
+        _ => VarBaseValue::int(c.base_damage),
+    };
+    [block, damage]
 }
 
 /// Reshuffle pre-sort PRIMARY key: the O(1) ordinal rank of a uid's card name
@@ -3618,7 +3541,31 @@ where
 /// component, so every comparison returns exactly the `Ordering` the old
 /// closure returned at the same algorithm step, and the introsort permutes
 /// whole tuples — the final uid order is the same permutation.
+#[cfg(test)]
 fn presort_draw_for_reshuffle(player: &mut PlayerCombatState, cards: &CardStore) {
+    presort_draw_for_reshuffle_for(player, cards, crate::GameVersion::V0_107_1);
+}
+
+/// [`presort_draw_for_reshuffle`] for the given build: v0.113.0 extends the
+/// tie-break (see [`card_model_compare_for`]).
+fn presort_draw_for_reshuffle_for(
+    player: &mut PlayerCombatState,
+    cards: &CardStore,
+    version: crate::GameVersion,
+) {
+    if version >= crate::GameVersion::V0_113_0 {
+        let mut keyed: SmallVec<[(CardModelKeyV0113, CardUid); 32]> = player
+            .draw
+            .iter()
+            .map(|&uid| (CardModelKeyV0113::of_uid(cards, uid), uid))
+            .collect();
+        let cmp = |a: (CardModelKeyV0113, CardUid), b: (CardModelKeyV0113, CardUid)| a.0.cmp(&b.0);
+        dotnet_list_sort(keyed.as_mut_slice(), &cmp);
+        for (slot, k) in player.draw.iter_mut().zip(keyed.iter()) {
+            *slot = k.1;
+        }
+        return;
+    }
     let mut keyed: SmallVec<[(u16, u8, CardUid); 32]> = player
         .draw
         .iter()
@@ -3648,6 +3595,17 @@ pub fn discard_pile_into_draw_pile_signaling(
     player: &mut PlayerCombatState,
     cards: &CardStore,
     rng: &mut CombatRng,
+) -> bool {
+    discard_pile_into_draw_pile_signaling_for(player, cards, rng, crate::GameVersion::V0_107_1)
+}
+
+/// [`discard_pile_into_draw_pile_signaling`] with the build's
+/// `CardModel.CompareTo` pre-sort ([`card_model_compare_for`]).
+pub fn discard_pile_into_draw_pile_signaling_for(
+    player: &mut PlayerCombatState,
+    cards: &CardStore,
+    rng: &mut CombatRng,
+    version: crate::GameVersion,
 ) -> bool {
     if !player.draw.is_empty() || player.discard.is_empty() {
         return false;
@@ -3690,8 +3648,8 @@ pub fn discard_pile_into_draw_pile_signaling(
     // [`presort_draw_for_reshuffle`], which resolves the sort keys once per
     // uid instead of per comparison) replicates .NET's algorithm exactly so
     // the tied run lands at the C# slot.
-    presort_draw_for_reshuffle(player, cards);
-    shuffle(player, rng);
+    presort_draw_for_reshuffle_for(player, cards, version);
+    shuffle_for(player, rng, version);
     // Phase 6+: apply_enchantment_shuffle_order(state.draw, is_initial_shuffle=False)
     // Bead `sts2-rs-jlc`: the caller now fires the `after_shuffle`
     // relic-bus channel based on the returned signal.
@@ -3721,6 +3679,17 @@ pub fn shuffle_draw_and_discard(
     cards: &CardStore,
     rng: &mut CombatRng,
 ) {
+    shuffle_draw_and_discard_for(player, cards, rng, crate::GameVersion::V0_107_1);
+}
+
+/// [`shuffle_draw_and_discard`] with the build's `CardModel.CompareTo`
+/// pre-sort ([`card_model_compare_for`]).
+pub fn shuffle_draw_and_discard_for(
+    player: &mut PlayerCombatState,
+    cards: &CardStore,
+    rng: &mut CombatRng,
+    version: crate::GameVersion,
+) {
     emit_pile_trace(player, cards, "shuf", rng.counter(), None);
     // A full shuffle scrambles all draw-pile position knowledge.
     player.pinned_top.clear();
@@ -3737,8 +3706,8 @@ pub fn shuffle_draw_and_discard(
     // .NET introsort tie-order (see [`dotnet_list_sort`]); the explicit
     // `Shuffle` command (Reboot, BottledPotential) routes through the
     // same C# `StableShuffle` -> `list.Sort()` as the auto-reshuffle.
-    presort_draw_for_reshuffle(player, cards);
-    shuffle(player, rng);
+    presort_draw_for_reshuffle_for(player, cards, version);
+    shuffle_for(player, rng, version);
 }
 
 /// Number of shuffles that occurred during the most recent
@@ -3757,6 +3726,17 @@ pub fn draw_signaling(
     cards: &CardStore,
     rng: &mut CombatRng,
 ) -> (usize, u32) {
+    draw_signaling_for(player, n, cards, rng, crate::GameVersion::V0_107_1)
+}
+
+/// [`draw_signaling`] with the build's reshuffle pre-sort.
+pub fn draw_signaling_for(
+    player: &mut PlayerCombatState,
+    n: i32,
+    cards: &CardStore,
+    rng: &mut CombatRng,
+    version: crate::GameVersion,
+) -> (usize, u32) {
     let target = usize::try_from(n).unwrap_or(0);
     let mut moved = 0;
     let mut shuffles: u32 = 0;
@@ -3764,7 +3744,9 @@ pub fn draw_signaling(
         if is_hand_full(player) {
             break;
         }
-        if player.draw.is_empty() && discard_pile_into_draw_pile_signaling(player, cards, rng) {
+        if player.draw.is_empty()
+            && discard_pile_into_draw_pile_signaling_for(player, cards, rng, version)
+        {
             shuffles = shuffles.saturating_add(1);
         }
         if player.draw.is_empty() {
@@ -3863,6 +3845,17 @@ pub fn draw(
     cards: &CardStore,
     rng: &mut CombatRng,
 ) -> usize {
+    draw_for(player, n, cards, rng, crate::GameVersion::V0_107_1)
+}
+
+/// [`draw`] in game build `version` (the auto-reshuffle's shuffle shape).
+pub fn draw_for(
+    player: &mut PlayerCombatState,
+    n: i32,
+    cards: &CardStore,
+    rng: &mut CombatRng,
+    version: crate::GameVersion,
+) -> usize {
     let target = usize::try_from(n).unwrap_or(0);
     let mut moved = 0;
     for _ in 0..target {
@@ -3875,7 +3868,7 @@ pub fn draw(
         if player.draw.is_empty() {
             // Auto-reshuffle: discard -> draw, shuffle in place. If both
             // piles are empty, this is a no-op and the next branch breaks.
-            discard_pile_into_draw_pile(player, cards, rng);
+            let _ = discard_pile_into_draw_pile_signaling_for(player, cards, rng, version);
         }
         if player.draw.is_empty() {
             // Both draw and (post-reshuffle) discard are empty — bail.
@@ -3962,6 +3955,39 @@ pub(crate) fn card_effect_draw_blocked(state: &crate::CombatState) -> bool {
 /// (`CardPileCmd.cs:753`), shared with
 /// [`crate::CombatState::draw_into_hand_card_effect`].
 pub fn draw_via_state(state: &mut crate::CombatState, n: i32) -> usize {
+    draw_via_state_collecting(state, n, None)
+}
+
+/// The cards ONE `CardPileCmd.Draw` call returned, and how many it still owes.
+///
+/// C# `CardPileCmd.Draw` returns the cards its own loop took. A nested draw
+/// started by a card's `AfterCardDrawn` rider (Iteration on the first Status,
+/// Pagestorm on an Ethereal card), a Hellraiser auto-play's own draw, or a
+/// Stratagem pick the reshuffle put in hand is not part of it, though all of
+/// them land in hand between its cards. A card that filters what it drew
+/// (Scrape, v0.111.0 Expertise) reads this.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OwnDraw {
+    /// The cards this draw took, in draw order (even if a rider moved one on).
+    pub cards: smallvec::SmallVec<[CardUid; 10]>,
+    /// The cards it still owes when it suspended on an open select: they
+    /// continue once the select resolves ([`crate::PendingDrawResume`]).
+    pub rest: i32,
+}
+
+/// [`draw_via_state`], reporting the draw's own cards ([`OwnDraw`]).
+#[must_use]
+pub fn draw_own_via_state(state: &mut crate::CombatState, n: i32) -> OwnDraw {
+    let mut own = OwnDraw::default();
+    let _ = draw_via_state_collecting(state, n, Some(&mut own));
+    own
+}
+
+fn draw_via_state_collecting(
+    state: &mut crate::CombatState,
+    n: i32,
+    own: Option<&mut OwnDraw>,
+) -> usize {
     // Reset the single-card draw report (bead `sts2-rs-pillage-hellraiser`);
     // the per-card / batch branches below set it to the drawn card when one
     // moves, leaving it `None` when nothing is drawn (NoDraw veto, empty
@@ -3999,15 +4025,29 @@ pub fn draw_via_state(state: &mut crate::CombatState, n: i32) -> usize {
     // C# auto-plays drawn Strikes mid-draw on EVERY draw path, so the
     // played Strike can reshuffle back into the same draw.
     if state.per_card_draw_loop_required() || state.reshuffle_reorders_mid_draw(n) {
-        return state.draw_suspending(n, false);
+        return state.draw_suspending_collecting(n, false, own);
     }
     let hand_len_before = state.player.hand.len();
-    let moved = draw(
+    let moved = draw_for(
         &mut state.player,
         n,
         &state.cards,
         &mut state.run_rng.shuffle,
+        state.game_version,
     );
+    // No rider draws mid-batch here (those force the per-card loop above), so
+    // the batch's own cards are the hand's new tail.
+    if let Some(own) = own {
+        own.cards.extend(
+            state
+                .player
+                .hand
+                .get(hand_len_before..hand_len_before + moved)
+                .unwrap_or_default()
+                .iter()
+                .copied(),
+        );
+    }
     // Report the last card drawn for the single-card path (bead
     // `sts2-rs-pillage-hellraiser`). This batch branch is only taken when no
     // per-card on-draw remover (Hellraiser) is active, so the drawn cards are
@@ -4060,11 +4100,11 @@ pub fn draw_via_state(state: &mut crate::CombatState, n: i32) -> usize {
     // `!FromHandDraw`). Only the BATCH path lands here; the per-card loop
     // early-returns through `draw_suspending(n, false)` above, which tallies
     // each drawn card itself (so resumed-after-shuffle cards are not missed).
-    if let Ok(moved_u32) = u32::try_from(moved) {
+    if let Ok(moved_u16) = u16::try_from(moved) {
         state.combat_log.cards_drawn_by_effect_this_turn = state
             .combat_log
             .cards_drawn_by_effect_this_turn
-            .saturating_add(moved_u32);
+            .saturating_add(moved_u16);
     }
     moved
 }
@@ -4097,6 +4137,110 @@ mod tests {
             std::cmp::Ordering::Less
         );
         assert_eq!(card_model_compare(&clap, &clap), std::cmp::Ordering::Equal);
+    }
+
+    /// v0.113.0 `CardModel.CompareTo` (CardModel.cs:2489-2524): copies equal
+    /// on (Entry, upgrade) order by enchantment (none first), then resolved
+    /// cost, then `BaseReplayCount`, then the `Block`/`Damage` base values.
+    /// v0.111.0 leaves them tied.
+    #[test]
+    fn card_model_compare_v0113_breaks_copy_ties() {
+        use std::cmp::Ordering::{Equal, Less};
+        let v111 = crate::GameVersion::V0_111_0;
+        let v113 = crate::GameVersion::V0_113_0;
+        let mk = || Card {
+            card_id: CardId::StrikeIronclad,
+            base_damage: 6,
+            ..Card::pod_defaults()
+        };
+        let plain = mk();
+        let mut sharp = mk();
+        sharp.enchantments.push((EnchantmentId::Sharp, 1));
+        assert_eq!(card_model_compare_for(&plain, &sharp, v111), Equal);
+        assert_eq!(card_model_compare_for(&plain, &sharp, v113), Less);
+        let mut replayed = mk();
+        replayed.base_replay_count = 1;
+        assert_eq!(card_model_compare_for(&plain, &replayed, v113), Less);
+        let mut hard = mk();
+        hard.base_damage = 9;
+        assert_eq!(card_model_compare_for(&plain, &hard, v113), Less);
+        assert_eq!(card_model_compare_for(&hard, &hard, v113), Equal);
+        assert_eq!(
+            ModelEntrySlug::of(&EnchantmentId::RoyallyApproved).as_str(),
+            "ROYALLY_APPROVED"
+        );
+        assert_eq!(
+            ModelEntrySlug::of(&EnchantmentId::SlumberingEssence).as_str(),
+            "SLUMBERING_ESSENCE"
+        );
+        // NUL padding orders like the ordinal string compare: a prefix first.
+        assert!(ModelEntrySlug::NONE < ModelEntrySlug::of(&EnchantmentId::Sown));
+        assert!(
+            ModelEntrySlug::of(&EnchantmentId::Slither)
+                < ModelEntrySlug::of(&EnchantmentId::SlumberingEssence)
+        );
+    }
+
+    /// v0.113.0 `CardModel.CompareTo` compares EVERY shared
+    /// `DynamicVar.BaseValue` in ordinal key order (CardModel.cs:2514-2524).
+    /// The vars C# mutates per instance but Rust keeps outside
+    /// `base_damage`/`base_block` must feed the key with C#'s value:
+    /// Rampage `Damage` (+`RampageDamage`), Thrash's decimal `Damage` (the
+    /// `ThrashFoldRem` fraction), Wither's FakeUpgrade `Damage` (+3/level),
+    /// Guilty `Combats` (5 - seen) and Dowsing `Rooms` (max(1, 4 - entered)).
+    #[test]
+    fn card_model_compare_v0113_covers_per_instance_dynamic_vars() {
+        use std::cmp::Ordering::{Equal, Greater, Less};
+        let v113 = crate::GameVersion::V0_113_0;
+        let mk = |id: CardId, dmg: i32| Card {
+            card_id: id,
+            base_damage: dmg,
+            ..Card::pod_defaults()
+        };
+        let rampage = mk(CardId::Rampage, 9);
+        let mut grown = rampage;
+        grown.set_combat_var(VarKey::RampageDamage, 5);
+        assert_eq!(card_model_compare_for(&rampage, &grown, v113), Less);
+        assert_eq!(
+            card_model_compare_for(&rampage, &grown, crate::GameVersion::V0_111_0),
+            Equal
+        );
+
+        let thrash = mk(CardId::Thrash, 5);
+        let mut frac = thrash;
+        frac.set_combat_var(VarKey::ThrashFoldRemNum, 1);
+        frac.set_combat_var(VarKey::ThrashFoldRemDen, 2);
+        assert_eq!(card_model_compare_for(&thrash, &frac, v113), Less);
+        let mut third = thrash;
+        third.set_combat_var(VarKey::ThrashFoldRemNum, 1);
+        third.set_combat_var(VarKey::ThrashFoldRemDen, 3);
+        assert_eq!(card_model_compare_for(&third, &frac, v113), Less);
+        let mut six = thrash;
+        six.base_damage = 6;
+        assert_eq!(card_model_compare_for(&frac, &six, v113), Less);
+
+        let wither = mk(CardId::Wither, 3);
+        let mut faked = wither;
+        faked.set_combat_var(VarKey::WitherFakeUpgradeLevel, 1);
+        assert_eq!(card_model_compare_for(&wither, &faked, v113), Less);
+
+        let guilty = mk(CardId::Guilty, 0);
+        let mut seen = guilty;
+        seen.set_combat_var(VarKey::Generic, 2);
+        assert_eq!(
+            card_model_compare_for(&guilty, &seen, v113),
+            Greater,
+            "Combats 5 vs 3"
+        );
+
+        let dowsing = mk(CardId::Dowsing, 0);
+        let mut entered = dowsing;
+        entered.set_combat_var(VarKey::Generic, 1);
+        assert_eq!(
+            card_model_compare_for(&dowsing, &entered, v113),
+            Greater,
+            "Rooms 4 vs 3"
+        );
     }
 
     use super::*;
@@ -4168,47 +4312,27 @@ mod tests {
     }
 
     #[test]
-    fn local_cost_initialization_preserves_clones_and_legacy_banks() {
-        let mut old_build = Card::pod_defaults();
-        old_build.cost = 3;
-        old_build.initialize_local_energy_cost(crate::GameVersion::V0_107_1);
-        assert!(old_build.local_energy_cost.is_none());
-        let mut fresh = Card::pod_defaults();
-        fresh.cost = 3;
-        fresh.set_combat_var(VarKey::FreeThisTurn, 1);
-        fresh.initialize_local_energy_cost(crate::GameVersion::V0_111_0);
-        assert_eq!(fresh.local_costs_after_expiration(), [0, 3, 3, 3]);
-        let mut cloned = fresh.clone_with_seed(7);
-        cloned.initialize_local_energy_cost(crate::GameVersion::V0_111_0);
-        assert_eq!(fresh.local_energy_cost, cloned.local_energy_cost);
-        cloned.reset_combat_vars();
-        assert_eq!(cloned.local_costs_after_expiration(), [3; 4]);
-        let mut legacy = Card::pod_defaults();
-        legacy.set_combat_var(VarKey::WireTransientCostThisTurn, 2);
-        legacy.initialize_local_energy_cost(crate::GameVersion::V0_111_0);
-        assert!(legacy.local_energy_cost.is_none());
+    fn local_cost_clone_keeps_modifiers_and_reset_restores_base() {
+        let mut card = Card::pod_defaults();
+        card.cost = CardEnergyCost::new(3);
+        card.cost.set_this_turn_or_until_played(0, false);
+        assert_eq!(card.local_costs_after_expiration(), [0, 3, 3, 3]);
+        let mut clone = card.clone_with_seed(7);
+        assert_eq!(card.cost, clone.cost);
+        clone.reset_combat_vars();
+        assert_eq!(clone.local_costs_after_expiration(), [3; 4]);
     }
 
     #[test]
     fn local_cost_negative_sentinel_bypasses_local_modifiers() {
-        let mut model = LocalEnergyCost::new(-1, false);
-        model.append(LocalCostModifier {
-            kind: LocalCostModifierKind::Relative,
-            amount: 2,
-            reduce_only: false,
-            expiration: 6,
-        });
-        assert_eq!(model.costs(), [-1; 4]);
         let mut card = Card::pod_defaults();
-        card.cost = -1;
+        card.cost = CardEnergyCost::new(-1);
+        card.cost.add_this_turn(2);
         card.card_type = CardType::Status;
-        card.initialize_local_energy_cost(crate::GameVersion::V0_111_0);
-        assert_eq!(card.cost, -1);
         assert!(!card.is_x_cost());
-        card.local_energy_cost = None;
+        assert_eq!(card.local_costs_after_expiration(), [-1; 4]);
         card.card_type = CardType::Attack;
-        card.initialize_local_energy_cost(crate::GameVersion::V0_111_0);
-        assert_eq!(card.local_energy_cost.unwrap().base, 0);
+        assert!(card.is_x_cost());
         assert_eq!(card.local_costs_after_expiration(), [-1; 4]);
     }
 
@@ -4259,7 +4383,9 @@ mod tests {
         assert_eq!(card_model_entry(CardId::Thunderclap), "THUNDERCLAP");
         assert!(reshuffle_rank(CardId::ThunderCard) < reshuffle_rank(CardId::Thunderclap));
         // Entries stay unique, so the rank is still a total order on cards.
-        let all = CardId::all_for(crate::GameVersion::V0_111_0);
+        let all = CardId::all_for(crate::GameVersion::V0_113_0);
+        // Every card of the latest build has a rank (no out-of-bounds index).
+        assert!(all.iter().all(|&c| reshuffle_rank(c) > 0));
         let mut entries: Vec<&str> = all.iter().map(|&c| card_model_entry(c)).collect();
         entries.sort_unstable();
         let n = entries.len();
@@ -4549,10 +4675,9 @@ mod tests {
     fn card_pod_round_trips_clone_eq() {
         // The Card POD must satisfy Copy + Eq for use in arena stores.
         let c = Card {
-            local_energy_cost: None,
             uid: uid(1),
             card_id: CardId::StrikeIronclad,
-            cost: 1,
+            cost: crate::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -4610,6 +4735,35 @@ mod tests {
         assert_eq!(pile_len(&p, PileKind::Draw), 2);
         // Python pops from index 0 — the "top" — so uid(1) should land in hand.
         assert_eq!(p.hand[0], uid(1));
+    }
+
+    /// v0.113: the mid-draw auto-reshuffle is an `UnstableShuffle` that seeds
+    /// a child Rng — exactly one parent read, whatever the discard size.
+    #[test]
+    fn draw_for_v0113_reshuffle_reads_once() {
+        let mut p = PlayerCombatState::default();
+        p.discard.extend([uid(10), uid(11), uid(12), uid(13)]);
+        let mut r = rng();
+        let moved = draw_for(
+            &mut p,
+            2,
+            &empty_store(),
+            &mut r,
+            crate::GameVersion::V0_113_0,
+        );
+        assert_eq!(moved, 2);
+        assert_eq!(r.counter(), 1);
+        let mut p = PlayerCombatState::default();
+        p.discard.extend([uid(10), uid(11), uid(12), uid(13)]);
+        let mut r = rng();
+        draw_for(
+            &mut p,
+            2,
+            &empty_store(),
+            &mut r,
+            crate::GameVersion::V0_111_0,
+        );
+        assert_eq!(r.counter(), 3);
     }
 
     #[test]
@@ -4814,6 +4968,17 @@ mod tests {
     ///    piles — the property that was broken by the plain
     ///    `UnstableShuffle` (no pre-sort).
     #[test]
+    fn compare_ranks_cover_the_v0113_only_cards() {
+        for id in CardId::V0113_ONLY {
+            let c = Card {
+                card_id: id,
+                ..Card::pod_defaults()
+            };
+            assert_eq!(card_model_compare(&c, &c), std::cmp::Ordering::Equal);
+        }
+    }
+
+    #[test]
     fn reshuffle_uses_stable_shuffle_sort_by_id_then_fisher_yates() {
         // Entry strings (uid -> id): 1=BASH, 2=DEFEND_IRONCLAD,
         // 3=HEADBUTT, 4=PERFECTED_STRIKE, 5=SWORD_BOOMERANG. Ordinal
@@ -4995,18 +5160,18 @@ mod tests {
     fn upgrade_keeps_a_fully_discounted_cost_at_zero() {
         let build = |cost: i8| Card {
             card_id: CardId::BansheesCry,
-            cost,
+            cost: crate::CardEnergyCost::new(cost),
             card_type: CardType::Attack,
             ..Card::pod_defaults()
         };
         let mut card = build(0);
         assert!(card.upgrade_with(|_, up| Some(build(if up { 7 } else { 9 }))));
-        assert_eq!(card.cost, 0);
+        assert_eq!(card.local_cost(), 0);
 
         // An X-cost card keeps its sentinel.
         let mut x = build(-1);
         assert!(x.upgrade_with(|_, _| Some(build(-1))));
-        assert_eq!(x.cost, -1);
+        assert_eq!(x.local_cost(), -1);
     }
 
     /// C# `CardPileCmd.Shuffle` merges DISCARD first, then draw
@@ -5058,10 +5223,9 @@ mod tests {
 
     fn sample_card(u: u32) -> Card {
         Card {
-            local_energy_cost: None,
             uid: uid(u),
             card_id: CardId::StrikeIronclad,
-            cost: 1,
+            cost: crate::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -5120,31 +5284,30 @@ mod tests {
     /// reclaimed — clearing a var writes 0 in place (the live prefix is
     /// equality/hash-visible, see `inline_kv` module docs) — so over a long
     /// combat a single card can collect every generic flag it ever touched
-    /// (`FreeThisTurn`, `EtherealThisCombat`, `StarCostFreeThisCombat`,
-    /// `SneckoCostDeltaThisTurn`, `SneckoRollLive`, `CostAbsolutelySet`, `IsDupe`,
-    /// `GeneratedInCombat`, `PendingBatchAutoPlay`,
-    /// `DampenDowngradedMarker`, `Generic`) PLUS the wire-reconstruction
-    /// cost trio PLUS its card-specific keys (Thrash carries two). At the
-    /// old capacity 8 the 9th distinct key panicked mid-run (Ironclad A10
-    /// seed 41100016, `CostAbsolutelySet` via net_search forks).
+    /// (`EtherealThisCombat`, `StarCostFreeThisCombat`, `StarCostFreeThisTurn`,
+    /// `IsDupe`, `GeneratedInCombat`, `PendingBatchAutoPlay`,
+    /// `DampenDowngradedMarker`, `Generic`, …) PLUS its card-specific keys
+    /// (Thrash carries two). At the old capacity 8 the 9th distinct key
+    /// panicked mid-run (Ironclad A10 seed 41100016, via net_search forks).
+    /// The energy cost modifiers no longer live here (`Card::cost`).
     #[test]
     fn combat_vars_capacity_holds_worst_case_distinct_key_set() {
-        // 16 keys: 11 generic + 3 wire costs + Thrash's pair.
+        // 16 keys: generic flags + Thrash's pair.
         let worst_case = [
-            VarKey::FreeThisTurn,
             VarKey::EtherealThisCombat,
             VarKey::StarCostFreeThisCombat,
-            VarKey::SneckoCostDeltaThisTurn,
-            VarKey::SneckoRollLive,
-            VarKey::CostAbsolutelySet,
+            VarKey::StarCostFreeThisTurn,
             VarKey::IsDupe,
             VarKey::GeneratedInCombat,
             VarKey::PendingBatchAutoPlay,
             VarKey::DampenDowngradedMarker,
             VarKey::EnchantmentUsed,
-            VarKey::WireTransientCostThisTurn,
-            VarKey::WireCostExpiringOnPlay,
-            VarKey::WireCostStable,
+            VarKey::Generic,
+            VarKey::ReturnIfPlayedRound,
+            VarKey::ExhaustOnNextPlay,
+            VarKey::SlyOwedAfterDraw,
+            VarKey::CloneTurnFlags,
+            VarKey::ExhaustOwedAfterDraw,
             VarKey::ThrashFoldRemNum,
             VarKey::ThrashFoldRemDen,
         ];
@@ -5193,14 +5356,14 @@ mod tests {
         // True case: cost == -1 + Attack/Skill/Power.
         for ty in [CardType::Attack, CardType::Skill, CardType::Power] {
             let mut c = sample_card(1);
-            c.cost = -1;
+            c.cost = crate::CardEnergyCost::new(-1);
             c.card_type = ty;
             assert!(c.is_x_cost(), "X-cost {ty:?} (cost=-1) must read true");
         }
         // False case: cost == -1 but Curse/Status (UNPLAYABLE sentinel).
         for ty in [CardType::Curse, CardType::Status] {
             let mut c = sample_card(1);
-            c.cost = -1;
+            c.cost = crate::CardEnergyCost::new(-1);
             c.card_type = ty;
             assert!(
                 !c.is_x_cost(),
@@ -5210,7 +5373,7 @@ mod tests {
         // False case: cost != -1, any type.
         for cost in [0, 1, 2, 3] {
             let mut c = sample_card(1);
-            c.cost = cost;
+            c.cost = crate::CardEnergyCost::new(cost);
             c.card_type = CardType::Attack;
             assert!(!c.is_x_cost(), "cost={cost} cannot be X-cost");
         }
@@ -5225,7 +5388,7 @@ mod tests {
     #[test]
     fn reset_combat_vars_preserves_enchantments_and_upgraded() {
         let mut c = sample_card(1);
-        c.set_combat_var(VarKey::FreeThisTurn, 1);
+        c.set_to_free_this_turn();
         c.energy_spent = 4;
         c.add_enchantment(EnchantmentId::Sharp, 3);
         assert!(c.upgrade(), "first upgrade flips");
@@ -5234,7 +5397,7 @@ mod tests {
         c.reset_combat_vars();
 
         // Cleared:
-        assert_eq!(c.combat_var(VarKey::FreeThisTurn), 0, "combat_vars cleared");
+        assert!(!c.cost.has_local_modifiers(), "cost modifiers cleared");
         assert_eq!(c.energy_spent, 0, "energy_spent zeroed");
         // Preserved:
         assert_eq!(
@@ -5328,7 +5491,7 @@ mod tests {
         for (card_id, card_type) in [
             (CardId::AscendersBane, CardType::Curse),
             (CardId::Wound, CardType::Status),
-            (CardId::SpoilsMap, CardType::Skill),
+            (CardId::SpoilsMap, CardType::Quest),
         ] {
             let mut c = Card {
                 card_id,
@@ -5433,6 +5596,11 @@ mod tests {
         assert_eq!(CardTag::Shiv as u8, 4);
         assert_eq!(CardTag::Strike.bit(), 0b0_0001);
         assert_eq!(CardTag::Shiv.bit(), 0b1_0000);
+        // v0.113.0 Fool tags past bit 7 need the u16 set.
+        assert_eq!(CardTag::Shoot as u8, 8);
+        assert_eq!(CardTag::Shoot.bit(), 0b1_0000_0000);
+        let all = CardTags::one(CardTag::Strike).with(CardTag::Shoot);
+        assert!(all.contains(CardTag::Shoot) && !all.contains(CardTag::Ki));
     }
 
     // -----------------------------------------------------------------
@@ -6009,7 +6177,7 @@ mod tests {
         let mut enchanted = Card {
             uid: uid(1),
             card_id: CardId::ShrugItOff,
-            cost: 1,
+            cost: crate::CardEnergyCost::new(1),
             card_type: CardType::Skill,
             target_type: TargetType::Self_,
             base_damage: 0,
@@ -6021,7 +6189,7 @@ mod tests {
         state.cards.push(Card {
             uid: uid(2),
             card_id: CardId::StrikeIronclad,
-            cost: 1,
+            cost: crate::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             base_damage: 6,
@@ -6040,11 +6208,15 @@ mod tests {
             "exactly one combat_energy_costs read: the Slither card rerolls, the plain card does not",
         );
         assert!(
-            (0..=3).contains(&state.cards[0].cost),
+            (0..=3).contains(&state.cards[0].local_cost()),
             "Slither card cost rerolled into [0, 3], got {}",
-            state.cards[0].cost,
+            state.cards[0].local_cost(),
         );
-        assert_eq!(state.cards[1].cost, 1, "un-enchanted card cost untouched");
+        assert_eq!(
+            state.cards[1].local_cost(),
+            1,
+            "un-enchanted card cost untouched"
+        );
     }
 
     /// Defect `IterationPower.AfterCardDrawn` (C# `IterationPower.cs`): the
@@ -6065,7 +6237,7 @@ mod tests {
             state.cards.push(Card {
                 uid: uid(n),
                 card_id: CardId::Dazed,
-                cost: 0,
+                cost: crate::CardEnergyCost::new(0),
                 card_type: if n == 1 || n == 5 {
                     CardType::Status
                 } else {
@@ -6546,7 +6718,7 @@ mod tests {
         assert!(cards_observationally_equal(&a, &b));
 
         let mut x1 = sample_card(3);
-        x1.cost = -1;
+        x1.cost = crate::CardEnergyCost::new(-1);
         let mut x2 = x1;
         x2.uid = uid(4);
         x2.energy_spent = 3;
@@ -7251,12 +7423,13 @@ mod tests {
     // J02: CardStore gate-id presence bits
     // -----------------------------------------------------------------
 
-    const GATE_IDS: [CardId; 5] = [
+    const GATE_IDS: [CardId; 6] = [
         CardId::Stomp,
         CardId::Pinpoint,
         CardId::Melancholy,
         CardId::Bolas,
         CardId::ThrummingHatchet,
+        CardId::Bounce,
     ];
 
     /// `holds_id` answers the arena scan for every gate id.
@@ -7313,6 +7486,40 @@ mod tests {
         assert!(store.is_empty());
         #[cfg(debug_assertions)]
         store.debug_assert_gate_bits();
+    }
+
+    /// v0.113.0: `holds_shoot_tag` (the Fool's lazy first-arrow-slot gate)
+    /// tracks "some arena card carries `CardTag::Shoot`" through every
+    /// structural write, without a scan.
+    #[test]
+    fn card_store_tracks_a_shoot_tagged_card() {
+        let shoot = |n: u32| Card {
+            uid: uid(n),
+            tags: CardTags::one(CardTag::Shoot),
+            ..Card::pod_defaults()
+        };
+        let mut store = store_with_ids(&[CardId::StrikeIronclad]);
+        assert!(!store.holds_shoot_tag());
+        store.push(shoot(2));
+        assert!(store.holds_shoot_tag());
+        store.truncate(1);
+        assert!(!store.holds_shoot_tag());
+        store.extend([shoot(2)]);
+        assert!(store.holds_shoot_tag());
+        assert!(CardStore::from(vec![shoot(1)]).holds_shoot_tag());
+        store.clear();
+        assert!(!store.holds_shoot_tag());
+    }
+
+    /// A tag rewrite through `&mut [Card]` that adds Shoot is caught by the
+    /// debug cross-check, like a `card_id` rewrite.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "disagrees with the arena scan")]
+    fn card_store_holds_shoot_tag_cross_checks_the_scan_in_debug() {
+        let mut store = store_with_ids(&[CardId::StrikeIronclad]);
+        store[0].tags = CardTags::one(CardTag::Shoot);
+        let _ = store.holds_shoot_tag();
     }
 
     /// The bits are derived: equality and the printed form are the old
@@ -7377,37 +7584,97 @@ mod tests {
         );
     }
 
+    /// v0.113 `DowngradeInternal` re-adds `_keywordsAddedFromOutside`: Ghost
+    /// Seed's applied Ethereal survives Dampen's downgrade.
+    #[test]
+    fn downgrade_keeps_applied_ethereal_v0113() {
+        let mut card = Card {
+            card_id: CardId::StrikeIronclad,
+            upgraded: true,
+            ..Card::pod_defaults()
+        };
+        card.set_combat_var(VarKey::EtherealThisCombat, 1);
+        assert!(card.downgrade_for(crate::GameVersion::V0_113_0));
+        assert!(!card.upgraded);
+        assert_eq!(card.combat_var(VarKey::EtherealThisCombat), 1);
+    }
+
     /// C# `ResetForDowngrade` restores the base cost (9) under Banshee's Cry's
     /// `AddThisCombat(-2)` modifiers, so after 5 Ethereal plays a downgraded
     /// copy resolves to `max(0, 9 - 10) = 0`, not the floored 0 plus the
-    /// reverted +2 (loadout Necrobinder 1006).
+    /// reverted +2 (loadout Necrobinder 1006), and after 4 to `9 - 8 = 1`
+    /// with no debt left over (loadout Necrobinder 5439, v0.107.1: the stale
+    /// debt read the cost as 0).
     #[test]
     fn banshees_cry_downgrade_keeps_its_ethereal_discounts() {
         let factory = |id, up: bool| {
             Some(Card {
                 card_id: id,
-                cost: if up { 7 } else { 9 },
+                cost: crate::CardEnergyCost::new(if up { 7 } else { 9 }),
                 ..Card::pod_defaults()
             })
         };
-        let mut card = Card {
-            card_id: CardId::BansheesCry,
-            cost: 0,
-            upgraded: true,
-            ..Card::pod_defaults()
+        let shaved = |plays: i32| {
+            let mut card = Card {
+                card_id: CardId::BansheesCry,
+                cost: crate::CardEnergyCost::new(7),
+                upgraded: true,
+                ..Card::pod_defaults()
+            };
+            for _ in 0..plays {
+                card.cost.add_this_combat(-2);
+            }
+            card.set_combat_var(VarKey::BansheesCryEtherealCounted, plays);
+            card
         };
-        card.set_combat_var(VarKey::BansheesCryEtherealCounted, 5);
+        // C# `ResetForDowngrade` puts the canonical 9 back under the SAME
+        // `AddThisCombat` modifiers, and only the final read clamps.
+        let mut card = shaved(5);
         assert!(card.downgrade_with(factory));
-        assert_eq!(card.cost, 0);
+        assert_eq!(card.local_cost(), -1, "9 - 10, unclamped");
 
+        let mut card = shaved(4);
+        assert!(card.downgrade_with(factory));
+        assert_eq!(card.local_cost(), 1, "9 - 8");
+
+        // The upgrade shifts the same unclamped sum: 9 - 8 = 1, upgraded
+        // 7 - 8 = -1 (shows 0), and the downgrade brings back 1.
+        assert!(card.upgrade_with(factory));
+        assert_eq!(card.local_cost(), -1);
+        assert!(card.downgrade_with(factory));
+        assert_eq!(card.local_cost(), 1);
+    }
+
+    /// GH #1150: Enlightenment+'s reduce-only cap over a live Snecko roll AND
+    /// a later `AddUntilPlayed(-1)`. C# folds `[roll 2, -1, cap 2]`: shown
+    /// `min(1, 2) = 1`; after the roll expires `[-1, cap 2]` on the 3-base,
+    /// `min(2, 2) = 2`; after the play `[cap 2]`, `min(3, 2) = 2`.
+    #[test]
+    fn enlightenment_cap_over_a_snecko_roll_keeps_the_until_played_reduction() {
         let mut card = Card {
-            card_id: CardId::BansheesCry,
-            cost: 0,
-            upgraded: true,
+            cost: crate::CardEnergyCost::new(3),
             ..Card::pod_defaults()
         };
-        card.set_combat_var(VarKey::BansheesCryEtherealCounted, 4);
-        assert!(card.downgrade_with(factory));
-        assert_eq!(card.cost, 1, "max(0, 9 - 8)");
+        // Snecko roll 3 -> 2 (`SetThisTurnOrUntilPlayed(2)`), then
+        // `AddUntilPlayed(-1)`, then Enlightenment+'s `SetThisCombat(2, true)`.
+        card.cost.set_this_turn_or_until_played(2, false);
+        card.cost.add_until_played(-1);
+        let shown = |c: &Card| c.local_cost();
+        assert_eq!(shown(&card), 1);
+
+        card.cost.set_this_combat(2, true);
+        assert_eq!(shown(&card), 1, "min(1, 2)");
+
+        let mut end_of_turn = card;
+        end_of_turn.cost.end_of_turn_cleanup();
+        assert_eq!(
+            shown(&end_of_turn),
+            2,
+            "min(3 - 1, 2) once the roll expires"
+        );
+
+        let mut played = card;
+        played.cost.after_card_played_cleanup();
+        assert_eq!(shown(&played), 2, "min(3, 2) once played");
     }
 }

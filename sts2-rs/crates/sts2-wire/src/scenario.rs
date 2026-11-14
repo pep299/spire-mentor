@@ -293,14 +293,9 @@ pub fn build_scenario_state_with_run_rng(
     potion_slots: Option<u8>,
     run_rng_init: Option<RunRngInit<'_>>,
 ) -> Result<CoreCombatState, String> {
-    if let Some(potion_slots) = potion_slots {
-        if usize::from(potion_slots) > sts2_core::MAX_POTIONS {
-            return Err(format!(
-                "build_scenario_state: {potion_slots} potion slots exceed MAX_POTIONS ({})",
-                sts2_core::MAX_POTIONS
-            ));
-        }
-    }
+    // No upper bound on `potion_slots`: C# `Player.MaxPotionCount` stacks past
+    // five (Potion Belt + Phial Holster, or Alchemical Coffer), and so does the
+    // engine's belt (`PlayerCombatState::effective_potion_slots`; GH #1094).
     // Map the scenario's capitalized class string to a `CharacterId`. The
     // deck loader (`resolve_card_name` below) already searches every
     // character's spec slice, so any ported character can build a scenario;
@@ -314,6 +309,7 @@ pub fn build_scenario_state_with_run_rng(
         "Defect" => sts2_core::CharacterId::Defect,
         "Regent" => sts2_core::CharacterId::Regent,
         "Necrobinder" => sts2_core::CharacterId::Necrobinder,
+        "Fool" => sts2_core::CharacterId::Fool,
         other => {
             return Err(format!(
                 "build_scenario_state: unknown character {other:?} (expected one of \
@@ -407,7 +403,7 @@ pub fn build_scenario_state_with_run_rng(
         let mut card = Card {
             uid,
             card_id: spec.id,
-            cost: spec.cost,
+            cost: sts2_core::CardEnergyCost::new(spec.cost),
             card_type: spec.card_type,
             target_type: spec.target_type,
             upgraded: false,
@@ -489,12 +485,13 @@ pub fn build_scenario_state_with_run_rng(
         creature_uid: None,
         pet_uid: None,
         shivs_played_this_turn: 0,
-        cards_played_this_turn: [0; 5],
+        cards_played_this_turn: [0; 6],
         powered_hits_this_turn: 0,
         powered_hits_by_target_this_turn: smallvec::SmallVec::new(),
         powered_hits_at_card_play_start: 0,
         attack_command_suppressed_this_play: false,
         vigor_latch_card: None,
+        fool: None,
         generated_cards_this_combat: 0,
         skills_played_this_turn: 0,
         card_plays_started_this_turn: 0,
@@ -692,6 +689,19 @@ pub fn build_scenario_state_with_run_rng(
     let mut player = player;
     player.current_hp = player_hp_final;
 
+    // MawBank (`MawBank.AfterRoomEntered`, run-side like Pantograph above)
+    // pays 12 gold on entering the combat room while nothing has been bought,
+    // so C# starts the fight 12 gold richer. Gold is combat-observable
+    // (MyShinies hit count, Thievery, SealOfGold).
+    let maw_bank_gold = if relics_vec
+        .iter()
+        .any(|r| r.kind == sts2_core::RelicKind::MawBank)
+    {
+        sts2_content::relics::event_reward::MAW_BANK_GOLD
+    } else {
+        0
+    };
+
     let mut state = CoreCombatState {
         phase: CombatPhase::Setup,
         round: 0,
@@ -714,7 +724,7 @@ pub fn build_scenario_state_with_run_rng(
         pending_snecko_cost_randomize: false,
         pending_cluster_resume: None,
         pending_collect_resume: None,
-        pending_play_phase_tail: false,
+        pending_play_phase_tail: None,
         pending_hand_draw_resume: None,
         pending_relic_hand_draw_resume: None,
         pending_wlp_retain_resume: false,
@@ -743,7 +753,7 @@ pub fn build_scenario_state_with_run_rng(
         // dies, and SealOfGold spends 5. At `gold: 0` both paths no-opped, so
         // the harness reported the engine missing a power it computes
         // correctly (GH #544, found by the Underdocks encounter sweep).
-        gold: sts2_core::characters::character_starter(character_id).gold,
+        gold: sts2_core::characters::character_starter(character_id).gold + maw_bank_gold,
         is_over: false,
         player_won: false,
         ascension,
@@ -753,6 +763,7 @@ pub fn build_scenario_state_with_run_rng(
         is_elite,
         is_boss,
         act_index: 1,
+        total_floor: 0,
         active_attack: None,
         energy_wasted: 0,
         cards_drawn: 0,
@@ -784,6 +795,10 @@ pub fn build_scenario_state_with_run_rng(
     // installed (only the card registry was) — see the
     // `relics::dispatch::install_default_registry()` call above. No
     // explicit `init_player_creature` is needed; `start_combat` does it.
+    // The recorded floor is C#'s `RunState.TotalFloor` (TheTower reads it).
+    state.total_floor = encounter_floor
+        .and_then(|f| u16::try_from(f.max(0)).ok())
+        .unwrap_or(0);
     start_combat(&mut state);
     start_player_turn(&mut state);
     Ok(state)
@@ -845,6 +860,67 @@ mod tests {
             None,
             None,
         )
+    }
+
+    /// MawBank pays 12 gold in `AfterRoomEntered` (MawBank.cs), which C#
+    /// fires on entering the combat room, so the player starts the fight on
+    /// starter gold + 12. MyShinies reads that gold as its hit count
+    /// (v0.113.0 fuzz seed 548: C# 5 hits at 111 gold, Rust 4 at 99).
+    #[test]
+    fn maw_bank_pays_its_room_entry_gold_into_the_scenario() {
+        let deck = vec!["STRIKE_IRONCLAD".to_string(); 5];
+        let build_with = |relics: &[String]| {
+            super::build_scenario_state(
+                1,
+                "Ironclad",
+                &deck,
+                70,
+                80,
+                relics,
+                &[],
+                "SHRINKER_BEETLE_WEAK",
+                0,
+                None,
+                None,
+            )
+            .expect("builds")
+            .gold
+        };
+        let base = build_with(&[]);
+        assert_eq!(build_with(&["MAW_BANK".to_string()]), base + 12);
+    }
+
+    /// The recorded fight's floor is C#'s `RunState.TotalFloor`, which the
+    /// v0.113.0 TheTower card reads (`CombatState::total_floor`).
+    #[test]
+    fn encounter_floor_sets_total_floor() {
+        let deck = vec!["STRIKE_IRONCLAD".to_string(); 5];
+        let floor_of = |floor: Option<i64>| {
+            super::build_scenario_state_with_run_rng(
+                sts2_core::GameVersion::V0_113_0,
+                1,
+                "Ironclad",
+                &deck,
+                70,
+                80,
+                &[],
+                &[],
+                "NIBBITS_WEAK",
+                10,
+                None,
+                None,
+                None,
+                Some(super::RunRngInit {
+                    run_seed: 7,
+                    counters: &[],
+                    encounter_floor: floor,
+                }),
+            )
+            .expect("scenario builds")
+            .total_floor
+        };
+        assert_eq!(floor_of(Some(9)), 9);
+        assert_eq!(floor_of(None), 0);
     }
 
     /// GH #918: a recorded fight that passes its floor rolls Decimillipede's
@@ -948,21 +1024,35 @@ mod tests {
             3,
             "the toad's rock fills the free third slot"
         );
-        assert!(super::build_scenario_state_with_slots(
+        // A belt bigger than the old five-slot cap (Alchemical Coffer: 3 + 4)
+        // builds, and the toad's rock lands in its seventh slot (GH #1094).
+        let six: Vec<String> = ["FIRE_POTION", "BLOCK_POTION", "ENERGY_POTION"]
+            .iter()
+            .cycle()
+            .take(6)
+            .map(|s| (*s).to_string())
+            .collect();
+        let seven = super::build_scenario_state_with_slots(
             1,
             "Ironclad",
             &deck,
             70,
             80,
-            &[],
-            &[],
+            &relics,
+            &six,
             "SHRINKER_BEETLE_WEAK",
-            10,
+            1,
             None,
             None,
-            u8::try_from(sts2_core::MAX_POTIONS + 1).unwrap(),
+            7,
         )
-        .is_err());
+        .expect("a 7-slot belt builds");
+        assert_eq!(seven.player.potion_slots, 7);
+        assert_eq!(
+            seven.player.potions.len(),
+            7,
+            "the toad's rock fills the 7th slot"
+        );
     }
 
     /// GH #893: A4 Tight Belt leaves the scenario player 2 potion slots.

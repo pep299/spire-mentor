@@ -23,6 +23,8 @@ import random
 from dataclasses import dataclass, field
 from typing import Any
 
+from card_inventory import _version_tuple, has_v0111_cards
+
 # Canonical Ironclad card ids. Cross-checked against the Rust generated
 # specs in sts2-content/src/cards/ironclad_specs_generated.rs. STRIKE
 # resolves as STRIKE_IRONCLAD (T1 probe confirmed bare "STRIKE" fails).
@@ -1286,6 +1288,116 @@ _NECROBINDER_CARD_TRIAL_FILLER: tuple[str, ...] = (
     "DEFEND_NECROBINDER",
 )
 
+#: v0.113.0 The Fool's class cards: `FoolCardPool.GenerateAllCards()` in
+#: decomp order (Rust `sts2_content::cards::fool::FOOL_POOL_V0113`). The Fool
+#: exists only from v0.113.0, so the list is not version-filtered.
+ALL_FOOL_CARDS: list[str] = [
+    "ALL_IS_WELL_CARD",
+    "ANGUISH",
+    "ARCHERY_CARD",
+    "ARROW_STAB",
+    "BLOSSOM_SHOT",
+    "BLOT_OUT_THE_SKY",
+    "BOUNCE",
+    "BOW_SMACK",
+    "BRACE",
+    "BRIGHTEN_UP",
+    "CHO_BARBS_CARD",
+    "CHO_CHORUS",
+    "CHO_FIRM",
+    "CHO_KI",
+    "CHO_LIMBS",
+    "CHO_READY",
+    "CODA",
+    "COMPOST_CARD",
+    "COVERING_FIRE_CARD",
+    "DEEP_STRETCH",
+    "DEFEND_FOOL",
+    "DISLIKE_YOU_CARD",
+    "DIVINE_SHOT",
+    "ECSTASY_CARD",
+    "ENCORE_CARD",
+    "ENNUI_CARD",
+    "ENRAPTURE",
+    "ENSEMBLE_CARD",
+    "EPIC_RETRIEVAL",
+    "EXPLOSIVE_ARROWS_CARD",
+    "FLORESCENCE",
+    "GROWTH",
+    "HARMONIC_SHIELD",
+    "HEAVY_SHOT",
+    "HIDDEN_ROOTS_CARD",
+    "HOBBLING_SHOT",
+    "HONING_CARD",
+    "JEST",
+    "KI_CHANT",
+    "KI_HOP",
+    "KI_REST",
+    "KI_VERSE_CARD",
+    "KI_WHIP",
+    "LOCKED_IN",
+    "FOOLISH_SHOT",
+    "LOST_LUTE_CARD",
+    "LULLABY_CARD",
+    "MELODIC_SHOT",
+    "MOTIF_CARD",
+    "MOURNING_BLOW",
+    "MYTHIC_FORM_CARD",
+    "NAIL",
+    "NOCK",
+    "PUNCH_OF_JOY",
+    "QUICK_SHOT",
+    "QUIETUS_CARD",
+    "QUIVER",
+    "RAIN_SHOT",
+    "RAPID_SHOT",
+    "RECALL",
+    "REPEAT_SHOT",
+    "RHYTHM_STRIKE",
+    "RUMMAGE",
+    "SELF_DEPRECATE",
+    "SERRATED_ARROWS_CARD",
+    "SHOW_OFF_CARD",
+    "SIMPLETON_CARD",
+    "SKY_SHOT",
+    "SONG_PATH_CARD",
+    "SORROWFUL_STRIKE",
+    "STEADY_CADENCE",
+    "STRIKE_FOOL",
+    "TIMBER",
+    "TRICK_SHOT",
+    "TUNE_CARD",
+    "UPROOT",
+    "VIOLENT_CHORD_CARD",
+    "VITRIOL",
+    "WAH_BLAST",
+    "WAH_CHO",
+    "WAH_CHO_KI",
+    "WAH_HAMMER",
+    "WAH_KI",
+    "WAH_SYMPHONY",
+    "WAH_SWEEP",
+    "WAH_TOUCH",
+    "WHISTLING_ARROWS",
+    "WREST",
+    "YAH_CARD",
+    "YOGA",
+]
+
+#: The Fool's starting deck (`Fool.StartingDeck`): 5 Strike, 4 Defend,
+#: FoolishShot.
+_FOOL_STARTER_DECK: tuple[str, ...] = (
+    ("STRIKE_FOOL",) * 5 + ("DEFEND_FOOL",) * 4 + ("FOOLISH_SHOT",)
+)
+
+#: The Fool's card-trial filler (inert basics).
+_FOOL_CARD_TRIAL_FILLER: tuple[str, ...] = (
+    "STRIKE_FOOL",
+    "DEFEND_FOOL",
+    "STRIKE_FOOL",
+    "DEFEND_FOOL",
+)
+
 # ---------------------------------------------------------------------------
 # Per-character v2 (random-seed) sweep pools
 # ---------------------------------------------------------------------------
@@ -1301,6 +1413,7 @@ _V2_CLASS_CARDS: dict[str, list[str]] = {
     "Defect": ALL_DEFECT_CARDS,
     "Necrobinder": ALL_NECROBINDER_CARDS,
     "Regent": ALL_REGENT_CARDS,
+    "Fool": ALL_FOOL_CARDS,
 }
 _V2_FILLER: dict[str, tuple[str, ...]] = {
     "Ironclad": _CARD_TRIAL_FILLER,
@@ -1308,6 +1421,7 @@ _V2_FILLER: dict[str, tuple[str, ...]] = {
     "Defect": _DEFECT_CARD_TRIAL_FILLER,
     "Necrobinder": _NECROBINDER_CARD_TRIAL_FILLER,
     "Regent": _REGENT_CARD_TRIAL_FILLER,
+    "Fool": _FOOL_CARD_TRIAL_FILLER,
 }
 
 
@@ -1328,9 +1442,14 @@ _V0111_ADDED_CLASS_CARDS: dict[str, list[str]] = {
     "Defect": ["HIBERNATE_CARD", "IMITATION_LEARNING_CARD", "ONE_FOR_ALL_CARD"],
     "Necrobinder": ["CACOPHONY_CARD", "SOULBOUND_CARD", "UNDERWORLD_CARD"],
     "Regent": ["CONSTELLATION", "PLOT", "TUTOR"],
+    # The Fool is v0.113.0-only: its list above is already the build's.
+    "Fool": [],
 }
 _V0111_ADDED_COLORLESS_CARDS: list[str] = ["THE_BALL"]
 _V0111_ADDED_EVENT_CARDS: list[str] = ["ABUNDANCE"]
+#: v0.113.0 event cards (`CardId::V0113_ONLY`): Waterfall of Obvious Secrets'
+#: Dingy Dagger, Shrine of the Warlord's Mighty Weapon and Mighty Shield.
+_V0113_ADDED_EVENT_CARDS: list[str] = ["DINGY_DAGGER", "MIGHTY_WEAPON", "MIGHTY_SHIELD"]
 
 
 def sweep_game_version() -> str:
@@ -1349,7 +1468,7 @@ def sweep_game_version() -> str:
 def _for_build(cards: list[str], added: list[str], game_version: str | None) -> list[str]:
     """`cards` as game build `game_version` has them (see the deltas above)."""
     version = game_version or sweep_game_version()
-    if version != "v0.111.0":
+    if not has_v0111_cards(version):
         return cards
     return [c for c in cards if c not in _V0111_REMOVED_CARDS] + added
 
@@ -1360,13 +1479,26 @@ def class_cards_for_build(character: str, game_version: str | None = None) -> li
 
 
 def colorless_cards_for_build(game_version: str | None = None) -> list[str]:
-    """`ALL_COLORLESS_CARDS` at `game_version`."""
-    return _for_build(ALL_COLORLESS_CARDS, _V0111_ADDED_COLORLESS_CARDS, game_version)
+    """`ALL_COLORLESS_CARDS` at `game_version`.
+
+    v0.113.0 adds `MY_SHINIES` to the colorless pool right after `MIND_BLAST`
+    (`ColorlessCardPool.cs`; Rust `specs_in` / `COLORLESS_V0113`).
+    """
+    version = game_version or sweep_game_version()
+    cards = _for_build(ALL_COLORLESS_CARDS, _V0111_ADDED_COLORLESS_CARDS, version)
+    if _version_tuple(version) >= (0, 113, 0):
+        at = cards.index("MIND_BLAST") + 1
+        cards = [*cards[:at], "MY_SHINIES", *cards[at:]]
+    return cards
 
 
 def event_cards_for_build(game_version: str | None = None) -> list[str]:
-    """`ALL_EVENT_CARDS` at `game_version`."""
-    return _for_build(ALL_EVENT_CARDS, _V0111_ADDED_EVENT_CARDS, game_version)
+    """`ALL_EVENT_CARDS` at `game_version`; v0.113.0 appends its event cards."""
+    version = game_version or sweep_game_version()
+    cards = _for_build(ALL_EVENT_CARDS, _V0111_ADDED_EVENT_CARDS, version)
+    if _version_tuple(version) >= (0, 113, 0):
+        cards = cards + _V0113_ADDED_EVENT_CARDS
+    return cards
 
 
 def _v2_card_pool(character: str, game_version: str | None = None) -> list[str]:
@@ -1460,6 +1592,19 @@ def _coverage_pack(character: str, game_version: str | None = None) -> CoverageP
             filler=_REGENT_CARD_TRIAL_FILLER,
             include_potions=False,
             include_encounters=False,
+        )
+    if character == "Fool":
+        # v0.113.0 only. Mirrors the Ironclad pack with The Fool's class cards.
+        return CoveragePack(
+            character="Fool",
+            cards=class_cards_for_build("Fool", gv)
+            + colorless_cards_for_build(gv)
+            + event_cards_for_build(gv),
+            relics=ALL_RELICS,
+            starter=_FOOL_STARTER_DECK,
+            filler=_FOOL_CARD_TRIAL_FILLER,
+            include_potions=True,
+            include_encounters=True,
         )
     raise ValueError(f"no coverage pack for character {character!r}")
 

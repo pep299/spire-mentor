@@ -10,18 +10,39 @@ pub(crate) fn play_fiend_fire(
     target: Option<CreatureUid>,
 ) -> EffectResult {
     let t = target.expect("FiendFire: Enemy-targeted");
-    let dmg = current_damage(state);
     // Snapshot the hand, then exhaust each (count == snapshot length; the
     // FiendFire card itself is on the Play pile, not in hand).
     let hand: Vec<sts2_core::CardUid> = state.player.hand.to_vec();
-    let count: i32 = hand.len().try_into().unwrap_or(0);
-    for uid in hand {
-        exhaust_hand_card(state, uid);
-    }
+    let count = u8::try_from(hand.len()).unwrap_or(u8::MAX).min(0x0F);
+    // C# awaits each `CardCmd.Exhaust` before the attack (FiendFire.cs:32-41),
+    // so a Dark Embrace draw that suspended on a reshuffle pick, the relic
+    // half of that exhaust parked on it, and the pick finish before the next
+    // exhaust (loadout Ironclad 6200 v0.107.1).
+    let idx = state
+        .enemy_uids
+        .iter()
+        .position(|&u| u == t)
+        .map_or(0x0F, |i| u8::try_from(i).unwrap_or(u8::MAX).min(0x0F));
+    crate::cards::draw_then::exhaust_then(
+        state,
+        &hand,
+        sts2_core::DrawThen::FiendFire((idx << 4) | count),
+    );
+    EffectResult::Resolved
+}
+
+/// Fiend Fire's `DamageCmd.Attack` (FiendFire.cs:36-41): `Damage.BaseValue`
+/// read at attack time, one hit per exhausted card. `packed` is
+/// [`sts2_core::DrawThen::FiendFire`]'s payload.
+pub(crate) fn fiend_fire_hits(state: &mut CombatState, packed: u8) {
+    let count = packed & 0x0F;
+    let Some(&t) = state.enemy_uids.get(usize::from(packed >> 4)) else {
+        return;
+    };
+    let dmg = current_damage(state);
     for _ in 0..count {
         let _ = deal_damage_player_to_enemy(state, t, dmg);
     }
-    EffectResult::Resolved
 }
 
 #[must_use]

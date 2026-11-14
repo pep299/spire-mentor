@@ -26,8 +26,11 @@ namespace SpireMentor;
 public static class MainFile
 {
     public const string ModId = "SpireMentor";
-    // Keep in sync with SpireMentor.json "version" (package.ps1 reads that one).
-    public const string ModVersion = "0.8.4";
+    // Keep in sync with SpireMentor.json "version" (package.ps1 reads that one
+    // and refuses to stage when they differ; tests/run_all.sh checks it too).
+    // It drifted once: beta.4 to beta.6 shipped saying "beta.3" in the toolbar,
+    // F1 help, bug reports and every envelope's mod_version.
+    public const string ModVersion = "0.11.3";
 
     private static Harmony? _patcher;
     private static SimAutoSlayer? _autoSlayer;
@@ -58,6 +61,8 @@ public static class MainFile
             ShieldBaseLibDamagePreview();
             ApplyPatch(typeof(HitStopTimeScalePatch));
             ApplyPatch(typeof(GameQuitPatch));
+            ApplyPatch(typeof(FrameFullscreenPatch));
+            ApplyPatch(typeof(FrameWindowedDisplayPatch));
             ApplyPatch(typeof(HotkeyResetPatch));
             // Coach capture (PROTOCOL.md v5 human_action): the human's end
             // turn and their event / campfire picks.
@@ -66,6 +71,14 @@ public static class MainFile
             ApplyPatch(typeof(EventOptionClickedPatch));
             ApplyPatch(typeof(RestOptionSelectedPatch));
             SimReduceEffects.Install(_patcher);
+            try
+            {
+                SimGameApi.InstallSelectorBridge(_patcher);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"  SKIP: card selector bridge - {ex.Message} (the AI cannot answer card choices)");
+            }
             try
             {
                 SimNoSaves.InstallIfRequested(_patcher);
@@ -112,6 +125,9 @@ public static class MainFile
             Logger.Log($"TCP bridge failed to start: {ex.Message}");
         }
 
+        // Launched by the Spire Mentor frame: feed its panels (FrameLink.cs).
+        FrameLink.Start();
+
         try
         {
             SpireMentorModConfig.Register();
@@ -121,10 +137,22 @@ public static class MainFile
             Logger.Log($"Settings page registration failed (non-fatal): {ex.Message}");
         }
 
+        // The panels in their own window when the player asked for that (a
+        // persisted setting, so after Register): the mod starts the frame
+        // next to this game. Not in Autopilot (sweeps, climbs).
+        if (SimRuntime.Mode != SimMode.Autopilot)
+        {
+            SimFrameLauncher.OpenAtStartupIfWanted();
+        }
+
         if (SimMp.SpeedOverride is double speed)
         {
             SimSpeed.Apply(speed, showVfx: false);
             Logger.Log($"--spire-mentor-speed: game speed {SimSpeed.Current:0.0}x");
+        }
+        else
+        {
+            SpireMentorModConfig.ApplyLastGameSpeed();
         }
 
         TaskHelper.RunSafely(SimVfxCap.InstallWhenReadyAsync());
@@ -828,6 +856,8 @@ public static class SimCardSelectContext
     /// <summary>The model's kind, by runtime type. Null for an unrecognized
     /// type, which the client must treat as "unknown", never as "not a
     /// card".</summary>
+    public static string? KindOfModel(object? m) => KindOf(m);
+
     private static string? KindOf(object? m) => m switch
     {
         null => null,

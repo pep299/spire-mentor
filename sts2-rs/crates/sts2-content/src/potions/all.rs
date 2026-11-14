@@ -254,6 +254,35 @@ pub const fn spec_for(kind: PotionKind) -> PotionSpec {
         // `TargetType => AnyPlayer` (decomp Ambergris.cs:20-24). Event
         // rarity keeps it out of every random potion pool.
         PotionKind::Ambergris => spec(kind, "AMBERGRIS", E, AT, AP, None, true),
+        // v0.113.0 Fool (`PrecisionPotion.cs` / `BottledSong.cs` /
+        // `CrystallineEuphoria.cs`): CombatOnly, AnyPlayer.
+        PotionKind::PrecisionPotion => spec(
+            kind,
+            "PRECISION_POTION",
+            C,
+            CO,
+            AP,
+            Some(CharacterId::Fool),
+            false,
+        ),
+        PotionKind::BottledSong => spec(
+            kind,
+            "BOTTLED_SONG",
+            U,
+            CO,
+            AP,
+            Some(CharacterId::Fool),
+            false,
+        ),
+        PotionKind::CrystallineEuphoria => spec(
+            kind,
+            "CRYSTALLINE_EUPHORIA",
+            R,
+            CO,
+            AP,
+            Some(CharacterId::Fool),
+            false,
+        ),
         // `PotionKind` is `#[non_exhaustive]` to allow downstream pin
         // bumps to add variants without breaking SemVer. Every variant
         // shipped at pin `01c094d` is handled above; a future variant
@@ -353,6 +382,8 @@ const fn character_pool_order(character: CharacterId) -> &'static [PotionKind] {
             PotionKind::CosmicConcoction,
             PotionKind::KingsCourage,
         ],
+        // The Fool (v0.113.0): `Fool4Epoch.Potions`.
+        CharacterId::Fool => &PotionKind::V0113_ONLY,
     }
 }
 
@@ -494,10 +525,13 @@ fn create_random_potions_from_pool(
 ) -> Vec<PotionKind> {
     let mut out = Vec::with_capacity(count);
     for _ in 0..count {
-        let roll = rng.next_float(1.0);
-        let rarity = if roll <= 0.1 {
+        // `float num = rng.NextFloat(); num <= 0.1f ? Rare : num <= 0.35f ?
+        // Uncommon : Common` (`PotionFactory.cs:82-83`, both builds): the
+        // sample is an `f32`, so 0.1000000011 rounds onto 0.1f and is Rare.
+        let roll = rng.next_float_f32();
+        let rarity = if roll <= 0.1_f32 {
             PotionRarity::Rare
-        } else if roll <= 0.35 {
+        } else if roll <= 0.35_f32 {
             PotionRarity::Uncommon
         } else {
             PotionRarity::Common
@@ -565,8 +599,10 @@ pub fn entropic_brew_fill_belt(state: &mut CombatState) {
         return;
     };
     while state.player.potions.len() < state.player.effective_potion_slots() {
+        // v0.113.0 (Entropic Brew and Delicate Frond alike) rolls on
+        // `PlayerRng.NonCombatGeneration`.
         let Some(kind) = create_random_potions_out_of_combat(
-            &mut state.run_rng.combat_potion_generation,
+            state.run_rng.non_combat_or_combat_potion(),
             character,
             1,
         )
@@ -881,5 +917,15 @@ mod tests {
             PotionRarity::Common,
             "seed 0 roll (else) + `== rarity` filter selects Common"
         );
+    }
+
+    /// `PotionFactory.cs:82-83`: `float num = rng.NextFloat(); num <= 0.1f ?
+    /// Rare : ...`. Seed 59306271's first draw 0.1000000011 rounds to 0.1f,
+    /// so C# rolls Rare; the f64 compare rolled Uncommon.
+    #[test]
+    fn random_potion_rarity_compares_in_f32() {
+        let mut rng = DotNetRng::from_seed(59_306_271);
+        let out = create_random_potions_from_pool(&mut rng, one_per_rarity_pool(), 1);
+        assert_eq!(spec_for(out[0]).rarity, PotionRarity::Rare);
     }
 }

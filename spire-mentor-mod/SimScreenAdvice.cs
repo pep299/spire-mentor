@@ -142,6 +142,17 @@ internal sealed class SimScreenDecision
     /// for every other screen.
     /// </summary>
     public List<object?> OptionRefs = new();
+
+    /// <summary>
+    /// The node the player clicks for each option, in option order, for the
+    /// HUD's highlight ring (SimHighlights): a reward card's holder, a shop
+    /// slot, a campfire or event button. A null entry (or a short list) is an
+    /// option with nothing on screen to ring; the advice panel still names it.
+    /// </summary>
+    public List<Control?> OptionNodes = new();
+
+    /// <summary>The node that skips this screen, when it has one to ring.</summary>
+    public Control? SkipNode;
 }
 
 internal static class SimScreenAdvice
@@ -423,6 +434,7 @@ internal static class SimScreenAdvice
             OptionLabels = labels,
             Screen = screen,
             ScreenName = nameof(NChooseARelicSelection),
+            OptionNodes = holders.Select(h => (Control?)h).ToList(),
             Choose = index => ClickHolder(holders, index),
         };
     }
@@ -453,9 +465,11 @@ internal static class SimScreenAdvice
 
         // A holder whose relic is not filled in yet is scenery, not an offer:
         // the room builds them up front and `InitializeRelics` only runs once
-        // the chest animation is done (NTreasureRoom.OpenChest).
+        // the chest animation is done (NTreasureRoom.OpenChest). Since v0.113.0
+        // the holders sit in one layout per relic count, all but one hidden,
+        // so only IsVisibleInTree says whether a holder is on screen.
         var holders = UiHelper.FindAll<NTreasureRoomRelicHolder>(room)
-            .Where(h => GodotObject.IsInstanceValid(h) && h.IsEnabled && h.Visible)
+            .Where(h => GodotObject.IsInstanceValid(h) && h.IsEnabled && h.IsVisibleInTree())
             .Where(h => SafeRelicModel(h.Relic) != null)
             .ToList();
 
@@ -536,9 +550,22 @@ internal static class SimScreenAdvice
             Signature = "treasure:" + string.Join("|", labels),
             Screen = room,
             ScreenName = nameof(NTreasureRoom),
+            OptionNodes = holders.Select(ChestRelicFrame).ToList(),
             Choose = index => ClickHolder(holders, index),
         };
     }
+
+    /// <summary>
+    /// What the advice frame goes around: the relic's icon, not its holder.
+    /// The holder is only the click area, and since v0.113.0 it builds its
+    /// NRelic at runtime at 2x from (68, 68), so the 240px icon sits off the
+    /// 136px holder rect (the frame used to circle empty space top-left of it).
+    /// </summary>
+    private static Control? ChestRelicFrame(NTreasureRoomRelicHolder holder) =>
+        holder.Relic is { } relic && GodotObject.IsInstanceValid(relic) &&
+        relic.Icon is { } icon && GodotObject.IsInstanceValid(icon)
+            ? icon
+            : holder;
 
     /// <summary>
     /// The chest button. `NTreasureRoom` binds it by unique name
@@ -624,6 +651,7 @@ internal static class SimScreenAdvice
             options.Add(new()
             {
                 ["index"] = i,
+                ["option_index"] = SimRestOptionSlot.Of(room, buttons[i].Option),
                 ["id"] = buttons[i].Option.OptionId,
                 ["action"] = NonCombatBridgeProtocol.RestOptionAction,
                 ["label"] = label,
@@ -652,6 +680,7 @@ internal static class SimScreenAdvice
             Screen = room,
             ScreenName = nameof(NRestSiteRoom),
             OptionRefs = buttons.Select(b => (object?)b.Option).ToList(),
+            OptionNodes = buttons.Select(b => (Control?)b).ToList(),
             Choose = index => ClickHolder(buttons, index),
         };
     }
@@ -702,6 +731,7 @@ internal static class SimScreenAdvice
             OptionLabels = labels,
             Screen = screen,
             ScreenName = nameof(NChooseABundleSelectionScreen),
+            OptionNodes = bundles.Select(b => (Control?)b).ToList(),
             Choose = index => ChooseBundle(screen, bundles, index),
         };
     }
@@ -960,6 +990,7 @@ internal static class SimScreenAdvice
             Screen = room,
             ScreenName = "NEventRoom",
             OptionRefs = options.Select(o => (object?)o.Option).ToList(),
+            OptionNodes = options.Select(o => (Control?)o).ToList(),
             Choose = index => ChooseEventOption(room, index),
         };
     }
@@ -1192,16 +1223,12 @@ internal static class SimScreenAdvice
     // Shop (what to buy with the gold you have)
     // ------------------------------------------------------------------
 
-    private const string MerchantRoomPath = "/root/Game/RootSceneContainer/Run/RoomContainer/MerchantRoom";
-
     private static SimScreenDecision? DescribeShop()
     {
-        if (Engine.GetMainLoop() is not SceneTree tree)
-        {
-            return null;
-        }
-        NMerchantRoom? room = tree.Root.GetNodeOrNull<NMerchantRoom>(MerchantRoomPath);
-        if (room == null || !GodotObject.IsInstanceValid(room) || !room.IsVisibleInTree())
+        // By type, not by node path: v0.113.0 renamed the room node
+        // (SimRoomNodes.MerchantRoom).
+        NMerchantRoom? room = SimRoomNodes.MerchantRoom();
+        if (room == null || !room.IsVisibleInTree())
         {
             return null;
         }
@@ -1288,6 +1315,13 @@ internal static class SimScreenAdvice
         {
             state["purge_cost"] = purgeCost.Value;
         }
+        // Blitz (v0.113.0+): free wares, a fixed number of picks. Gold never
+        // moves there, so the count also keys the signature below.
+        int? blitzLeft = SimBlitzShop.ChoicesRemaining(room.Inventory.Inventory);
+        if (blitzLeft.HasValue)
+        {
+            state["blitz_choices_remaining"] = blitzLeft.Value;
+        }
         // The WHOLE shopfront (sold-out and unaffordable slots included) for
         // the workbench mirror; `options` above stays purchasable-only
         // because it is what the policy ranks.
@@ -1310,10 +1344,12 @@ internal static class SimScreenAdvice
             OptionCount = options.Count,
             // Gold too: buying does not always shrink the stock (a purge
             // leaves the slot count alone), but it always spends.
-            Signature = $"shop:{me?.Gold ?? 0}:" +
+            Signature = $"shop:{me?.Gold ?? 0}:{blitzLeft?.ToString() ?? "-"}:" +
                         string.Join("|", options.Select(o => o.TryGetValue("id", out object? id) ? id : "?")),
             Screen = room,
             ScreenName = nameof(NMerchantRoom),
+            // Option 0 is "leave" (no slot); the slots follow in option order.
+            OptionNodes = new List<Control?> { null }.Concat(slots.Select(s => (Control?)s)).ToList(),
             Choose = index => ChooseShopOption(room, slots, index),
         };
     }
@@ -1350,7 +1386,7 @@ internal static class SimScreenAdvice
         {
             return false;
         }
-        TaskHelper.RunSafely(slot.Entry.OnTryPurchaseWrapper(room.Inventory.Inventory));
+        TaskHelper.RunSafely(SimGameApi.Purchase(slot.Entry, room.Inventory.Inventory));
         return true;
     }
 
@@ -1556,6 +1592,10 @@ internal static class SimScreenAdvice
             OptionLabels = labels,
             Screen = screen,
             ScreenName = nameof(NCardRewardSelectionScreen),
+            OptionNodes = holders.Select(h => (Control?)h).ToList(),
+            // The Skip button itself: always the first alternative
+            // (CardRewardAlternative.Generate adds Skip before any other).
+            SkipNode = RewardSkipButton(screen),
             Choose = index => ChooseCardReward(screen, index),
         };
     }
@@ -1651,6 +1691,14 @@ internal static class SimScreenAdvice
         bool canSkip = SkipButton(screen) != null;
         RunState? runState = RunManager.Instance.DebugOnlyGetState();
         Player? me = LocalContext.GetMe(runState);
+        // What opened the screen (CardSelectContextNoPrefsPatch captured it
+        // on `FromChooseACardScreen`: Discovery, a Skill/Attack/Power Potion,
+        // Lead Paperweight). In a fight the advisor's mirror needs it to
+        // replay the opening play and stand on the same choice; without it
+        // every such offer fell back from Instinct to the search's deck-pick
+        // head (73 of 289 answers in one live run, 2026-11-08).
+        (string? source, string? promptKey, string? sourceModel, _) = SimCardSelectContext.Peek();
+        bool fromThisScreen = source == "FromChooseACardScreen";
         Dictionary<string, object> state = new()
         {
             // The card-pick head is the closest trained surface, so it rides
@@ -1663,6 +1711,15 @@ internal static class SimScreenAdvice
             ["can_skip"] = canSkip,
             ["combat"] = (object?)SimCombatHandler.BuildEmbeddedCombatState(me)!,
         };
+        if (fromThisScreen)
+        {
+            state["source"] = source!;
+            state["prompt_key"] = (object?)promptKey!;
+            state["source_model"] = (object?)sourceModel!;
+            state["source_kind"] = (object?)SimCardSelectContext.SourceKind!;
+            state["source_target_index"] = (object?)SimCardSelectContext.SourceTargetIndex!;
+            state["source_upgraded"] = (object?)SimCardSelectContext.SourceUpgraded!;
+        }
         SimStateExtractor.ApplyEnvelope(state, runState, me);
 
         return new SimScreenDecision
@@ -1673,6 +1730,8 @@ internal static class SimScreenAdvice
             OptionLabels = labels,
             Screen = screen,
             ScreenName = nameof(NChooseACardSelectionScreen),
+            OptionNodes = holders.Select(h => (Control?)h).ToList(),
+            SkipNode = SkipButton(screen),
             Choose = index => ChooseGeneratedCard(screen, index),
         };
     }
@@ -1757,6 +1816,19 @@ internal static class SimScreenAdvice
     /// result as end-selection-without-reward). There is no skip button to
     /// click.
     /// </summary>
+    /// <summary>The reward screen's Skip button (for the highlight ring), or
+    /// the alternatives row when the button cannot be found.</summary>
+    private static Control? RewardSkipButton(NCardRewardSelectionScreen screen)
+    {
+        Control? row = screen.GetNodeOrNull<Control>("UI/RewardAlternatives");
+        if (row == null)
+        {
+            return null;
+        }
+        return UiHelper.FindAll<NCardRewardAlternativeButton>(row)
+            .FirstOrDefault(b => GodotObject.IsInstanceValid(b) && b.IsVisibleInTree()) ?? row;
+    }
+
     private static bool TrySkipCardReward(NCardRewardSelectionScreen screen)
     {
         try
@@ -1792,6 +1864,17 @@ internal static class SimScreenAdvice
     private static SimScreenDecision? DescribeRewards(NRewardsScreen screen)
     {
         List<NRewardButton> buttons = ClaimableRewards(screen);
+        // Everything claimable is taken: a potion the full belt blocks is the
+        // one real question left on this screen -- for an advisor that can
+        // answer it (PotionSwapAdvice). Otherwise, as before, proceed past it.
+        if (buttons.Count == 0)
+        {
+            SimScreenDecision? swap = DescribePotionSwap(screen);
+            if (swap != null)
+            {
+                return swap;
+            }
+        }
         NProceedButton? proceed = UiHelper.FindFirst<NProceedButton>(screen);
         if (buttons.Count == 0 && (proceed == null || !proceed.IsEnabled))
         {
@@ -1830,6 +1913,160 @@ internal static class SimScreenAdvice
             LocalAdvice = advice,
             Choose = index => ChooseReward(screen, index),
         };
+    }
+
+    /// <summary>A potion's display name, or its id if the loc lookup throws.</summary>
+    private static string SafePotionTitle(PotionModel potion)
+    {
+        try
+        {
+            string title = potion.Title.GetFormattedText();
+            return string.IsNullOrWhiteSpace(title) ? potion.Id.Entry : title;
+        }
+        catch (Exception)
+        {
+            return potion.Id.Entry;
+        }
+    }
+
+    /// <summary>
+    /// The first full-belt potion reward still on the loot screen, as a
+    /// <c>potion_swap</c> decision (v5.2, PotionSwapAdvice): option 0 leaves
+    /// it, option k+1 discards belt slot k and claims it -- the option objects
+    /// of the autopilot's group on <c>reward_screen</c> (GH #1069), reindexed
+    /// from 0. Null when the advisor does not advertise
+    /// <c>capabilities.potion_swap</c>, or no such potion is left.
+    /// </summary>
+    private static SimScreenDecision? DescribePotionSwap(NRewardsScreen screen)
+    {
+        int capability = SimAdvisor.AdvisorPotionSwapCapability;
+        RunState? runState = RunManager.Instance.DebugOnlyGetState();
+        Player? me = LocalContext.GetMe(runState);
+        if (me == null)
+        {
+            return null;
+        }
+        List<NRewardButton> blocked = FullBeltPotionRewards(screen, me);
+        if (!PotionSwapAdvice.ShouldAsk(0, blocked.Count, capability))
+        {
+            return null;
+        }
+        NRewardButton button = blocked[0];
+        // Names, not ids: the label is what the player reads ("discard Fire
+        // Potion") and what the takeover cross-checks `best.label` against.
+        List<string?> belt = me.PotionSlots.Select(p => p == null ? null : SafePotionTitle(p)).ToList();
+        List<string> labels = PotionSwapAdvice.Labels(belt);
+        object? reward = button.Reward is PotionReward { Potion: not null } pr
+            ? SimStateExtractor.SerializePotionSlot(pr.Potion, -1)
+            : null;
+        string description = "";
+        try
+        {
+            description = button.Reward?.Description.GetFormattedText() ?? "";
+        }
+        catch (Exception)
+        {
+            // Display only.
+        }
+        var options = new List<Dictionary<string, object?>>();
+        for (int i = 0; i < labels.Count; i++)
+        {
+            options.Add(new Dictionary<string, object?>
+            {
+                ["index"] = i,
+                ["id"] = RewardLabel(button),
+                ["action"] = NonCombatBridgeProtocol.PotionSwapAction,
+                ["label"] = labels[i],
+                ["description"] = description,
+                ["enabled"] = true,
+                ["reward"] = reward,
+                // One group per request: the first blocked reward on screen.
+                ["reward_button"] = 0,
+                ["discard_slot"] = PotionSwapAdvice.DiscardSlotOf(i, belt.Count),
+            });
+        }
+        var state = new Dictionary<string, object>
+        {
+            [NonCombatBridgeProtocol.TypeField] = PotionSwapAdvice.AdviceFor,
+            ["options"] = options,
+        };
+        SimStateExtractor.ApplyEnvelope(state, runState, me);
+        return new SimScreenDecision
+        {
+            AdviceFor = PotionSwapAdvice.AdviceFor,
+            State = state,
+            OptionCount = labels.Count,
+            OptionLabels = labels,
+            Screen = screen,
+            ScreenName = nameof(NRewardsScreen) + " (potion swap)",
+            // The reward and the belt: a discard by hand, or the next blocked
+            // potion, is a new question on the same node.
+            Signature = $"potion_swap:{System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(button.Reward)}:" +
+                        string.Join(",", belt),
+            Choose = index => ChoosePotionSwap(screen, button, index, belt.Count),
+        };
+    }
+
+    /// <summary>Full-belt potion rewards still on the screen that we have not
+    /// declined (SimPotionRules.BlockedOnlyByFullBelt: Sozu-refused ones stay
+    /// hidden, no discard helps there).</summary>
+    private static List<NRewardButton> FullBeltPotionRewards(NRewardsScreen screen, Player me) =>
+        UiHelper.FindAll<NRewardButton>(screen)
+            .Where(b => GodotObject.IsInstanceValid(b) && b.IsEnabled)
+            .Where(b => b.Reward is PotionReward pr && SimPotionRules.BlockedOnlyByFullBelt(me, pr.Potion))
+            .Where(b => !DeclinedSwapRewards.Contains(b.Reward!))
+            .ToList();
+
+    /// <summary>
+    /// Potion rewards whose swap was declined: left on the screen and never
+    /// asked again there, as the autopilot's decline does. Without it the
+    /// loot screen would re-ask the same question forever instead of
+    /// proceeding. Reference identity, never cleared (rewards are built fresh
+    /// per screen, as for SkippedCardRewards).
+    /// </summary>
+    private static readonly HashSet<object> DeclinedSwapRewards = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
+    /// Execute option <paramref name="index"/> of a potion_swap decision: a
+    /// decline is remembered (the next describe moves on to proceed or the
+    /// next blocked potion); a discard frees that belt slot with the game's
+    /// own discard (PotionCmd.Discard, the potion popup's) and then claims the
+    /// reward into it, as the autopilot's SimRewardsScreenHandler does.
+    /// </summary>
+    private static bool ChoosePotionSwap(NRewardsScreen screen, NRewardButton button, int index, int beltCount)
+    {
+        if (!GodotObject.IsInstanceValid(screen) || !GodotObject.IsInstanceValid(button) || !button.IsEnabled)
+        {
+            return false;
+        }
+        int? slot = PotionSwapAdvice.DiscardSlotOf(index, beltCount);
+        if (slot == null)
+        {
+            if (button.Reward != null)
+            {
+                DeclinedSwapRewards.Add(button.Reward);
+            }
+            Logger.Log("[SimScreenAdvice] Potion swap: leaving the potion reward (belt full).");
+            return true;
+        }
+        Player? me = LocalContext.GetMe(RunManager.Instance.DebugOnlyGetState());
+        if (me == null)
+        {
+            return false;
+        }
+        int discard = slot.Value;
+        TaskHelper.RunSafely(SwapAsync(me, button, discard));
+        return true;
+    }
+
+    private static async System.Threading.Tasks.Task SwapAsync(Player me, NRewardButton button, int slot)
+    {
+        Logger.Log($"[SimScreenAdvice] Potion swap: discarding belt slot {slot} to take the reward.");
+        await SimCombatHandler.DiscardPotionAndWaitAsync(me, slot, CancellationToken.None);
+        if (GodotObject.IsInstanceValid(button) && button.IsEnabled)
+        {
+            await UiHelper.Click(button);
+        }
     }
 
     /// <summary>
@@ -2343,9 +2580,15 @@ internal static class SimScreenAdvice
         // autoplay pick a second, third, ... card on a screen that was only
         // ever waiting to be confirmed (59 straight `Takeover executed on
         // NDeckEnchantSelectScreen: Defend` in godot.log, 2026-08-06).
+        // Except an "up to N" combat pile pick (Neow's Fury), which keeps
+        // offering the rest: see CardGridRules.OffersMorePicks.
         int selected = SelectedCount(screen);
         (int minSelect, int maxSelect) = ReadSelectionBounds(screen);
-        if (selected > 0)
+        // Already-selected cards are excluded: `_selectedCards` is a HashSet,
+        // so re-picking one DE-selects it, and an autoplay loop that keeps
+        // being offered its own last pick can toggle a card on and off forever.
+        List<NGridCardHolder> holders = SelectableHolders(screen);
+        if (!CardGridRules.OffersMorePicks(screen.GetType().Name, selected, maxSelect, holders.Count))
         {
             NConfirmButton? confirm = PendingConfirm(screen);
             if (confirm != null)
@@ -2382,10 +2625,6 @@ internal static class SimScreenAdvice
             // through and offer what is still pickable.
         }
 
-        // Already-selected cards are excluded: `_selectedCards` is a HashSet,
-        // so re-picking one DE-selects it, and an autoplay loop that keeps
-        // being offered its own last pick can toggle a card on and off forever.
-        List<NGridCardHolder> holders = SelectableHolders(screen);
         if (holders.Count == 0)
         {
             return null;
@@ -2433,6 +2672,10 @@ internal static class SimScreenAdvice
             ["source_target_index"] = (object?)SimCardSelectContext.SourceTargetIndex!,
             ["source_upgraded"] = (object?)SimCardSelectContext.SourceUpgraded!,
             ["screen"] = screen.GetType().Name,
+            // Cards already taken on this screen (an "up to N" combat pile
+            // pick asks again after each one): the advisor continues its
+            // planned picks, or confirms.
+            ["selected_count"] = Math.Max(0, selected),
             ["combat"] = (object?)SimCombatHandler.BuildEmbeddedCombatState(me)!,
         };
         SimStateExtractor.ApplyEnvelope(state, runState, me);
@@ -2446,6 +2689,7 @@ internal static class SimScreenAdvice
             Screen = screen,
             ScreenName = screen.GetType().Name,
             OptionRefs = holders.Select(h => (object?)h.CardModel).ToList(),
+            OptionNodes = holders.Select(h => (Control?)h).ToList(),
             // `index == OptionCount` is the takeover's SKIP leg (SimAdvisor).
             Choose = index =>
                 index >= holders.Count

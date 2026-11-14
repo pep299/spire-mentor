@@ -272,7 +272,8 @@ pub(crate) fn forge_from_card(state: &mut CombatState, amount: i32) -> usize {
 /// Direct-arena push matches what Vigor / Strength on player do in
 /// the ironclad pool.
 pub(crate) fn apply_power_to_player(state: &mut CombatState, kind: PowerKind, amount: i32) {
-    if amount <= 0 {
+    // C# `PowerCmd.Apply` returns while the combat `IsEnding` (PowerCmd.cs:69).
+    if amount <= 0 || state.is_over || sts2_core::combat_loop::enemy_side_is_ending(state) {
         return;
     }
     // Bead `sts2-rs-au4l2`: route through the canonical creature surface
@@ -692,6 +693,11 @@ pub(crate) fn make_it_so_late_effect(
     // records in the 2026-08-03 live Regent corpus.
     let count = state.count_player_cards_played_this_turn(Some(CardType::Skill));
     if count == 0 || !count.is_multiple_of(interval) {
+        return;
+    }
+    // `CardPileCmd.Add(this, Hand)` (MakeItSo.cs:43) refuses a combat pile
+    // once the combat is ending (CardPileCmd.cs:312).
+    if sts2_core::combat_loop::combat_is_ending(state) {
         return;
     }
     // Move the watched card from whichever non-Hand pile it occupies

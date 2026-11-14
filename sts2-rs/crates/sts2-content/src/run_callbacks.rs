@@ -132,6 +132,67 @@ fn roll_transform_replacement(
     crate::cards::v0111::card_pod_for(new_id, false, rs.game_version)
 }
 
+/// C# `CardSelectCmd.FromDeckForTransformation(prefs(N))` followed by one
+/// transform per selected card, for a select of `picks.len()` cards (each
+/// pick carries its replacement roll: event stream + read index, upgrade).
+///
+/// The select lists the deck's transformable cards (`Type != Quest &&
+/// IsTransformable`). With none it returns empty and opens no screen; with
+/// `list.Count <= MinSelect` it opens no screen either and returns the whole
+/// list (CardSelectCmd.cs), so every transformable card transforms, in deck
+/// order. Only a list longer than `MinSelect` reaches a screen: interactive
+/// hosts then queue the picks, other hosts transform the first
+/// transformable cards. Queueing separate picks for a short list let the
+/// second pick offer the card the first pick had just produced.
+///
+/// Returns how the select resolved.
+pub(crate) fn transform_from_deck(
+    rs: &mut RunState,
+    picks: &[sts2_core::PendingDeckTransform],
+) -> DeckTransformOutcome {
+    let eligible: Vec<usize> = rs
+        .master_deck
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| crate::cards::spec_index::card_is_transformable_in_deck(c))
+        .map(|(i, _)| i)
+        .collect();
+    if rs.interactive_card_transform && eligible.len() > picks.len() {
+        rs.pending_deck_transforms.extend(picks.iter().cloned());
+        return DeckTransformOutcome::Queued;
+    }
+    let mut transformed = 0;
+    // Remove each original from where it sits now (earlier removals shift
+    // it down by one each; replacements land at the tail, behind it).
+    for (removed, (&deck_idx, pick)) in eligible.iter().zip(picks).enumerate() {
+        let at = deck_idx - removed;
+        let original = rs.master_deck[at].card_id;
+        let replacement = match pick.fixed_target {
+            Some(card) => Some(card),
+            None => roll_transform_replacement(rs, original, pick.event_stream_roll),
+        };
+        let Some(mut card) = replacement else {
+            continue;
+        };
+        if pick.upgrade {
+            card.upgrade_for(rs.game_version);
+        }
+        rs.master_deck.remove(at);
+        rs.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::Other);
+        transformed += 1;
+    }
+    DeckTransformOutcome::Transformed(transformed)
+}
+
+/// How [`transform_from_deck`] resolved its select.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DeckTransformOutcome {
+    /// The picks were queued for the player.
+    Queued,
+    /// This many cards were transformed with no pick.
+    Transformed(usize),
+}
+
 /// Pre-roll the boss encounter for the act the player just entered and
 /// stash it on [`RunState::pinned_act_boss`]. Mirrors the C# game's
 /// "boss locked at act start" behavior — the boss-room dispatch in
@@ -379,8 +440,8 @@ const GRAB_BAG_SHUFFLE_ORDER: [sts2_core::runstate::RelicRarity; 4] = {
 /// `sts2-pycli/parity_walk.py`; beads `sts2-rs-mcesz` / `7e04v` / `jenwp`):
 /// C# `InitializeNewRun` shuffles TWO bags off the *same* `up_front` stream —
 /// first the shared-only `SharedRelicGrabBag` (`RunManager.cs:311`, ~111 reads
-/// for the 30/25/35/25 shared buckets), then a `NextInt(2)` setup read
-/// (counter 112, a single-element-range read not visible in the IL decomp),
+/// for the 30/25/35/25 shared buckets), then its Event (1 relic, 0 reads) and
+/// Ancient (2 relics, one `NextInt(2)` at counter 112) buckets,
 /// then the player's shared+character bag (`:314`). Relic rewards draw from the
 /// player bag, but the shared bag's shuffle must run first or the player Common
 /// shuffle starts ~111 reads too early. The shuffled shared bag is retained
@@ -388,24 +449,40 @@ const GRAB_BAG_SHUFFLE_ORDER: [sts2_core::runstate::RelicRarity; 4] = {
 /// Then `GenerateRooms` pre-rolls all acts' contents (reads 231..413).
 pub fn initialize_run_setup(rm: &mut sts2_core::run_manager::RunManager) {
     let cid = rm.run_state.character_id;
+    let version = rm.run_state.game_version;
     let (mut by_rarity, fallback, boss) = default_relic_grab_bag_for(cid);
 
     // (1) shared-only bag first (its shuffle consumes ~111 `up_front` reads).
     let mut shared = crate::relics::grab_bag::shared_grab_bag_buckets();
     for rarity in GRAB_BAG_SHUFFLE_ORDER {
         if let Some(bucket) = shared.get_mut(&rarity) {
-            rm.run_state.rng.up_front.shuffle(bucket);
+            rm.run_state.rng.up_front.shuffle_for(version, bucket);
         }
     }
     rm.run_state.shared_relic_grab_bag_by_rarity = shared;
 
-    // (2) one setup `NextInt(2)` between the two populates (counter 112).
-    rm.run_state.rng.up_front.next_int(0, 1);
+    // (2) the shared bag's two other buckets. `Populate(relics, rng)` does not
+    // filter rarities, so `SharedRelicPool` also yields an Event bucket
+    // ([FresnelLens], first at pool index 28) and an Ancient one
+    // ([LoomingFruit, VeryHotCocoa], index 52), shuffled after Shop in
+    // insertion order. Before v0.113.0 they cost 0 reads and one `NextInt(2)`
+    // (the "setup read", counter 112); from v0.113.0 each shuffle seeds a
+    // child Rng with one `NextUnsignedLong`. Their contents are never pulled
+    // (rewards roll Common / Uncommon / Rare / Shop).
+    if version >= sts2_core::GameVersion::V0_113_0 {
+        rm.run_state.rng.up_front.shuffle_for(version, &mut [()]);
+        rm.run_state
+            .rng
+            .up_front
+            .shuffle_for(version, &mut [(), ()]);
+    } else {
+        rm.run_state.rng.up_front.next_int(0, 1);
+    }
 
     // (3) player shared+character bag.
     for rarity in GRAB_BAG_SHUFFLE_ORDER {
         if let Some(bucket) = by_rarity.get_mut(&rarity) {
-            rm.run_state.rng.up_front.shuffle(bucket);
+            rm.run_state.rng.up_front.shuffle_for(version, bucket);
         }
     }
     rm.run_state
@@ -498,41 +575,32 @@ fn roll_out_of_combat_potion_kind(rs: &mut RunState) -> Option<sts2_core::potion
 /// `RollRarity` off `Rewards`) is appended separately by the run loop
 /// AFTER the card reward, matching C#'s populate order. Bead
 /// `sts2-rs-jenwp` (M4 live reward stream).
-fn apply_combat_gold_and_potion(rs: &mut RunState, room_type: RoomType) {
+///
+/// Returns whether the potion dropped: the set's `PotionReward` takes a slot
+/// in `RewardsSet`'s sort, which picks the card reward offered first.
+fn apply_combat_gold_and_potion(rs: &mut RunState, room_type: RoomType) -> bool {
     // (1) potion-odds NextFloat + pity update; `true` ⇒ a potion drops.
     let potion_drops = rs.roll_potion_reward(room_type);
-    // (2) gold NextInt → apply immediately, scaled by the escaped-creature
-    // GoldProportion that `exit_combat` stashed (`sts2-rs-RP15`).
+    // (2) gold NextInt, scaled by the escaped-creature GoldProportion that
+    // `exit_combat` stashed (`sts2-rs-RP15`).
     let gold_proportion = rs.last_combat_gold_proportion;
-    if let Some(amount) = rs.roll_encounter_gold(room_type, gold_proportion) {
-        rs.gain_gold(amount);
-    }
+    let base_gold = rs.roll_encounter_gold(room_type, gold_proportion);
     // (3) potion-contents off the SAME `Rewards` stream (only on a drop).
-    if potion_drops {
+    let potion = if potion_drops {
         let character = rs.character_id;
-        if let Some(kind) = crate::potions::all::create_random_potions_out_of_combat(
-            &mut rs.rng.rewards,
-            character,
-            1,
-        )
-        .into_iter()
-        .next()
-        {
-            // Reward claim: on a full belt this queues an interactive
-            // discard-to-claim swap (or counts the drop) instead of
-            // silently evaporating — C# leaves the TooFull `PotionReward`
-            // claimable on the reward screen (GH #252).
-            let _ = rs.claim_potion_reward(kind);
-        }
-    }
+        crate::potions::all::create_random_potions_out_of_combat(&mut rs.rng.rewards, character, 1)
+            .into_iter()
+            .next()
+    } else {
+        None
+    };
     // (4) `modify_rewards` relic bonuses (C# `RelicModel.TryModifyRewards`,
     // applied to the combat reward set). The hook bus exists + is tested but
     // was never wired into the LIVE combat-reward path, so AmethystAubergine's
     // `GoldReward(15)` per Monster/Elite (`AmethystAubergine.cs:42`) was never
     // granted — the rs-lower half of the gold class (IC:1009 elite @266:
-    // C# +15). The headless auto-collects gold rewards, so credit the appended
-    // `Reward::Gold` here. Listeners are pure pushes (no RNG), so this consumes
-    // no `Rewards` reads and stays stream-faithful. Card/Relic bonuses from the
+    // C# +15). Listeners are pure pushes (no RNG), so this consumes no
+    // `Rewards` reads and stays stream-faithful. Card/Relic bonuses from the
     // same hook (BlackStar / LavaRock / Wongo relics, PrayerWheel / WhiteStar
     // cards) are rolled by `RunManager::offer_combat_room_rewards`'s hook
     // walk, in relic order and after the card reward (`RewardsSet.cs:139-146`).
@@ -552,9 +620,25 @@ fn apply_combat_gold_and_potion(rs: &mut RunState, room_type: RoomType) {
             _ => None,
         })
         .sum();
+    // The headless auto-collects the set in `RewardsSet`'s sorted order
+    // (`RewardsSetIndex`: gold 1, potion 2; stable among the golds): the
+    // base gold, the fight's extra gold (Heist, Royalties) and the hook gold,
+    // then the potion.
+    if let Some(amount) = base_gold {
+        rs.gain_gold(amount);
+    }
+    rs.grant_extra_reward_gold();
     if bonus_gold > 0 {
         rs.gain_gold(bonus_gold);
     }
+    if let Some(kind) = potion {
+        // Reward claim: on a full belt this queues an interactive
+        // discard-to-claim swap (or counts the drop) instead of
+        // silently evaporating — C# leaves the TooFull `PotionReward`
+        // claimable on the reward screen (GH #252).
+        let _ = rs.claim_potion_reward(kind);
+    }
+    potion_drops
 }
 
 /// Seeded encounter picker for Acts 1–3. Mirrors Python
@@ -874,14 +958,17 @@ fn build_combat_for_room(
     // (SwordOfStone elite-victory counter, StoneCracker boss gate) see the
     // right value — set inside `enter_combat_from_roster` BEFORE the opening
     // draw.
-    let mut combat = crate::run_bridge::enter_combat_from_roster(rs, &roster, room_type);
-    // GH #552: stamp the encounter's slot model so a mid-combat summon lands
-    // in the turn position C# gives it (`CombatState.SortEnemiesBySlotName` +
-    // the summoners' free-slot search). Inert for encounters with no `Slots`,
-    // and a no-op for the initial roster — every shipped `GenerateMonsters` is
-    // already slot-ascending, so this only ever informs a LATER add.
-    combat.assign_encounter_slots(enc.member_slots());
-    Some(combat)
+    // GH #552: the encounter's slot model rides in so a mid-combat summon
+    // lands in the turn position C# gives it (`CombatState.SortEnemiesBySlotName`
+    // + the summoners' free-slot search). It is stamped BEFORE combat starts:
+    // a summon can happen inside entry (Whispering Earring + Void Form runs
+    // the first enemy turn there).
+    Some(crate::run_bridge::enter_combat_from_roster_in_slots(
+        rs,
+        &roster,
+        enc.member_slots(),
+        room_type,
+    ))
 }
 
 /// Spawn `encounter_id`'s roster off the C# `niche` stream and return each
@@ -963,9 +1050,10 @@ pub fn dump_roster_for_encounter(
         .collect();
     // Roster-HP oracle dump: room type is irrelevant to the HP roll it
     // gates, so pass `Unknown` (no draw-modifier influence).
-    let state = crate::run_bridge::enter_combat_from_roster(
+    let state = crate::run_bridge::enter_combat_from_roster_in_slots(
         rs,
         &roster,
+        enc.member_slots(),
         sts2_core::runstate::RoomType::Unknown,
     );
     let out = state
@@ -1013,8 +1101,9 @@ pub fn populate_starter_deck(rs: &mut RunState, character: CharacterId) {
     // RNG consumes positionally.
     let curses = std::mem::take(&mut rs.master_deck);
     for spec in &starter {
-        rs.master_deck
-            .push(crate::cards::status::card_from_spec(spec));
+        let mut card = crate::cards::status::card_from_spec(spec);
+        card.normalize_for_version(rs.game_version);
+        rs.master_deck.push(card);
     }
     rs.master_deck.extend(curses);
 }
@@ -1680,7 +1769,7 @@ mod tests {
 
         // Control: no AmethystAubergine ⇒ base Monster gold only.
         rs.gold = 0;
-        apply_combat_gold_and_potion(rs, RoomType::Monster);
+        let _ = apply_combat_gold_and_potion(rs, RoomType::Monster);
         let base_only = rs.gold;
         assert!(
             (10..=20).contains(&base_only),
@@ -1690,12 +1779,66 @@ mod tests {
         // With the relic ⇒ base + 15.
         rs.relics.push(RelicId::AmethystAubergine);
         rs.gold = 0;
-        apply_combat_gold_and_potion(rs, RoomType::Monster);
+        let _ = apply_combat_gold_and_potion(rs, RoomType::Monster);
         assert!(
             (25..=35).contains(&rs.gold),
             "base+15 bonus in [25,35], got {}",
             rs.gold
         );
+    }
+
+    static GOLD_GAINS: std::sync::Mutex<Vec<(i32, usize)>> = std::sync::Mutex::new(Vec::new());
+
+    fn record_gold_gain(rs: &mut RunState, amount: i32) -> sts2_core::EffectResult {
+        GOLD_GAINS
+            .lock()
+            .expect("gold log")
+            .push((amount, rs.potions.len()));
+        sts2_core::EffectResult::Resolved
+    }
+
+    /// C# `RewardsSet.GenerateWithoutOffering` sorts the set by
+    /// `RewardsSetIndex` (gold 1, potion 2) and the headless takes it in that
+    /// order: the base gold, the fight's extra gold (Heist then Royalties, the
+    /// `AddExtraReward` order) and Amethyst Aubergine's gold all land before
+    /// the potion. Rust credited the extras in `exit_combat`, ahead of the
+    /// base gold.
+    #[test]
+    fn combat_rewards_take_every_gold_before_the_potion() {
+        crate::relics::dispatch::ensure_installed();
+        sts2_core::run_effects::register_on_gold_gained(
+            RelicId::Akabeko,
+            record_gold_gain as sts2_core::run_effects::OnGoldGainedRunFn,
+        );
+        let mut rm = new_run_manager_for_character(42, CharacterId::Ironclad).with_neow_start();
+        initialize_run_setup(&mut rm);
+        let rs = &mut rm.run_state;
+        rs.last_combat_gold_proportion = 1.0;
+        rs.potions.clear();
+        rs.potion_reward_odds.current_value = 1.0;
+        rs.relics.push(RelicId::AmethystAubergine);
+        rs.pending_extra_reward_gold = vec![7, 30];
+        GOLD_GAINS.lock().expect("gold log").clear();
+
+        assert!(apply_combat_gold_and_potion(rs, RoomType::Monster));
+
+        let gains = GOLD_GAINS.lock().expect("gold log").clone();
+        assert_eq!(gains.len(), 4, "{gains:?}");
+        assert!(
+            (10..=20).contains(&gains[0].0),
+            "base gold first: {gains:?}"
+        );
+        assert_eq!(
+            gains[1..].iter().map(|g| g.0).collect::<Vec<_>>(),
+            [7, 30, 15],
+            "Heist, Royalties, then the Aubergine"
+        );
+        assert!(
+            gains.iter().all(|&(_, potions)| potions == 0),
+            "no potion before the gold: {gains:?}"
+        );
+        assert_eq!(rs.potions.len(), 1, "the potion is claimed last");
+        assert!(rs.pending_extra_reward_gold.is_empty());
     }
 
     /// Task #19 end-to-end: `generate_boss_relic_pool` returns the NEXT
@@ -2198,6 +2341,47 @@ mod tests {
     }
 
     #[test]
+    fn neows_bones_deferred_scroll_boxes_offers_its_packs_after_a_pomander_pick() {
+        // Loadout Necrobinder 3116 v0.107.1: NeowsBones rolled Pomander then
+        // ScrollBoxes. Pomander's upgrade pick defers ScrollBoxes; once the
+        // pick resolves, ScrollBoxes is granted and C# awaits its pack choice
+        // inside the same `RewardsSet.Offer()`. Rust went to the map.
+        use sts2_core::run_manager::{Phase, RunAction, RunManager};
+        use sts2_core::NeowRelic;
+        crate::relics::dispatch::ensure_installed();
+        let mut rm = RunManager::new(0, CharacterId::Ironclad)
+            .with_content_callbacks(ironclad_content_callbacks())
+            .with_neow_start();
+        rm.run_state.direct_event_relic_grant = true;
+        rm.run_state.interactive_card_upgrade = true;
+        for _ in 0..5 {
+            let mut c = sts2_core::cards::Card::pod_defaults();
+            c.card_id = sts2_core::cards::CardId::StrikeIronclad;
+            rm.run_state.master_deck.push(c);
+        }
+        let mut offers = rm.run_state.neow_offers.expect("neow offers rolled");
+        offers.positive_2 = NeowRelic::Pomander;
+        rm.run_state.neow_offers = Some(offers);
+        let _ = rm.take_action(RunAction::EventChoice { idx: 1 });
+        assert!(
+            rm.get_available_actions()
+                .iter()
+                .any(|a| matches!(a, RunAction::UpgradeDeckCard { .. })),
+            "Pomander's upgrade pick is open: {:?}",
+            rm.get_available_actions()
+        );
+        rm.run_state
+            .pending_post_pick_relic_grants
+            .push(RelicId::ScrollBoxes);
+
+        let _ = rm.take_action(RunAction::UpgradeDeckCard { idx: 0 });
+
+        assert!(rm.run_state.relics.contains(&RelicId::ScrollBoxes));
+        assert_eq!(rm.phase(), Phase::CardReward, "the pack choice is open");
+        assert!(rm.card_reward_bundles().is_some(), "offered as bundles");
+    }
+
+    #[test]
     fn neows_bones_deferred_relic_grant_drains_chained_reward_and_lands_curse() {
         // Parity `deck_size_minus1_step2` (SEED A5P41 Ironclad A5): NeowsBones
         // grants relic#1 = LostCoffer (whose `AfterObtained` surfaces a card
@@ -2371,6 +2555,47 @@ mod tests {
         assert_eq!(rm.phase(), Phase::MapChoice);
     }
 
+    /// v0.107.1 parity seed 6104 (all characters): NeowsBones rolled
+    /// Kaleidoscope then ScrollBoxes. Kaleidoscope's two card rewards defer
+    /// ScrollBoxes; once the 2nd card reward resolves, the settle drain in
+    /// `advance_after_card_reward` grants ScrollBoxes, whose pack choice C#
+    /// awaits inside the same `RewardsSet.Offer()` (`NeowsBones.cs:40-44`).
+    /// Rust stranded the bundle on `pending_bundles` and went to the map,
+    /// which also stranded the NeowsBones curse.
+    #[test]
+    fn neows_bones_deferred_scroll_boxes_offers_its_packs_after_kaleidoscope_rewards() {
+        use sts2_core::run_manager::{ActionResult, Phase, RunAction, RunManager};
+        use sts2_core::NeowRelic;
+        crate::relics::dispatch::ensure_installed();
+        let mut rm = RunManager::new(0, CharacterId::Ironclad)
+            .with_content_callbacks(ironclad_content_callbacks())
+            .with_neow_start();
+        rm.run_state.direct_event_relic_grant = true;
+        let mut offers = rm.run_state.neow_offers.expect("neow offers rolled");
+        offers.positive_2 = NeowRelic::Kaleidoscope;
+        rm.run_state.neow_offers = Some(offers);
+        // The NeowsBones batch state: ScrollBoxes is owed after Kaleidoscope.
+        rm.run_state
+            .pending_post_pick_relic_grants
+            .push(RelicId::ScrollBoxes);
+        assert_eq!(
+            rm.take_action(RunAction::EventChoice { idx: 1 }),
+            ActionResult::Advanced
+        );
+        for i in 0..2 {
+            assert_eq!(rm.phase(), Phase::CardReward, "Kaleidoscope reward {i}");
+            assert!(rm.card_reward_bundles().is_none(), "reward {i} is cards");
+            assert_eq!(
+                rm.take_action(RunAction::PickCardReward { idx: None }),
+                ActionResult::Advanced
+            );
+        }
+        assert!(rm.run_state.relics.contains(&RelicId::ScrollBoxes));
+        assert_eq!(rm.phase(), Phase::CardReward, "the pack choice is open");
+        assert!(rm.card_reward_bundles().is_some(), "offered as bundles");
+        assert!(rm.run_state.pending_bundles.is_empty());
+    }
+
     #[test]
     fn card_reward_returns_three_cards_for_ironclad() {
         let mut rs = RunState::new();
@@ -2517,6 +2742,7 @@ mod tests {
                 CharacterId::Defect => assert_eq!(expected_relic, RelicId::CrackedCore),
                 CharacterId::Necrobinder => assert_eq!(expected_relic, RelicId::BoundPhylactery),
                 CharacterId::Regent => assert_eq!(expected_relic, RelicId::DivineRight),
+                CharacterId::Fool => assert_eq!(expected_relic, RelicId::SongBow),
             }
         }
     }
@@ -2743,8 +2969,8 @@ mod tests {
     }
 
     /// QX79 (Ironclad, v0.111.0): `FromDeckForTransformation` drops
-    /// `CardType.Quest` cards (CardSelectCmd.cs:488). Dowsing (a Quest card
-    /// Rust types as a Skill) in the deck must not be offered, or every later
+    /// `CardType.Quest` cards (CardSelectCmd.cs:488). Dowsing (a Quest card)
+    /// in the deck must not be offered, or every later
     /// offer index lands one card early (WhisperingHollow's Hug transformed
     /// Inflame instead of Thunderclap).
     #[test]
@@ -3710,6 +3936,84 @@ mod tests {
             vec![MonsterKind::HunterKiller],
             "cursor 1 % 2 == 1 must select the 2nd entry (HUNTER_KILLER_NORMAL)"
         );
+    }
+
+    /// The encounter's slot model is stamped BEFORE combat starts, so a
+    /// summon that happens inside combat entry still lands in its C# slot.
+    ///
+    /// Whispering Earring auto-plays turn 1 inside `start_player_turn`, and
+    /// Void Form ends that turn, so the whole enemy turn runs inside entry:
+    /// the Fabricator's opening FABRICATE / FABRICATING_STRIKE spawns bots
+    /// before `build_combat_for_room` returns. C# names the slots in
+    /// `GenerateMonstersWithSlots` before the combat starts
+    /// (`FabricatorNormal.Slots` = `[bot1, bot2, fabricator, bot3, bot4]`),
+    /// `Fabricator.SpawnBot` adds at `Encounter.GetNextSlot`
+    /// (Fabricator.cs:115) and `CombatManager.AddCreature` re-sorts by slot
+    /// (`CombatState.SortEnemiesBySlotName`, CombatState.cs:678) — the bots
+    /// go AHEAD of the Fabricator. Stamping after entry left the Fabricator
+    /// slot-less during that turn, so the bots were appended behind it
+    /// (Regent seed 6673, v0.107.1, step 631).
+    #[test]
+    fn build_combat_for_room_stamps_slots_before_entry_summons() {
+        use sts2_core::run_room_gen::GeneratedActRooms;
+        use sts2_core::MonsterKind;
+        crate::relics::dispatch::ensure_installed();
+        crate::cards::dispatch::install_default_registry();
+        let mut spawned_any = false;
+        for seed in 0..8_i32 {
+            let mut rs = RunState::new();
+            rs.rng = sts2_core::run_rng_set::RunRngSet::new(seed);
+            rs.character_id = CharacterId::Regent;
+            rs.relics = vec![sts2_core::RelicId::WhisperingEarring];
+            let mut card = sts2_core::cards::Card::pod_defaults();
+            card.card_id = sts2_core::cards::CardId::VoidForm;
+            rs.master_deck = vec![card];
+            rs.current_hp = 999;
+            rs.max_hp = 999;
+            rs.act_index = 3;
+            rs.generated_rooms = vec![
+                GeneratedActRooms::default(),
+                GeneratedActRooms::default(),
+                GeneratedActRooms {
+                    normal_encounters: vec!["FABRICATOR_NORMAL"],
+                    elite_encounters: vec![],
+                    boss_id: "QUEEN_BOSS",
+                    second_boss_id: None,
+                    events_shuffled: vec![],
+                    ancient: None,
+                },
+            ];
+            let combat = build_combat_for_room(&mut rs, 3, RoomType::Monster)
+                .expect("act-3 monster room builds a combat");
+            let order: Vec<(MonsterKind, Option<u8>)> = combat
+                .enemy_uids
+                .iter()
+                .map(|&uid| {
+                    let c = combat.creatures.iter().find(|c| c.id == uid.0).unwrap();
+                    (c.species.unwrap(), combat.enemy_slot(uid))
+                })
+                .collect();
+            assert!(
+                order.len() > 1,
+                "seed {seed}: the Fabricator's opening move spawns a bot inside entry, got {order:?}"
+            );
+            spawned_any = true;
+            let (last_kind, last_slot) = *order.last().unwrap();
+            assert_eq!(
+                (last_kind, last_slot),
+                (MonsterKind::Fabricator, Some(2)),
+                "seed {seed}: bots in slots 0/1 precede the Fabricator, got {order:?}"
+            );
+            for (i, &(kind, slot)) in order[..order.len() - 1].iter().enumerate() {
+                assert_ne!(kind, MonsterKind::Fabricator);
+                assert_eq!(
+                    slot,
+                    Some(u8::try_from(i).unwrap()),
+                    "seed {seed}: {order:?}"
+                );
+            }
+        }
+        assert!(spawned_any);
     }
 
     /// Boss-room pin path resolves identity from the generated `boss_id`

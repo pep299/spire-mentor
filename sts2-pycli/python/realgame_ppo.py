@@ -115,6 +115,7 @@ from typing import Any
 import ppo_decode
 from floors import act_number, engine_total_floor
 from ppo.errors import BudgetExceededError  # numpy-free (ppo.schema imports numpy)
+from realgame_adapter import UnsupportedGameVersionError
 from realgame_bridge import DEFAULT_HOST, DEFAULT_PORT, RealGameBridgeClient
 from realgame_mcts import (
     DEFAULT_SIMS_BOSS,
@@ -558,7 +559,15 @@ def _build_rest_site(state: dict[str, Any]) -> PpoDecision | None:
     run_state = state.get("run_state") or {}
     obs = _base_obs(state, run_state)
     obs["rest_option_labels"] = list(_REST_OPTION_LABELS)
-    actions = [{"action": "rest_option", "idx": i} for i in range(len(options))]
+    # ``option_index`` is the option's slot in C# ``room.Options`` -- the
+    # engine ``rest_site_options()`` order the net was trained on (a disabled
+    # Smith keeps slot 1). The mod's ``index`` is renumbered after it drops
+    # disabled options, so keying on position put Dig on ``rest_smith``. Older
+    # mods send no ``option_index``. Mirrors ``sts2-runai`` ``build_rest_site``.
+    actions = [
+        {"action": "rest_option", "idx": int(o.get("option_index", i))}
+        for i, o in enumerate(options)
+    ]
     responses = [
         {"action": "choose", "index": int(o.get("index", i))} for i, o in enumerate(options)
     ]
@@ -1026,6 +1035,48 @@ def _build_event(state: dict[str, Any]) -> PpoDecision | None:
     )
 
 
+#: The bridge's action for one Blitz merchant ware (v0.113.0+,
+#: spire-mentor-mod/SimBlitzShop.cs).
+BLITZ_CHOICE_ACTION = "blitz_choice"
+
+
+def is_blitz_shop(state: dict[str, Any]) -> bool:
+    """The shop is the Blitz merchant: free wares, a fixed number of picks."""
+    return state.get("blitz_choices_remaining") is not None or any(
+        isinstance(o, dict) and o.get("action") == BLITZ_CHOICE_ACTION
+        for o in state.get("options") or []
+    )
+
+
+def blitz_shop_choice(state: dict[str, Any]) -> tuple[int, str]:
+    """The bridge index to answer a Blitz shop with, and why.
+
+    No run-policy head was trained on Blitz (the mode is v0.113.0; the nets
+    predate it), so this is NOT a ranking. It only refuses the two plainly
+    wrong answers the generic shop builder gives: its encoder turns every
+    ware into the same "none" token, so the net walked out on three FREE
+    picks; and a cursed ware (`IsCursed`: every kind from `Glam` on adds a
+    random Curse) has a cost nothing here can weigh. So: the first uncursed
+    ware in shop order while picks remain, else leave. Each pick opens its own
+    follow-up screen (a card reward, an upgrade pick, ...) that IS ranked.
+    """
+    options = [o for o in state.get("options") or [] if isinstance(o, dict)]
+    leave = next(
+        (int(o.get("index", i)) for i, o in enumerate(options) if o.get("action") == "leave_shop"),
+        0,
+    )
+    remaining = state.get("blitz_choices_remaining")
+    if remaining is not None and int(remaining) <= 0:
+        return leave, "no Blitz picks left"
+    for i, o in enumerate(options):
+        if o.get("action") != BLITZ_CHOICE_ACTION or not o.get("enabled", True):
+            continue
+        if (o.get("item") or {}).get("cursed"):
+            continue
+        return int(o.get("index", i)), "first uncursed ware"
+    return leave, "only cursed wares left"
+
+
 def _build_shop(state: dict[str, Any]) -> PpoDecision | None:
     """``shop`` -> ``ppo.env``'s "shop" surface.
 
@@ -1162,6 +1213,14 @@ _CARD_SELECT_SURFACES = {
 #:   * CLAWS  `FromDeckForTransformation` -> `CardCmd.Transform(..)` into Maul
 #:     (Claws.cs:22-29) -- master-deck cards, which is the `transform`
 #:     surface's own shape.
+#:   * BLITZ.NEOW (v0.113.0 Blitz mode)  `FromSimpleGridForRewards(prefs(3))`
+#:     -> `Add(item, Deck)` (Models.Blitz/BlitzRunModel.cs:24-35) -- 3 of 10
+#:     generated class cards, ROOM_FULL_OF_CHEESE's shape. Unmapped it went
+#:     leftmost -- the three commons at the front of a rarity-sorted list --
+#:     live 2026-11-13.
+#:   * COMBAT_REWARD_CARD_UPGRADE (v0.113.0) ships a prompt string, but
+#:     `CardUpgradeReward.OnSelect` asks with the shared `TO_UPGRADE`; mapped
+#:     to `smith` anyway so it ranks if a build ever sends it.
 #:
 #: DOLLYS_MIRROR is deliberately ABSENT. It also adds to the deck, but its
 #: options are the player's OWN deck (`FromDeckGeneric`, DollysMirror.cs:16-22)
@@ -1178,6 +1237,8 @@ _PROMPT_SURFACES: dict[str, str] = {
     "ROOM_FULL_OF_CHEESE.PAGES.GORGE.SELECTIONSCREENPROMPT": "grant",
     "SEA_GLASS.SELECTIONSCREENPROMPT": "grant",
     "CLAWS.SELECTIONSCREENPROMPT": "transform",
+    "BLITZ.NEOW.SELECTIONSCREENPROMPT": "grant",
+    "COMBAT_REWARD_CARD_UPGRADE.SELECTIONSCREENPROMPT": "smith",
 }
 
 
@@ -1920,6 +1981,11 @@ def pick_noncombat_action_ppo(
     builder = _PPO_NONCOMBAT_BUILDERS.get(msg_type or "")
     state = apply_session_context(state, session)
 
+    # The Blitz merchant (v0.113.0) is no surface the nets know; see
+    # `blitz_shop_choice` for what this does and does not claim.
+    if msg_type == "shop" and is_blitz_shop(state):
+        return {"action": "choose", "index": blitz_shop_choice(state)[0]}, None
+
     def _fallback() -> dict[str, Any]:
         action = choose_action(
             state,
@@ -2213,6 +2279,13 @@ def run(
                     result = "max_steps_reached"
                     print(f"Stopping after max_steps={max_steps}")
                     break
+    except UnsupportedGameVersionError as e:
+        # GH #807: `pick_combat_action_mcts` re-raises a build the engine has
+        # no rules for rather than answering it with a random legal move.
+        logger.error("Refusing to play: %s", e)
+        print(f"Steps: {step}\nResult: refused ({e})\nLog: {jsonl.path}")
+        jsonl.close()
+        return 2
     except (ConnectionError, TimeoutError) as e:
         logger.error("Bridge connection error after %d steps: %s", step, e)
         result = f"error: {e}"

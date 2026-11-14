@@ -1,6 +1,7 @@
 import { useEffect, useId, useState, type CSSProperties } from "react";
-import { assetUrl } from "../api";
-import { characterKey } from "../characters";
+import { assetUrl, type Advisor } from "../api";
+import { e2eAdvisable } from "../advisor";
+import { characterArt, characterInBuild, characterKey } from "../characters";
 import { ASCENSION_LEVELS, ascensionLevel, ascensionModifiers } from "../ascension";
 import { canonicalizeSeed, generateSeed } from "../seed";
 import { DEFAULT_GAME_VERSION, gameVersionLabel } from "../gameVersion";
@@ -9,12 +10,16 @@ import RichText from "./RichText";
 import "../skins/runend.css";
 import "../skins/launcher.css";
 
-/** The five playable characters, in the game's roster order. */
-export const CHARACTERS = ["Ironclad", "Silent", "Defect", "Regent", "Necrobinder"] as const;
+/** The playable characters, in the game's roster order. The Fool is
+ *  v0.113.0-only: the launcher offers it only for a build that has it. */
+export const CHARACTERS = ["Ironclad", "Silent", "Defect", "Regent", "Necrobinder", "Fool"] as const;
 
 const ENGINE_LABELS: Record<string, string> = { rust: "Rust", csharp: "C#" };
 
-export type OffCombatBrain = "heuristic" | "ppo";
+export type OffCombatBrain = "heuristic" | "ppo" | "e2e";
+
+/** The e2e student plays only the run it was trained on. */
+export { E2E_CHARACTER, E2E_GAME_VERSION } from "../advisor";
 
 /**
  * The start screen: pick a character, seed and ascension, then choose HOW the
@@ -38,7 +43,8 @@ export default function RunLauncher({
   backend, onBackend, backends,
   gameVersion = DEFAULT_GAME_VERSION, onGameVersion, gameVersions = [],
   onPlay, onWatch, busy, error,
-  offCombatBrain, onOffCombatBrain,
+  offCombatBrain, onOffCombatBrain, e2eAvailable = false,
+  advisor = "search", onAdvisor,
   combat,
 }: {
   character: string;
@@ -68,6 +74,12 @@ export default function RunLauncher({
   error: string | null;
   offCombatBrain: OffCombatBrain;
   onOffCombatBrain: (b: OffCombatBrain) => void;
+  /** The engine has the e2e student brain (`features.e2e`). */
+  e2eAvailable?: boolean;
+  /** Who advises the hand-played run ("Play yourself"). The picker shows
+   *  only where the e2e student can advise (Ironclad, v0.111.0, Rust). */
+  advisor?: Advisor;
+  onAdvisor?: (a: Advisor) => void;
   combat: {
     preset: CombatPreset;
     monsterSims: number;
@@ -87,6 +99,12 @@ export default function RunLauncher({
 
   const canonical = canonicalizeSeed(seed);
   const slug = characterKey(character);
+  // The build this run would play (the version select shows the same value):
+  // a character it lacks is not offered, and a pick it lacks falls back.
+  const runVersion = backend === "rust" ? gameVersion : DEFAULT_GAME_VERSION;
+  useEffect(() => {
+    if (!characterInBuild(slug, runVersion)) onCharacter(CHARACTERS[0]);
+  }, [slug, runVersion, onCharacter]);
   const level = ascensionLevel(ascension);
   const stacked = ascensionModifiers(ascension);
   const [heroOk, setHeroOk] = useState(true);
@@ -106,7 +124,7 @@ export default function RunLauncher({
             <section className="gs-launch-field">
               <h2 className="gs-launch-label" id={`${ids}-char`}>Character</h2>
               <div className="gs-launch-chars" role="radiogroup" aria-labelledby={`${ids}-char`}>
-                {CHARACTERS.map((ch) => {
+                {CHARACTERS.filter((ch) => characterInBuild(characterKey(ch), runVersion)).map((ch) => {
                   const k = characterKey(ch);
                   const on = ch === character;
                   return (
@@ -117,7 +135,7 @@ export default function RunLauncher({
                     >
                       <span className="gs-launch-charface">
                         {k
-                          ? <img src={assetUrl(`ui/top_panel/character_icon_${k}.png`)} alt="" draggable={false} />
+                          ? <img src={assetUrl(characterArt(k, `ui/top_panel/character_icon_${k}.png`))} alt="" draggable={false} />
                           : <b>{ch[0]}</b>}
                       </span>
                       <span className="gs-launch-charname">{ch}</span>
@@ -197,7 +215,7 @@ export default function RunLauncher({
             {slug && heroOk && (
               <img
                 key={slug}
-                src={assetUrl(`character_sprites/${slug}.png`)}
+                src={assetUrl(characterArt(slug, `character_sprites/${slug}.png`))}
                 alt="" draggable={false}
                 onError={() => setHeroOk(false)}
               />
@@ -213,6 +231,21 @@ export default function RunLauncher({
             <p className="gs-launch-actiondesc" id={`${ids}-play`}>
               You make every decision — map, cards, fights, shops. AI hints stay off unless you switch them on.
             </p>
+            {onAdvisor && e2eAdvisable(e2eAvailable, character, gameVersion, backend) && (
+              <div className="gs-launch-knobs">
+                <label title={"Who the AI hints, the policy panel, the choice coach and \"play best\" ask. "
+                  + "Search: the combat MCTS in fights, the PPO run policy elsewhere. "
+                  + "Instinct: one transformer, no search — for every decision "
+                  + "(its ~21 MB net downloads the first time you pick it)."}>
+                  advisor{" "}
+                  <select aria-label="advisor" value={advisor} disabled={busy}
+                    onChange={(e) => onAdvisor(e.target.value as Advisor)}>
+                    <option value="search">Search (MCTS + PPO)</option>
+                    <option value="e2e">Instinct (PPO only)</option>
+                  </select>
+                </label>
+              </div>
+            )}
             <button type="button" className="gs-runend-btn gs-runend-btn--primary gs-launch-go"
               onClick={onPlay} disabled={busy} aria-describedby={`${ids}-play`}>
               <span className="gs-runend-btnface">Play yourself</span>
@@ -226,7 +259,9 @@ export default function RunLauncher({
                 The run AI plays the whole run out while you watch. Stop it any time and take over from there.
               </p>
               <div className="gs-launch-knobs">
-                <label title="Off-combat brain: which policy drives card rewards / shops / events / map / rest. Combat itself is always searched by the combat MCTS agent, regardless of this choice.">
+                <label title={e2eAvailable
+                  ? "Brain: Heuristic and PPO drive card rewards / shops / events / map / rest while the combat MCTS agent searches every fight. Instinct is one transformer that makes EVERY decision, fights included, with no search (Ironclad, v0.111.0 only; its ~21 MB net downloads the first time you pick it)."
+                  : "Off-combat brain: which policy drives card rewards / shops / events / map / rest. Combat itself is always searched by the combat MCTS agent, regardless of this choice."}>
                   brain{" "}
                   <select
                     aria-label="brain"
@@ -236,19 +271,30 @@ export default function RunLauncher({
                   >
                     <option value="heuristic">Heuristic</option>
                     <option value="ppo">PPO</option>
+                    {e2eAvailable && <option value="e2e">Instinct (PPO only)</option>}
                   </select>
                 </label>
-                <CombatBudget
-                  preset={combat.preset} monsterSims={combat.monsterSims} bossSims={combat.bossSims}
-                  threads={combat.threads} disabled={busy}
-                  onPreset={combat.onPreset} onMonsterSims={combat.onMonsterSims} onBossSims={combat.onBossSims}
-                />
+                {offCombatBrain === "e2e" ? (
+                  <span className="gs-launch-hint" data-testid="e2e-note">
+                    Ironclad · v0.111.0 · act 1 rolled · no combat search
+                  </span>
+                ) : (
+                  <CombatBudget
+                    preset={combat.preset} monsterSims={combat.monsterSims} bossSims={combat.bossSims}
+                    threads={combat.threads} disabled={busy}
+                    onPreset={combat.onPreset} onMonsterSims={combat.onMonsterSims} onBossSims={combat.onBossSims}
+                  />
+                )}
               </div>
               <button type="button" className="gs-runend-btn gs-runend-btn--secondary gs-launch-go"
                 onClick={onWatch} disabled={busy} aria-describedby={`${ids}-watch`}>
                 <span className="gs-runend-btnface">{busy ? "Running…" : "Watch the AI play"}</span>
               </button>
-              <p className="gs-launch-footnote">AI runs always use the Rust engine and the Overgrowth act 1.</p>
+              <p className="gs-launch-footnote">
+                {offCombatBrain === "e2e"
+                  ? "Instinct plays the run it was trained on: Rust engine, Ironclad, v0.111.0, the rolled act 1."
+                  : "AI runs always use the Rust engine and the Overgrowth act 1."}
+              </p>
             </section>
           )}
         </div>

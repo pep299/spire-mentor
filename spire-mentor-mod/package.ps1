@@ -5,6 +5,8 @@
 #
 #   mods/SpireMentor/   SpireMentor.dll, SpireMentor.json, SpireMentor.conf.template,
 #                     SimAdvisor/            (the packaged torch-free advisor)
+#                     SpireMentorFrame/      (the panels' own window, .NET
+#                                             Framework 4.8; SimFrameLauncher)
 #                     workbench/             (the browser-only workbench, which
 #                                             the advisor hosts on :8079)
 #   mods/BaseLib/     BaseLib.dll, BaseLib.pck, BaseLib.json,
@@ -101,6 +103,14 @@ if ($LASTEXITCODE -ne 0) { throw "dotnet build failed" }
 $dll = Join-Path $bridge "bin/Release/net9.0/SpireMentor.dll"
 if (-not (Test-Path $dll)) { throw "missing $dll" }
 
+# The panels' own window (spire-mentor-frame, .NET Framework 4.8: no runtime
+# for players to install). The mod starts it next to the game (SimFrameLauncher).
+$frameProj = Join-Path $repo "spire-mentor-frame"
+dotnet build $frameProj -c Release
+if ($LASTEXITCODE -ne 0) { throw "frame build failed" }
+$frameOut = Join-Path $frameProj "bin/Release/net48"
+if (-not (Test-Path (Join-Path $frameOut "SpireMentorFrame.exe"))) { throw "missing $frameOut\SpireMentorFrame.exe" }
+
 $advisorDist = Join-Path $pycli "dist/SimAdvisor"
 if ($BuildAdvisor) {
     pwsh -NoProfile -File (Join-Path $pycli "scripts/build_advisor_exe.ps1")
@@ -130,6 +140,13 @@ if (-not (Test-Path (Join-Path $workbenchDist "wb-precache.json"))) {
 
 # --- stage -------------------------------------------------------------------
 $version = (Get-Content (Join-Path $bridge "SpireMentor.json") | ConvertFrom-Json).version
+# The DLL's own version string (toolbar, F1 help, bug reports, every
+# envelope's mod_version) is a const, not read from the manifest.
+$constLine = Select-String -Path (Join-Path $bridge "MainFile.cs") -Pattern 'ModVersion = "([^"]+)"' | Select-Object -First 1
+$codeVersion = if ($constLine) { $constLine.Matches[0].Groups[1].Value } else { "" }
+if ($codeVersion -ne $version) {
+    throw "MainFile.ModVersion is '$codeVersion' but SpireMentor.json says '$version'; bump both."
+}
 $staging = Join-Path $bridge "staging"
 if (Test-Path $staging) { Remove-Item -Recurse -Force $staging }
 $simDir = New-Item -ItemType Directory -Path (Join-Path $staging "mods/SpireMentor") -Force
@@ -139,6 +156,9 @@ Copy-Item $dll $simDir
 Copy-Item (Join-Path $bridge "SpireMentor.json") $simDir
 Copy-Item (Join-Path $bridge "SpireMentor.conf.template") $simDir
 Copy-Item -Recurse $advisorDist (Join-Path $simDir "SimAdvisor")
+# The frame without its debug symbols / XML docs.
+$frameDir = New-Item -ItemType Directory -Path (Join-Path $simDir "SpireMentorFrame") -Force
+Copy-Item -Recurse (Join-Path $frameOut "*") $frameDir -Exclude *.pdb, *.xml
 # The nets stay out (8.5 MB each); /ppo/index.json stays, and the control
 # plane serves the files from the advisor's own data/ppo.
 Copy-Item -Recurse $workbenchDist (Join-Path $simDir "workbench")

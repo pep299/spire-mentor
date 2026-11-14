@@ -313,6 +313,16 @@ export interface FaithfulDebug {
   action?: string;       // resolved action label ("Play Strike", "Choose path", …)
   step?: number;         // run step counter after this action
   summary: string;       // one-line human-readable description for the log
+  /** The brain that made the move (the e2e student says "e2e"). */
+  brain?: string;
+  // e2e decisions: what the student decided and how long it took, measured
+  // in the engine (`performance.now()` in the browser).
+  decision_type?: string;
+  forced?: boolean;
+  prob?: number;
+  ms?: number;
+  ms_tokenize?: number;
+  ms_net?: number;
   // combat decisions
   sims?: number;
   seed?: number;
@@ -362,6 +372,10 @@ export interface Score {
   pick_rank?: number | null;
   /** Why the engine took this move, on its own pick's row only. */
   pick_reason?: string | null;
+  /** The e2e advisor's row: the student's softmax probability for this
+   *  class (also in `win_prob`, so the overlays still read). A POLICY
+   *  probability, never a win chance — absent on search rows. */
+  prob?: number;
 }
 /** Compact recorded-advice row (live-game logs): the advisor's pick, its
  *  one-line note, and the policy-ranked options for decisions the MCTS never
@@ -371,6 +385,18 @@ export interface StepAdvice {
   note?: string | null;
   options?: { label: string; share?: number | null; is_best?: boolean }[];
 }
+/** GH #1222: Instinct's win probe — a small net on the student's state
+ *  embedding. Every number means "if Instinct plays on from here".
+ *  `p_fight` / `hp_loss` are null outside a fight; `hp_loss` holds quantiles
+ *  of the HP the fight costs (end-of-fight heals included, so it can be
+ *  negative), clamped to `hp_now`. */
+export interface InstinctEstimate {
+  p_run: number;
+  p_fight: number | null;
+  hp_loss: { q10: number; q25: number; q50: number; q75: number; q90: number } | null;
+  hp_now: number | null;
+}
+
 export interface Step {
   idx: number;
   decision: string;
@@ -395,6 +421,8 @@ export interface Step {
   };
   /** GH #801: the session's game build; absent = v0.107.1. */
   game_version?: string;
+  /** Instinct's estimate for this position, attached by the hint (GH #1222). */
+  estimate?: InstinctEstimate | null;
 }
 /**
  * Whether the loaded recording can be taken over interactively, and where.
@@ -653,6 +681,8 @@ export interface ChoiceRankRow {
   q: number | null;
   visits: number;
   is_best: boolean;
+  /** The e2e advisor's policy probability (absent on search rows). */
+  prob?: number | null;
 }
 
 /** Result of POST /api/live/choice-ranker — one combat MCTS search ranking
@@ -666,6 +696,8 @@ export interface ChoiceRanker {
   act?: number;
   config: Record<string, unknown>;
   error?: string;
+  /** "e2e" when the e2e student ranked the options instead of the search. */
+  advisor?: "e2e";
 }
 
 /** One offered option's PPO run-policy probability (off-combat). */
@@ -686,17 +718,65 @@ export interface PpoPolicyPayload {
   value: number | null;
   options: PpoOption[];
   error: string | null;
+  /** "e2e" when the e2e advisor answered (the student's classes, no V(s)). */
+  policy?: "e2e";
+  /** e2e: the position is a forced step (one option at probability 1). */
+  forced?: boolean;
+  /** e2e: the win probe's estimate (GH #1222); null without a probe. */
+  estimate?: InstinctEstimate | null;
+}
+
+/** Who advises a hand-played run: the combat MCTS + run PPO ("search", the
+ *  default) or the e2e Ironclad student ("e2e"). */
+export type Advisor = "search" | "e2e";
+
+/** One merged class of the e2e student's evaluation. */
+export interface E2eAdviceOption {
+  class: number;
+  /** The workbench verb + args to send to `/api/live/action`. */
+  action: string;
+  args: Record<string, unknown>;
+  label: string;
+  /** Softmax over the classes — a policy probability, not a win chance. */
+  prob: number;
+  /** How many legal actions the class merges (copies of one card, …). */
+  members: number;
+  is_best: boolean;
+  run_action: Record<string, unknown>;
+}
+
+/** Result of POST /api/live/e2e-advice: the e2e student's evaluation of the
+ *  live node (cached per node by the engine). */
+export interface E2eAdvice {
+  advisor: "e2e";
+  node_id: number;
+  available: boolean;
+  /** Why there is no pick here (run over, a position the student cannot read). */
+  reason: string | null;
+  forced: boolean;
+  is_combat: boolean;
+  decision_type?: string | null;
+  n_classes?: number;
+  ms?: number;
+  pick: { action: string; args: Record<string, unknown>; label: string; prob: number; forced: boolean } | null;
+  options: E2eAdviceOption[];
+  /** The combat classes as hint rows (a card's `stable_idx` = hand index). */
+  scores: Score[];
+  /** The win probe's estimate (GH #1222); null without a probe. */
+  estimate?: InstinctEstimate | null;
 }
 
 /** Resolved two-axis run-mode config (off-combat brain x combat budget) —
  *  the shared shape for POST /api/live/run-mode's request body and response. */
 export interface RunModeConfig {
-  off_combat_brain: string; // "heuristic" | "ppo"
+  off_combat_brain: string; // "heuristic" | "ppo" | "e2e"
   ppo_impl: string; // "rust" | "python"
   combat_sims: number;
   combat_boss_sims: number;
   combat_threads: number;
   reward_sims: number | null;
+  /** Who advises hand-played moves; absent = "search". */
+  advisor?: Advisor;
 }
 export type RunModePayload = RunModeConfig;
 
@@ -778,6 +858,8 @@ export interface ChoiceGrade {
   alternatives: { label: string; prob: number }[];
   n_options: number;
   checkable: boolean;      // a rollout check can compare you vs the AI
+  /** "e2e" when graded against the e2e advisor (absent = the PPO). */
+  policy?: "e2e";
 }
 
 /** Result of the choice coach's rollout check: rows keyed "you" / "ai". */
@@ -1085,6 +1167,16 @@ export interface CombatLogRow {
    *  `EventLogEntry` enum has no death entry. */
   blocked?: number | null;
   hp_after?: number | null;
+  /** Present (and `true`) only on rows produced inside an AUTO-played card's
+   *  play — Stampede, Havoc, Mayhem, Cascade, … — including that play's own
+   *  `card_auto_played` row (GH #1155). The step label never names an
+   *  auto-played card, so the ledger's compact mode keeps these rows. */
+  auto_played?: boolean;
+  /** `card_auto_played` rows only: the auto-played card's raw engine id
+   *  (`"BASH"`) and upgrade, for the board's card flash. `source_*` on that
+   *  row names the PARENT play (e.g. Havoc), not this card. */
+  card_id?: string | null;
+  card_upgraded?: boolean | null;
 }
 
 export interface LiveNode {
@@ -1372,6 +1464,10 @@ export interface CapabilityFeatures {
    *  the distribution study half, which is still desktop-only. */
   simlab?: boolean;
   simlab_sweeps?: boolean;
+  /** The e2e student brain (one net, no search; Ironclad v0.111.0). Only
+   *  the Rust workbench has it, so absent means OFF (unlike the flags
+   *  above). */
+  e2e?: boolean;
 }
 
 export const api = {
@@ -1388,6 +1484,15 @@ export const api = {
       default_game_version?: string;
     }>),
   runs: () => apiFetch("/api/runs").then(json<{ runs: string[] }>),
+  // The host's advisor preference: kept by the engine for every run it
+  // installs after (start, save-load, import, resume) and put on the live run
+  // where the e2e student can read it. `live` = the live run's advisor.
+  advisor: (advisor: Advisor) =>
+    apiFetch("/api/advisor", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ advisor }),
+    }).then(json<{ advisor: Advisor; live: Advisor | null }>),
   runStat: (path: string) =>
     apiFetch(`/api/runs/stat?path=${encodeURIComponent(path)}`).then(
       json<{ size: number; mtime: number }>,
@@ -1542,6 +1647,10 @@ export const api = {
       threads?: number;
       /** GH #801: "v0.107.1" (default) | "v0.111.0". */
       game_version?: string;
+      /** The e2e student's run: the engine forces Ironclad, v0.111.0, act 1
+       *  rolled and potion swap on (ascension default 10) and drives it with
+       *  the `e2e` brain. */
+      e2e?: boolean;
     }) =>
       apiFetch("/api/live/start-faithful", {
         method: "POST",
@@ -1573,7 +1682,13 @@ export const api = {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ config }),
-      }).then(json<{ scores: Score[]; pv: string[] | null }>),
+      }).then(json<{
+        scores: Score[]; pv: string[] | null; advisor?: "e2e"; error?: string;
+        estimate?: InstinctEstimate | null;
+      }>),
+    // The e2e student's evaluation of the live node (the e2e advisor's
+    // probabilities + picks for every surface).
+    e2eAdvice: () => apiFetch("/api/live/e2e-advice", { method: "POST" }).then(json<E2eAdvice>),
     // The policy's recommended (verb, args) for the current decision: a
     // run-level one (card reward, shop, event, map, rest, …) or an open
     // in-combat card choice, which the combat MCTS answers at the same config

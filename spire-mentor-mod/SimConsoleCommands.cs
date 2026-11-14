@@ -22,7 +22,7 @@ public class SpireMentorConsoleCmd : AbstractConsoleCmd
 {
     public override string CmdName => "spirementor";
 
-    public override string Args => "[mode off|advisor|hints|coach] [speed <0.1-4.0>] [hud on|off] [log] [bugreport [note...]] [waitmult <f>] [animmult <f>]";
+    public override string Args => "[mode off|advisor|hints|coach] [speed <0.1-8.0>] [hud on|off] [log] [bugreport [note...]] [waitmult <f>] [animmult <f>]";
 
     public override string Description => "Spire Mentor control: show status, switch mode, set game speed / HUD / autopilot multipliers.";
 
@@ -48,9 +48,10 @@ public class SpireMentorConsoleCmd : AbstractConsoleCmd
             case "speed":
                 if (!TryParseFloat(value, out float speed))
                 {
-                    return new CmdResult(success: false, "usage: spirementor speed <0.1-4.0>");
+                    return new CmdResult(success: false, "usage: spirementor speed <0.1-8.0>");
                 }
                 SimSpeed.Apply(speed);
+                SpireMentorModConfig.RememberSpeed();
                 return new CmdResult(success: true, $"speed -> {SimSpeed.Current:0.0}x");
             case "hud":
                 if (value is not ("on" or "off"))

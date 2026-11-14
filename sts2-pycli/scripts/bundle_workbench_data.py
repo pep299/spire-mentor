@@ -58,7 +58,7 @@ _MONO_ROOT = _REPO_ROOT.parent
 # Keep in lockstep with ``workbench.localization.DEFAULT_GAME_VERSION`` /
 # ``SUPPORTED_GAME_VERSIONS`` (and the Rust ``sts2_core::GameVersion``).
 _ENGINE_WIKI_VERSION = "v0.107.1"
-_VERSIONS = ("v0.107.1", "v0.111.0")
+_VERSIONS = ("v0.107.1", "v0.111.0", "v0.113.0")
 
 _WIKI_ROOT = _MONO_ROOT / "sts2-wiki" / "data"
 _IMAGES = _MONO_ROOT / "sts2-wiki" / "site" / "public" / "images"
@@ -74,6 +74,7 @@ _LOC_FILES = (
     "card_keywords.json",
     "cards.json",
     "characters.json",
+    "encounters.json",
     "events.json",
     "monsters.json",
     "orbs.json",
@@ -317,6 +318,12 @@ def _build_version(out_dir: Path, version: str) -> dict[str, int]:
     if not scales_src.is_file():
         raise SystemExit(f"error: {scales_src} not found")
     scales = json.loads(scales_src.read_text(encoding="utf-8"))
+    for overlay in overlays:
+        # The creatures that build added (import_game's art overlay step).
+        own_scales = _IMAGES / overlay / "creature_scales.json"
+        if own_scales.is_file():
+            scales = {**scales, **json.loads(own_scales.read_text(encoding="utf-8"))}
+            scales = {k: scales[k] for k in sorted(scales)}
 
     # The deck analyzer's two tables (`workbench/deck_analysis.py`), copied
     # as-is: the Rust twin reads the same keys off the same JSON. Per build

@@ -209,6 +209,43 @@ _OSTY_PET_ID = "OSTY"
 _NECROBINDER_CHARACTER_ID = "NECROBINDER"
 
 
+class UnsupportedCharacterError(ValueError):
+    """A board with a character the engine does not simulate yet (v0.113.0's
+    The Fool). ``str(exc)`` is the player-facing HUD note; ``raw`` the id."""
+
+    def __init__(self, raw: str) -> None:
+        self.raw = raw
+        name = _UNSUPPORTED_CHARACTER_NAMES[raw]
+        super().__init__(
+            f"{name} support is coming soon to Spire Mentor. Until then there is no advice "
+            f"for runs with this character (supported: {', '.join(CHARACTER_ID_TO_DISPLAY.values())})."
+        )
+
+
+#: Display names of characters the engine does not simulate yet.
+_UNSUPPORTED_CHARACTER_NAMES = {"FOOL": "The Fool"}
+
+
+def check_supported_characters(msg: dict[str, Any]) -> None:
+    """Refuse a board whose own character or any ally's is one the engine
+    knows it cannot simulate (`_UNSUPPORTED_CHARACTER_NAMES`).
+
+    Only that named set is refused. Any other id outside
+    ``CHARACTER_ID_TO_DISPLAY`` (a modded or renamed character) passes, as
+    do absent / blank ids: the adapter then infers the character from card
+    ids, as it did before the gate existed.
+
+    Raises:
+        UnsupportedCharacterError: the first known-unsupported character id.
+    """
+    run_state = msg.get("run_state")
+    ids = [run_state.get("character") if isinstance(run_state, dict) else None]
+    ids += [a.get("character") for a in (msg.get("allies") or []) if isinstance(a, dict)]
+    for cid in ids:
+        if isinstance(cid, str) and cid.strip().upper() in _UNSUPPORTED_CHARACTER_NAMES:
+            raise UnsupportedCharacterError(cid.strip().upper())
+
+
 def character_display_name(character_id: str | None) -> str | None:
     """Map a bridge ``run_state.character`` id to the adapter's Title-Case form.
 
@@ -546,6 +583,13 @@ def _translate_enemy(enemy: dict[str, Any], index: int) -> dict[str, Any]:
     curse_counter = enemy.get("curse_of_knowledge_counter")
     if isinstance(curse_counter, int) and not isinstance(curse_counter, bool):
         out["curse_of_knowledge_counter"] = curse_counter
+    # The move machine's state (#1181, ``AppendMoveMachineState`` in both C#
+    # producers): ``log`` (``StateLog`` ids), ``performed_first_move``,
+    # ``performed``. The engine restores the AI's move log from it, which the
+    # repeat rules and cooldowns read. Forwarded verbatim.
+    ai = enemy.get("ai")
+    if isinstance(ai, dict):
+        out["ai"] = ai
     # C# ``Creature.CombatId`` (newer mods): what a combat-log row names its
     # target by, so a co-op replay can find it (``coop_replay``).
     combat_id = enemy.get("combat_id")
@@ -1084,7 +1128,9 @@ def _reset_wire_unlock_latch() -> None:
 __all__ = [
     "CHARACTER_ID_TO_DISPLAY",
     "LIVE_LOCKED_EPOCHS",
+    "UnsupportedCharacterError",
     "character_display_name",
+    "check_supported_characters",
     "install_live_unlock_state",
     "install_unlock_state_from_wire",
     "locked_epochs_from_wire",

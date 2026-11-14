@@ -54,3 +54,15 @@ def test_existing_onnx_scores_claws_choices_without_shape_change():
     probs, _ = OnnxPolicy(str(MODEL)).distribution(_obs(), actions, _obs())
     assert len(probs) == 2
     assert abs(sum(probs) - 1.0) < 1e-6
+
+
+def test_claws_confirm_is_encodable_by_both_e2e_action_sets():
+    from ppo.e2e import contracts
+
+    for actions in (
+        [{"action": "transform_deck_card", "idx": 0}, {"action": "confirm_deck_selection"}],
+        [{"action": "confirm_deck_selection"}],
+    ):
+        dtype, kinds = contracts.classify_ooc(actions)
+        assert dtype == contracts.DT["CARD_TRANSFORM"]
+        assert kinds[-1] == contracts.AK["GRANT_CONFIRM"]

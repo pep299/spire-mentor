@@ -20,6 +20,7 @@
     <Compile Include="../../GameVersionFormat.cs" Link="GameVersionFormat.cs" />
     <Compile Include="../../ChoiceInference.cs" Link="ChoiceInference.cs" />
     <Compile Include="../../CoachStyle.cs" Link="CoachStyle.cs" />
+    <Compile Include="../../MentorBadge.cs" Link="MentorBadge.cs" />
     <Compile Include="../../CoachChipText.cs" Link="CoachChipText.cs" />
     <Compile Include="../../SimCoachReports.cs" Link="SimCoachReports.cs" />
     <Compile Include="../../WorkbenchUrl.cs" Link="WorkbenchUrl.cs" />
@@ -31,12 +32,20 @@
     <Compile Include="../../EnemyTagText.cs" Link="EnemyTagText.cs" />
     <Compile Include="../../TeammateTargetPick.cs" Link="TeammateTargetPick.cs" />
     <Compile Include="../../TieBandText.cs" Link="TieBandText.cs" />
+    <Compile Include="../../InstinctEstimateText.cs" Link="InstinctEstimateText.cs" />
     <Compile Include="../../RefusalWatch.cs" Link="RefusalWatch.cs" />
     <Compile Include="../../TravelGuard.cs" Link="TravelGuard.cs" />
     <Compile Include="../../BugReportDump.cs" Link="BugReportDump.cs" />
     <Compile Include="../../CrystalSpherePick.cs" Link="CrystalSpherePick.cs" />
     <Compile Include="../../AdviceColumn.cs" Link="AdviceColumn.cs" />
     <Compile Include="../../RewardSwapLayout.cs" Link="RewardSwapLayout.cs" />
+    <Compile Include="../../PartnerCharacters.cs" Link="PartnerCharacters.cs" />
+    <Compile Include="../../PartnerVotes.cs" Link="PartnerVotes.cs" />
+    <Compile Include="../../CardGridRules.cs" Link="CardGridRules.cs" />
     <Compile Include="../../WindowsChildProcess.cs" Link="WindowsChildProcess.cs" />
+    <Compile Include="../../AdvisorBrainRules.cs" Link="AdvisorBrainRules.cs" />
+    <Compile Include="../../PotionSwapAdvice.cs" Link="PotionSwapAdvice.cs" />
+    <Compile Include="../../AdviceMarks.cs" Link="AdviceMarks.cs" />
+    <Compile Include="../../FrameLaunchRules.cs" Link="FrameLaunchRules.cs" />
   </ItemGroup>
 </Project>

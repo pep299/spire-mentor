@@ -59,7 +59,7 @@ fn fresh_state(card_id: CardId, base_damage: i32, base_block: i32) -> (CombatSta
     state.cards.push(Card {
         uid: sts2_core::CardUid(card_uid),
         card_id,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: false,
@@ -79,7 +79,7 @@ fn push_draw_card_id(state: &mut CombatState, card_id: CardId) -> CardUid {
     state.cards.push(Card {
         uid,
         card_id,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Skill,
         target_type: TargetType::Self_,
         upgraded: false,
@@ -196,7 +196,7 @@ fn seeker_strike_stable_shuffle_key_is_entry_upgraded_not_uid() {
         state.cards.push(Card {
             uid,
             card_id,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Skill,
             target_type: TargetType::Self_,
             upgraded,
@@ -456,6 +456,85 @@ fn entropy_transforms_the_ball_off_the_colorless_pool_v0111() {
     assert!(
         colorless_combat_generatable_card_ids().contains(&new_id),
         "TheBall must transform into a colorless card, got {new_id:?}",
+    );
+}
+
+/// v0.113.0: MyShinies sits in `ColorlessCardPool` (ColorlessCardPool.cs:63),
+/// so Entropy transforms a hand MyShinies off the colorless pool, not the
+/// player's (Regent fuzz seed 235, `THE_OBSCURA_NORMAL`: C# rolled FINESSE
+/// where Rust rolled the Regent CRESCENT_SPEAR).
+#[test]
+fn entropy_transforms_my_shinies_off_the_colorless_pool_regent_v0113() {
+    use super::helpers::{colorless_combat_generatable_ids_in, transform_card_to_random_for_hook};
+    let (mut state, _euid) = fresh_state(CardId::MyShinies, 10, 0);
+    state.game_version = sts2_core::GameVersion::V0_113_0;
+    state.player.character = Some(sts2_core::potions::CharacterId::Regent);
+    let uid = sts2_core::CardUid(NonZeroU32::new(1).expect("nz"));
+    state.player.play.clear();
+    state.player.hand.push(uid);
+    let new_uid = transform_card_to_random_for_hook(&mut state, uid).expect("transforms");
+    let new_id = state
+        .cards
+        .iter()
+        .find(|c| c.uid == new_uid)
+        .unwrap()
+        .card_id;
+    assert_ne!(new_id, CardId::MyShinies);
+    assert!(
+        colorless_combat_generatable_ids_in(sts2_core::GameVersion::V0_113_0).contains(&new_id),
+        "MyShinies must transform into a colorless card, got {new_id:?}",
+    );
+}
+
+/// v0.113.0: MyShinies (Rare) sits in `ColorlessCardPool`
+/// (ColorlessCardPool.cs:63), so `CardFactory.GetDefaultTransformationOptions`
+/// uses `original.Pool` = the colorless pool. Its spec lives outside
+/// `COLORLESS_SPECS`, so it used to fall through to the Silent pool.
+#[test]
+fn entropy_transforms_my_shinies_off_the_colorless_pool_v0113() {
+    use super::helpers::{colorless_combat_generatable_ids_in, transform_card_to_random_for_hook};
+    let (mut state, _euid) = fresh_state(CardId::MyShinies, 10, 0);
+    state.game_version = sts2_core::GameVersion::V0_113_0;
+    state.player.character = Some(sts2_core::potions::CharacterId::Silent);
+    let uid = sts2_core::CardUid(NonZeroU32::new(1).expect("nz"));
+    state.player.play.clear();
+    state.player.hand.push(uid);
+    let new_uid = transform_card_to_random_for_hook(&mut state, uid).expect("transforms");
+    let new_id = state
+        .cards
+        .iter()
+        .find(|c| c.uid == new_uid)
+        .unwrap()
+        .card_id;
+    assert!(
+        colorless_combat_generatable_ids_in(sts2_core::GameVersion::V0_113_0).contains(&new_id),
+        "MyShinies must transform into a colorless card, got {new_id:?}",
+    );
+}
+
+/// v0.113.0: a Fool card's `original.Pool` is `FoolCardPool`, so Entropy on
+/// a Fool card in an Ironclad hand rolls another Fool card, not an Ironclad
+/// one (`CardFactory.GetDefaultTransformationOptions`).
+#[test]
+fn entropy_transforms_a_fool_card_off_the_fool_pool_v0113() {
+    use super::helpers::transform_card_to_random_for_hook;
+    let (mut state, _euid) = fresh_state(CardId::TrickShot, 10, 0);
+    state.game_version = sts2_core::GameVersion::V0_113_0;
+    state.player.character = Some(sts2_core::potions::CharacterId::Ironclad);
+    let uid = sts2_core::CardUid(NonZeroU32::new(1).expect("nz"));
+    state.player.play.clear();
+    state.player.hand.push(uid);
+    let new_uid = transform_card_to_random_for_hook(&mut state, uid).expect("transforms");
+    let new_id = state
+        .cards
+        .iter()
+        .find(|c| c.uid == new_uid)
+        .unwrap()
+        .card_id;
+    assert_ne!(new_id, CardId::TrickShot);
+    assert!(
+        crate::cards::fool::FOOL_POOL_V0113.contains(&new_id),
+        "a Fool card must transform into a Fool card, got {new_id:?}",
     );
 }
 
@@ -999,7 +1078,7 @@ fn push_discard_card(
     state.cards.push(Card {
         uid,
         card_id,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type,
         target_type,
         upgraded: false,
@@ -1279,7 +1358,7 @@ fn thinking_ahead_putback_option_order_is_raw_hand_order() {
         state.cards.push(Card {
             uid,
             card_id,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Skill,
             target_type: TargetType::Self_,
             upgraded: false,
@@ -1995,7 +2074,7 @@ fn play_mad_science_skill_gains_eight_block() {
 /// screen (C# `GetDistinctForCombat(pool, 3)` → `FromChooseACardScreen(
 /// canSkip: true)`). The `AddGeneratedFreeToHand` resolver — shared with
 /// the Skill/Power/Attack potions and exercised by their tests — then
-/// stamps the chosen card `FreeThisTurn` (C# `Discovery.cs:35`
+/// stamps the chosen card `FREE_THIS_TURN` (C# `Discovery.cs:35`
 /// `SetToFreeThisTurn`) and moves it to hand.
 #[test]
 fn y9hvo_discovery_flags_generated_card_free_this_turn() {
@@ -2070,12 +2149,12 @@ fn metamorphosis_generated_attacks_are_free_this_combat() {
     assert_eq!(generated.len(), 5);
     for c in generated {
         assert!(
-            c.cost <= 0,
+            c.local_cost() <= 0,
             "{:?} should be free (or keep its X sentinel)",
             c.card_id
         );
-        if c.cost == 0 {
-            assert_ne!(c.combat_var(sts2_core::cards::VarKey::CostAbsolutelySet), 0);
+        if c.base_cost() >= 0 {
+            assert!(c.cost.has(sts2_core::LocalCostMod::FREE_THIS_COMBAT));
         }
     }
 }
@@ -2123,7 +2202,7 @@ fn distraction_generated_skill_is_free_this_turn() {
         .collect();
     assert_eq!(new.len(), 1);
     let c = &state.cards[new[0].0.get() as usize - 1];
-    assert_eq!(c.combat_var(sts2_core::cards::VarKey::FreeThisTurn), 1);
+    assert!(c.cost.has(sts2_core::LocalCostMod::FREE_THIS_TURN));
 }
 
 /// `sts2-rs-k2rzs`: Base Metamorphosis still adds 3 (C# `CardsVar(3)`).
@@ -2288,7 +2367,7 @@ fn play_mad_science_wisdom_draws_three() {
         state.cards.push(Card {
             uid,
             card_id: CardId::StrikeIronclad,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             base_damage: 6,
@@ -2308,11 +2387,43 @@ fn play_mad_science_wisdom_draws_three() {
     assert!(state.player.draw.is_empty(), "draw pile emptied into hand");
 }
 
+/// The Chaos card goes into hand with a plain `CardPileCmd.Add`
+/// (MadScience.cs:286-288), not `AddGeneratedCardToCombat`, so Regalite's
+/// `AfterCardGeneratedForCombat` grants nothing: a Skill Mad Science gains its
+/// 8 block only (loadout Defect 1221 v0.107.1: Rust gained 10).
+#[test]
+fn mad_science_chaos_card_is_not_generated_for_regalite() {
+    use sts2_core::potions::CharacterId;
+    install_pool();
+    crate::relics::dispatch::ensure_installed();
+    let (mut state, enemy) = fresh_state(CardId::MadScience, 12, 0);
+    state.player.character = Some(CharacterId::Ironclad);
+    state.player.current_hp = 70;
+    state.player.max_hp = 70;
+    let _ = state.init_player_creature();
+    state.relics.push(sts2_core::Relic {
+        id: std::num::NonZeroU32::new(1).expect("nz"),
+        kind: sts2_core::RelicKind::Regalite,
+        counter: 0,
+        is_wax: false,
+        is_melted: false,
+    });
+    set_mad_science_variant(&mut state.cards[0], CardType::Skill, TinkerTimeRider::Chaos);
+    let generated_before = state.player.generated_cards_this_combat;
+    let f = lookup(CardId::MadScience).expect("registered");
+    f(&mut state, Some(enemy));
+    assert_eq!(state.player.block, 8, "Skill block only, no Regalite");
+    assert_eq!(
+        state.player.generated_cards_this_combat, generated_before,
+        "not a generated card"
+    );
+}
+
 /// `sts2-rs-m3n0g.8`: Chaos rider generates one distinct card from the
 /// owner's CHARACTER pool (C# `MadScience.cs:280-285`
 /// `CardFactory.GetDistinctForCombat(Owner,
 /// Owner.Character.CardPool.GetUnlockedCards(...), 1,
-/// Rng.CombatCardGeneration).First()`), stamps it `FreeThisTurn`
+/// Rng.CombatCardGeneration).First()`), stamps it `FREE_THIS_TURN`
 /// (`SetToFreeThisTurn`), and adds it to hand (`CardPileCmd.Add(.., Hand)`).
 #[test]
 fn play_mad_science_chaos_generates_free_card_into_hand() {
@@ -2339,9 +2450,8 @@ fn play_mad_science_chaos_generates_free_card_into_hand() {
         .iter()
         .find(|c| c.uid == new_uid)
         .expect("generated card materialised in the arena");
-    assert_eq!(
-        generated.combat_var(sts2_core::cards::VarKey::FreeThisTurn),
-        1,
+    assert!(
+        generated.cost.has(sts2_core::LocalCostMod::FREE_THIS_TURN),
         "C# SetToFreeThisTurn — the generated card plays free this turn"
     );
     assert_eq!(
@@ -2496,7 +2606,7 @@ fn play_secret_technique_moves_a_skill_from_draw_to_hand() {
         state.cards.push(Card {
             uid,
             card_id: CardId::StrikeIronclad,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: ct,
             target_type: TargetType::Self_,
             upgraded: false,
@@ -2523,9 +2633,8 @@ fn play_secret_technique_moves_a_skill_from_draw_to_hand() {
 
 /// C# `SecretTechnique.cs:22` filters `c.Type == CardType.Skill`, and the
 /// Quest cards are `CardType.Quest` (`Dowsing.cs:45`, v0.107.1
-/// `ByrdonisEgg.cs:15`, `LanternKey.cs:17`). Rust models them as Skills, so
-/// the fetch must skip `is_quest()` cards: a draw pile holding only quest
-/// cards moves nothing (Ironclad:6174 @775 moved DOWSING to hand).
+/// `ByrdonisEgg.cs:15`, `LanternKey.cs:17`), so the fetch must skip them: a
+/// draw pile holding only quest cards moves nothing (Ironclad:6174 @775 moved DOWSING to hand).
 #[test]
 fn secret_technique_skips_quest_cards_in_draw() {
     install_pool();
@@ -2537,7 +2646,8 @@ fn secret_technique_skips_quest_cards_in_draw() {
         CardId::LanternKey,
         CardId::SpoilsMap,
     ] {
-        push_draw_card_id(&mut state, id);
+        let uid = push_draw_card_id(&mut state, id);
+        state.cards[uid.0.get() as usize - 1].card_type = CardType::Quest;
     }
     let hand_before = state.player.hand.len();
     let _ = lookup(CardId::SecretTechnique).expect("registered")(&mut state, None);
@@ -2557,7 +2667,7 @@ fn play_secret_technique_with_no_skills_is_noop() {
     state.cards.push(Card {
         uid,
         card_id: CardId::StrikeIronclad,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: false,
@@ -2684,7 +2794,7 @@ fn play_wish_single_draw_card_is_taken_without_a_choice() {
     state.cards.push(Card {
         uid,
         card_id: CardId::Anger,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         ..Card::pod_defaults()
@@ -2720,7 +2830,7 @@ fn play_secret_weapon_moves_an_attack_from_draw_to_hand() {
     state.cards.push(Card {
         uid,
         card_id: CardId::StrikeIronclad,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: false,
@@ -2747,7 +2857,7 @@ fn play_apotheosis_upgrades_every_combat_card_except_self() {
         state.cards.push(Card {
             uid,
             card_id: CardId::StrikeIronclad,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -2883,6 +2993,54 @@ fn calamity_conjures_nothing_when_before_card_played_was_skipped() {
     sts2_core::hooks::dispatch_after_card_played(&mut state, &ctx);
     assert_eq!(state.player.hand.len(), hand_after_first);
     assert_eq!(state.run_rng.combat_card_generation.counter(), gen);
+}
+
+/// C# `CardPileCmd.Add` returns `success = false` before touching a combat
+/// pile once `CombatManager.IsEnding` (CardPileCmd.cs:312 v0.107.1, :379
+/// v0.111.0). So a Calamity Attack conjured after the play killed the last
+/// enemy never reaches the hand; its generation roll still happens. Loadout
+/// Ironclad 5625 v0.111.0: Stampede's next pick saw an empty hand in C# and
+/// rolled nothing.
+#[test]
+fn calamity_attack_conjured_after_the_last_kill_stays_out_of_the_hand() {
+    use sts2_core::card_effects::apply_power_to_creature;
+    crate::cards::dispatch::ensure_installed();
+    for version in [
+        sts2_core::GameVersion::V0_107_1,
+        sts2_core::GameVersion::V0_111_0,
+    ] {
+        let (mut state, enemy) = fresh_state(CardId::StrikeIronclad, 6, 0);
+        state.game_version = version;
+        state.player.play.clear();
+        add_player_creature(&mut state);
+        state.player.character = Some(sts2_core::CharacterId::Ironclad);
+        let puid = state.player.creature_uid.expect("player mirror");
+        apply_power_to_creature(&mut state, puid, sts2_core::powers::PowerKind::Calamity, 1);
+        let ctx = sts2_core::hooks::CardCtx {
+            card_type: Some(CardType::Attack),
+            ..Default::default()
+        };
+        sts2_core::hooks::dispatch_before_card_played_powers(&mut state, 1, false);
+        // The play kills the last enemy.
+        if let Some(c) = state.creatures.iter_mut().find(|c| c.id == enemy.0) {
+            c.current_hp = 0;
+        }
+        assert!(sts2_core::combat_loop::combat_is_ending(&state));
+        let gen_before = state.run_rng.combat_card_generation.counter();
+        let hand_before = state.player.hand.len();
+        sts2_core::hooks::dispatch_after_card_played(&mut state, &ctx);
+        assert_eq!(
+            state.run_rng.combat_card_generation.counter(),
+            gen_before + 1,
+            "{version:?}: the Attack is still generated"
+        );
+        assert_eq!(
+            state.player.hand.len(),
+            hand_before,
+            "{version:?}: not added"
+        );
+        assert!(state.player.discard.is_empty(), "{version:?}");
+    }
 }
 
 /// C# `Hook.AfterCardPlayed` walks `CombatState.IterateHookListeners`
@@ -3039,7 +3197,7 @@ fn play_dual_wield_clones_leftmost_attack_or_power() {
         state.cards.push(Card {
             uid,
             card_id: CardId::StrikeIronclad,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: ct,
             target_type: TargetType::Self_,
             upgraded: false,
@@ -3083,7 +3241,7 @@ fn play_dual_wield_with_no_attack_or_power_is_noop() {
     state.cards.push(Card {
         uid,
         card_id: CardId::StrikeIronclad,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Skill,
         target_type: TargetType::Self_,
         upgraded: false,
@@ -3118,7 +3276,7 @@ fn play_neows_fury_deals_damage_then_opens_discard_choice() {
         state.cards.push(Card {
             uid,
             card_id: CardId::StrikeIronclad,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -3779,7 +3937,7 @@ fn play_impatience_no_attack_draws_two() {
     state.cards.push(Card {
         uid: held,
         card_id: CardId::DefendIronclad,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Skill,
         target_type: TargetType::Self_,
         upgraded: false,
@@ -3794,7 +3952,7 @@ fn play_impatience_no_attack_draws_two() {
         state.cards.push(Card {
             uid: cuid,
             card_id: CardId::StrikeIronclad,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -3819,7 +3977,7 @@ fn play_impatience_with_attack_in_hand_is_noop() {
     state.cards.push(Card {
         uid: attack,
         card_id: CardId::StrikeIronclad,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: false,
@@ -3832,7 +3990,7 @@ fn play_impatience_with_attack_in_hand_is_noop() {
     state.cards.push(Card {
         uid: pile,
         card_id: CardId::StrikeIronclad,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: false,
@@ -3861,7 +4019,7 @@ fn play_restlessness_empty_hand_draws_two_and_gains_two_energy() {
         state.cards.push(Card {
             uid: cuid,
             card_id: CardId::StrikeIronclad,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -3889,7 +4047,7 @@ fn play_restlessness_nonempty_hand_is_noop() {
     state.cards.push(Card {
         uid: held,
         card_id: CardId::StrikeIronclad,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: false,
@@ -3902,7 +4060,7 @@ fn play_restlessness_nonempty_hand_is_noop() {
     state.cards.push(Card {
         uid: pile,
         card_id: CardId::StrikeIronclad,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: false,
@@ -4627,7 +4785,7 @@ fn apotheosis_deep_pin_upgrade_all_in_hand() {
         state.cards.push(Card {
             uid: sts2_core::CardUid(cuid),
             card_id: CardId::StrikeIronclad,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -5355,7 +5513,7 @@ fn play_enlightenment_caps_high_cost_hand_cards_at_one() {
         let uid = CardUid::new(raw).expect("nz");
         let mut card = card_from_spec(&crate::cards::ironclad::strike_ironclad::spec());
         card.uid = uid;
-        card.cost = cost;
+        card.cost = sts2_core::CardEnergyCost::new(cost);
         state.cards.push(card);
         state.player.hand.push(uid);
         uids.push((uid, cost));
@@ -5364,8 +5522,8 @@ fn play_enlightenment_caps_high_cost_hand_cards_at_one() {
     assert_eq!(f(&mut state, None), EffectResult::Resolved);
     for (uid, original) in uids {
         let idx = uid.0.get() as usize - 1;
-        let now = state.cards[idx].cost;
-        let expected = original.min(super::ENLIGHTENMENT_COST_CAP);
+        let now = state.cards[idx].local_cost();
+        let expected = i32::from(original.min(super::ENLIGHTENMENT_COST_CAP));
         assert_eq!(
             now, expected,
             "uid {uid:?} (was {original}) → expected {expected}, got {now}"
@@ -5463,15 +5621,19 @@ fn play_enlightenment_cap_reverts_at_turn_start() {
     let uid = CardUid::new(raw).expect("nz");
     let mut card = card_from_spec(&crate::cards::ironclad::strike_ironclad::spec());
     card.uid = uid;
-    card.cost = 3;
+    card.cost = sts2_core::CardEnergyCost::new(3);
     state.cards.push(card);
     state.player.hand.push(uid);
     let f = lookup(CardId::Enlightenment).expect("registered");
     assert_eq!(f(&mut state, None), EffectResult::Resolved);
     let idx = uid.0.get() as usize - 1;
-    assert_eq!(state.cards[idx].cost, 1, "capped this turn");
-    state.restore_snecko_costs_for_turn_start();
-    assert_eq!(state.cards[idx].cost, 3, "the cap expires at turn end");
+    assert_eq!(state.cards[idx].local_cost(), 1, "capped this turn");
+    state.cards[idx].cost.end_of_turn_cleanup();
+    assert_eq!(
+        state.cards[idx].local_cost(),
+        3,
+        "the cap expires at turn end"
+    );
 }
 
 /// An earlier `AddUntilPlayed(-1)` (a retained Reap) folds BEFORE
@@ -5492,8 +5654,8 @@ fn play_enlightenment_cap_absorbs_an_earlier_until_played_reduction() {
             let uid = CardUid::new(raw).expect("nz");
             let mut card = card_from_spec(&crate::cards::ironclad::strike_ironclad::spec());
             card.uid = uid;
-            card.cost = 3;
-            card.add_cost_reduction_until_played(1);
+            card.cost = sts2_core::CardEnergyCost::new(3);
+            card.cost.add_until_played(-1);
             state.cards.push(card);
             state.player.hand.push(uid);
             idxs.push(uid.0.get() as usize - 1);
@@ -5502,25 +5664,22 @@ fn play_enlightenment_cap_absorbs_an_earlier_until_played_reduction() {
         assert_eq!(f(&mut state, None), EffectResult::Resolved);
         for &idx in &idxs {
             assert_eq!(
-                sts2_core::hooks::local_card_cost(&state, &state.cards[idx]),
+                state.cards[idx].local_cost(),
                 1,
                 "min(3 - 1, 1) (upgraded={upgraded})"
             );
         }
         // Card 0 is played: every WhenPlayed modifier drops.
-        state.cards[idxs[0]].expire_snecko_roll();
-        state.cards[idxs[0]]
-            .combat_vars
-            .zero(sts2_core::cards::VarKey::CostReductionUntilPlayed);
+        state.cards[idxs[0]].cost.after_card_played_cleanup();
         assert_eq!(
-            sts2_core::hooks::local_card_cost(&state, &state.cards[idxs[0]]),
+            state.cards[idxs[0]].local_cost(),
             if upgraded { 1 } else { 3 },
             "after the play (upgraded={upgraded})"
         );
         // Card 1 is held past turn end: only the EndOfTurn cap drops.
-        state.restore_snecko_costs_for_turn_start();
+        state.cards[idxs[1]].cost.end_of_turn_cleanup();
         assert_eq!(
-            sts2_core::hooks::local_card_cost(&state, &state.cards[idxs[1]]),
+            state.cards[idxs[1]].local_cost(),
             if upgraded { 1 } else { 2 },
             "past turn end (upgraded={upgraded})"
         );
@@ -5542,7 +5701,7 @@ fn play_enlightenment_plain_then_upgraded_keeps_combat_cap() {
         let uid = CardUid::new(raw).expect("nz");
         let mut card = card_from_spec(&crate::cards::ironclad::strike_ironclad::spec());
         card.uid = uid;
-        card.cost = 2;
+        card.cost = sts2_core::CardEnergyCost::new(2);
         state.cards.push(card);
         state.player.hand.push(uid);
         uids.push(uid.0.get() as usize - 1);
@@ -5552,17 +5711,28 @@ fn play_enlightenment_plain_then_upgraded_keeps_combat_cap() {
     state.cards[0].upgraded = true;
     assert_eq!(f(&mut state, None), EffectResult::Resolved);
     for &idx in &uids {
-        assert_eq!(state.cards[idx].cost, 1);
+        assert_eq!(state.cards[idx].local_cost(), 1);
     }
     // Card 0: played (WhenPlayed expiry). Card 1: held to the next turn.
-    state.cards[uids[0]].expire_snecko_roll();
-    assert_eq!(state.cards[uids[0]].cost, 1, "combat cap survives the play");
-    state.restore_snecko_costs_for_turn_start();
-    assert_eq!(state.cards[uids[1]].cost, 1, "combat cap survives turn end");
+    state.cards[uids[0]].cost.after_card_played_cleanup();
+    assert_eq!(
+        state.cards[uids[0]].local_cost(),
+        1,
+        "combat cap survives the play"
+    );
+    state.cards[uids[1]].cost.end_of_turn_cleanup();
+    assert_eq!(
+        state.cards[uids[1]].local_cost(),
+        1,
+        "combat cap survives turn end"
+    );
     for &idx in &uids {
-        assert_eq!(
-            state.cards[idx].combat_var(sts2_core::cards::VarKey::CostAbsolutelySet),
-            1,
+        assert!(
+            state.cards[idx].cost.has(sts2_core::LocalCostMod::absolute(
+                1,
+                sts2_core::CostExpiry::Combat,
+                true
+            )),
             "an Absolute combat modifier is still live"
         );
     }
@@ -5578,14 +5748,15 @@ fn play_enlightenment_skips_x_cost_cards() {
     let uid = CardUid::new(raw).expect("nz");
     let mut card = card_from_spec(&crate::cards::ironclad::strike_ironclad::spec());
     card.uid = uid;
-    card.cost = -1;
+    card.cost = sts2_core::CardEnergyCost::new(-1);
     state.cards.push(card);
     state.player.hand.push(uid);
     let f = lookup(CardId::Enlightenment).expect("registered");
     assert_eq!(f(&mut state, None), EffectResult::Resolved);
     let idx = uid.0.get() as usize - 1;
     assert_eq!(
-        state.cards[idx].cost, -1,
+        state.cards[idx].local_cost(),
+        -1,
         "X-cost sentinel must be preserved"
     );
 }
@@ -5599,7 +5770,7 @@ fn enlightenment_with_barricade(upgraded: bool) -> (CombatState, CardUid) {
     let uid = CardUid::new(2).expect("nz");
     let mut card = card_from_spec(&crate::cards::ironclad::barricade::spec());
     card.uid = uid;
-    assert_eq!(card.cost, 3);
+    assert_eq!(card.local_cost(), 3);
     card.set_local_energy_cost(sts2_core::cards::LocalEnergyCost::new(3, false));
     state.cards.push(card);
     state.player.hand.push(uid);
@@ -5616,15 +5787,16 @@ fn enlightenment_cost_expires_on_either_edge_once_and_upgrade_persists() {
             assert_eq!(state.cards[1].local_costs_after_expiration(), expected);
             for play in [play_first, !play_first] {
                 if play {
-                    state.restore_wire_cost_expiring_on_play(uid);
+                    state.cards[uid.get() as usize - 1]
+                        .cost
+                        .after_card_played_cleanup();
                 } else {
-                    state.restore_wire_transient_costs_for_turn_start();
+                    for card in &mut state.cards {
+                        card.cost.end_of_turn_cleanup();
+                    }
                 }
-                assert_eq!(state.cards[1].cost, if upgraded { 1 } else { 3 });
-                assert_eq!(
-                    state.cards[1].combat_var(VarKey::CostAbsolutelySet),
-                    i32::from(upgraded)
-                );
+                assert_eq!(state.cards[1].local_cost(), if upgraded { 1 } else { 3 });
+                assert_eq!(state.cards[1].cost.has_local_modifiers(), upgraded);
             }
         }
     }
@@ -5641,9 +5813,13 @@ fn enlightenment_reduces_future_cost_even_when_a_temporary_free_card_is_already_
     });
     play_enlightenment(&mut state, None);
     assert_eq!(state.cards[1].local_costs_after_expiration(), [0, 1, 1, 1]);
-    state.restore_wire_cost_expiring_on_play(uid);
-    state.restore_wire_transient_costs_for_turn_start();
-    assert_eq!(state.cards[1].cost, 1);
+    state.cards[uid.get() as usize - 1]
+        .cost
+        .after_card_played_cleanup();
+    for card in &mut state.cards {
+        card.cost.end_of_turn_cleanup();
+    }
+    assert_eq!(state.cards[1].local_cost(), 1);
 }
 
 #[test]
@@ -5665,45 +5841,34 @@ fn enlightenment_preserves_preexisting_independent_lifetimes() {
         assert_eq!(state.cards[1].local_costs_after_expiration(), [1, 4, 3, 5]);
         for play in [play_first, !play_first] {
             if play {
-                state.restore_wire_cost_expiring_on_play(uid);
+                state.cards[uid.get() as usize - 1]
+                    .cost
+                    .after_card_played_cleanup();
             } else {
-                state.restore_wire_transient_costs_for_turn_start();
+                for card in &mut state.cards {
+                    card.cost.end_of_turn_cleanup();
+                }
             }
         }
-        assert_eq!(state.cards[1].cost, 5);
+        assert_eq!(state.cards[1].local_cost(), 5);
     }
 }
 
 #[test]
-fn enlightenment_absorbs_stomp_and_snecko_banks_without_double_restoration() {
-    for bank in [
-        VarKey::StompCostReductionThisTurn,
-        VarKey::SneckoCostDeltaThisTurn,
-    ] {
+fn enlightenment_expires_with_stomp_or_snecko_modifiers_without_double_restoration() {
+    for snecko in [false, true] {
         let (mut state, uid) = enlightenment_with_barricade(false);
-        state.cards[1].local_energy_cost = None;
-        state.cards[1].cost = 2;
-        state.cards[1].set_combat_var(
-            bank,
-            if bank == VarKey::SneckoCostDeltaThisTurn {
-                -1
-            } else {
-                1
-            },
-        );
-        if bank == VarKey::SneckoCostDeltaThisTurn {
-            state.cards[1].set_combat_var(
-                VarKey::SneckoRollLive,
-                sts2_core::cards::SNECKO_ROLL_RAISED_FLAG,
-            );
-            state.cards[1].set_combat_var(VarKey::CostAbsolutelySet, 1);
+        if snecko {
+            state.cards[1].cost.set_this_turn_or_until_played(2, false);
+        } else {
+            state.cards[1].cost.add_this_turn(-1);
         }
         play_enlightenment(&mut state, None);
-        state.restore_wire_cost_expiring_on_play(uid);
-        state.restore_stomp_costs_for_turn_start();
-        state.restore_snecko_costs_for_turn_start();
-        state.restore_wire_transient_costs_for_turn_start();
-        assert_eq!(state.cards[1].cost, 3);
+        state.cards[uid.get() as usize - 1]
+            .cost
+            .after_card_played_cleanup();
+        state.cards[1].cost.end_of_turn_cleanup();
+        assert_eq!(state.cards[1].local_cost(), 3);
     }
 }
 
@@ -5713,11 +5878,15 @@ fn enlightenment_cap_survives_card_upgrade_but_expiry_reveals_the_upgraded_base(
         let (mut state, uid) = enlightenment_with_barricade(upgraded_enlightenment);
         play_enlightenment(&mut state, None);
         assert!(state.cards[1].upgrade());
-        assert_eq!(state.cards[1].cost, 1);
-        state.restore_wire_cost_expiring_on_play(uid);
-        state.restore_wire_transient_costs_for_turn_start();
+        assert_eq!(state.cards[1].local_cost(), 1);
+        state.cards[uid.get() as usize - 1]
+            .cost
+            .after_card_played_cleanup();
+        for card in &mut state.cards {
+            card.cost.end_of_turn_cleanup();
+        }
         assert_eq!(
-            state.cards[1].cost,
+            state.cards[1].local_cost(),
             if upgraded_enlightenment { 1 } else { 2 }
         );
     }
@@ -5729,14 +5898,15 @@ fn enlightenment_keeps_local_cost_distinct_from_global_corruption() {
     let uid = state.cards[1].uid;
     let mut card = card_from_spec(&crate::cards::ironclad::impervious::spec());
     card.uid = uid;
-    card.initialize_local_energy_cost(sts2_core::GameVersion::V0_111_0);
     state.cards[1] = card;
     crate::cards::ironclad::helpers::apply_power_to_player(&mut state, PowerKind::Corruption, 1);
     play_enlightenment(&mut state, None);
     assert_eq!(state.cards[1].local_costs_after_expiration(), [1, 2, 2, 2]);
     assert_eq!(sts2_core::hooks::effective_card_cost(&state, uid), 0);
-    state.restore_wire_cost_expiring_on_play(uid);
-    assert_eq!(state.cards[1].cost, 2);
+    state.cards[uid.get() as usize - 1]
+        .cost
+        .after_card_played_cleanup();
+    assert_eq!(state.cards[1].local_cost(), 2);
     assert_eq!(sts2_core::hooks::effective_card_cost(&state, uid), 0);
 }
 
@@ -5748,7 +5918,6 @@ fn generated_card_keeps_ordered_cost_after_confused_enlightenment_upgrade_and_ex
     let card = card_from_spec(&crate::cards::ironclad::barricade::spec());
     let uid = sts2_core::card_effects::spawn_card_into_hand(&mut state, card);
     let card = &mut state.cards[uid.get() as usize - 1];
-    assert!(card.local_energy_cost.is_some());
     // Confused.SetThisCombat(3), followed by a combat-relative increase.
     card.add_local_cost_modifier(sts2_core::cards::LocalCostModifier {
         kind: sts2_core::cards::LocalCostModifierKind::Absolute,
@@ -5766,9 +5935,13 @@ fn generated_card_keeps_ordered_cost_after_confused_enlightenment_upgrade_and_ex
     let card = &mut state.cards[uid.get() as usize - 1];
     assert!(card.upgrade());
     assert_eq!(card.local_costs_after_expiration(), [1, 4, 4, 4]);
-    state.restore_wire_cost_expiring_on_play(uid);
-    state.restore_wire_transient_costs_for_turn_start();
-    assert_eq!(state.cards[uid.get() as usize - 1].cost, 4);
+    state.cards[uid.get() as usize - 1]
+        .cost
+        .after_card_played_cleanup();
+    for card in &mut state.cards {
+        card.cost.end_of_turn_cleanup();
+    }
+    assert_eq!(state.cards[uid.get() as usize - 1].local_cost(), 4);
 }
 
 /// Bead `sts2-rs-rnyme`: GoldAxe damage equals
@@ -6394,7 +6567,7 @@ fn push_hand_card_id(state: &mut CombatState, card_id: CardId) -> CardUid {
     state.cards.push(Card {
         uid,
         card_id,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Skill,
         target_type: TargetType::Self_,
         upgraded: false,
@@ -6878,7 +7051,7 @@ fn gh422_dispatch_reads_the_stated_card_not_the_play_pile_top() {
     state.cards.push(Card {
         uid: sibling,
         card_id: CardId::Clash,
-        cost: 0,
+        cost: sts2_core::CardEnergyCost::new(0),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: false,
@@ -7257,4 +7430,94 @@ fn entropy_transforms_when_turn_start_inferno_leaves_the_enemy_alive() {
         counter_before + 1,
         "a live combat transforms exactly one card"
     );
+}
+
+/// v0.111.0 changed the Chaos rider to `CardPileCmd.AddGeneratedCardToCombat`
+/// (MadScience.cs:286), so the card IS generated there: Regalite grants its
+/// v0.111.0 4 block (Regalite.cs:22) and `History.CardGenerated` counts it for Supermassive (loadout
+/// Regent 5045 v0.111.0: Rust's Supermassive was one card short).
+#[test]
+fn mad_science_chaos_card_is_generated_on_v0111() {
+    use sts2_core::potions::CharacterId;
+    install_pool();
+    crate::relics::dispatch::ensure_installed();
+    let (mut state, enemy) = fresh_state(CardId::MadScience, 12, 0);
+    state.game_version = sts2_core::GameVersion::V0_111_0;
+    state.player.character = Some(CharacterId::Ironclad);
+    state.player.current_hp = 70;
+    state.player.max_hp = 70;
+    let _ = state.init_player_creature();
+    state.relics.push(sts2_core::Relic {
+        id: std::num::NonZeroU32::new(1).expect("nz"),
+        kind: sts2_core::RelicKind::Regalite,
+        counter: 0,
+        is_wax: false,
+        is_melted: false,
+    });
+    set_mad_science_variant(&mut state.cards[0], CardType::Skill, TinkerTimeRider::Chaos);
+    let generated_before = state.player.generated_cards_this_combat;
+    let f = lookup(CardId::MadScience).expect("registered");
+    f(&mut state, Some(enemy));
+    assert_eq!(state.player.block, 12, "Skill block + Regalite's 4");
+    assert_eq!(
+        state.player.generated_cards_this_combat,
+        generated_before + 1,
+        "a generated card"
+    );
+}
+
+/// v0.113.0 `MyShinies.cs`: `Damage.BaseValue` (1) `floor(Gold / 20)` times;
+/// the upgrade lowers the gold per hit to 10.
+#[test]
+fn play_my_shinies_hits_once_per_twenty_gold() {
+    install_pool();
+    let f = lookup(CardId::MyShinies).expect("registered");
+    for (gold, upgraded, hits) in [
+        (45, false, 2),
+        (19, false, 0),
+        (45, true, 4),
+        (60, false, 3),
+    ] {
+        let (mut state, euid) = fresh_state(CardId::MyShinies, 1, 0);
+        state.gold = gold;
+        state.cards[0].upgraded = upgraded;
+        let hp_before = state.creatures[0].current_hp;
+        f(&mut state, Some(euid));
+        assert_eq!(
+            hp_before - state.creatures[0].current_hp,
+            hits,
+            "gold {gold} upgraded {upgraded}"
+        );
+    }
+}
+
+/// v0.113.0 `ColorlessCardPool.cs:62-63`: MyShinies follows MindBlast in
+/// every run-level colorless pool read and in the combat generation pool;
+/// earlier builds never see it.
+#[test]
+fn my_shinies_follows_mind_blast_only_from_v0113() {
+    use sts2_core::GameVersion;
+    let run_pool = |v| {
+        crate::cards::spec_index::specs_in(crate::cards::spec_index::COLORLESS_SPECS, v)
+            .map(|s| s.id)
+            .collect::<Vec<_>>()
+    };
+    for v in [GameVersion::V0_107_1, GameVersion::V0_111_0] {
+        assert!(!run_pool(v).contains(&CardId::MyShinies), "{v:?}");
+        assert!(
+            !super::helpers::colorless_combat_generatable_ids_in(v).contains(&CardId::MyShinies)
+        );
+    }
+    let pool = run_pool(GameVersion::V0_113_0);
+    let at = pool
+        .iter()
+        .position(|&id| id == CardId::MindBlast)
+        .expect("MindBlast");
+    assert_eq!(pool[at + 1], CardId::MyShinies);
+    let combat = super::helpers::colorless_combat_generatable_ids_in(GameVersion::V0_113_0);
+    let at = combat
+        .iter()
+        .position(|&id| id == CardId::MindBlast)
+        .expect("MindBlast");
+    assert_eq!(combat[at + 1], CardId::MyShinies);
 }

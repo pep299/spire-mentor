@@ -104,6 +104,13 @@ pub(crate) fn play_jackpot(state: &mut CombatState, target: Option<CreatureUid>)
                 .filter(|s| s.cost == 0)
                 .collect()
         }
+        // v0.113.0 The Fool: the `FilterForCombat`-filtered Fool pool
+        // (`FoolCardPool.GenerateAllCards` order), then `cost == 0`.
+        Some(c @ CharacterId::Fool) => super::helpers::fight_pool(state, c)
+            .iter()
+            .copied()
+            .filter(|s| s.cost == 0)
+            .collect(),
         _ => return EffectResult::Resolved,
     };
     // v0.111.0 (GH #793): Sidestep holds Scare's Silent slot (decomp
@@ -126,7 +133,10 @@ pub(crate) fn play_jackpot(state: &mut CombatState, target: Option<CreatureUid>)
     if pool.is_empty() {
         return EffectResult::Resolved;
     }
-    let upgraded = current_upgraded(state);
+    // Jackpot attacks before it generates: after a killing blow on the last
+    // enemy `CardCmd.Upgrade` is a no-op (`CombatManager.IsEnding`,
+    // CardCmd.cs:267-270), so the cards stay unupgraded (GH #1150).
+    let upgraded = current_upgraded(state) && !sts2_core::combat_loop::combat_is_ending(state);
     for _ in 0..3 {
         let spec = pool[state
             .run_rng

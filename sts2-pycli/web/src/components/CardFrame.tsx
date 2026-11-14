@@ -1,5 +1,6 @@
 import { Fragment, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { assetUrl, type Card } from "../api";
+import { characterArt } from "../characters";
 // card.tscn's card box, in the scene's own units, plus the width→height rule.
 // Shared so callers that reserve space for a card get the same number it uses.
 import { CARD_H, CARD_W, cardBoxHeight } from "../cardGeometry";
@@ -79,7 +80,7 @@ const TITLE_OUTLINE: Record<string, string> = {
 // orb. Keyed by the frame colour so it needs no extra field.
 const ORB_BY_COLOR: Record<string, string> = {
   red: "ironclad", green: "silent", blue: "defect",
-  pink: "necrobinder", orange: "regent", quest: "quest",
+  pink: "necrobinder", orange: "regent", yellow: "fool", quest: "quest",
 };
 
 function frameType(type: string | undefined): string {
@@ -105,7 +106,7 @@ function bannerRarity(rarity: string | undefined): string {
  * construction (`card_atlas/<pool>/<slug>.png`). */
 const POOL_COLOR: Record<string, string> = {
   ironclad: "red", silent: "green", defect: "blue",
-  necrobinder: "pink", regent: "orange", curse: "curse", quest: "quest",
+  necrobinder: "pink", regent: "orange", fool: "yellow", curse: "curse", quest: "quest",
 };
 
 function frameColor(card: Card): string {
@@ -190,7 +191,7 @@ function renderMarkup(text: string, orb: string): ReactNode[] {
     if (m[3]) {
       const src = m[3] === "star"
         ? assetUrl("card_template/energy_star.png")
-        : assetUrl(`card_template/energy/${orb}.png`);
+        : assetUrl(characterArt(orb, `card_template/energy/${orb}.png`));
       for (let i = 0; i < Number(m[4]); i++) {
         out.push(
           <img key={out.length} className="gs-card-inline-icon" src={src}
@@ -270,7 +271,7 @@ function renderDesc(
   return <>{out}</>;
 }
 
-export default function CardFrame({ card, width = 112, height, dim = false, unaffordable = false, blocked = false, played = false, onClick, clickable = false, hotkey, winProb, best, previewDamage }: {
+export default function CardFrame({ card, width = 112, height, dim = false, unaffordable = false, blocked = false, played = false, onClick, clickable = false, hotkey, winProb, best, mark, step, previewDamage, descFloor }: {
   card: Card; width?: number; height?: number; dim?: boolean;
   /** In hand, and you cannot pay for it right now. The game does NOT fade the
    *  card for this: `NCard.UpdateEnergyCostVisuals` paints the cost numeral
@@ -289,6 +290,11 @@ export default function CardFrame({ card, width = 112, height, dim = false, unaf
    *  are short on energy when you are not. */
   blocked?: boolean;
   played?: boolean; onClick?: () => void; hotkey?: number; winProb?: number; best?: boolean;
+  /** The advice's mark on this card (advice/marks.ts): a gold glow around its
+   *  silhouette, breathing on the move to make. */
+  mark?: "best" | "good" | "alt" | null;
+  /** The mark's step number (1 = play now). */
+  step?: number | null;
   /** Reads as clickable (cursor, rim) although the click is handled by an
    *  ancestor. The hand needs this: its cards sit under a hitbox that stays
    *  put while the card itself rises, so the hand's slot — not the card —
@@ -297,6 +303,12 @@ export default function CardFrame({ card, width = 112, height, dim = false, unaf
   // Live modified per-hit damage for the target currently being aimed at, when
   // this card is an attack and a target is determined; recolored on the card.
   previewDamage?: number | null;
+  /** The description never renders smaller than this (same px as `width`),
+   *  not even to fit its box. The phone's zoomed card (ZoomCard) uses it to
+   *  hold the 13 real px text floor at 160-170px wide, where the game's 21/300
+   *  ratio gives 11-12; text that no longer fits then scrolls inside its box
+   *  (phone.css, `.gs-zoomcard .gs-card-desc`) instead of shrinking. */
+  descFloor?: number;
 }) {
   // Fixed portrait aspect ratio (card.tscn's 300x422) so cards never resize
   // with content length.
@@ -331,6 +343,7 @@ export default function CardFrame({ card, width = 112, height, dim = false, unaf
   if (blocked) cls.push("gs-blocked");
   if (played) cls.push("gs-played");
   if (best) cls.push("gs-best");
+  if (mark) cls.push(`gs-mark-${mark}`);
 
   return (
     <div
@@ -350,11 +363,11 @@ export default function CardFrame({ card, width = 112, height, dim = false, unaf
 
       {/* Frame: tinted by pool. Also paints the description panel behind the text. */}
       <img className="gs-card-layer" alt="" aria-hidden="true"
-        src={assetUrl(`card_template/frames/${frameType(card.type)}_${color}.png`)} />
+        src={assetUrl(characterArt(orb, `card_template/frames/${frameType(card.type)}_${color}.png`))} />
 
       <FitText fitKey={`${desc}|${card.stats?.damage ?? ""}|${previewDamage ?? ""}`
         + `|${card.stats?.block ?? ""}|${card.block_preview ?? ""}`}
-        max={width * DESC_SIZE} min={width * DESC_MIN_SIZE}
+        max={Math.max(width * DESC_SIZE, descFloor ?? 0)} min={Math.max(width * DESC_MIN_SIZE, descFloor ?? 0)}
         className="gs-card-desc" style={{ ...DESCRIPTION, whiteSpace: "pre-line" }}>
         {renderDesc(desc, orb, card, previewDamage)}
       </FitText>
@@ -390,7 +403,7 @@ export default function CardFrame({ card, width = 112, height, dim = false, unaf
       </div>
 
       <div className={`gs-card-energy${costShift}`} style={ENERGY_ICON}>
-        <img src={assetUrl(`card_template/energy/${orb}.png`)} alt="" aria-hidden="true" />
+        <img src={assetUrl(characterArt(orb, `card_template/energy/${orb}.png`))} alt="" aria-hidden="true" />
         <span style={{ fontSize: `calc(var(--cw) * ${ENERGY_SIZE})` }}>{card.cost}</span>
       </div>
 
@@ -410,6 +423,9 @@ export default function CardFrame({ card, width = 112, height, dim = false, unaf
       {/* Workbench affordances — not part of the game's card. */}
       {played && <span className="gs-badge gs-played-tag">played</span>}
       {hotkey != null && <span aria-hidden="true" className="gs-badge gs-hotkey-tag">{hotkey}</span>}
+      {step != null && (
+        <span className={`gs-badge gs-step-tag gs-step-${mark ?? "best"}`} aria-label={`step ${step}`}>{step}</span>
+      )}
       {winProb != null && (
         <span aria-hidden="true" className={`gs-badge gs-win${best ? " gs-best" : ""}`}>
           {Math.round(winProb * 100)}%

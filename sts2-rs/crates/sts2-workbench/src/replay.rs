@@ -20,10 +20,9 @@ use crate::api::ApiError;
 use crate::combatlog::format_combat_log;
 use crate::deck;
 use crate::enrich::{asset_url, enrich, enrich_map_nodes, log_names, EnrichCtx};
-use crate::game::{Game, GameError};
+use crate::game::{Game, GameError, ModeSeed};
 use crate::localization::{resolve_state_names, Loc};
 use crate::render::{describe_action, NATIVE_ACTION};
-use crate::rmx;
 use crate::runlog::{resume_capability, ReplayStore, Step};
 use crate::runmode;
 use crate::statediff::diff_states;
@@ -317,14 +316,21 @@ impl Rebuilt {
         game.set_record_card_plays(true);
         game.set_record_combat_log(true);
         if ident.run_mode {
-            let seed = ident.seed.parse::<i32>().map_err(|_| {
+            let mode_seed = ModeSeed::parse(&ident.seed).ok_or_else(|| {
                 format!(
-                    "run-mode save carries a non-numeric seed {:?}; cannot restore it",
+                    "run-mode save carries an unreadable seed {:?}; cannot restore it",
                     ident.seed
                 )
             })?;
-            game.start_faithful(&ident.character, seed, ident.ascension)
-                .map_err(|GameError(m)| m)?;
+            if ident.e2e_setup {
+                start_e2e(&mut game, &mode_seed, ident.ascension)?;
+            } else {
+                let ModeSeed::Int(seed) = mode_seed else {
+                    return Err("a game seed string needs the e2e setup".to_string());
+                };
+                game.start_faithful(&ident.character, seed, ident.ascension)
+                    .map_err(|GameError(m)| m)?;
+            }
         } else {
             game.start(&ident.character, &ident.seed, ident.ascension, &ident.act1)
                 .map_err(|GameError(m)| m)?;
@@ -351,10 +357,9 @@ impl Rebuilt {
             let total = self.line.len();
             let n = self.applied + 1;
             if action == NATIVE_ACTION {
-                let ra = rmx::action_from_value(&args).map_err(|e| {
+                let result = self.game.take_native_value(&args).map_err(|e| {
                     format!("replay diverged at step {n}/{total} (action '{action}'): {e}")
                 })?;
-                let result = rmx::result_str(&self.game.take_native(ra));
                 if result != "advanced" && result != "run_over" {
                     return Err(format!(
                         "replay diverged at step {n}/{total} (action '{action}'): take_action returned '{result}'"
@@ -645,5 +650,20 @@ mod tests {
             !b["message"].as_str().unwrap_or("").contains(".title"),
             "{b}"
         );
+    }
+}
+
+/// `Game::start_e2e`, or an error in a build without the `e2e` feature.
+fn start_e2e(game: &mut Game, seed: &ModeSeed, ascension: u8) -> Result<(), String> {
+    #[cfg(feature = "e2e")]
+    {
+        game.start_e2e_seed(seed, ascension)
+            .map(|_| ())
+            .map_err(|GameError(m)| m)
+    }
+    #[cfg(not(feature = "e2e"))]
+    {
+        let _ = (game, seed, ascension);
+        Err("this build has no e2e feature; cannot rebuild an e2e run".to_string())
     }
 }

@@ -97,6 +97,18 @@ _REQUIREMENTS: dict[str, tuple[Path, str]] = {
         _MONO / "logs" / "2026-10-18-rollout-net-recipe" / "boss800.jsonl",
         "private run logs (logs/ is not exported)",
     ),
+    "instinct_corpus": (
+        _MONO / "logs" / "2026-11-07-instinct-live" / "run1-requests.jsonl.gz",
+        "private run logs (logs/ is not exported) + the private Instinct net (data/e2e)",
+    ),
+    "host_overrides": (
+        _PYCLI / "data" / "host_overrides.json",
+        "names game methods; not exported (GH #1299)",
+    ),
+    "decomp_v0111": (
+        _MONO / "sts2-wiki" / "decompiled" / "v0.111.0",
+        "the C# decompilation (decompiled/ is not exported)",
+    ),
 }
 
 # Node-id prefix (relative to tests/) -> requirement. A bare module prefix
@@ -105,6 +117,7 @@ _NEEDS: dict[str, str] = {
     # --- the vendored English localization
     "test_localization_registry_coverage.py": "localization",
     "test_realgame_advisor_deck_mutation.py": "localization",
+    "test_display_names.py::test_names_come_from_the_game_tables": "localization",
     "test_rust_game_backend.py::test_csharp_resolve_event_fields_resolves_boss_relic_and_regular_event": "localization",
     "test_hint_adapter.py::test_ironclad_vs_nibbit_mid_turn": "localization",
     "test_hint_adapter.py::test_mid_turn_with_potions": "localization",
@@ -161,10 +174,44 @@ _NEEDS: dict[str, str] = {
     "turnplan/test_root_filter.py::test_a_cell_with_the_knob_reports_a_filtered_root": "combat_bench",
     # --- the rollout-net recipe's boss800 holdout list (private logs/)
     "test_combat_ctx.py::test_jobs_hold_out_every_holdout_run": "rollout_recipe",
+    "test_realgame_instinct_live.py": "instinct_corpus",
+    # --- the combat-PPO start pool subtracts every combat-bench run
+    "test_combat_ppo.py::test_train_pool_holds_out_every_holdout_run": "combat_bench",
     "test_elite_gap_tools.py::test_takeover_forces_a_human_line_exactly": "combat_bench",
     "test_elite_gap_tools.py::test_takeover_records_both_first_turns_with_rollouts": "combat_bench",
     "test_leaf_correction.py::test_play_and_label_rebuilds_the_final_value": "combat_bench",
+    # --- the e2e F9 ledger's card types, checked against the v0.111.0 decomp
+    # --- the reviewed override table (and the decomp the IlPatcher rows hash)
+    "test_host_override_fingerprints.py": "host_overrides",
+    "e2e/test_e2e_invariants.py::test_no_v0111_power_is_typed_as_a_non_power": "decomp_v0111",
+    "e2e/test_e2e_invariants.py::test_the_instanced_powers_match_the_decomp": "decomp_v0111",
 }
+
+
+#: Wall-clock-timing tests that flake on the public repo's GitHub Actions
+#: runners (2 slow cores). Node-id prefixes as in `_NEEDS`, parameters ignored.
+#: They skip when `GITHUB_ACTIONS` is set: this repo has no Actions CI, so
+#: that means the public CI. They still run on every local gate.
+_FLAKY_ON_GITHUB_ACTIONS: dict[str, str] = {
+    # state.pt lagged the stats rows by 12 iterations at the kill (138 < 149).
+    "e2e/test_e2e_t11_sigkill.py::test_sigkill_then_resume_reproduces_the_next_three_iterations": (
+        "state.pt falls behind the stats rows on a slow runner"
+    ),
+    # The 0.3 s stall window fired in the healthy phase (resumed at 720, not 900).
+    "e2e/test_e2e_ops_watchdog.py::test_stall_restarts_the_learner": (
+        "the stall watchdog's sub-second window fires early on a slow runner"
+    ),
+}
+
+
+def _flaky_on_github_actions(nodeid: str) -> str | None:
+    rel = nodeid.split("tests/", 1)[-1].split("[", 1)[0]
+    parts = rel.split("::")
+    for n in range(len(parts), 0, -1):
+        hit = _FLAKY_ON_GITHUB_ACTIONS.get("::".join(parts[:n]))
+        if hit:
+            return hit
+    return None
 
 
 def _needs(nodeid: str) -> str | None:
@@ -177,9 +224,53 @@ def _needs(nodeid: str) -> str | None:
     return None
 
 
+#: What the engine has not ported yet for a supported game build, by marker.
+#: GH #1303 tracks the v0.113.0 port. A test carrying ``pending_<name>`` is a
+#: STRICT xfail on a build listed here: it must fail there, and the first run in
+#: which it passes goes red (XPASS), which is the cue to drop the build. The
+#: values are (builds, reason, the only exception a pass may fail with or None).
+#:
+#: * ``run_level`` -- the engine still rolls the previous build's run level on
+#:   these builds (Neow offer, act-1 boss), so a C#-captured golden cannot
+#:   match yet.
+#: * ``e2e_tables`` -- the e2e brain's static tables are not generated for
+#:   these builds (``tests/e2e/test_e2e_static_tables.py`` ``PENDING_TABLES``).
+PENDING_BUILDS: dict[str, tuple[frozenset[str], str, type[BaseException] | None]] = {
+    "run_level": (
+        frozenset(),
+        "run level (Neow offer, act rolls) not ported to this build yet (GH #1303)",
+        None,
+    ),
+    "e2e_tables": (
+        frozenset({"v0.113.0"}),
+        "e2e static tables not generated for this build yet (GH #1303)",
+        KeyError,
+    ),
+}
+
+
+@pytest.fixture
+def run_level_pending() -> bool:
+    """Whether the active build's run level is still pending (`PENDING_BUILDS`)."""
+    return sts2_client.GAME_VERSION in PENDING_BUILDS["run_level"][0]
+
+
+@pytest.fixture
+def pending_builds() -> dict[str, frozenset[str]]:
+    """`PENDING_BUILDS` as {name: builds}."""
+    return {name: builds for name, (builds, _, _) in PENDING_BUILDS.items()}
+
+
+def _mark_pending(item: pytest.Item) -> None:
+    for name, (builds, reason, raises) in PENDING_BUILDS.items():
+        if item.get_closest_marker(f"pending_{name}") and sts2_client.GAME_VERSION in builds:
+            item.add_marker(pytest.mark.xfail(strict=True, reason=reason, raises=raises))
+
+
 def pytest_collection_modifyitems(items):
     oracle_skip = _oracle_skip_reason()
     for item in items:
+        _mark_pending(item)
         if "game" in getattr(item, "fixturenames", ()):
             item.add_marker(pytest.mark.oracle)
         if oracle_skip and item.get_closest_marker("oracle"):
@@ -190,6 +281,10 @@ def pytest_collection_modifyitems(items):
             path, how = _REQUIREMENTS[req]
             if not path.exists():
                 item.add_marker(pytest.mark.skip(reason=f"needs {path.relative_to(_MONO)} ({how})"))
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            flaky = _flaky_on_github_actions(item.nodeid)
+            if flaky:
+                item.add_marker(pytest.mark.skip(reason=f"timing flake on GitHub Actions: {flaky}"))
 
 
 @pytest.hookimpl(wrapper=True)

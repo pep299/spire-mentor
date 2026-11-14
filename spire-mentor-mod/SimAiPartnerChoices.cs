@@ -133,6 +133,8 @@ internal sealed class SimAiPartnerChoices
         }
         state["type"] = "advice_request";
         state["advice_for"] = adviceFor;
+        // Same brain as the player's advice (SimAiPartnerBrain's combat asks).
+        state["brain"] = SimAdvisor.CurrentBrain;
         _inflightKey = key;
         _inflightAt = DateTime.UtcNow;
         if (!advisor.Request(state, root => OnReply(key, root)))
@@ -185,6 +187,56 @@ internal sealed class SimAiPartnerChoices
         {
             state["surface"] = surface;
         }
+        SimStateExtractor.ApplyEnvelope(state, me.RunState as RunState, me);
+        return state;
+    }
+
+    /// <summary>A choose-a-card screen as the host's own (SimScreenAdvice
+    /// DescribeChooseACard): in a fight it carries the partner's board and
+    /// what opened it (Discovery, a potion), so the partner's advisor answers
+    /// it on its fight mirror like the host's; out of a fight (Lead
+    /// Paperweight) it is a deck pick and <c>combat</c> is null.</summary>
+    internal static Dictionary<string, object> ChooseACardState(Player me, IReadOnlyList<CardModel> cards, bool canSkip, object? source)
+    {
+        Dictionary<string, object> state = CardRewardState(me, cards, canSkip, "choose_a_card");
+        state["combat"] = (object?)SimCombatHandler.BuildEmbeddedCombatState(me)!;
+        string? sourceModel = SimCardSelectContext.EntryOf(source);
+        if (sourceModel != null)
+        {
+            state["source"] = "FromChooseACardScreen";
+            state["prompt_key"] = "TO_OBTAIN";
+            state["source_model"] = sourceModel;
+            state["source_kind"] = (object?)SimCardSelectContext.KindOfModel(source)!;
+        }
+        return state;
+    }
+
+    /// <summary>A one-card deck screen (upgrade / transform / remove) as the
+    /// host's card_select (SimCardSelector): the prompt key says what it
+    /// does, which is what both brains read.</summary>
+    internal static Dictionary<string, object> DeckSelectState(Player me, IReadOnlyList<CardModel> cards, CardSelectorPrefs? prefs, string kind)
+    {
+        var rows = new List<Dictionary<string, object?>>();
+        for (int i = 0; i < cards.Count; i++)
+        {
+            Dictionary<string, object?> data = SimStateExtractor.SerializeCard(cards[i]);
+            data["index"] = i;
+            rows.Add(data);
+        }
+        string method = kind.Contains('.') ? kind[(kind.LastIndexOf('.') + 1)..] : kind;
+        var state = new Dictionary<string, object>
+        {
+            [NonCombatBridgeProtocol.TypeField] = NonCombatBridgeProtocol.CardSelectState,
+            ["cards"] = rows,
+            ["min_select"] = 1,
+            ["max_select"] = 1,
+            ["min_count"] = 1,
+            ["max_count"] = 1,
+            ["cancelable"] = prefs?.Cancelable ?? false,
+            ["prompt_key"] = (object?)prefs?.Prompt.LocEntryKey!,
+            ["source"] = method,
+            ["combat"] = (object?)SimCombatHandler.BuildEmbeddedCombatState(me)!,
+        };
         SimStateExtractor.ApplyEnvelope(state, me.RunState as RunState, me);
         return state;
     }
@@ -251,8 +303,9 @@ internal sealed class SimAiPartnerChoices
         {
             bool canSkip = args.OfType<bool>().LastOrDefault();
             List<CardModel> cards = offered.ToList();
+            object? source = SimCardSelectContext.SourceObjectFrom(args);
             return AskIndex(me, $"chooseacard:{id}", NonCombatBridgeProtocol.CardRewardState,
-                () => CardRewardState(me, cards, canSkip, "choose_a_card"), cards.Count, canSkip ? null : 0, cards, out how);
+                () => ChooseACardState(me, cards, canSkip, source), cards.Count, canSkip ? null : 0, cards, out how);
         }
         if (kind.EndsWith(".FromChooseARelicScreen", StringComparison.Ordinal) &&
             args.OfType<IReadOnlyList<RelicModel>>().FirstOrDefault() is { } relics)
@@ -282,14 +335,30 @@ internal sealed class SimAiPartnerChoices
         }
         if (kind.Contains("FromDeck", StringComparison.Ordinal))
         {
-            List<CardModel> deck = me.Deck.Cards.ToList();
-            IEnumerable<CardModel> candidates = kind.EndsWith("FromDeckForUpgrade", StringComparison.Ordinal)
-                ? deck.Where(c => c.IsUpgradable)
-                : deck;
+            IEnumerable<CardModel> candidates = DeckCandidates(me, kind, args);
             // An upgrade is always worth taking (a smith, an event's upgrade);
             // other deck prompts take what they must.
             int count = kind.EndsWith("FromDeckForUpgrade", StringComparison.Ordinal) ? Math.Max(1, minSelect) : minSelect;
-            List<CardModel> picks = Rank(candidates, kind).Take(count).ToList();
+            List<CardModel> pool = candidates.ToList();
+            if (count == 1 && pool.Count > 1)
+            {
+                // One card to upgrade / transform / remove: the advisor's
+                // deck screen (the Smith, Neow's New Leaf), as the host's own
+                // card_select. The partner played these by the hand-written
+                // order below until 0.10.0-beta.7.
+                (SimAskState asked, int? index) = Ask(me, $"deck:{id}", NonCombatBridgeProtocol.CardSelectState,
+                    () => DeckSelectState(me, pool, prefs, kind));
+                if (asked == SimAskState.Pending)
+                {
+                    return null;
+                }
+                if (asked == SimAskState.Answered && index is int i && i >= 0 && i < pool.Count)
+                {
+                    how = $"{pool[i].Id.Entry} (advisor)";
+                    return PlayerChoiceResult.FromMutableDeckCards(new List<CardModel> { pool[i] });
+                }
+            }
+            List<CardModel> picks = Rank(pool, kind).Take(count).ToList();
             how = picks.Count == 0 ? "none" : string.Join(",", picks.Select(c => c.Id.Entry)) + " (heuristic)";
             return PlayerChoiceResult.FromMutableDeckCards(picks);
         }
@@ -303,6 +372,39 @@ internal sealed class SimAiPartnerChoices
         }
         how = "none (unknown prompt)";
         return PlayerChoiceResult.FromIndex(null);
+    }
+
+    /// <summary>The deck cards a FromDeck* prompt offers, filtered the way
+    /// CardSelectCmd filters them -- an answer outside that set makes the
+    /// host throw (a Defend for Self-Help Book's attack-only Sharp: "Cannot
+    /// enchant CARD.DEFEND_SILENT with ENCHANTMENT.SHARP", live 2026-11-13).
+    /// The prompt is the innermost overload called, so a deck enchantment
+    /// carries its already-filtered card list.</summary>
+    internal static IEnumerable<CardModel> DeckCandidates(Player me, string kind, object?[] args)
+    {
+        if (args.FirstOrDefault() is IReadOnlyList<CardModel> offered)
+        {
+            return offered;
+        }
+        IEnumerable<CardModel> deck = me.Deck.Cards;
+        if (kind.EndsWith("FromDeckForUpgrade", StringComparison.Ordinal))
+        {
+            deck = deck.Where(c => c.IsUpgradable);
+        }
+        else if (kind.EndsWith("FromDeckForTransformation", StringComparison.Ordinal))
+        {
+            deck = deck.Where(c => c.Type != CardType.Quest && c.IsTransformable);
+        }
+        if (args.OfType<EnchantmentModel>().FirstOrDefault() is { } enchantment)
+        {
+            deck = deck.Where(enchantment.CanEnchant);
+        }
+        // FromDeckGeneric's filter, FromDeckForEnchantment's additionalFilter.
+        if (args.OfType<Func<CardModel, bool>>().FirstOrDefault() is { } filter)
+        {
+            deck = deck.Where(filter);
+        }
+        return deck;
     }
 
     /// <summary>A card pick by the advisor, else <paramref name="fallback"/>

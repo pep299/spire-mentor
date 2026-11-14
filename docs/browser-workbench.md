@@ -81,6 +81,21 @@ cargo install wasm-bindgen-cli --locked \
 the `binaryen` npm package `_web-deps` puts in `web/node_modules`; without
 either, the build ships the unoptimized wasm with a note (~30% larger).
 
+**The engine ships gzipped.** The wasm32 target is built with `+simd128`
+(`sts2-rs/.cargo/config.toml`; Chrome 91+, Firefox 89+, Safari 16.4+), which
+makes the e2e student's net ~3.6x faster and the engine ~26.2 MB — over
+Cloudflare Pages' 25 MiB (26,214,400 B) per-file cap. So `wasm-build` also
+writes `web/src/wasm/pkg/sts2_workbench_wasm_bg.wasm.gz` (gzip -9, byte-stable,
+~7.5 MB), the static BUILD points the worker's `?url` import at it
+(`vite.config.ts`; dist then carries `wb-assets/sts2_workbench_wasm_bg.wasm-<hash>.gz`
+and no `.wasm`), and the worker inflates it with `DecompressionStream`
+(`web/src/worker/wasmLoad.ts`, still `instantiateStreaming`; a host that adds
+`Content-Encoding: gzip` anyway is handled by sniffing the gzip magic; a
+browser without `DecompressionStream` gets a clear error). `vite dev` serves
+the plain wasm. `workbench_static.py build` ends with a **size gate**
+(`check-dist`): any `web/dist` file over 25 MiB, or any `.wasm` in dist,
+fails the build (and `just deploy-static-cf` re-runs it before uploading).
+
 All from `sts2-pycli/`:
 
 ```
@@ -313,6 +328,122 @@ port `BranchingLiveSession.start_run_mode` / `run_mode_step` /
 - The `ppo_impl` toggle is accepted for parity (`python|rust`) but the
   browser always runs tract; the panel hides the toggle in static mode.
 
+## Instinct — the e2e brain (one net, no search)
+
+The UI calls this brain and advisor **Instinct** ("Instinct (PPO only)" in the pickers); code, routes and stored values keep `e2e`.
+
+`off_combat_brain: "e2e"` is the e2e Ironclad student (`sts2-rs/crates/sts2-e2e`,
+weights `sts2-pycli/data/e2e/*.e2ew` + `.provenance.md`): one transformer that
+makes EVERY decision of the run, fights included, with no search. Plan:
+`docs/plans/2026-11-06-workbench-e2e-brain.md`.
+
+- **Engine.** `sts2-workbench` feature `e2e` (default; the wasm shell has it).
+  `e2e.rs` is the pure core (load, decide, `selfplay`); `session_e2e.rs` is the
+  brain: `run_mode_step` routes every phase to `e2e_step`, which asks the
+  `sts2_e2e::env::Driver` what comes next (`peek`), applies forced steps as the
+  env does, otherwise tokenizes + runs the net greedily, applies the action
+  natively and records a `__agent_native__` node. The step answers the
+  agent-step shape: `search.scores` are the merged-class probabilities with
+  labels, `debug` carries `decision_type`, `prob`, `ms_tokenize`, `ms_net`,
+  `ms` (from `Config.perf_ms` = `performance.now()` in the browser). The
+  student's per-run state (driver + tokenizer cache) is kept per node and
+  rebuilt by shadow replay after seek / restore / import.
+  `recommended_action` and the autobattle champion pick ask the student too.
+- **Start.** `start-faithful {e2e: true}` forces the training run: Ironclad,
+  v0.111.0, act 1 rolled, potion swap on, ascension default 10. The run
+  identity carries `e2e_setup` through saves, persists and run logs.
+- **Net, on demand.** ~21 MB. The worker fetches `/e2e/<file>` only when a call
+  selects the brain (or the engine answers 424 for a restored run, retried
+  once): not at boot, not in "Download for offline". The static build copies
+  it to `dist/e2e/`; the service worker caches it cache-first in `wb-ppo-v1`;
+  `_headers` serves `/e2e/*` immutable. The public export has no `data/e2e`
+  (the unit allowlist names only the PPO champions), so there the build ships
+  without it and the brain answers 424 with the fetch's 404.
+- **Probe.** `POST /api/e2e/selfplay {seed, ascension?, max_decisions?}` plays
+  a fresh run headless: `{won, decisions, chosen, ms_total, ms_per_decision,
+  ms_{tokenize,net,env}_per_decision}`; `chosen` equals a native `E2eEnv` run.
+- **Size + SIMD.** The brain adds ~0.7 MB to the engine wasm. `+simd128`
+  (enabled since 2026-11-06) grows it 26,097,190 → 26,269,945 B after
+  `wasm-opt -O3`, over Pages' 25 MiB per-file cap, so the engine ships
+  gzipped (7,526,128 B; "Build, run, gates" above). Measured under node 26
+  on the same source, full `selfplay` of seed 170000000 (634 decisions, A10,
+  won, identical choices): 30.7 → 8.6 ms/decision (net 30.3 → 8.2 ms); the
+  MCTS bench (`scripts/site-bench/wasm_hint_bench.mjs`, BENCH1) got faster
+  too, 0.0302 → 0.0241 ms/sim at 4000 sims (0.0293 → 0.0211 at 200).
+
+### Instinct as advisor (hand-played runs)
+
+A run you play yourself can take the student as its **advisor** instead of the
+search: `advisor: "e2e"` (Ironclad on v0.111.0 only — any other run keeps the
+search). Every surface that advises a hand-played move then shows the
+student's pick and its softmax probabilities (a POLICY's, never win chances):
+
+| Surface | Route | Under the e2e advisor |
+|---|---|---|
+| combat hint, best-move star on hand / potions / end turn, reasoning sidebar | `/api/live/hint` | the student's merged classes as `Score` rows (`stable_idx` = hand index, `-1` end turn, `-100-s` potion; `prob` on every row); the sidebar draws label / bar / % and captions "e2e net" |
+| play best (G), autoplay a turn (A), peek (P) | `/api/live/hint`, `/api/live/auto-action` | the student's pick |
+| policy panel (card reward, shop, event, map, rest, Neow, card selects, potion swap, bundles) | `/api/live/ppo-policy` | `policy: "e2e"` payload: the student's classes, no V(s), no backend toggle |
+| in-combat card-select chips | `/api/live/choice-ranker` | the student's probability per option ("e2e NN%") |
+| choice coach chip | `/api/live/last-choice-grade` | agreement with the student (`policy: "e2e"`, no rollout check) |
+| map route overlay | `full_map` / `/api/live/map` | seeded on the student's map pick |
+| per-turn combat coach | `/api/live/last-turn-grade` | silent (409): it grades against the search's line |
+
+**Win estimate (GH #1222).** The shipped `.e2ew` also carries a small probe
+(`ppo.e2e.probe`: a ~0.13M-parameter MLP on the student's `h_STATE`, the
+RUNCTX output its policy forward already computes, so it costs no extra
+forward). `E2eNet::evaluate` returns it with the logits; `e2e-advice`, the
+hint and the policy panel carry it as `estimate` — `{p_run, p_fight,
+hp_loss: {q10, q25, q50, q75, q90}, hp_now}` (`p_fight` / `hp_loss` only in a
+fight; `hp_loss` includes end-of-fight heals and is clamped to `hp_now`) — and
+the sidebar shows one line under Instinct's advice: "If Instinct plays on:
+fight 93% · −9 HP (−2 HP to −20 HP) · run 34%". The top bar shows the two
+chances side by side as a chip, "Run 34% · Fight 93%" (the fight only in
+combat), banded green / amber / red (`advice/estimate.ts` `estimateChip`);
+the idle "Instinct ready" shrinks to its dot to make room. Every number assumes Instinct
+plays every move from here; it is a state estimate, not a per-option value
+(per-choice numbers wait on #1222 step 5). Run mode adds it to the step's
+`debug.estimate` and summary. The probe is fitted per student: re-fit it
+(`ppo.e2e.probe collect` / `fit` / `report`, then `export_wb weights --probe`)
+whenever the weights change. Calibration: the `.provenance.md` next to the
+weights.
+
+Left on the search, deliberately: the search tree (`search_tree`, an explicit
+MCTS tool), the on-demand EV analyzers (card / decision advisor, choice
+"check it" — Monte-Carlo rollouts with MCTS fights, a different question than
+"what would the net play"), the regret / WPA reviews and the autobattle
+champion verdict (the run brain's, not the advisor's).
+
+- **One evaluation per node.** `POST /api/live/e2e-advice` is the student's
+  evaluation of the live node — `{available, reason, forced, is_combat,
+  decision_type, ms, pick, options, scores}`; each option carries the class's
+  workbench `action` / `args` (what `/api/live/action` takes), `label`,
+  `prob`, `members`, `is_best` and the env's `run_action`. It is cached per
+  node (`E2eSlot::advice`), so the hint, panel, auto-action and coach of one
+  position share ONE forward (~20–45 ms in wasm).
+- **Student state on a human's run.** While the student advises, every human
+  move goes through `Driver::peek` + `note_external` (the per-node state the
+  brain keeps); a run played without it (advisor switched on mid-run, a
+  reload, a save-load) is rebuilt once by shadow replay from the deepest node
+  that has a state. A position the driver cannot read (an unencodable action,
+  a cap) answers `available: false` with the reason — and does not poison the
+  positions after it (the driver's terminal is sticky, so the tracked state
+  skips the peek that ended it). Out-of-distribution runs (Overgrowth act 1,
+  potion swap off, other ascensions) still get an answer.
+- **Choosing it.** `POST /api/advisor {advisor}` is the host's preference: the
+  engine applies it to every run it installs after (start, save-load, import,
+  play-from-here, resume) that the student can read, and to the live run.
+  `POST /api/live/run-mode {advisor}` sets one run's advisor (400 for a run the
+  student cannot read); the run-mode config persists it (named only when
+  `e2e`). The page keeps the preference in `localStorage` (`wb.advisor`): the
+  launcher's "Play yourself" card has an **advisor** picker and the top bar an
+  **🔎 search / 🧠 e2e net** chip, both shown only for an Ironclad v0.111.0
+  Rust run; picking the e2e brain to watch picks it to advise too. The default
+  stays the search: the student's ~21 MB net downloads on first use (the
+  worker fetches it when a call selects the advisor or answers 424), and
+  v0.111.0 is not the default build. Tests: `tests/e2e_advisor.rs` (a
+  hand-played run checked position by position against an independent
+  `Driver` + net loop, through seek and a save-load rebuild).
+
 ## Replay viewer + deck analysis (M4)
 
 `crates/sts2-workbench/src/runlog.rs` is `BranchingLiveSession.quit` +
@@ -350,6 +481,50 @@ port `BranchingLiveSession.start_run_mode` / `run_mode_step` /
 - The run log is written with the Python normaliser's action shape (a
   hand-played potion records `slot: null` — the M2 asymmetry stays in the
   live coach only), so a recorded line hashes like the oracle's.
+
+## Seed check (`/seedcheck.html`)
+
+A page for a seed seen in a post ("maybe unwinnable"): paste the game seed,
+and Instinct plays it until it wins. Linked from the top bar (🎲 Seed check).
+The page picks character, build and ascension. Instinct only plays Ironclad
+on v0.111.0, so the other characters and builds are listed but disabled (the
+engine refuses them with a 400 too); any ascension 0–10 runs, with a note
+below A10 that the net trained at A10. Design:
+`docs/superpowers/specs/2026-11-08-workbench-seed-checker-design.md`.
+
+- **The seed is the game's.** `sts2_e2e::env::new_run_from_game_seed`
+  canonicalises (uppercase, `O`→`0`, `I`→`1`) and hashes with the v0.111.0
+  run-seed hash, the same as `sts2_rs.RunManager(string_seed=…)` and the C#
+  oracle. The page shows the Neow offers and the bosses before anything runs,
+  so a typo is visible. A character outside the game's alphabet is a 400; a
+  length other than 12 is shown as a warning.
+- **Check.** Attempt 0 is greedy, then T=1.0 samples, each attempt's PRNG
+  seeded from (seed, `check`, k) (`e2e::attempt`), so attempt k replays from
+  its index alone. `pool.ts` runs `min(8, cores − 1)` workers
+  (`seedcheck.worker.ts`, each its own wasm and net), stops at the first win
+  or at 5 minutes. No win: the rule-of-three bound over counted attempts
+  (engine errors and decision caps excluded), the best attempt saved, and
+  "Keep searching" continues the same sequence from the next k.
+- **Win rate.** A separate sequence (seed, `rate`, k), 200 sampled attempts,
+  Wilson 95% interval and deaths per floor with the room.
+- **Replay.** The winning (or best) attempt's class sequence is replayed
+  through a live e2e session (`POST /api/seedcheck/log`) and stored like any
+  run log; the result links to `/?open=<path>`. The run identity carries the
+  string seed as `game:<SEED>` (`ModeSeed`), so seek and restore rebuild it.
+- **The text.** `verdict.ts` writes the paste-ready verdict; it never says
+  "impossible". It carries the route floor by floor
+  (`seedcheck::line_summary` `route`, built from `visited_map_coords` so
+  forced moves are there too): the node's room ("?" says whether it was a
+  fight or an event), which node to take ("go left/straight/right" from the
+  node you stand on, "Nth of M from the left" on that floor), the encounter
+  or event, the choices and relics, and the HP on leaving. With no win, the
+  best attempt's route. Paragraphs are blank-line separated and the route is a
+  `- ` list, so Reddit and Discord markdown keep the lines apart.
+- **Acceptance (node, no browser).** `node web/scripts/seedcheck-node.mjs`
+  after `just wasm-build`: the greedy attempt must win both reference seeds and
+  the sampled rate on `1SNVTCEXKR0Q` must fall in [4.6%, 12.0%], the Wilson
+  interval of the Python `ppo.e2e.solve` d1250 rate (15/200). That reference
+  predates the d2500 avg5 (2026-11-08) and d5250 (2026-11-13) nets and needs re-measuring.
 
 ## Persistence
 

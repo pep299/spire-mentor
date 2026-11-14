@@ -28,25 +28,24 @@ pub(crate) fn drink_touch_of_insanity(
         .filter(|uid| {
             let idx = uid.0.get() as usize - 1;
             let c = &state.cards[idx];
-            // C# `CostsEnergyOrStars` resolves cost WITH local modifiers
-            // (`CardEnergyCost.GetWithModifiers`): a LiquidMemories /
-            // potion-generated free-this-turn card already costs 0 and is
-            // filtered OUT — C#'s TOI no-ops on it (sweep seed 3991: Rust
-            // selected the free RAMPAGE+1 off raw `cost > 0` and made it
-            // free for the whole combat). The raw cost stays as a guard so
-            // X-cost (-1) cards remain excluded.
-            if c.local_energy_cost.is_none()
-                && c.combat_var(sts2_core::cards::VarKey::FreeThisTurn) != 0
-            {
-                return false;
-            }
             // C# filters on `CostsEnergyOrStars` — energy OR stars. A Regent
             // 0-energy star card (FallingStar / Quasar, or a Confused-to-0
             // DyingStar) still costs STARS, so it IS a valid target. Mirror
             // both halves: raw energy cost > 0, or a positive star cost.
             // `effective_star_cost` returns 0 once a card is already free
             // (StarCostFreeThisCombat) so it won't be re-selected.
-            c.cost > 0 || sts2_core::effective_star_cost(c) > 0
+            // `CostsEnergyOrStars(false) || CostsEnergyOrStars(true)`: the cost
+            // with its local modifiers, or with the global ones too — not
+            // the printed cost. A Flatten zeroed by an Osty attack is no
+            // option (loadout Necrobinder 3159 v0.111.0: Rust offered it,
+            // shifting the pick onto Mimic instead of Melancholy).
+            // A potion-generated free-this-turn card already costs 0 locally
+            // and is no option unless a global surcharge prices it again
+            // (sweep seed 3991).
+            let energy = c.base_cost() >= 0
+                && (c.local_cost() > 0
+                    || sts2_core::hooks::effective_card_cost_inst(state, c, *uid) > 0);
+            energy || sts2_core::effective_star_cost(c) > 0
         })
         .collect();
     match candidates.as_slice() {
@@ -54,7 +53,8 @@ pub(crate) fn drink_touch_of_insanity(
         [uid] => {
             // FirstOrDefault: a single cost-bearing card, set free directly.
             let idx = uid.0.get() as usize - 1;
-            state.cards[idx].set_free_this_combat();
+            // C# `SetToFreeThisCombat`: `SetThisCombat(0)` and the star cost.
+            state.cards[idx].set_to_free_this_combat();
         }
         _ => {
             let options: Vec<sts2_core::ChoiceOption> = candidates

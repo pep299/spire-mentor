@@ -122,9 +122,9 @@ pub fn roll_offers_for(
         AncientId::Orobas => roll_orobas(version, rng, cond),
         AncientId::Pael => roll_pael(rng, cond),
         AncientId::Tezcatara => roll_tezcatara(rng, cond),
-        AncientId::Nonupeipe => roll_nonupeipe(rng, cond),
-        AncientId::Tanx => roll_tanx(rng, cond),
-        AncientId::Vakuu => roll_vakuu(rng),
+        AncientId::Nonupeipe => roll_nonupeipe(version, rng, cond),
+        AncientId::Tanx => roll_tanx(version, rng, cond),
+        AncientId::Vakuu => roll_vakuu(version, rng),
         AncientId::Darv => roll_darv(version, rng, cond),
         // Neow's offers are rolled via `neow_offers::roll_neow_offers`
         // (2 positives + 1 curse), not this 3-relic boss-relic surface.
@@ -158,6 +158,15 @@ fn roll_tezcatara(rng: &mut Rng, cond: &AncientConditions) -> Vec<RelicId> {
     ]
 }
 
+/// `base.Rng.NextFloat() < 0.3333333f` (`Orobas.cs:196`, both builds): the
+/// roll is the `float` C# `NextFloat()` returns and the literal is a `float`.
+/// A double sample in [0.33333329857, 0.3333333) rounds to the float
+/// 0.33333331 = `0.3333333f`, which is not `<`, so C# offers Sea Glass where
+/// an `f64` compare offered Prismatic Gem.
+fn orobas_rolls_prismatic_gem(roll: f32) -> bool {
+    roll < 0.333_333_3_f32
+}
+
 /// `Orobas.GenerateInitialOptions`. RNG order: (1) pick the SeaGlass
 /// character variant from the other-character pool, (2) `NextFloat() < 1/3`
 /// PrismaticGem vs SeaGlass, (3) `NextItem` over `pool1 ++ [item]`,
@@ -176,7 +185,7 @@ fn roll_orobas(
         let _ = rng.next_int_exclusive(0, cond.num_other_characters as i32);
     }
     // (2) PrismaticGem (1/3) vs SeaGlass.
-    let item = if rng.next_float(1.0) < 0.333_333_3_f64 {
+    let item = if orobas_rolls_prismatic_gem(rng.next_float_f32()) {
         PrismaticGem
     } else {
         SeaGlass
@@ -189,7 +198,7 @@ fn roll_orobas(
         ),
         // v0.111.0: SandCastle moved from OptionPool1 to the END of
         // OptionPool2 (decomp Orobas.cs:28-39).
-        crate::GameVersion::V0_111_0 => (
+        crate::GameVersion::V0_111_0 | crate::GameVersion::V0_113_0 => (
             &[ElectricShrymp, GlassEye, item],
             &[AlchemicalCoffer, Driftwood, RadiantPearl, SandCastle],
         ),
@@ -246,7 +255,12 @@ fn roll_pael(rng: &mut Rng, cond: &AncientConditions) -> Vec<RelicId> {
 
 /// `Vakuu.GenerateInitialOptions` — `UnstableShuffle` each of 3 pools, take
 /// the head of each. DistinguishedCape's −9 MaxHP is a pickup side effect.
-fn roll_vakuu(rng: &mut Rng) -> Vec<RelicId> {
+///
+/// v0.113.0 replaced the shuffles with `GetOptionsFromThreePools`
+/// (`AncientEventModel.cs:302-360`): one `Rng.NextItem` per pool over its
+/// allowed options. Every Vakuu relic is allowed in a standard run, so the
+/// refill-from-the-union branch never runs.
+fn roll_vakuu(version: crate::GameVersion, rng: &mut Rng) -> Vec<RelicId> {
     use RelicId::{
         BloodSoakedRose, ChoicesParadox, DistinguishedCape, Fiddle, JeweledMask, LordsParasol,
         MusicBox, PreservedFog, SereTalon, WhisperingEarring,
@@ -254,6 +268,12 @@ fn roll_vakuu(rng: &mut Rng) -> Vec<RelicId> {
     let mut pool1 = vec![BloodSoakedRose, WhisperingEarring, Fiddle];
     let mut pool2 = vec![PreservedFog, SereTalon, DistinguishedCape];
     let mut pool3 = vec![ChoicesParadox, MusicBox, LordsParasol, JeweledMask];
+    if version >= crate::GameVersion::V0_113_0 {
+        return [pool1, pool2, pool3]
+            .iter()
+            .map(|pool| pool[rng.next_int_exclusive(0, pool.len() as i32) as usize])
+            .collect();
+    }
     rng.shuffle(&mut pool1);
     rng.shuffle(&mut pool2);
     rng.shuffle(&mut pool3);
@@ -263,7 +283,7 @@ fn roll_vakuu(rng: &mut Rng) -> Vec<RelicId> {
 /// `Tanx.GenerateInitialOptions` — base pool of 9 weapons (+TriBoomerang
 /// when the deck has ≥3 Instinct-enchantable cards), `UnstableShuffle`,
 /// take 3.
-fn roll_tanx(rng: &mut Rng, cond: &AncientConditions) -> Vec<RelicId> {
+fn roll_tanx(version: crate::GameVersion, rng: &mut Rng, cond: &AncientConditions) -> Vec<RelicId> {
     use RelicId::{
         Claws, Crossbow, IronClub, MeatCleaver, Sai, SpikedGauntlets, TanxsWhistle, ThrowingAxe,
         TriBoomerang, WarHammer,
@@ -282,13 +302,18 @@ fn roll_tanx(rng: &mut Rng, cond: &AncientConditions) -> Vec<RelicId> {
     if cond.instinct_eligible_count >= 3 {
         list.push(TriBoomerang);
     }
-    rng.shuffle(&mut list);
+    // v0.113.0 UnstableShuffle: one parent draw seeds a child Rng.
+    rng.shuffle_for(version, &mut list);
     list.into_iter().take(3).collect()
 }
 
 /// `Nonupeipe.GenerateInitialOptions` — base pool of 9 (+BeautifulBracelet
 /// when the deck has ≥4 Swift-enchantable cards), `UnstableShuffle`, take 3.
-fn roll_nonupeipe(rng: &mut Rng, cond: &AncientConditions) -> Vec<RelicId> {
+fn roll_nonupeipe(
+    version: crate::GameVersion,
+    rng: &mut Rng,
+    cond: &AncientConditions,
+) -> Vec<RelicId> {
     use RelicId::{
         BeautifulBracelet, BlessedAntler, BrilliantScarf, DelicateFrond, DiamondDiadem, FurCoat,
         Glitter, JewelryBox, LoomingFruit, SignetRing,
@@ -307,7 +332,8 @@ fn roll_nonupeipe(rng: &mut Rng, cond: &AncientConditions) -> Vec<RelicId> {
     if cond.swift_eligible_count >= 4 {
         list.push(BeautifulBracelet);
     }
-    rng.shuffle(&mut list);
+    // v0.113.0 UnstableShuffle: one parent draw seeds a child Rng.
+    rng.shuffle_for(version, &mut list);
     list.into_iter().take(3).collect()
 }
 
@@ -342,7 +368,7 @@ fn roll_darv(version: crate::GameVersion, rng: &mut Rng, cond: &AncientCondition
         // (each still costs its own `NextItem` read), and PhilosophersStone /
         // VelvetChoker are valid from act 2 on (`CurrentActIndex >= 1`, was
         // `== 2`). Decomp Darv.cs:172-197.
-        crate::GameVersion::V0_111_0 => {
+        crate::GameVersion::V0_111_0 | crate::GameVersion::V0_113_0 => {
             if cond.act_index == 1 {
                 sets.push(&[Ectoplasm]);
                 sets.push(&[Sozu]);
@@ -355,7 +381,8 @@ fn roll_darv(version: crate::GameVersion, rng: &mut Rng, cond: &AncientCondition
     }
 
     let mut source: Vec<RelicId> = sets.iter().map(|s| next_item(rng, s)).collect();
-    rng.shuffle(&mut source);
+    // v0.113.0 UnstableShuffle: one parent draw seeds a child Rng.
+    rng.shuffle_for(version, &mut source);
 
     if rng.next_bool() {
         let mut out: Vec<RelicId> = source.into_iter().take(2).collect();
@@ -696,7 +723,9 @@ mod tests {
         let mut saw_no = false;
         for seed in 0..256i32 {
             let mut rng = event_rng(seed, AncientId::Tanx);
-            if roll_tanx(&mut rng, &c).contains(&RelicId::TriBoomerang) {
+            if roll_tanx(crate::GameVersion::V0_107_1, &mut rng, &c)
+                .contains(&RelicId::TriBoomerang)
+            {
                 saw_no = true;
             }
         }
@@ -706,7 +735,9 @@ mod tests {
         let mut saw_yes = false;
         for seed in 0..256i32 {
             let mut rng = event_rng(seed, AncientId::Tanx);
-            if roll_tanx(&mut rng, &c).contains(&RelicId::TriBoomerang) {
+            if roll_tanx(crate::GameVersion::V0_107_1, &mut rng, &c)
+                .contains(&RelicId::TriBoomerang)
+            {
                 saw_yes = true;
                 break;
             }
@@ -810,5 +841,20 @@ mod tests {
         assert!(act3_seen.contains(&RelicId::PhilosophersStone));
         assert!(!act3_seen.contains(&RelicId::Ectoplasm));
         assert!(!act3_seen.contains(&RelicId::Sozu));
+    }
+
+    /// `Orobas.cs:196` compares floats. The double 0.33333329986 is below
+    /// the decimal 0.3333333 but rounds to the float `0.3333333f` itself, so
+    /// C# rolls Sea Glass. No seed in 3e8 hits this ~1.4e-9-wide window, so
+    /// the test pins the compare on a constructed sample.
+    #[test]
+    fn orobas_prismatic_gem_roll_is_an_f32_compare() {
+        let d = 0.333_333_299_86_f64;
+        assert!(d < 0.333_333_3_f64);
+        #[allow(clippy::cast_possible_truncation)]
+        let roll = d as f32;
+        assert_eq!(roll, 0.333_333_3_f32);
+        assert!(!orobas_rolls_prismatic_gem(roll));
+        assert!(orobas_rolls_prismatic_gem(0.333_333_28_f32));
     }
 }
