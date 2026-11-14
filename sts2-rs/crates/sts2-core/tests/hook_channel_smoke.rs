@@ -204,7 +204,6 @@ fn make_damage_given_ctx(f: &HookSmokeFixture) -> DamageGivenCtx {
 
 fn make_damage_ctx(f: &HookSmokeFixture) -> DamageCtx {
     DamageCtx {
-        card_source: None,
         dealer: CreatureRef::Player,
         target: CreatureRef::Enemy(f.enemy_uid),
         props: ValueProps::NONE,
@@ -621,7 +620,6 @@ fn modify_damage_multiplicative_listener_fires() {
     );
     let f = build_hook_smoke_fixture();
     let ctx = DamageCtx {
-        card_source: None,
         dealer: CreatureRef::Player,
         target: CreatureRef::Enemy(f.enemy_uid),
         props: ValueProps::MOVE,

@@ -1380,12 +1380,13 @@ impl Policy for SharedPolicy {
 /// against the *current* simulation state, by scanning the hand for a
 /// card matching that identity tuple. Every other variant is
 /// hand-index-free and stored verbatim.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EdgeAction {
-    /// Stable card-identity key for a `PlayCard` edge. `cost` retains the
-    /// complete `CardEnergyCost`, including ordered modifiers and their
-    /// expiration, so equal current costs with different future costs remain
-    /// distinct. `free` captures whether the card's LOCAL base cost is
+    /// Stable card-identity key for a `PlayCard` edge. `cost` here is
+    /// the card's `cost` field at the moment the edge was created —
+    /// it disambiguates cards that share `(card_id, upgraded)` but
+    /// have had per-instance cost mutations (Mayhem / SeeingRed-style)
+    /// applied. `free` captures whether the card's LOCAL base cost is
     /// zeroed by a `FREE_THIS_TURN` / `SetUntilPlayed(0)` rider (or
     /// Flatten-after-osty-attack) — a per-instance cost mutation that
     /// does NOT touch the `cost` field. Without it, a PowerPotion's
@@ -7780,7 +7781,7 @@ pub(crate) fn play_identity(state: &CombatState, a: &Action) -> Option<PlayIdent
 ///
 /// Steps:
 /// 1. Sort [`Action::PlayCard`] entries by the [`EdgeAction::PlayCard`]
-///    identity tuple `(card_id, upgraded, cost, free, affliction, target)` so equal
+///    identity tuple `(card_id, upgraded, cost, free, target)` so equal
 ///    cards are adjacent.
 /// 2. Collapse adjacent equal `PlayCard` entries — different hand
 ///    indices of the same edge identity back the same tree child.
@@ -8205,119 +8206,6 @@ mod tests {
         assert_eq!(non_free_edge.resolve(&state), Some(non_free_play));
     }
 
-    #[test]
-    fn equal_current_costs_with_different_expirations_keep_separate_edges() {
-        use sts2_core::cards::{
-            Card, CardId, CardType, LocalCostModifier, LocalCostModifierKind, TargetType,
-        };
-        let mut state = CombatState::default();
-        for (index, expiration) in [2, 4].into_iter().enumerate() {
-            let uid = sts2_core::CardUid::new(index as u32 + 1).unwrap();
-            let mut card = Card {
-                uid,
-                card_id: CardId::BarricadeCard,
-                cost: sts2_core::CardEnergyCost::new(3),
-                card_type: CardType::Power,
-                target_type: TargetType::Self_,
-                ..Card::pod_defaults()
-            };
-            card.add_local_cost_modifier(LocalCostModifier {
-                kind: LocalCostModifierKind::Absolute,
-                amount: 0,
-                reduce_only: false,
-                expiration,
-            });
-            state.cards.push(card);
-            state.player.hand.push(uid);
-        }
-        assert_eq!(state.cards[0].local_cost(), state.cards[1].local_cost());
-        let plays = smallvec::smallvec![
-            Action::PlayCard {
-                hand_index: 0,
-                target: None
-            },
-            Action::PlayCard {
-                hand_index: 1,
-                target: None
-            },
-        ];
-        assert_eq!(canonicalize_actions(&state, plays).len(), 2);
-        let edge = EdgeAction::from_action(
-            &Action::PlayCard {
-                hand_index: 1,
-                target: None,
-            },
-            &state,
-        );
-        state.player.hand.swap(0, 1);
-        assert_eq!(
-            edge.resolve(&state),
-            Some(Action::PlayCard {
-                hand_index: 0,
-                target: None
-            })
-        );
-        state.cards[0].cost.end_of_turn_cleanup();
-        state.cards[1].cost.end_of_turn_cleanup();
-        assert_eq!(
-            (state.cards[0].local_cost(), state.cards[1].local_cost()),
-            (3, 0)
-        );
-    }
-
-    #[test]
-    fn equal_lifetime_costs_with_different_upgrade_semantics_keep_separate_edges() {
-        use sts2_core::cards::{
-            Card, CardId, CardType, LocalCostModifier, LocalCostModifierKind, TargetType,
-        };
-        let mut state = CombatState::default();
-        for (index, kind) in [
-            LocalCostModifierKind::Absolute,
-            LocalCostModifierKind::Relative,
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let uid = sts2_core::CardUid::new(index as u32 + 1).unwrap();
-            let mut card = Card {
-                uid,
-                card_id: CardId::BarricadeCard,
-                cost: sts2_core::CardEnergyCost::new(3),
-                card_type: CardType::Power,
-                target_type: TargetType::Self_,
-                ..Card::pod_defaults()
-            };
-            card.add_local_cost_modifier(LocalCostModifier {
-                kind,
-                amount: if index == 0 { 1 } else { -2 },
-                reduce_only: true,
-                expiration: 0,
-            });
-            state.cards.push(card);
-            state.player.hand.push(uid);
-        }
-        assert_eq!(
-            state.cards[0].local_costs_after_expiration(),
-            state.cards[1].local_costs_after_expiration()
-        );
-        let plays = smallvec::smallvec![
-            Action::PlayCard {
-                hand_index: 0,
-                target: None
-            },
-            Action::PlayCard {
-                hand_index: 1,
-                target: None
-            },
-        ];
-        assert_eq!(canonicalize_actions(&state, plays).len(), 2);
-        let mut capped = state.cards[0].public_local_energy_cost();
-        let mut relative = state.cards[1].public_local_energy_cost();
-        capped.upgrade_base(-1);
-        relative.upgrade_base(-1);
-        assert_eq!((capped.costs()[0], relative.costs()[0]), (1, 0));
-    }
-
     /// Bead `sts2-rs-y3a28` (b32is.1): try_search (no-arg wrapper)
     /// matches try_search_n's TerminalRoot behavior under the
     /// configured max_simulations budget.
@@ -8486,6 +8374,8 @@ mod tests {
 
         let mut coop = solo.clone();
         coop.allies.push(sts2_core::PlayerCombatState {
+            observed_draws: smallvec::SmallVec::new(),
+            observed_draw_failed: false,
             current_hp: 50,
             max_hp: 61,
             ..sts2_core::PlayerCombatState::default()
@@ -12332,9 +12222,10 @@ mod tests {
     fn belief_root_is_invariant_to_draw_pile_permutation() {
         // Both canonicalizer branches: unpinned (plain sort) and pinned
         // (preserve head/tail, sort the middle).
-        for (what, a) in std::iter::once(("unpinned", permutation_fixture()))
-            .chain(std::iter::once(("pinned", permutation_fixture_pinned())))
-        {
+        for (what, a) in [
+            ("unpinned", permutation_fixture()),
+            ("pinned", permutation_fixture_pinned()),
+        ] {
             let b = with_reversed_draw(&a);
             assert_ne!(
                 a.player.draw, b.player.draw,
@@ -14408,18 +14299,20 @@ mod endturn_prefix_tests {
     fn prefix_stops_before_an_enemy_move_that_draws_randomness() {
         for seed in [3, 17, 4242] {
             let (thievery, flutter) = hopper_rounds(seed);
-            for (label, s) in std::iter::once(("materialized", thievery.clone()))
-                .chain(std::iter::once(("belief", as_belief(&thievery))))
-            {
+            for (label, s) in [
+                ("materialized", thievery.clone()),
+                ("belief", as_belief(&thievery)),
+            ] {
                 assert_eq!(
                     prefix_len(&s),
                     3,
                     "seed {seed} {label}: THIEVERY's steal roll is in enemy_turn_exec"
                 );
             }
-            for (label, s) in std::iter::once(("materialized", flutter.clone()))
-                .chain(std::iter::once(("belief", as_belief(&flutter))))
-            {
+            for (label, s) in [
+                ("materialized", flutter.clone()),
+                ("belief", as_belief(&flutter)),
+            ] {
                 assert!(
                     prefix_len(&s) >= 4,
                     "seed {seed} {label}: FLUTTER draws nothing, so enemy_turn_exec is in the prefix"

@@ -6534,7 +6534,6 @@ pub fn preview_damage_to_player(
 ) -> i32 {
     let target_ref = CreatureRef::Player;
     let ctx = DamageCtx {
-        card_source: crate::damage::originating_card_uid(state, card),
         dealer,
         target: target_ref,
         props,
@@ -6569,7 +6568,6 @@ pub fn preview_damage_to_player_modifiers(
     hooks::damage_modifier_breakdown(
         state,
         &DamageCtx {
-            card_source: None,
             dealer,
             target: CreatureRef::Player,
             props,
@@ -6691,7 +6689,6 @@ pub fn apply_damage_to_player(
     }
     let target_ref = CreatureRef::Player;
     let ctx = DamageCtx {
-        card_source: crate::damage::originating_card_uid(state, card),
         dealer,
         target: target_ref,
         props,
@@ -10385,15 +10382,6 @@ fn finish_card_play_tail(state: &mut CombatState, fin: CardPlayFinish) -> StepRe
         // Ringing `ShouldPlay` gates (act23 Ironclad:1006: Strike + a Replay-2
         // Strike under Sloth(3) blocks the Bash that Stampede auto-plays).
         card_play = start_card_play(state, card.card_type).1;
-        // C# `Free{Attack,Skill,Power}Power.BeforeCardPlayed` decrements on
-        // EVERY play iteration (no IsDupe guard), so a card replayed under
-        // OneTwoPunch/EchoForm consumes the matching Free* stack once per
-        // replay — mirror the original play's decrement at line ~5336. Without
-        // this a replayed Power card left a surviving FreePower zeroing the
-        // next Power card's cost (gh#180 PANACHE HAND_COST residual).
-        if before_hooks_live {
-            let _ = consume_free_card_power(state, card.card_type);
-        }
         crate::fool::note_play_started(state, card_uid);
         // Stomp's shave is a `BeforeCardPlayed` hook — pre-body, once per
         // replay iteration (see the initial-play site above).
@@ -10500,12 +10488,6 @@ fn finish_card_play_tail(state: &mut CombatState, fin: CardPlayFinish) -> StepRe
             // Per-iteration `History.CardPlayStarted` (CardModel.cs:1926-1929),
             // same as the `extra_plays` loop above.
             card_play = start_card_play(state, card.card_type).1;
-            // C# `Free*Power.BeforeCardPlayed` decrements per play iteration —
-            // consume the matching Free* stack on this Echo replay too, same as
-            // the `extra_plays` loop above (gh#180 PANACHE HAND_COST residual).
-            if before_hooks_live {
-                let _ = consume_free_card_power(state, card.card_type);
-            }
             crate::fool::note_play_started(state, card_uid);
             // Bead `sts2-rs-stomp`: Stomp's shave is a `BeforeCardPlayed`
             // hook — pre-body, once per Echo replay (see the initial-play
@@ -11811,13 +11793,19 @@ pub fn player_should_play_blocked(state: &CombatState, card: &crate::cards::Card
     {
         return true;
     }
-    // Sloth counts plays since its application; Ringing scans the full turn.
-    if state.player_power_uids().iter().any(|uid| {
-        state.powers.get_by_id(uid.0).is_some_and(|power| {
-            power.kind == crate::PowerKind::Sloth && power.counter >= power.amount
-        })
+    // Both Sloth (`BeforeCardPlayed` counter) and Ringing
+    // (`CardPlaysStarted` scan) count STARTED plays — an in-flight parent
+    // play (Cascade/Havoc gathering its auto-plays) counts.
+    if let Some(sloth_amount) = state.player.powers.iter().find_map(|puid| {
+        state
+            .powers
+            .get_by_id(puid.0)
+            .filter(|p| p.kind == crate::powers::PowerKind::Sloth)
+            .map(|p| p.amount)
     }) {
-        return true;
+        if state.player.card_plays_started_this_turn >= sloth_amount.max(0) as u32 {
+            return true;
+        }
     }
     // C# `Normality.ShouldPlay` (`Normality.cs:30-41`): while Normality sits
     // in the hand, no further card plays once three have STARTED this turn —
@@ -25937,7 +25925,6 @@ mod tests {
 
         // Simulate a powered hit on the player (damage = 5).
         let ctx = DamageCtx {
-            card_source: None,
             dealer: CreatureRef::Enemy(state.enemy_uids[0]),
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -25984,7 +25971,6 @@ mod tests {
         state.player.powers.push(crate::PowerUid(pid));
 
         let ctx = DamageCtx {
-            card_source: None,
             dealer: CreatureRef::Enemy(state.enemy_uids[0]),
             target: CreatureRef::Player,
             props: ValueProps::MOVE,

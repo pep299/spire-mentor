@@ -286,7 +286,7 @@ pub fn dispatch_on_card_drawn(state: &mut CombatState, card_uid: CardUid, from_h
 ///
 /// **Wave 3 (`sts2-rs-g7rni`):** Slither cost-roll. Python pin:
 /// `if card.has_enchantment("Slither"):
-///   card.set_cost_this_combat(combat.combat_energy_costs_rng.next_int(0, 3))`.
+///   card.set_combat_cost(combat.combat_energy_costs_rng.next_int(0, 3))`.
 ///
 /// **Divergence:** Python uses a dedicated `combat_energy_costs_rng`
 /// sub-stream on `RunState`; the dispatch site here has access to
@@ -1052,7 +1052,6 @@ mod tests {
         state.player.hand.clear();
         state.player.play.push(uid(1));
         let powered = crate::hooks::DamageCtx {
-            card_source: None,
             dealer: crate::hooks::CreatureRef::Player,
             target: crate::hooks::CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -1096,7 +1095,6 @@ mod tests {
         });
         state.player.powers.push(crate::PowerUid(strength));
         let ctx = crate::hooks::DamageCtx {
-            card_source: None,
             dealer: crate::hooks::CreatureRef::Player,
             target: crate::hooks::CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -1114,7 +1112,6 @@ mod tests {
         state.player.hand.clear();
         state.player.play.push(uid(1));
         let ctx = crate::hooks::DamageCtx {
-            card_source: None,
             dealer: crate::hooks::CreatureRef::Player,
             target: crate::hooks::CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -1135,7 +1132,6 @@ mod tests {
         state.player.hand.clear();
         state.player.play.push(uid(1));
         let powered = crate::hooks::DamageCtx {
-            card_source: None,
             dealer: crate::hooks::CreatureRef::Player,
             target: crate::hooks::CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -1164,7 +1160,6 @@ mod tests {
         state.player.hand.clear();
         state.player.play.push(uid(1));
         let powered = crate::hooks::DamageCtx {
-            card_source: None,
             dealer: crate::hooks::CreatureRef::Player,
             target: crate::hooks::CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -1238,7 +1233,6 @@ mod tests {
         state.player.hand.clear();
         state.player.play.push(uid(1));
         let powered = crate::hooks::DamageCtx {
-            card_source: None,
             dealer: crate::hooks::CreatureRef::Player,
             target: crate::hooks::CreatureRef::Player,
             props: ValueProps::MOVE,

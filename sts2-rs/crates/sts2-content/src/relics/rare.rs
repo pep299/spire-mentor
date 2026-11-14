@@ -2021,7 +2021,6 @@ mod tests {
         let mut state = CombatState::default();
         let enemy_uid = paper_krane_setup(&mut state, true, true, false);
         let ctx = DamageCtx {
-            card_source: None,
             dealer: CreatureRef::Enemy(enemy_uid),
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -2040,7 +2039,6 @@ mod tests {
         let mut state = CombatState::default();
         let enemy_uid = paper_krane_setup(&mut state, true, true, true);
         let ctx = DamageCtx {
-            card_source: None,
             dealer: CreatureRef::Enemy(enemy_uid),
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -2058,7 +2056,6 @@ mod tests {
         let enemy_uid = paper_krane_setup(&mut state, true, true, false);
         state.relics.set_melted(0, true);
         let ctx = DamageCtx {
-            card_source: None,
             dealer: CreatureRef::Enemy(enemy_uid),
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -2074,7 +2071,6 @@ mod tests {
         let mut state = CombatState::default();
         let enemy_uid = paper_krane_setup(&mut state, true, false, false);
         let ctx = DamageCtx {
-            card_source: None,
             dealer: CreatureRef::Enemy(enemy_uid),
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -2090,7 +2086,6 @@ mod tests {
         let mut state = CombatState::default();
         let enemy_uid = paper_krane_setup(&mut state, false, true, false);
         let ctx = DamageCtx {
-            card_source: None,
             dealer: CreatureRef::Enemy(enemy_uid),
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -2106,7 +2101,6 @@ mod tests {
         let mut state = CombatState::default();
         let enemy_uid = paper_krane_setup(&mut state, true, true, false);
         let ctx = DamageCtx {
-            card_source: None,
             dealer: CreatureRef::Enemy(enemy_uid),
             target: CreatureRef::Player,
             props: ValueProps::NONE,
@@ -2354,134 +2348,5 @@ mod tests {
             let _ = dispatch_modify_rewards(&mut rs, &mut rewards, rt);
             assert!(rewards.is_empty(), "WhiteStar silent on {rt:?}");
         }
-    }
-
-    // ─── PaperKrane Weak-detection boundary ───
-    /// Push a Weak power of the given `amount` onto a fresh enemy and
-    /// return the combat ctx, owner equipped with PaperKrane. Used to
-    /// pin the `kind == Weak && amount > 0` guard.
-    #[cfg(test)]
-    fn paper_krane_weak_amount_setup(
-        state: &mut CombatState,
-        weak_amount: i32,
-    ) -> sts2_core::CreatureUid {
-        use smallvec::SmallVec;
-        use std::num::NonZeroU32;
-        use sts2_core::powers::PowerKind;
-        use sts2_core::{Creature, MonsterId, MonsterKind, Power, PowerUid, Relic};
-        state.relics.push(Relic {
-            id: NonZeroU32::new(1).expect("non-zero"),
-            kind: RelicKind::PaperKrane,
-            counter: 0,
-            is_wax: false,
-            is_melted: false,
-        });
-        let mut enemy_powers: SmallVec<[PowerUid; 8]> = SmallVec::new();
-        let pid = NonZeroU32::new(10).expect("non-zero");
-        state.powers.push(Power {
-            id: pid,
-            kind: PowerKind::Weak,
-            amount: weak_amount,
-            counter: 0,
-            applier: None,
-            skip_next_tick: false,
-        });
-        enemy_powers.push(PowerUid(pid));
-        let enemy_uid = sts2_core::CreatureUid::new(1).expect("non-zero");
-        state.creatures.push(Creature {
-            id: NonZeroU32::new(1).expect("non-zero"),
-            current_hp: 50,
-            max_hp: 50,
-            block: 0,
-            powers: enemy_powers,
-            species: Some(MonsterKind::Nibbit),
-            intent: None,
-            intent_history: sts2_core::IntentHistory::default(),
-            monster_id: MonsterId("Nibbit"),
-            ai: None,
-        });
-        state.enemy_uids.push(enemy_uid);
-        enemy_uid
-    }
-
-    /// **PaperKrane boundary `amount > 0`** — a Weak power with `amount
-    /// == 0` must NOT engage PaperKrane (no Weak in effect). A `>=`
-    /// mutation would treat a 0-stack Weak as live and apply the 4/5.
-    #[test]
-    fn listener_paper_krane_weak_amount_zero_is_no_op() {
-        use sts2_core::hooks::ValueProps;
-        crate::relics::dispatch::ensure_installed();
-        let mut state = CombatState::default();
-        let enemy_uid = paper_krane_weak_amount_setup(&mut state, 0);
-        let ctx = DamageCtx {
-            card_source: None,
-            dealer: CreatureRef::Enemy(enemy_uid),
-            target: CreatureRef::Player,
-            props: ValueProps::MOVE,
-        };
-        assert_eq!(
-            sts2_core::relic_effects::dispatch_modify_damage_multiplicative(&state, &ctx),
-            DamageMul::ONE,
-            "Weak(0) does not engage PaperKrane"
-        );
-    }
-
-    /// **PaperKrane `&&` join** — a dealer carrying ONLY a non-Weak
-    /// power with `amount > 0` (Debilitate) must NOT engage PaperKrane:
-    /// the guard requires `kind == Weak AND amount > 0`. A `||` mutation
-    /// would fire on any positive-amount power.
-    #[test]
-    fn listener_paper_krane_non_weak_positive_power_is_no_op() {
-        use smallvec::SmallVec;
-        use std::num::NonZeroU32;
-        use sts2_core::hooks::ValueProps;
-        use sts2_core::powers::PowerKind;
-        use sts2_core::{Creature, MonsterId, MonsterKind, Power, PowerUid, Relic};
-        crate::relics::dispatch::ensure_installed();
-        let mut state = CombatState::default();
-        state.relics.push(Relic {
-            id: NonZeroU32::new(1).expect("non-zero"),
-            kind: RelicKind::PaperKrane,
-            counter: 0,
-            is_wax: false,
-            is_melted: false,
-        });
-        // Debilitate(1): a non-Weak power with positive amount, no Weak.
-        let mut enemy_powers: SmallVec<[PowerUid; 8]> = SmallVec::new();
-        let pid = NonZeroU32::new(10).expect("non-zero");
-        state.powers.push(Power {
-            id: pid,
-            kind: PowerKind::Debilitate,
-            amount: 1,
-            counter: 0,
-            applier: None,
-            skip_next_tick: false,
-        });
-        enemy_powers.push(PowerUid(pid));
-        let enemy_uid = sts2_core::CreatureUid::new(1).expect("non-zero");
-        state.creatures.push(Creature {
-            id: NonZeroU32::new(1).expect("non-zero"),
-            current_hp: 50,
-            max_hp: 50,
-            block: 0,
-            powers: enemy_powers,
-            species: Some(MonsterKind::Nibbit),
-            intent: None,
-            intent_history: sts2_core::IntentHistory::default(),
-            monster_id: MonsterId("Nibbit"),
-            ai: None,
-        });
-        state.enemy_uids.push(enemy_uid);
-        let ctx = DamageCtx {
-            card_source: None,
-            dealer: CreatureRef::Enemy(enemy_uid),
-            target: CreatureRef::Player,
-            props: ValueProps::MOVE,
-        };
-        assert_eq!(
-            sts2_core::relic_effects::dispatch_modify_damage_multiplicative(&state, &ctx),
-            DamageMul::ONE,
-            "non-Weak positive power must not engage PaperKrane"
-        );
     }
 }

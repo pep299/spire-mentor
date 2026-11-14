@@ -920,7 +920,6 @@ fn hang_card_multiplies_its_damage_on_a_hang_afflicted_target() {
     state.player.play.push(cuid);
 
     let ctx = DamageCtx {
-        card_source: None,
         dealer: CreatureRef::Player,
         target: CreatureRef::Enemy(enemy),
         props: ValueProps::MOVE,
@@ -935,7 +934,6 @@ fn hang_card_multiplies_its_damage_on_a_hang_afflicted_target() {
     // apply, Panache's AoE) has no Hang `cardSource`: unscaled (seeds
     // 2203/3154).
     let reaction = DamageCtx {
-        card_source: None,
         dealer: CreatureRef::Player,
         target: CreatureRef::Enemy(enemy),
         props: ValueProps::UNPOWERED,
@@ -972,7 +970,6 @@ fn reaper_form_dooms_target_by_total_damage_times_amount() {
     push_player_power(&mut state, PowerKind::ReaperForm, 2);
 
     let ctx = DamageCtx {
-        card_source: None,
         dealer: CreatureRef::Player,
         target: CreatureRef::Enemy(enemy),
         props: ValueProps::MOVE,
@@ -1005,7 +1002,6 @@ fn reaper_form_killing_blow_still_arms_deaths_door() {
     }
 
     let ctx = DamageCtx {
-        card_source: None,
         dealer: CreatureRef::Player,
         target: CreatureRef::Enemy(enemy),
         props: ValueProps::MOVE,
@@ -1044,7 +1040,6 @@ fn reaper_form_killing_blow_is_dropped_while_die_for_you_is_live() {
             c.current_hp = 0;
         }
         let ctx = DamageCtx {
-            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(enemy),
             props: ValueProps::MOVE,
@@ -1072,7 +1067,6 @@ fn reaper_form_fires_on_fully_blocked_but_not_unpowered() {
     push_player_power(&mut state, PowerKind::ReaperForm, 3);
 
     let powered = DamageCtx {
-        card_source: None,
         dealer: CreatureRef::Player,
         target: CreatureRef::Enemy(enemy),
         props: ValueProps::MOVE,
@@ -1087,7 +1081,6 @@ fn reaper_form_fires_on_fully_blocked_but_not_unpowered() {
 
     // Unpowered hit (e.g. reflected/HP-loss style): no ReaperForm.
     let unpowered = DamageCtx {
-        card_source: None,
         dealer: CreatureRef::Player,
         target: CreatureRef::Enemy(enemy),
         props: ValueProps::UNPOWERED,
@@ -1288,7 +1281,6 @@ fn double_damage_doubles_the_owners_osty_hits() {
     state.player.play.push(cuid);
 
     let osty_hit = DamageCtx {
-        card_source: None,
         dealer: CreatureRef::Enemy(pet),
         target: CreatureRef::Enemy(enemy),
         props: ValueProps::MOVE,
@@ -1299,7 +1291,6 @@ fn double_damage_doubles_the_owners_osty_hits() {
         "the owner's pet's powered card hit is doubled"
     );
     let enemy_hit = DamageCtx {
-        card_source: None,
         dealer: CreatureRef::Enemy(enemy),
         target: CreatureRef::Player,
         props: ValueProps::MOVE,

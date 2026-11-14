@@ -364,7 +364,6 @@ fn intercept_on_two_teammates_triples_the_hits_on_us() {
             state,
             6,
             &DamageCtx {
-                card_source: None,
                 dealer: CreatureRef::Enemy(enemy),
                 target: CreatureRef::Player,
                 props: ValueProps::MOVE,

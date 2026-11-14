@@ -109,13 +109,11 @@ pub(crate) fn play_thrash(state: &mut CombatState, target: Option<CreatureUid>) 
         };
         let enchanted_x100 =
             i64::from(exhausted_base.saturating_add(ench_add)).saturating_mul(i64::from(ench_x100));
-        let (term_num, mut term_den) =
-            sts2_core::hooks::player_modified_card_damage_frac_with_source(
-                state,
-                enchanted_x100.saturating_add(i64::from(relic_add - vigor).saturating_mul(100)),
-                100,
-                Some(exhausted_uid),
-            );
+        let (term_num, mut term_den) = card_effects::player_modified_card_damage_frac_of(
+            state,
+            enchanted_x100.saturating_add(i64::from(relic_add - vigor).saturating_mul(100)),
+            100,
+        );
         // Gigantification is the other modifier the fold must see after the
         // attack, not during it. Thrash's attack latches it, and its
         // `AfterAttack` decrements it before the fold (GigantificationPower.cs).
@@ -126,6 +124,15 @@ pub(crate) fn play_thrash(state: &mut CombatState, target: Option<CreatureUid>) 
         if state.player_power_amount(PowerKind::Gigantification) == 1 {
             term_den = term_den.saturating_mul(3);
         }
+        // Pen Nib keys on the fold's `cardSource` (the exhausted attack, still
+        // in Hand), which the card-less relic `DamageCtx` cannot carry: the
+        // listener judged Thrash instead. Swap its factor for the one C# gives
+        // the exhausted card (x2 when Thrash is the 9th attack, x1 when it is
+        // the marked 10th; seeds 2008 / 2029 / 2103).
+        let (pen_num, pen_den) =
+            crate::relics::uncommon::pen_nib_fold_rescale(state, exhausted_uid);
+        let term_num = term_num.saturating_mul(pen_num);
+        term_den = term_den.saturating_mul(pen_den);
         exhaust_hand_card(state, exhausted_uid);
         // Accumulate `rem + term` (rational add). The integer part flows into
         // `base_damage`; the reduced fractional remainder (in [0, 1)) goes back

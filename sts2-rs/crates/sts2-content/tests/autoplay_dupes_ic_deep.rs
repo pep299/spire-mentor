@@ -53,9 +53,9 @@ fn lone_fat_enemy() -> (Vec<Creature>, CreatureUid) {
     (creatures, enemy_uid)
 }
 
-fn push(cards: &mut sts2_core::CardStore, card: &Card) -> CardUid {
+fn push(cards: &mut sts2_core::CardStore, card: Card) -> CardUid {
     let uid = CardUid::new(u32::try_from(cards.len() + 1).expect("fits")).expect("non-zero");
-    cards.push(Card { uid, ..*card });
+    cards.push(Card { uid, ..card });
     uid
 }
 
@@ -88,7 +88,7 @@ fn setup(relics: Vec<Relic>) -> CombatState {
     sts2_content::relics::dispatch::ensure_installed();
 
     let mut cards = sts2_core::CardStore::new();
-    let filler: Vec<CardUid> = (0..5).map(|_| push(&mut cards, &defend())).collect();
+    let filler: Vec<CardUid> = (0..5).map(|_| push(&mut cards, defend())).collect();
     let (creatures, enemy_uid) = lone_fat_enemy();
     let player = PlayerCombatState {
         max_energy: 3,
@@ -151,7 +151,7 @@ fn enemy_hp(state: &CombatState) -> i32 {
 #[test]
 fn auto_play_replay_consumes_free_attack_per_play() {
     let mut state = setup(Vec::new());
-    let s = push(&mut state.cards, &strike());
+    let s = push(&mut state.cards, strike());
     state.player.draw.insert(0, s);
     add_power(&mut state, PowerKind::OneTwoPunch, 1);
     add_power(&mut state, PowerKind::FreeAttack, 2);
@@ -174,7 +174,7 @@ fn auto_played_unrelenting_under_one_two_punch_ends_with_one_free_attack() {
     let mut card = sts2_content::cards::spec_index::card_pod_from_id(CardId::Unrelenting, false)
         .expect("Unrelenting");
     card.cost = sts2_core::CardEnergyCost::new(2);
-    let u = push(&mut state.cards, &card);
+    let u = push(&mut state.cards, card);
     state.player.draw.insert(0, u);
     add_power(&mut state, PowerKind::OneTwoPunch, 1);
 
@@ -186,7 +186,7 @@ fn auto_played_unrelenting_under_one_two_punch_ends_with_one_free_attack() {
 #[test]
 fn history_course_dupe_replay_consumes_free_attack_per_play() {
     let mut state = setup(history_course());
-    let src = push(&mut state.cards, &strike());
+    let src = push(&mut state.cards, strike());
     add_power(&mut state, PowerKind::OneTwoPunch, 1);
     add_power(&mut state, PowerKind::FreeAttack, 2);
 
@@ -204,7 +204,7 @@ fn history_course_dupe_runs_its_enchantment_on_play() {
     let mut state = setup(history_course());
     let mut card = strike();
     card.set_enchantment(EnchantmentId::Corrupted, 1);
-    let src = push(&mut state.cards, &card);
+    let src = push(&mut state.cards, card);
     let hp0 = state.player.current_hp;
 
     run_history_course_dupe(&mut state, src);
@@ -222,7 +222,7 @@ fn history_course_dupe_replay_runs_its_enchantment_per_play() {
     let mut state = setup(history_course());
     let mut card = strike();
     card.set_enchantment(EnchantmentId::Corrupted, 1);
-    let src = push(&mut state.cards, &card);
+    let src = push(&mut state.cards, card);
     add_power(&mut state, PowerKind::OneTwoPunch, 1);
     add_power(&mut state, PowerKind::Rupture, 1);
     let hp0 = state.player.current_hp;
@@ -250,7 +250,7 @@ fn dupe_strike() -> Card {
 #[test]
 fn havoc_auto_played_dupe_leaves_combat_without_exhausting() {
     let mut state = setup(Vec::new());
-    let d = push(&mut state.cards, &dupe_strike());
+    let d = push(&mut state.cards, dupe_strike());
     state.player.draw.insert(0, d);
     add_power(&mut state, PowerKind::FeelNoPain, 3);
     let block0 = state.player.block;
@@ -270,7 +270,7 @@ fn havoc_auto_played_dupe_leaves_combat_without_exhausting() {
 #[test]
 fn auto_played_dupe_is_not_discarded() {
     let mut state = setup(Vec::new());
-    let d = push(&mut state.cards, &dupe_strike());
+    let d = push(&mut state.cards, dupe_strike());
     state.player.draw.insert(0, d);
 
     assert!(auto_play_card_from_draw_top(&mut state, false));
@@ -285,7 +285,7 @@ fn auto_played_dupe_skill_under_corruption_still_exhausts() {
     let mut state = setup(Vec::new());
     let mut c = defend();
     c.set_combat_var(VarKey::IsDupe, 1);
-    let d = push(&mut state.cards, &c);
+    let d = push(&mut state.cards, c);
     state.player.draw.insert(0, d);
     add_power(&mut state, PowerKind::Corruption, 1);
 

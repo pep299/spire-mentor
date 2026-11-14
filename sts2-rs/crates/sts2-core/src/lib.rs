@@ -16179,11 +16179,20 @@ pub(crate) fn push_card_play_actions_with(
     // (Single-kind gates use `contains` — one word test — rather than an
     // 8-word `intersects` against a one-kind mask; same absence proof.)
     let sloth_cap_reached = state.powers.present_kinds().contains(PowerKind::Sloth)
-        && state.player_power_uids().iter().any(|uid| {
-            state.powers.get_by_id(uid.0).is_some_and(|power| {
-                power.kind == PowerKind::Sloth && power.counter >= power.amount
+        && state
+            .player
+            .powers
+            .iter()
+            .find_map(|puid| {
+                state
+                    .powers
+                    .get_by_id(puid.0)
+                    .filter(|p| p.kind == crate::PowerKind::Sloth)
+                    .map(|p| p.amount)
             })
-        });
+            .is_some_and(|amt| {
+                state.count_player_cards_played_this_turn(None) >= amt.max(0) as u32
+            });
 
     // Bead `sts2-rs-ybtmu`: mirror the `play_card` ChainsOfBindingPower
     // gate (C# `ChainsOfBindingPower.ShouldPlay`,

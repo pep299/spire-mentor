@@ -483,10 +483,7 @@ pub fn apply_damage(
 /// when the proximate source isn't the top-of-`Play` card (e.g. a relic
 /// listener that passes an explicit `card_id`). Bead `sts2-rs-nwz1n`.
 #[inline]
-pub(crate) fn originating_card_uid(
-    state: &CombatState,
-    card: Option<CardId>,
-) -> Option<crate::CardUid> {
+fn originating_card_uid(state: &CombatState, card: Option<CardId>) -> Option<crate::CardUid> {
     let card_id = card?;
     let uid = crate::card_effects::resolving_card_uid(state)?;
     let idx = uid.0.get() as usize - 1;
@@ -557,7 +554,6 @@ pub fn compute_modified_damage(
     card: Option<CardId>,
 ) -> i32 {
     let ctx = DamageCtx {
-        card_source: originating_card_uid(state, card),
         dealer,
         target: CreatureRef::Enemy(target),
         props,
@@ -671,7 +667,6 @@ pub fn flash_damage_amount_modifiers(
         return;
     }
     let ctx = hooks::DamageCtx {
-        card_source: None,
         dealer,
         target,
         props,
@@ -755,7 +750,6 @@ fn apply_damage_with_final_impl(
 ) -> DamageOutcome {
     let target_ref = CreatureRef::Enemy(target);
     let ctx = DamageCtx {
-        card_source: None,
         dealer,
         target: target_ref,
         props,
@@ -1142,7 +1136,6 @@ fn apply_damage_with_final_impl(
     // blocked).
     let was_fully_blocked = target_fully_blocked_arm && modified_hp_loss == 0;
     let tail = HitTail {
-        card_source: ctx.card_source,
         dealer,
         target,
         props,
@@ -1207,7 +1200,6 @@ fn apply_damage_with_final_impl(
 /// before any of these (see [`with_deferred_enemy_deaths`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HitTail {
-    card_source: Option<crate::CardUid>,
     dealer: CreatureRef,
     target: CreatureUid,
     props: ValueProps,
@@ -1238,7 +1230,6 @@ fn finish_hit_tail(state: &mut CombatState, tail: &HitTail) {
 
 fn finish_hit_tail_body(state: &mut CombatState, tail: &HitTail) {
     let HitTail {
-        card_source,
         dealer,
         target,
         props,
@@ -1253,7 +1244,6 @@ fn finish_hit_tail_body(state: &mut CombatState, tail: &HitTail) {
     } = *tail;
     let target_ref = CreatureRef::Enemy(target);
     let ctx = DamageCtx {
-        card_source,
         dealer,
         target: target_ref,
         props,
@@ -1698,7 +1688,6 @@ pub fn compute_modified_damage_frac(
     card: Option<CardId>,
 ) -> i32 {
     let ctx = DamageCtx {
-        card_source: originating_card_uid(state, card),
         dealer,
         target: CreatureRef::Enemy(target),
         props,

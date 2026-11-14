@@ -267,65 +267,6 @@ fn replay_counts_started_attacks_and_pen_nib_before_each_iteration() {
 }
 
 #[test]
-fn pen_nib_uses_explicit_damage_source_not_the_parent_attack() {
-    use sts2_core::hooks::{CreatureRef, ValueProps};
-    let mut value = fixture();
-    value["player"]["powers"] = json!([]);
-    value["player"]["relics"] = json!([{"id":"PEN_NIB","counter":0}]);
-    value["deck"]["hand"] = json!([
-        {"id":"STRIKE_IRONCLAD","kind":"card","stable_idx":4,"upgraded":false},
-        {"id":"STRIKE_IRONCLAD","kind":"card","stable_idx":5,"upgraded":false}
-    ]);
-    let mut state = rebuild(&value);
-    state.relics[0].counter = 9;
-    assert_eq!(
-        sts2_wire::emit::card_damage_preview(&state)[0].get(&0),
-        Some(&12)
-    );
-    state.relics[0].counter = 0;
-    let parent = state.player.hand.remove(0);
-    let nested = state.player.hand.remove(0);
-    state.player.play.push(parent);
-    state.resolving_card = Some(parent);
-    state.combat_log.current_card_play = Some(0);
-    state.combat_log.pen_nib_attack_to_double = Some(parent);
-    let damage = |state: &sts2_core::CombatState, card| {
-        sts2_core::damage::compute_modified_damage(
-            state,
-            CreatureRef::Player,
-            state.enemy_uids[0],
-            6,
-            ValueProps::MOVE,
-            card,
-        )
-    };
-    assert_eq!(damage(&state, Some(CardId::StrikeIronclad)), 12);
-    assert_eq!(
-        damage(&state, None),
-        6,
-        "powered card-less damage inside an Attack is not doubled"
-    );
-    state.player.play.push(nested);
-    state.resolving_card = Some(nested);
-    assert_eq!(
-        damage(&state, Some(CardId::StrikeIronclad)),
-        6,
-        "a second card of the same type has another source identity"
-    );
-    state.combat_log.pen_nib_attack_to_double = Some(nested);
-    assert_eq!(damage(&state, Some(CardId::StrikeIronclad)), 12);
-    state.resolving_card = Some(parent);
-    assert_eq!(
-        damage(&state, Some(CardId::StrikeIronclad)),
-        6,
-        "a nested marked Attack does not boost its parent"
-    );
-    state.resolving_card = Some(nested);
-    state.relics.set_melted(0, true);
-    assert_eq!(damage(&state, Some(CardId::StrikeIronclad)), 6);
-}
-
-#[test]
 fn nested_block_cards_keep_distinct_play_tags_across_choices() {
     let mut value = fixture();
     value["player"]["block"] = json!(0);
@@ -422,12 +363,12 @@ fn temporary_card_flags_survive_leaving_the_hand() {
 }
 
 #[test]
-fn juggling_applied_mid_turn_counts_started_attacks_including_pending_parents() {
+fn juggling_applied_after_two_attacks_copies_the_third() {
     let mut value = fixture();
     value["game_version"] = json!("0.111.0");
     value["player"]["powers"] = json!([]);
     value["player"]["relics"] = json!([]);
-    value["player"]["cards_played_this_turn"] = json!([1, 0, 0, 0, 0]);
+    value["player"]["cards_played_this_turn"] = json!([2, 0, 0, 0, 0]);
     value["player"]["cards_started_this_turn"] = json!([2, 0, 0, 0, 0]);
     value["deck"]["hand"] = json!([
         {"id":"JUGGLING_CARD","kind":"card","stable_idx":4,"upgraded":false},
@@ -471,7 +412,7 @@ fn juggling_applied_mid_turn_counts_started_attacks_including_pending_parents() 
     assert_eq!(
         state.player.hand.len(),
         1,
-        "the third started Attack leaves a generated copy"
+        "the third Attack leaves a generated copy"
     );
 }
 
@@ -810,7 +751,7 @@ fn vexing_generated_card_is_only_free_until_played_or_turn_end() {
 
 #[test]
 fn discovery_is_skippable_but_abundance_requires_a_selection() {
-    for (id, min, skip) in [("DISCOVERY", 0, true), ("ABUNDANCE", 1, false)] {
+    for (id, skip) in [("DISCOVERY", true), ("ABUNDANCE", false)] {
         let mut value = fixture();
         value["game_version"] = json!("0.111.0");
         value["player"]["powers"] = json!([]);
@@ -826,11 +767,18 @@ fn discovery_is_skippable_but_abundance_requires_a_selection() {
         );
         let choice = state.pending_choice.as_ref().unwrap();
         assert_eq!(
-            (choice.min_select, choice.max_select, choice.can_skip),
-            (min, 1, skip),
+            (choice.max_select, choice.can_skip),
+            (1, skip),
             "{id}"
         );
         assert_eq!(choice.options.len(), 3);
+        assert_eq!(
+            sts2_core::legal_actions(&state).iter().any(|action| {
+                matches!(action, Action::ResolveChoice { selection } if selection.is_empty())
+            }),
+            skip,
+            "{id}"
+        );
         if skip {
             sts2_core::apply(
                 &mut state,

@@ -2,7 +2,7 @@
 use super::prelude::*;
 
 /// Modded. Cost 0, Skill. Draw 1 + gain 1 orb slot + bump THIS card's
-/// cost by 1 for this combat. Pin:
+/// cost by 1 (persists in deck). Pin:
 /// `sts2-rl-agent@01c094d:sts2_env/cards/defect.py:750-754`. Bead
 /// `sts2-rs-e0vm`.
 pub(crate) fn play_modded(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {

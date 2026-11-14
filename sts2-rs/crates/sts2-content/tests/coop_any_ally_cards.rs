@@ -215,7 +215,6 @@ fn intercept_covers_the_teammate_until_the_enemy_turn_ends() {
     assert_eq!(mate_power(&state, PowerKind::Covered), 1);
     assert_eq!(state.player_power_amount(PowerKind::Intercept), 1);
     let hit = |target| DamageCtx {
-        card_source: None,
         dealer: CreatureRef::Enemy(enemy),
         target,
         props: ValueProps::MOVE,

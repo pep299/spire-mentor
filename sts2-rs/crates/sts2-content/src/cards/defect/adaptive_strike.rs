@@ -6,8 +6,11 @@ use super::prelude::*;
 /// the card, set the clone's EnergyCost-this-combat to 0, and add it
 /// to the discard pile.
 ///
-/// The clone retains its instance attributes, then gains its own
-/// combat-lifetime absolute cost modifier (`AdaptiveStrike.OnPlay`).
+/// Bead `sts2-rs-o6ioo` wires the clone+discard step the prior body
+/// dropped. The engine has no separate cost-modifier stack at this
+/// pin, so the "this combat 0-cost" semantic is approximated by
+/// writing `cost = 0` directly on the freshly-spawned card POD —
+/// the clone never re-derives its cost from a spec.
 pub(crate) fn play_adaptive_strike(
     state: &mut CombatState,
     target: Option<CreatureUid>,

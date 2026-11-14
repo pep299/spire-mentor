@@ -430,7 +430,6 @@ pub(crate) fn play_rain_shot(state: &mut CombatState, t: Option<CreatureUid>) ->
             .iter()
             .map(|&e| {
                 let ctx = sts2_core::hooks::DamageCtx {
-                    card_source: card_effects::resolving_card_uid(state),
                     dealer: CreatureRef::Player,
                     target: CreatureRef::Enemy(e),
                     props: ValueProps::MOVE,

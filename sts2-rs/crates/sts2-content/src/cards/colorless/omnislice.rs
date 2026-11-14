@@ -66,7 +66,6 @@ pub(crate) fn play_omnislice(state: &mut CombatState, target: Option<CreatureUid
                 let cap = sts2_core::hooks::dispatch_modify_damage_cap(
                     state,
                     &sts2_core::hooks::DamageCtx {
-                        card_source: sts2_core::card_effects::resolving_card_uid(state),
                         dealer: sts2_core::hooks::CreatureRef::Player,
                         target: sts2_core::hooks::CreatureRef::Enemy(e),
                         props,

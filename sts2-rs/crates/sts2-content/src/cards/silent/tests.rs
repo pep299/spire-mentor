@@ -775,7 +775,6 @@ fn abrasive_grants_thorns_reflects_on_attack_received() {
     let _ = f(&mut state, None);
     // Simulate an enemy powered attack on the player.
     let ctx = DamageCtx {
-        card_source: None,
         dealer: CreatureRef::Enemy(euid),
         target: CreatureRef::Player,
         props: ValueProps::MOVE,

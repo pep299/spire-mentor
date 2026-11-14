@@ -141,8 +141,8 @@ pub fn apply_static_enchantment(
             added = CardKeywords::RETAIN;
         }
         EnchantmentId::TezcatarasEmber => {
-            // C# `TezcatarasEmber.OnEnchant` grants Eternal and upgrades
-            // the unmodified base cost to zero (`TezcatarasEmber.cs`).
+            // C# `TezcatarasEmber.OnEnchant` does exactly
+            // `Card.AddKeyword(CardKeyword.Eternal)` (`TezcatarasEmber.cs:18`).
             // ETERNAL is the keyword `CardModel.IsRemovable` reads, so it is the
             // one that has to land; NON_REMOVABLE is the older local alias, kept
             // so existing readers of that flag still see it.

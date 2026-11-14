@@ -121,7 +121,6 @@ pub fn deal_damage_player_to_enemy_frac(
 #[must_use]
 pub fn player_modified_card_damage(state: &CombatState, base: i32) -> i32 {
     let ctx = hooks::DamageCtx {
-        card_source: None,
         dealer: CreatureRef::Player,
         target: CreatureRef::Nobody,
         props: ValueProps::MOVE,
@@ -457,9 +456,6 @@ pub fn osty_attack_command<R>(state: &mut CombatState, f: impl FnOnce(&mut Comba
     let outer = state.combat_log.osty_attack_command_open;
     state.combat_log.osty_attack_command_open = true;
     let r = f(state);
-    if !outer {
-        after_osty_attack_costs(state);
-    }
     state.combat_log.osty_attack_command_open = outer;
     if !outer {
         state.combat_log.osty_attacks_this_turn =
@@ -540,34 +536,6 @@ pub fn deal_damage_from_osty_to_all_alive_enemies(state: &mut CombatState, base:
             total
         })
     })
-}
-
-fn after_osty_attack_costs(state: &mut CombatState) {
-    if state.game_version < crate::GameVersion::V0_111_0 {
-        return;
-    }
-    let active: smallvec::SmallVec<[CardUid; 32]> = state
-        .player
-        .hand
-        .iter()
-        .chain(&state.player.draw)
-        .chain(&state.player.discard)
-        .chain(&state.player.exhaust)
-        .chain(&state.player.play)
-        .copied()
-        .collect();
-    for uid in active {
-        if let Some(card) = state.cards.get_mut(uid.get() as usize - 1) {
-            if card.card_id == crate::cards::CardId::Flatten {
-                card.add_local_cost_modifier(crate::cards::LocalCostModifier {
-                    kind: crate::cards::LocalCostModifierKind::Absolute,
-                    amount: 0,
-                    reduce_only: false,
-                    expiration: 2,
-                });
-            }
-        }
-    }
 }
 
 /// Sample a uniform-random alive enemy from `state.enemy_uids`, filtered

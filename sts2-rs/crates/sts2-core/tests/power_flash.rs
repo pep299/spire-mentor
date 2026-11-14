@@ -1863,7 +1863,6 @@ fn imbalanced_flashes_only_when_fully_blocked() {
     // Give the enemy a MonsterAi with a counter, so `ai.set_counter(1)` has
     // somewhere to land (a `None` ai just silently no-ops the stun half).
     let ctx = sts2_core::hooks::DamageCtx {
-        card_source: None,
         dealer: CreatureRef::Enemy(enemy),
         target: CreatureRef::Player,
         props: ValueProps::MOVE,
@@ -1888,7 +1887,6 @@ fn painful_stabs_flashes_only_when_a_wound_is_actually_added() {
     let enemy = add_enemy(&mut state, 40);
     push_enemy_power(&mut state, 1, enemy, PowerKind::PainfulStabs, 2);
     let ctx = sts2_core::hooks::DamageCtx {
-        card_source: None,
         dealer: CreatureRef::Enemy(enemy),
         target: CreatureRef::Player,
         props: ValueProps::MOVE,
@@ -1921,7 +1919,6 @@ fn flutter_flashes_only_when_it_hits_zero() {
     let enemy = add_enemy(&mut state, 40);
     push_enemy_power(&mut state, 1, enemy, PowerKind::Flutter, 2);
     let ctx = sts2_core::hooks::DamageCtx {
-        card_source: None,
         dealer: CreatureRef::Player,
         target: CreatureRef::Enemy(enemy),
         props: ValueProps::MOVE,
@@ -1981,7 +1978,6 @@ fn slippery_flashes_only_when_unblocked_damage_lands() {
     let enemy = add_enemy(&mut state, 40);
     push_enemy_power(&mut state, 1, enemy, PowerKind::Slippery, 3);
     let ctx = sts2_core::hooks::DamageCtx {
-        card_source: None,
         dealer: CreatureRef::Player,
         target: CreatureRef::Enemy(enemy),
         props: ValueProps::MOVE,
@@ -2004,7 +2000,6 @@ fn the_gambit_flashes_only_on_a_powered_unblocked_hit_to_the_player() {
     push_player_power(&mut state, 1, PowerKind::TheGambit, 1);
     let dealer = add_enemy(&mut state, 40);
     let ctx = sts2_core::hooks::DamageCtx {
-        card_source: None,
         dealer: CreatureRef::Enemy(dealer),
         target: CreatureRef::Player,
         props: ValueProps::UNPOWERED,
@@ -2017,7 +2012,6 @@ fn the_gambit_flashes_only_on_a_powered_unblocked_hit_to_the_player() {
     // Re-apply (nothing removed it) and drive a powered hit.
     push_player_power(&mut state, 2, PowerKind::TheGambit, 1);
     let powered_ctx = sts2_core::hooks::DamageCtx {
-        card_source: None,
         dealer: CreatureRef::Enemy(dealer),
         target: CreatureRef::Player,
         props: ValueProps::MOVE,
@@ -2982,7 +2976,6 @@ fn paper_cuts_skips_a_dead_dealer() {
     let enemy = add_enemy(&mut state, 40);
     push_enemy_power(&mut state, 1, enemy, PowerKind::PaperCuts, 2);
     let ctx = sts2_core::hooks::DamageCtx {
-        card_source: None,
         dealer: CreatureRef::Enemy(enemy),
         target: CreatureRef::Player,
         props: ValueProps::MOVE,

@@ -124,6 +124,7 @@ pub(crate) fn card_rarity_for_id_in(
 /// Catastrophe `StableShuffle` (`PILE_COUNT|CATASTROPHE`, seed 1490). The
 /// `OrderBy`/`ThenBy` is LINQ-stable → stable `sort_by`; and unlike
 /// Catastrophe's own StableShuffle it carries NO `upgraded` tiebreak.
+/// `card_rarity_rank_csharp` is the C# `CardRarity` ordinal.
 ///
 /// Bead `sts2-rs-1xmxp` — replaces the prior random `state.rng` stub
 /// (the `NOTE(sts2-rs-sr3ql)` "stays on legacy rng" caveat is now
