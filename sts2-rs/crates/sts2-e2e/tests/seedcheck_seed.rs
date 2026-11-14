@@ -91,7 +91,15 @@ fn python_proof_replays_to_a_win() {
     let mut step = env.reset();
     for (n, &ai) in log.iter().enumerate() {
         match step {
-            Step::Decision(_) => step = env.step_action(ai),
+            Step::Decision(d) => {
+                assert!(
+                    ai < d.actions.len(),
+                    "step {n}: action {ai} outside {:?} (dtype {})",
+                    d.actions,
+                    d.dtype
+                );
+                step = env.step_action(ai);
+            }
             Step::Terminal(t) => panic!(
                 "run ended at step {n} of {}: {} ({:?})",
                 log.len(),

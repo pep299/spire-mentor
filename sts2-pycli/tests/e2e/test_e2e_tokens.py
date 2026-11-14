@@ -340,12 +340,12 @@ def test_event_previews_are_honest() -> None:
     drops never reaches a row."""
     import dataclasses
 
-    d = next(
-        d
-        for _st, d in _decisions()
-        if CT.DECISION_TYPES[d.dtype].name == "EVENT"
-        and any((o.get("relics_gained") or 0) > 0 for o in d.run_obs.get("event_options", []))
-    )
+    from ppo.e2e import env as E
+
+    rm = factory.new_run(13)
+    assert rm.force_event("RoomFullOfCheese") == "RoomFullOfCheese"
+    d = E.E2EEnv(13, rm=rm).reset()
+    assert isinstance(d, E.E2EDecision) and d.dtype == CT.DT["EVENT"]
     names = [c for c, _k, _s in CT.EVENT_DELTA_COLUMNS]
     cols = [CT.XF[c] for c in names]
 

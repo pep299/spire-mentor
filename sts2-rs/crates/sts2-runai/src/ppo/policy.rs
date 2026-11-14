@@ -638,6 +638,8 @@ pub fn build_obs(rm: &RunManager, phase: &str, surface: Option<&str>) -> PpoObs 
             });
         }
         Some("rest") => {
+            // The CURRENT option ids (`ppo.env.observe`): a Miniature Tent
+            // second pick no longer lists the option already taken.
             obs.rest_option_labels = Some(
                 rs.rest_site_options()
                     .iter()
@@ -1099,26 +1101,23 @@ impl RunNudge {
         if phase != Phase::RestSite {
             return argmax;
         }
+        // Find Rest and Smith by identity: after a Miniature Tent first pick
+        // the option at idx 0 is whatever is left, not Rest.
+        use sts2_core::runstate::RestSiteOption;
         let rs = &rm.run_state;
         let options = rs.rest_site_options();
         let RunAction::RestOption { idx } = actions[argmax] else {
             return argmax;
         };
-        if !matches!(
-            options.get(idx),
-            Some(sts2_core::runstate::RestSiteOption::Rest)
-        ) {
+        if !matches!(options.get(idx), Some(RestSiteOption::Rest))
+            || f64::from(rs.current_hp) < f64::from(threshold) * f64::from(rs.max_hp)
+        {
             return argmax;
         }
-        if f64::from(rs.current_hp) < f64::from(threshold) * f64::from(rs.max_hp) {
-            return argmax;
-        }
-        let Some(smith_idx) = options.iter().position(|opt| {
-            matches!(
-                opt,
-                sts2_core::runstate::RestSiteOption::Smith { enabled: true }
-            )
-        }) else {
+        let Some(smith_idx) = options
+            .iter()
+            .position(|opt| matches!(opt, RestSiteOption::Smith { enabled: true }))
+        else {
             return argmax;
         };
         actions
@@ -1516,7 +1515,7 @@ mod combat_fallback_tests {
 
 #[cfg(all(test, feature = "ppo"))]
 mod run_nudge_tests {
-    use super::{build_obs, RunNudge};
+    use super::RunNudge;
 
     #[test]
     fn unset_or_empty_is_no_nudge() {
@@ -1544,6 +1543,8 @@ mod run_nudge_tests {
         let _ = RunNudge::parse(Some("smith_hp=half"));
     }
 
+    /// Found by the pep299 fork: after a Miniature Tent first pick, idx 0 is
+    /// Smith. The obs must say so and the nudge must not read it as Rest.
     #[test]
     fn miniature_tent_second_pick_observation_and_nudge_track_smith() {
         use sts2_core::potions::CharacterId;
@@ -1554,22 +1555,30 @@ mod run_nudge_tests {
         let mut rm = RunManager::new(0, CharacterId::Ironclad)
             .with_content_callbacks(sts2_content::run_callbacks::ironclad_content_callbacks());
         rm.run_state.relics.push(RelicId::MiniatureTent);
-        rm.run_state.current_hp = 40;
+        rm.run_state.current_hp = rm.run_state.max_hp;
+        // Something to upgrade, so Smith is enabled.
+        let strike = sts2_content::cards::spec_index::card_pod_from_id(
+            sts2_core::cards::CardId::StrikeIronclad,
+            false,
+        );
+        rm.run_state.master_deck.push(strike.expect("Strike pod"));
         rm.enter_rest_site();
 
-        let before = build_obs(&rm, "rest_site", Some("rest"));
+        let nudge = RunNudge::parse(Some("smith_hp=0.5"));
+        let before = super::build_obs(&rm, "rest_site", Some("rest"));
         assert_eq!(
             before.rest_option_labels,
             Some(vec!["HEAL".to_owned(), "SMITH".to_owned()])
         );
+        // Healthy: a Rest argmax is nudged to Smith.
+        let actions = rm.get_available_actions();
+        assert_eq!(nudge.smith_override(&rm, Phase::RestSite, &actions, 0), 1);
+
         rm.take_action(RunAction::RestOption { idx: 0 });
         assert_eq!(rm.phase(), Phase::RestSite);
-        let after = build_obs(&rm, "rest_site", Some("rest"));
+        let after = super::build_obs(&rm, "rest_site", Some("rest"));
         assert_eq!(after.rest_option_labels, Some(vec!["SMITH".to_owned()]));
-
-        // idx=0 now means Smith; the HP-based nudge must not treat it as Heal.
         let actions = rm.get_available_actions();
-        let nudge = RunNudge::parse(Some("smith_hp=0.5"));
         assert_eq!(nudge.smith_override(&rm, Phase::RestSite, &actions, 0), 0);
     }
 }

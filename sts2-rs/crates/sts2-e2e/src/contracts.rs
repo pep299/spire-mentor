@@ -203,7 +203,7 @@ pub fn dtype_kinds(d: u8) -> &'static [u8] {
         dt::POTION_SWAP => &[POTION_SWAP_DISCARD, POTION_SWAP_DECLINE],
         dt::CARD_REMOVE => &[REMOVE_DECK_CARD],
         dt::CARD_UPGRADE => &[UPGRADE_DECK_CARD],
-        dt::CARD_TRANSFORM => &[TRANSFORM_DECK_CARD, GRANT_CONFIRM],
+        dt::CARD_TRANSFORM => &[TRANSFORM_DECK_CARD],
         dt::CARD_ENCHANT => &[ENCHANT_DECK_CARD],
         dt::CARD_GRANT => &[GRANT_DECK_CARD, GRANT_CONFIRM],
         dt::TREASURE => &[COLLECT_TREASURE],
@@ -239,7 +239,6 @@ fn ooc_simple(a: &str) -> Option<u8> {
         "remove_deck_card" => REMOVE_DECK_CARD,
         "upgrade_deck_card" => UPGRADE_DECK_CARD,
         "transform_deck_card" => TRANSFORM_DECK_CARD,
-        "confirm_deck_selection" => GRANT_CONFIRM,
         "enchant_deck_card" => ENCHANT_DECK_CARD,
         _ => return None,
     })
@@ -393,13 +392,6 @@ pub fn classify_ooc(
         .iter()
         .map(|a| ooc_action_kind(a, bundles, grant_n_options))
         .collect::<Result<Vec<_>, _>>()?;
-    if actions
-        .iter()
-        .any(|a| action_name(a) == Some("confirm_deck_selection"))
-    {
-        check_kinds(dt::CARD_TRANSFORM, &kinds)?;
-        return Ok((dt::CARD_TRANSFORM, kinds));
-    }
     for (kind, d) in DTYPE_BY_KIND {
         if kinds.contains(&kind) {
             let d = if d == dt::EVENT && event_name == Some("Neow") {

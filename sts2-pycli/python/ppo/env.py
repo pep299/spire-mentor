@@ -205,10 +205,10 @@ def observe(
         obs["event_name"] = rm.current_event_name()
         obs["event_options"] = rm.event_option_infos()
     elif surface == "rest":
-        # The engine's CURRENT option ids, in RestOption{idx} order. A
-        # Miniature Tent second pick removes the first choice and reindexes
-        # the remainder; the old fixed ["rest", "smith"] list was incorrect.
-        obs["rest_option_labels"] = [option_id for option_id, _ in rm.rest_site_options()]
+        # The engine's CURRENT option ids, in `rest_option` idx order. After a
+        # Miniature Tent first pick the taken option is gone and the rest
+        # move up, so a fixed ["rest", "smith"] misnames them.
+        obs["rest_option_labels"] = [oid for oid, _ in rm.rest_site_options()]
     elif surface == "potion-swap":
         # The potion being OFFERED. Every option token names a potion you
         # would THROW AWAY (or the decline), so without this the decision is

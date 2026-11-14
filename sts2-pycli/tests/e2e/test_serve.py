@@ -488,6 +488,7 @@ def test_policy_inputs_match_batch_inputs_bitwise(t_pad):
     assert parity.policy_input_parity(ds, "cpu", t_pad)["ok"]
 
 
+@needs_x86
 def test_packed_and_bucketed_forward_match_1081_in_fp32():
     ds = synthetic_decisions(96, seed=12)
     rep = parity.inference_parity(parity.tiny_net(), ds, "cpu")
@@ -495,6 +496,7 @@ def test_packed_and_bucketed_forward_match_1081_in_fp32():
     assert rep["fp32_mixed"]["max_abs_logit"] <= 0.0  # same shapes: bit-identical
 
 
+@needs_x86
 def test_priv_permutation_leaves_logits_bit_identical():
     # plan test T14 (S1b part)
     assert parity.priv_permutation_parity(

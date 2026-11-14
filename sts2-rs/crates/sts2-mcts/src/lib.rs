@@ -1374,7 +1374,7 @@ impl Policy for SharedPolicy {
 ///
 /// `EdgeAction` decouples the edge identity from the volatile hand
 /// index: for `PlayCard` we capture the **card identity** tuple
-/// `(card_id, upgraded, cost, local_cost, free, affliction, target)`. At UCT
+/// `(card_id, upgraded, cost, free, affliction, target)`. At UCT
 /// descent / expansion
 /// time the edge is resolved back to a concrete `Action::PlayCard`
 /// against the *current* simulation state, by scanning the hand for a
@@ -1382,11 +1382,10 @@ impl Policy for SharedPolicy {
 /// hand-index-free and stored verbatim.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EdgeAction {
-    /// Stable card-identity key for a `PlayCard` edge. `cost` here is
-    /// the card's `cost` field at the moment the edge was created —
-    /// it disambiguates cards that share `(card_id, upgraded)` but
-    /// have had per-instance cost mutations (Mayhem / SeeingRed-style)
-    /// applied. `free` captures whether the card's LOCAL base cost is
+    /// Stable card-identity key for a `PlayCard` edge. `cost` retains the
+    /// complete `CardEnergyCost`, including ordered modifiers and their
+    /// expiration, so equal current costs with different future costs remain
+    /// distinct. `free` captures whether the card's LOCAL base cost is
     /// zeroed by a `FREE_THIS_TURN` / `SetUntilPlayed(0)` rider (or
     /// Flatten-after-osty-attack) — a per-instance cost mutation that
     /// does NOT touch the `cost` field. Without it, a PowerPotion's
@@ -1436,7 +1435,7 @@ impl EdgeAction {
     /// Build an `EdgeAction` from a legal `Action` at the moment of
     /// expansion. For `PlayCard`, looks up the card in `state.cards`
     /// via `state.player.hand[hand_index] -> CardUid` and captures
-    /// `(card_id, upgraded, cost, local_cost, free, affliction, target)`. For
+    /// `(card_id, upgraded, cost, free, affliction, target)`. For
     /// unrecognized hand
     /// indices (shouldn't occur — `legal_actions` only emits valid
     /// indices) falls back to `Other` with the original action so the
@@ -7781,7 +7780,7 @@ pub(crate) fn play_identity(state: &CombatState, a: &Action) -> Option<PlayIdent
 ///
 /// Steps:
 /// 1. Sort [`Action::PlayCard`] entries by the [`EdgeAction::PlayCard`]
-///    identity tuple `(card_id, upgraded, cost, local_cost, free, affliction, target)` so equal
+///    identity tuple `(card_id, upgraded, cost, free, affliction, target)` so equal
 ///    cards are adjacent.
 /// 2. Collapse adjacent equal `PlayCard` entries — different hand
 ///    indices of the same edge identity back the same tree child.
