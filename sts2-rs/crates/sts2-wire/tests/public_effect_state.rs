@@ -766,11 +766,7 @@ fn discovery_is_skippable_but_abundance_requires_a_selection() {
             },
         );
         let choice = state.pending_choice.as_ref().unwrap();
-        assert_eq!(
-            (choice.max_select, choice.can_skip),
-            (1, skip),
-            "{id}"
-        );
+        assert_eq!((choice.max_select, choice.can_skip), (1, skip), "{id}");
         assert_eq!(choice.options.len(), 3);
         assert_eq!(
             sts2_core::legal_actions(&state).iter().any(|action| {
