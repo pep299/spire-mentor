@@ -38,11 +38,15 @@ pub(crate) fn play_misery(state: &mut CombatState, target: Option<CreatureUid>) 
     let t = target.expect("Misery: Enemy-targeted");
 
     // 1. Snapshot the target's debuffs (kind + amount + C# `Applier`) before
-    // the hit.
+    // the hit. A corpse has none: C# `CreatureCmd.Kill` strips it with
+    // `RemoveAllPowersAfterDeath`, keeping only a few non-debuff survivors
+    // (Minion, Adaptable, ...). Rust keeps corpse powers, so a replay of a
+    // Misery that killed its target copied them again (random-loadout
+    // Necrobinder 7600 v0.111.0: the Rock's Imbalanced, 2 instead of 1).
     let original_debuffs: Vec<Debuff> = state
         .creatures
         .iter()
-        .find(|c| c.id == t.0)
+        .find(|c| c.id == t.0 && c.current_hp > 0)
         .map(|c| {
             c.powers
                 .iter()
@@ -131,9 +135,11 @@ fn foreign_applier(
 /// Copy one snapshotted debuff onto `enemy` — C#'s `ModifyAmount` / `Apply`
 /// branch with the original applier.
 ///
-/// A copy of a monster's own debuff (`applier` = that monster) is invisible
-/// to Unsettling Lamp, so it neither captures nor doubles it, and it is not a
-/// player-applied debuff for Sleight of Flesh. Rust treated every copy as
+/// A copy of a monster's own debuff (`applier` = that monster) cannot capture
+/// Unsettling Lamp's trigger, and it is not a player-applied debuff for
+/// Sleight of Flesh. It IS doubled once an earlier player-applied copy of the
+/// same play captured the Lamp: the doubling arm checks only the card source
+/// (GH #1150, `relic_effects::helpers::unsettling_lamp_doubles`). Rust treated every copy as
 /// player-applied: Misery copying BowlbugRock's Imbalanced 1 onto its Nectar
 /// sibling under the Lamp landed Imbalanced 2 and burnt the Lamp's trigger
 /// (loadout Necrobinder 1096 v0.107.1 act2; C# Imbalanced 1).

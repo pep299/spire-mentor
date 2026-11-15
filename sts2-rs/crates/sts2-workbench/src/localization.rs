@@ -928,6 +928,16 @@ pub fn build_loc(d: &Data) -> Loc {
     for (key, value) in &d.loc_events {
         card_loc.setdefault(key.clone(), value.clone());
     }
+    // Encounter titles only (`VANTOM_BOSS.title`): the seed checker names
+    // bosses with them; their `.loss` lines are not display names.
+    for (key, value) in &d.loc_encounters {
+        if key
+            .rsplit_once('.')
+            .is_some_and(|(_, field)| field == "title")
+        {
+            card_loc.setdefault(key.clone(), value.clone());
+        }
+    }
     card_loc
 }
 
@@ -1298,7 +1308,9 @@ mod tests {
 
     // ── test_event_option_loc_keys.py (the localization halves) ────
 
-    #[cfg(workbench_game_data)] // asserts on real game text (see build.rs)
+    // Asserts on real game text and reads the v0.113.0 events.json, which
+    // the public export omits (see build.rs).
+    #[cfg(all(workbench_game_data, workbench_game_data_v0_113_0))]
     #[test]
     fn every_wired_static_event_option_loc_key_names_a_real_row() {
         // The Python gate reads the keys out of the Rust SOURCE (so it also
@@ -1307,7 +1319,12 @@ mod tests {
         // silently degrades to the developer shorthand this replaced.
         let events = &data::data().loc_events;
         let mut missing = Vec::new();
-        for id in sts2_core::EventId::all() {
+        // The workbench ships the default build's events.json; the v0.113.0
+        // events' keys are rows of `localization_eng_v0.113.0/events.json`.
+        for id in sts2_core::EventId::all()
+            .iter()
+            .filter(|e| !sts2_core::EventId::V0113_ONLY.contains(e))
+        {
             for opt in sts2_content::events::dispatch::spec_for(*id).options {
                 if opt.loc_key.is_empty() {
                     continue;
@@ -1319,6 +1336,20 @@ mod tests {
                 }
             }
         }
+        // An option a pre-v0.113.0 event gains in v0.113.0 (Colorful
+        // Philosophers' Fool) has its row in the v0.113.0 file only.
+        let v0113: serde_json::Map<String, serde_json::Value> = serde_json::from_str(
+            &std::fs::read_to_string(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/data/game/v0.113.0/localization_eng/events.json"
+            ))
+            .expect("v0.113.0 events.json"),
+        )
+        .expect("events.json parses");
+        missing.retain(|k| {
+            !v0113.contains_key(&format!("{k}.title"))
+                && !v0113.contains_key(&format!("{k}.description"))
+        });
         missing.sort();
         missing.dedup();
         assert!(

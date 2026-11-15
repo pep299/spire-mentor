@@ -413,7 +413,7 @@ mod tests {
             let mut fresh = crate::PyCombatState::from_inner(inner.clone(), 0);
             let mut carried = crate::PyCombatState::from_inner(inner, 0);
             carried.inner.player.card_plays_started_this_turn = 3;
-            carried.inner.combat_log.cards_started_this_turn = [3, 0, 0, 0, 0];
+            carried.inner.combat_log.cards_started_this_turn = [3, 0, 0, 0, 0, 0];
             carried.inner.combat_log.card_plays_finished_this_turn = 2;
             carried.inner.combat_log.unmovable_card_block_plays.push(0);
             carried.inner.combat_log.next_card_play = 3;
@@ -421,7 +421,7 @@ mod tests {
                 .transplant_hidden(&carried, None, false, None, None, true)
                 .unwrap();
             assert_eq!(fresh.inner.player.card_plays_started_this_turn, 0);
-            assert_eq!(fresh.inner.combat_log.cards_started_this_turn, [0; 5]);
+            assert_eq!(fresh.inner.combat_log.cards_started_this_turn, [0; 6]);
             assert_eq!(fresh.inner.combat_log.card_plays_finished_this_turn, 0);
             assert!(fresh.inner.combat_log.unmovable_card_block_plays.is_empty());
             assert_eq!(fresh.inner.combat_log.next_card_play, 0);
@@ -1107,7 +1107,7 @@ mod tests {
             });
             state.player.powers.push(PowerUid(pid));
             state.player.card_plays_started_this_turn = 5;
-            state.combat_log.cards_started_this_turn = [5, 0, 0, 0, 0];
+            state.combat_log.cards_started_this_turn = [5, 0, 0, 0, 0, 0];
 
             let d = state_to_dict(py, &state).expect("state_to_dict");
             let p0 = d
@@ -1968,6 +1968,37 @@ mod tests {
         assert!(!base.iter().any(|s| s == "ONE_FOR_ALL"));
         assert!(all.iter().any(|s| s == "ONE_FOR_ALL"));
         assert!(base.iter().all(|s| all.contains(s)));
+    }
+
+    #[test]
+    fn power_all_skips_v0113_only_and_power_any_keeps_them() {
+        // `power_all` feeds the e2e vocab (trained on v0.111.0): the
+        // v0.113.0-only powers map to UNK there, like v0.113.0 cards/events.
+        // `power_any` is every build's, for checking a carried id.
+        let all = list_registry_names_impl("power_all").unwrap();
+        let any = list_registry_names_impl("power_any").unwrap();
+        assert!(!all.iter().any(|s| s == "AIM"));
+        assert!(any.iter().any(|s| s == "AIM"));
+        assert!(any.iter().any(|s| s == "ONE_FOR_ALL"));
+        assert!(all.iter().all(|s| any.contains(s)));
+    }
+
+    #[test]
+    fn card_any_adds_the_later_builds_cards_to_the_frozen_vocab() {
+        // `card` is the PPO vocab (v0.111.0, embedding rows): it must not
+        // grow. `card_any` is every build's, for checking a carried id.
+        let vocab = list_registry_names_impl("card").unwrap();
+        let any = list_registry_names_impl("card_any").unwrap();
+        assert!(!vocab.iter().any(|s| s == "MY_SHINIES"));
+        assert!(any.iter().any(|s| s == "MY_SHINIES"));
+        assert!(any.iter().any(|s| s == "DEEP_STRETCH"));
+        assert!(vocab.iter().all(|s| any.contains(s)));
+        for name in &any {
+            assert!(
+                sts2_wire::state_dict::card_id_from_python_name(name).is_some(),
+                "{name} is listed but the wire parser rejects it"
+            );
+        }
     }
 
     #[test]

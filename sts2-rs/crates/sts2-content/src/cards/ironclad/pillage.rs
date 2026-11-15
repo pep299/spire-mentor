@@ -63,10 +63,9 @@ mod tests {
         let raw = u32::try_from(state.cards.len() + 1).expect("fits");
         let uid = sts2_core::CardUid::new(raw).expect("non-zero");
         state.cards.push(Card {
-            local_energy_cost: None,
             uid,
             card_id: CardId::StrikeIronclad,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -146,10 +145,9 @@ mod tests {
         let pillage_raw = u32::try_from(state.cards.len() + 1).expect("fits");
         let pillage_uid = sts2_core::CardUid::new(pillage_raw).expect("non-zero");
         state.cards.push(Card {
-            local_energy_cost: None,
             uid: pillage_uid,
             card_id: CardId::Pillage,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -255,10 +253,9 @@ mod tests {
 
         let pillage_uid = sts2_core::CardUid::new(1).expect("non-zero");
         state.cards.push(Card {
-            local_energy_cost: None,
             uid: pillage_uid,
             card_id: CardId::Pillage,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -277,10 +274,9 @@ mod tests {
             let raw = u32::try_from(state.cards.len() + 1).expect("fits");
             let uid = sts2_core::CardUid::new(raw).expect("non-zero");
             state.cards.push(Card {
-                local_energy_cost: None,
                 uid,
                 card_id: CardId::SetupStrikeCard,
-                cost: 1,
+                cost: sts2_core::CardEnergyCost::new(1),
                 card_type: CardType::Attack,
                 target_type: TargetType::Enemy,
                 upgraded: false,

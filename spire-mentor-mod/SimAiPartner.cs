@@ -183,6 +183,31 @@ internal sealed class SimAiPartner
                 Logger.Log($"[SimAiPartner] {p.Label} tick: {ex}");
             }
         }
+        if (SimMp.AiPartnerGoTest)
+        {
+            GoLaneCheck();
+        }
+    }
+
+    private static DateTime? _goLaneWaitSince;
+
+    /// <summary><c>--spire-mentor-ai-partner-go-test</c>: "Partner go" once
+    /// a partner has waited 1.5 s (it then plays the turn out, so once per
+    /// turn).</summary>
+    private static void GoLaneCheck()
+    {
+        if (!All.Any(p => p.Brain.Waiting != PartnerWait.None))
+        {
+            _goLaneWaitSince = null;
+            return;
+        }
+        _goLaneWaitSince ??= DateTime.UtcNow;
+        if (DateTime.UtcNow - _goLaneWaitSince.Value < TimeSpan.FromSeconds(1.5))
+        {
+            return;
+        }
+        _goLaneWaitSince = null;
+        SimActions.PartnersGo("go lane");
     }
 
     public async Task JoinAsync(SimLoopbackHost host, SceneTree tree)
@@ -190,17 +215,23 @@ internal sealed class SimAiPartner
         try
         {
             Logger.Log($"[SimAiPartner] {Label} ({NetId}) joining the lobby.");
-            (object flow, INetGameService? service) = CreateJoinFlow();
+            object connector = SimLoopbackConnector.Create(host, NetId);
+            (object flow, INetGameService? service) = CreateJoinFlow(connector);
             _flow = flow;
             MethodInfo begin = flow.GetType().GetMethod("Begin")
                 ?? throw new MissingMethodException("JoinFlow.Begin");
+            // Begin(initializer, tree) up to v0.111.0; v0.113.0 takes the
+            // initializer in the constructor and Begin(tree) alone.
+            object?[] beginArgs = begin.GetParameters().Length == 1
+                ? new object?[] { tree }
+                : new object?[] { connector, tree };
             // JoinFlow runs the service's update loop itself while joining,
             // and turns the network / action / sync log channels up to
             // (very) debug for the rest of the process (it restores them
             // only on failure); put them back after.
             var levels = new Dictionary<GameLogging.LogType, GameLogging.LogLevel>(
                 GameLogging.Logger.logLevelTypeMap);
-            var task = (Task)begin.Invoke(flow, new object?[] { SimLoopbackConnector.Create(host, NetId), tree })!;
+            var task = (Task)begin.Invoke(flow, beginArgs)!;
             try
             {
                 await task;
@@ -255,14 +286,16 @@ internal sealed class SimAiPartner
         Advisor = null;
     }
 
-    /// <summary>v0.111.0: <c>new JoinFlow(new NetClientGameService(
+    /// <summary>v0.113.0: <c>new JoinFlow(service, initializer)</c>;
+    /// v0.111.0: <c>new JoinFlow(new NetClientGameService(
     /// PeerVersionInfo.LocalDefault()))</c>; v0.107.1: <c>new JoinFlow()</c>,
     /// which creates its service in Begin.</summary>
-    private static (object flow, INetGameService? service) CreateJoinFlow()
+    private static (object flow, INetGameService? service) CreateJoinFlow(object connector)
     {
         Type flowType = typeof(JoinFlow);
-        ConstructorInfo? withService = flowType.GetConstructors().FirstOrDefault(c => c.GetParameters().Length == 1);
-        if (withService == null)
+        ConstructorInfo? ctor = flowType.GetConstructors().OrderByDescending(c => c.GetParameters().Length).FirstOrDefault();
+        int arity = ctor?.GetParameters().Length ?? 0;
+        if (ctor == null || arity == 0)
         {
             return (Activator.CreateInstance(flowType)!, null);
         }
@@ -270,7 +303,10 @@ internal sealed class SimAiPartner
         object service = version != null
             ? Activator.CreateInstance(typeof(NetClientGameService), version)!
             : Activator.CreateInstance(typeof(NetClientGameService))!;
-        return (withService.Invoke(new[] { service }), (INetGameService)service);
+        object flow = arity == 1
+            ? ctor.Invoke(new[] { service })
+            : ctor.Invoke(new[] { service, connector });
+        return (flow, (INetGameService)service);
     }
 
     private void ChooseCharacterAndReady()
@@ -290,19 +326,54 @@ internal sealed class SimAiPartner
         Send(new LobbyPlayerSetReadyMessage { ready = true });
     }
 
+    /// <summary>The lane's <c>--spire-mentor-ai-partner-character</c>, else
+    /// the character this seat last played (clicked in the lobby), else the
+    /// seat's default.</summary>
     private CharacterModel PickCharacter()
     {
         List<CharacterModel> all = ModelDb.AllCharacters.ToList();
-        if (!string.IsNullOrEmpty(_characterName))
+        foreach (string? wanted in new[] { _characterName, PartnerCharacters.ForSeat(SpireMentorModConfig.AiPartnerCharacters, Seat) })
         {
-            CharacterModel? named = all.FirstOrDefault(c => c.Id.Entry.Contains(_characterName, StringComparison.OrdinalIgnoreCase));
+            if (string.IsNullOrEmpty(wanted))
+            {
+                continue;
+            }
+            CharacterModel? named = all.FirstOrDefault(c => c.Id.Entry.Equals(wanted, StringComparison.OrdinalIgnoreCase))
+                                    ?? all.FirstOrDefault(c => c.Id.Entry.Contains(wanted, StringComparison.OrdinalIgnoreCase));
             if (named != null)
             {
                 return named;
             }
-            Logger.Log($"[SimAiPartner] No character matches \"{_characterName}\".");
+            Logger.Log($"[SimAiPartner] No character matches \"{wanted}\".");
         }
-        return all[(Seat + 1) % all.Count];
+        return all[PartnerCharacters.DefaultIndex(Seat, all.Count)];
+    }
+
+    /// <summary>The lobby's click on this partner's slot (SimAiPartnerLobby):
+    /// the next (+1) or previous (-1) character, sent as a remote player's
+    /// pick is; the host's lobby takes a change while the run has not begun,
+    /// readied or not. Kept for the seat's next lobby. False when there is
+    /// nothing to change (not joined yet, or a saved run's fixed seat).</summary>
+    public bool CycleCharacter(int direction)
+    {
+        if (!Joined || Character == null || _saved != null)
+        {
+            return false;
+        }
+        List<CharacterModel> all = ModelDb.AllCharacters.ToList();
+        int current = all.FindIndex(c => c.Id.Equals(Character.Id));
+        CharacterModel next = all[PartnerCharacters.Cycle(current, all.Count, direction)];
+        if (next.Id.Equals(Character.Id))
+        {
+            return false;
+        }
+        Character = next;
+        Logger.Log($"[SimAiPartner] {Label} switches to {next.Id.Entry}.");
+        Send(new LobbyPlayerChangedCharacterMessage { character = next });
+        SpireMentorModConfig.AiPartnerCharacters =
+            PartnerCharacters.WithSeat(SpireMentorModConfig.AiPartnerCharacters, Seat, next.Id.Entry);
+        SpireMentorModConfig.SaveSoon();
+        return true;
     }
 
     /// <summary>Sends one message as this partner, as a remote client would.</summary>
@@ -486,6 +557,14 @@ internal sealed class SimAiPartnerSession
         await Task.Delay(400);
         Error err = tree.Root.GetViewport().GetTexture().GetImage().SavePng(path);
         Logger.Log($"[SimAiPartner] lobby screenshot -> {path} ({err}).");
+        if (SimMp.AiPartnerPickClicks > 0 && Partners.FirstOrDefault() is { } first)
+        {
+            await SimAiPartnerLobby.ClickSlotAsync(tree, first.NetId, SimMp.AiPartnerPickClicks);
+            await Task.Delay(800);
+            string picked = System.IO.Path.ChangeExtension(path, null) + "_picked.png";
+            err = tree.Root.GetViewport().GetTexture().GetImage().SavePng(picked);
+            Logger.Log($"[SimAiPartner] lobby screenshot after picking -> {picked} ({err}); {first.Label} plays {first.Character?.Id.Entry}.");
+        }
     }
 
     public void End(string why)
@@ -552,7 +631,7 @@ internal sealed class SimAiPartnerSession
                 Error err = image.SavePng(shot);
                 Logger.Log($"[SimAiPartner] host menu screenshot -> {shot} ({err}).");
             }
-            if (hostMenu.GetNodeOrNull<NSubmenuButton>("SpireMentorAiPartnersButton") is not { } button)
+            if (SimAiPartnerMenu.Find(hostMenu) is not { } button)
             {
                 Logger.Log("[SimAiPartner] The host menu has no AI-partners button; hosting directly.");
                 return false;

@@ -267,65 +267,6 @@ fn replay_counts_started_attacks_and_pen_nib_before_each_iteration() {
 }
 
 #[test]
-fn pen_nib_uses_explicit_damage_source_not_the_parent_attack() {
-    use sts2_core::hooks::{CreatureRef, ValueProps};
-    let mut value = fixture();
-    value["player"]["powers"] = json!([]);
-    value["player"]["relics"] = json!([{"id":"PEN_NIB","counter":0}]);
-    value["deck"]["hand"] = json!([
-        {"id":"STRIKE_IRONCLAD","kind":"card","stable_idx":4,"upgraded":false},
-        {"id":"STRIKE_IRONCLAD","kind":"card","stable_idx":5,"upgraded":false}
-    ]);
-    let mut state = rebuild(&value);
-    state.relics[0].counter = 9;
-    assert_eq!(
-        sts2_wire::emit::card_damage_preview(&state)[0].get(&0),
-        Some(&12)
-    );
-    state.relics[0].counter = 0;
-    let parent = state.player.hand.remove(0);
-    let nested = state.player.hand.remove(0);
-    state.player.play.push(parent);
-    state.resolving_card = Some(parent);
-    state.combat_log.current_card_play = Some(0);
-    state.combat_log.pen_nib_attack_to_double = Some(parent);
-    let damage = |state: &sts2_core::CombatState, card| {
-        sts2_core::damage::compute_modified_damage(
-            state,
-            CreatureRef::Player,
-            state.enemy_uids[0],
-            6,
-            ValueProps::MOVE,
-            card,
-        )
-    };
-    assert_eq!(damage(&state, Some(CardId::StrikeIronclad)), 12);
-    assert_eq!(
-        damage(&state, None),
-        6,
-        "powered card-less damage inside an Attack is not doubled"
-    );
-    state.player.play.push(nested);
-    state.resolving_card = Some(nested);
-    assert_eq!(
-        damage(&state, Some(CardId::StrikeIronclad)),
-        6,
-        "a second card of the same type has another source identity"
-    );
-    state.combat_log.pen_nib_attack_to_double = Some(nested);
-    assert_eq!(damage(&state, Some(CardId::StrikeIronclad)), 12);
-    state.resolving_card = Some(parent);
-    assert_eq!(
-        damage(&state, Some(CardId::StrikeIronclad)),
-        6,
-        "a nested marked Attack does not boost its parent"
-    );
-    state.resolving_card = Some(nested);
-    state.relics.set_melted(0, true);
-    assert_eq!(damage(&state, Some(CardId::StrikeIronclad)), 6);
-}
-
-#[test]
 fn nested_block_cards_keep_distinct_play_tags_across_choices() {
     let mut value = fixture();
     value["player"]["block"] = json!(0);
@@ -422,12 +363,12 @@ fn temporary_card_flags_survive_leaving_the_hand() {
 }
 
 #[test]
-fn juggling_applied_mid_turn_counts_started_attacks_including_pending_parents() {
+fn juggling_applied_after_two_attacks_copies_the_third() {
     let mut value = fixture();
     value["game_version"] = json!("0.111.0");
     value["player"]["powers"] = json!([]);
     value["player"]["relics"] = json!([]);
-    value["player"]["cards_played_this_turn"] = json!([1, 0, 0, 0, 0]);
+    value["player"]["cards_played_this_turn"] = json!([2, 0, 0, 0, 0]);
     value["player"]["cards_started_this_turn"] = json!([2, 0, 0, 0, 0]);
     value["deck"]["hand"] = json!([
         {"id":"JUGGLING_CARD","kind":"card","stable_idx":4,"upgraded":false},
@@ -471,7 +412,7 @@ fn juggling_applied_mid_turn_counts_started_attacks_including_pending_parents() 
     assert_eq!(
         state.player.hand.len(),
         1,
-        "the third started Attack leaves a generated copy"
+        "the third Attack leaves a generated copy"
     );
 }
 
@@ -488,23 +429,14 @@ fn relative_combat_costs_keep_debt_and_later_absolute_overrides() {
         let mut state = rebuild(&value);
         let uid = state.player.hand[0];
         let idx = uid.get() as usize - 1;
-        state.cards[idx].add_cost_this_combat(-2);
-        assert_eq!(
-            sts2_core::hooks::local_card_cost(&state, &state.cards[idx]),
-            -1
-        );
+        state.cards[idx].cost.add_this_combat(-2);
+        assert_eq!(state.cards[idx].local_cost(), -1);
         assert_eq!(sts2_core::hooks::effective_card_cost(&state, uid), 0);
         sts2_core::apply_transfigure(&mut state, uid);
-        assert_eq!(
-            sts2_core::hooks::local_card_cost(&state, &state.cards[idx]),
-            0
-        );
+        assert_eq!(state.cards[idx].local_cost(), 0);
         assert_eq!(sts2_core::hooks::effective_card_cost(&state, uid), 2);
-        state.cards[idx].set_cost_this_combat(3);
-        assert_eq!(
-            sts2_core::hooks::local_card_cost(&state, &state.cards[idx]),
-            3
-        );
+        state.cards[idx].cost.set_this_combat(3, false);
+        assert_eq!(state.cards[idx].local_cost(), 3);
         assert_eq!(sts2_core::hooks::effective_card_cost(&state, uid), 5);
     }
 }
@@ -522,7 +454,7 @@ fn transfigure_adds_after_a_local_zero_without_surviving_its_expiration_twice() 
         let mut state = rebuild(&value);
         let uid = state.player.hand[0];
         let idx = uid.get() as usize - 1;
-        state.cards[idx].set_combat_var(sts2_core::cards::VarKey::FreeThisTurn, 1);
+        state.cards[idx].set_to_free_this_turn();
         sts2_core::apply_transfigure(&mut state, uid);
         assert_eq!(sts2_core::hooks::effective_card_cost(&state, uid), 1);
         assert_eq!(
@@ -541,6 +473,10 @@ fn transfigure_adds_after_a_local_zero_without_surviving_its_expiration_twice() 
 #[test]
 fn ordered_cost_modifiers_roundtrip_without_losing_expiration_or_order() {
     let mut value = fixture();
+    value["deck"]["hand"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("cost_mods");
     value["deck"]["hand"][0]["combat_vars"] = json!({});
     value["deck"]["hand"][0]["local_cost"] = json!({
         "base":3,"costs_x":false,"modifiers":[
@@ -556,7 +492,7 @@ fn ordered_cost_modifiers_roundtrip_without_losing_expiration_or_order() {
     let back = rebuild(&emitted);
     let card = &back.cards[back.player.hand[0].get() as usize - 1];
     assert_eq!(card.local_costs_after_expiration(), [3, 5, 5, 5]);
-    let mut model = card.local_energy_cost.unwrap();
+    let mut model = card.public_local_energy_cost();
     model.upgrade_base(-1);
     assert_eq!(
         model.costs(),
@@ -566,8 +502,8 @@ fn ordered_cost_modifiers_roundtrip_without_losing_expiration_or_order() {
     value["deck"]["hand"][0]["local_cost"]["modifiers"][0]["expiration"] = json!(0);
     let permanent = rebuild(&value);
     assert_eq!(
-        permanent.cards[permanent.player.hand[0].get() as usize - 1].cost,
-        state.cards[state.player.hand[0].get() as usize - 1].cost
+        permanent.cards[permanent.player.hand[0].get() as usize - 1].local_cost(),
+        state.cards[state.player.hand[0].get() as usize - 1].local_cost()
     );
     assert_ne!(
         sts2_core::search_hash(&permanent),
@@ -722,6 +658,10 @@ fn slumbering_discount_expires_on_play_and_stomp_backfill_keeps_full_relative_am
 #[test]
 fn tezcatara_ember_changes_base_without_erasing_later_relative_cost() {
     let mut value = fixture();
+    value["deck"]["hand"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("cost_mods");
     value["deck"]["hand"][0]["combat_vars"] = json!({});
     value["deck"]["hand"][0]["local_cost"] = json!({
         "base":2,"costs_x":false,"modifiers":[
@@ -735,7 +675,7 @@ fn tezcatara_ember_changes_base_without_erasing_later_relative_cost() {
         sts2_core::cards::EnchantmentId::TezcatarasEmber,
         1,
     );
-    assert_eq!(card.local_energy_cost.unwrap().base, 0);
+    assert_eq!(card.public_local_energy_cost().base, 0);
     assert_eq!(card.local_costs_after_expiration(), [1; 4]);
 }
 
@@ -755,8 +695,10 @@ fn bookmark_discount_survives_turn_end_but_not_the_next_play() {
         state.cards[uid.get() as usize - 1].local_costs_after_expiration(),
         [0, 0, 1, 1]
     );
-    state.restore_wire_transient_costs_for_turn_start();
-    assert_eq!(state.cards[uid.get() as usize - 1].cost, 0);
+    for card in &mut state.cards {
+        card.cost.end_of_turn_cleanup();
+    }
+    assert_eq!(state.cards[uid.get() as usize - 1].local_cost(), 0);
     sts2_core::apply(
         &mut state,
         Action::PlayCard {
@@ -786,21 +728,19 @@ fn vexing_generated_card_is_only_free_until_played_or_turn_end() {
         sts2_core::relic_effects::dispatch_after_player_turn_start(&mut state);
         assert_eq!(state.cards.len(), arena_size + 1);
         let card = state.cards.last().unwrap();
-        let model = card
-            .local_energy_cost
-            .expect("generated factory cards retain their exact local cost");
+        let model = card.public_local_energy_cost();
         if model.costs_x {
             continue;
         }
-        assert_eq!(card.cost, 0);
+        assert_eq!(card.local_cost(), 0);
         if model.base > 0 {
             positive_cost_cards += 1;
             let mut after_play = *card;
-            after_play.expire_local_energy_cost(4);
-            assert_eq!(i32::from(after_play.cost), model.base);
+            after_play.cost.after_card_played_cleanup();
+            assert_eq!(after_play.local_cost(), model.base);
             let mut after_turn = *card;
-            after_turn.expire_local_energy_cost(2);
-            assert_eq!(i32::from(after_turn.cost), model.base);
+            after_turn.cost.end_of_turn_cleanup();
+            assert_eq!(after_turn.local_cost(), model.base);
         }
     }
     assert!(
@@ -811,7 +751,7 @@ fn vexing_generated_card_is_only_free_until_played_or_turn_end() {
 
 #[test]
 fn discovery_is_skippable_but_abundance_requires_a_selection() {
-    for (id, min, skip) in [("DISCOVERY", 0, true), ("ABUNDANCE", 1, false)] {
+    for (id, skip) in [("DISCOVERY", true), ("ABUNDANCE", false)] {
         let mut value = fixture();
         value["game_version"] = json!("0.111.0");
         value["player"]["powers"] = json!([]);
@@ -826,12 +766,15 @@ fn discovery_is_skippable_but_abundance_requires_a_selection() {
             },
         );
         let choice = state.pending_choice.as_ref().unwrap();
+        assert_eq!((choice.max_select, choice.can_skip), (1, skip), "{id}");
+        assert_eq!(choice.options.len(), 3);
         assert_eq!(
-            (choice.min_select, choice.max_select, choice.can_skip),
-            (min, 1, skip),
+            sts2_core::legal_actions(&state).iter().any(|action| {
+                matches!(action, Action::ResolveChoice { selection } if selection.is_empty())
+            }),
+            skip,
             "{id}"
         );
-        assert_eq!(choice.options.len(), 3);
         if skip {
             sts2_core::apply(
                 &mut state,
@@ -918,7 +861,7 @@ fn capture_played_cost(
     state: &mut sts2_core::CombatState,
     ctx: &sts2_core::relic_effects::CardEventCtx,
 ) -> sts2_core::EffectResult {
-    state.player.block = i32::from(state.cards[ctx.card_uid.unwrap().get() as usize - 1].cost);
+    state.player.block = state.cards[ctx.card_uid.unwrap().get() as usize - 1].local_cost();
     sts2_core::EffectResult::Resolved
 }
 
@@ -951,7 +894,7 @@ fn when_played_cost_modifier_remains_live_through_after_card_played() {
         "AfterCardPlayed still observes the earlier free modifier before cleanup"
     );
     assert_eq!(
-        state.cards[uid.get() as usize - 1].cost,
+        state.cards[uid.get() as usize - 1].local_cost(),
         3,
         "WhenPlayed cleanup runs after the hook"
     );
@@ -982,9 +925,9 @@ fn mummified_hand_uses_base_preference_and_current_cost_after_a_free_modifier() 
             target: None,
         },
     );
-    assert_eq!(state.cards[preferred.get() as usize - 1].cost, 0);
+    assert_eq!(state.cards[preferred.get() as usize - 1].local_cost(), 0);
     assert_eq!(
-        state.cards[fallback.get() as usize - 1].cost,
+        state.cards[fallback.get() as usize - 1].local_cost(),
         1,
         "zero-base cards are the later fallback pool, even when both currently cost energy"
     );
@@ -1005,7 +948,7 @@ fn touch_of_insanity_can_free_a_positive_local_cost_after_an_earlier_free_modifi
     }]);
     let mut state = rebuild(&value);
     let uid = state.player.hand[0];
-    assert_eq!(state.cards[uid.get() as usize - 1].cost, 1);
+    assert_eq!(state.cards[uid.get() as usize - 1].local_cost(), 1);
     sts2_core::apply(
         &mut state,
         Action::DrinkPotion {

@@ -64,7 +64,7 @@ fn fresh_state(card_id: CardId, base_damage: i32, base_block: i32) -> (CombatSta
     state.cards.push(Card {
         uid: sts2_core::CardUid(card_uid),
         card_id,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: false,
@@ -117,10 +117,15 @@ pin_registered!(pin_momentum_strike, MomentumStrike);
 fn j0wn5_momentum_strike_sets_own_cost_to_zero() {
     install_pool();
     let (mut state, euid) = fresh_state(CardId::MomentumStrike, 10, 0);
-    assert_eq!(state.cards[0].cost, 1, "MomentumStrike base cost = 1");
+    assert_eq!(
+        state.cards[0].local_cost(),
+        1,
+        "MomentumStrike base cost = 1"
+    );
     let _ = lookup(CardId::MomentumStrike).expect("registered")(&mut state, Some(euid));
     assert_eq!(
-        state.cards[0].cost, 0,
+        state.cards[0].local_cost(),
+        0,
         "MomentumStrike sets its own cost to 0 for this combat"
     );
 }
@@ -300,9 +305,18 @@ fn play_strike_defect_deals_6_damage() {
 #[test]
 fn sunder_grants_energy_only_on_the_killing_blow_not_a_corpse() {
     install_pool();
-    // Killing blow: enemy at 10 HP, Sunder 24 → dies, +3 energy.
+    // Killing blow: enemy at 10 HP, Sunder 24 → dies, +3 energy. A second,
+    // live enemy keeps the combat from ending: `PlayerCmd.GainEnergy` grants
+    // nothing once `CombatManager.IsEnding` (PlayerCmd.cs:31).
     let (mut state, euid) = fresh_state(CardId::Sunder, 24, 0);
     state.creatures[0].current_hp = 10;
+    let mut bystander = state.creatures[0].clone();
+    bystander.id = NonZeroU32::new(9).expect("nz");
+    bystander.current_hp = 50;
+    state.creatures.push(bystander);
+    state
+        .enemy_uids
+        .push(CreatureUid(NonZeroU32::new(9).expect("nz")));
     state.player.energy = 0;
     let f = lookup(CardId::Sunder).expect("registered");
     let r = f(&mut state, Some(euid));
@@ -356,7 +370,7 @@ fn play_uproar_lethal_leaves_the_pick_in_the_draw_pile() {
     state.cards.push(Card {
         uid: strike_uid,
         card_id: CardId::StrikeDefect,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: false,
@@ -383,7 +397,7 @@ fn play_uproar_auto_plays_an_attack_from_draw_not_a_skill() {
     state.cards.push(Card {
         uid: skill_uid,
         card_id: CardId::DefendDefect,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Skill,
         target_type: TargetType::Self_,
         upgraded: false,
@@ -398,7 +412,7 @@ fn play_uproar_auto_plays_an_attack_from_draw_not_a_skill() {
     state.cards.push(Card {
         uid: strike_uid,
         card_id: CardId::StrikeDefect,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: false,
@@ -443,7 +457,7 @@ fn scrape_v0111_discards_a_drawn_unplayable_status() {
         state.cards.push(Card {
             uid: infection,
             card_id: CardId::Infection,
-            cost: -1,
+            cost: sts2_core::CardEnergyCost::new(-1),
             card_type: CardType::Status,
             target_type: TargetType::None,
             ..Card::pod_defaults()
@@ -452,7 +466,7 @@ fn scrape_v0111_discards_a_drawn_unplayable_status() {
         state.cards.push(Card {
             uid: claw,
             card_id: CardId::Claw,
-            cost: 0,
+            cost: sts2_core::CardEnergyCost::new(0),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             base_damage: 3,
@@ -503,7 +517,7 @@ fn scrape_keeps_cards_drawn_by_iteration() {
             state.cards.push(Card {
                 uid,
                 card_id: id,
-                cost: if status { -1 } else { 1 },
+                cost: sts2_core::CardEnergyCost::new(if status { -1 } else { 1 }),
                 card_type: if status {
                     CardType::Status
                 } else {
@@ -569,7 +583,7 @@ fn scrape_discard_waits_for_a_stratagem_suspended_draw() {
             state.cards.push(Card {
                 uid,
                 card_id: id,
-                cost: 1,
+                cost: sts2_core::CardEnergyCost::new(1),
                 card_type: CardType::Skill,
                 target_type: TargetType::None,
                 ..Card::pod_defaults()
@@ -625,6 +639,90 @@ fn scrape_discard_waits_for_a_stratagem_suspended_draw() {
     }
 }
 
+/// A Scrape draw resumed after a Stratagem pick still discards only its own
+/// cards: the resumed draw's first Status fires Iteration, whose nested draw
+/// lands in hand between Scrape's cards and is not part of Scrape's result
+/// (Defect v0.107.1 5679 @553: Rust discarded the Uproar Iteration drew).
+#[test]
+fn resumed_scrape_draw_keeps_the_card_iteration_drew() {
+    install_pool();
+    for version in [
+        sts2_core::GameVersion::V0_107_1,
+        sts2_core::GameVersion::V0_111_0,
+    ] {
+        let (mut state, euid) = fresh_state(CardId::Scrape, 7, 0);
+        state.game_version = version;
+        let mut uids = Vec::new();
+        for (n, id) in [CardId::Zap, CardId::Dazed, CardId::Dazed, CardId::Leap]
+            .into_iter()
+            .enumerate()
+        {
+            let uid = sts2_core::CardUid(NonZeroU32::new(n as u32 + 2).expect("nz"));
+            let status = id == CardId::Dazed;
+            state.cards.push(Card {
+                uid,
+                card_id: id,
+                cost: sts2_core::CardEnergyCost::new(if status { -1 } else { 1 }),
+                card_type: if status {
+                    CardType::Status
+                } else {
+                    CardType::Skill
+                },
+                target_type: TargetType::None,
+                ..Card::pod_defaults()
+            });
+            uids.push(uid);
+        }
+        let (zap, leap) = (uids[0], uids[3]);
+        state.player.draw.push(zap);
+        state.player.discard.extend([uids[1], uids[2], leap]);
+        for (n, kind) in [
+            sts2_core::PowerKind::Stratagem,
+            sts2_core::PowerKind::Iteration,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let pid = NonZeroU32::new(90 + n as u32).expect("nz");
+            state.powers.push(sts2_core::Power::new(pid, kind, 1));
+            state.player.powers.push(sts2_core::PowerUid(pid));
+        }
+
+        let f = lookup(CardId::Scrape).expect("registered");
+        assert_eq!(f(&mut state, Some(euid)), EffectResult::Resolved);
+        let choice = state.pending_choice.as_ref().expect("Stratagem pick open");
+        let at = choice
+            .options
+            .iter()
+            .position(|o| o.card_uid == Some(leap))
+            .expect("Leap offered");
+        let mut sel: SmallVec<[u8; 4]> = SmallVec::new();
+        sel.push(u8::try_from(at).expect("small"));
+        let _ = sts2_core::apply(
+            &mut state,
+            sts2_core::Action::ResolveChoice { selection: sel },
+        );
+        assert!(state.pending_choice.is_none(), "{version:?}: pick resolved");
+        // Scrape's resumed draw took one Dazed (firing Iteration), Iteration
+        // drew the other, then the pile ran dry.
+        let in_hand: Vec<_> = uids[1..3]
+            .iter()
+            .copied()
+            .filter(|u| state.player.hand.contains(u))
+            .collect();
+        assert_eq!(
+            in_hand.len(),
+            1,
+            "{version:?}: Iteration's Dazed stays, Scrape's is discarded"
+        );
+        assert!(state.player.discard.contains(&zap), "{version:?}");
+        assert!(
+            state.player.hand.contains(&leap),
+            "{version:?}: the pick stays"
+        );
+    }
+}
+
 /// An auto-played card runs its `Enchantment.OnPlay` like a hand play
 /// (CardModel.cs:1930-1943): Uproar auto-playing a Sown(1) Strike gains 1
 /// energy, once. Defect QX189.
@@ -639,7 +737,7 @@ fn uproar_auto_played_sown_strike_gains_energy() {
     let mut strike = Card {
         uid: strike_uid,
         card_id: CardId::StrikeDefect,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         base_damage: 6,
@@ -884,7 +982,7 @@ fn scavenge_opens_exhaust_choice_then_applies_energy() {
         state.cards.push(Card {
             uid: sts2_core::CardUid(hand_uid),
             card_id: CardId::StrikeDefect,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -937,7 +1035,7 @@ fn hologram_opens_discard_choice_at_two_plus() {
         state.cards.push(Card {
             uid: sts2_core::CardUid(uid),
             card_id: cid,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Skill,
             target_type: TargetType::Self_,
             upgraded: false,
@@ -969,7 +1067,7 @@ fn hologram_auto_returns_lone_discard_card() {
     state.cards.push(Card {
         uid: sts2_core::CardUid(uid),
         card_id: CardId::Zap,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Skill,
         target_type: TargetType::Self_,
         upgraded: false,
@@ -1002,7 +1100,7 @@ fn push_arena_card(
     state.cards.push(Card {
         uid,
         card_id,
-        cost,
+        cost: sts2_core::CardEnergyCost::new(cost),
         card_type,
         target_type: TargetType::Self_,
         upgraded: false,
@@ -1240,7 +1338,7 @@ fn play_claw_increments_all_claws() {
     state.cards.push(Card {
         uid: sts2_core::CardUid(claw2_uid),
         card_id: CardId::Claw,
-        cost: 0,
+        cost: sts2_core::CardEnergyCost::new(0),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: false,
@@ -1323,7 +1421,7 @@ fn play_claw_upgraded_increments_all_claws_by_three() {
     state.cards.push(Card {
         uid: sts2_core::CardUid(claw2_uid),
         card_id: CardId::Claw,
-        cost: 0,
+        cost: sts2_core::CardEnergyCost::new(0),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: false,
@@ -1720,6 +1818,53 @@ fn an_unsized_defect_fixture_belt_still_gets_the_three_slot_base() {
     assert_eq!(state.player.orbs.count_kind(orbs::OrbKind::Frost), 1);
 }
 
+/// An Ironclad (C# `BaseOrbSlotCount` 0) playing a generated Capacitor on its
+/// fresh, unsized belt: C# `Capacitor.OnPlay` is just `OrbCmd.AddSlots(2)`
+/// (Capacitor.cs:19-23; OrbCmd.cs:23-33) onto Capacity 0 → 2 slots. The
+/// 3-slot base is the Defect's alone. Rust used to grow it to 3 + 2 = 5
+/// (Ironclad seed 6637, v0.111.0, step 268).
+#[test]
+fn capacitor_on_a_non_defect_gives_only_its_own_slots() {
+    install_pool();
+    let f = lookup(CardId::Capacitor).expect("registered");
+    let (mut state, _) = fresh_state(CardId::Capacitor, 0, 0);
+    state.player.character = Some(sts2_core::potions::CharacterId::Ironclad);
+    assert!(!state.player.orbs.sized);
+    let _ = f(&mut state, None);
+    assert_eq!(state.player.orbs.capacity(), 2);
+    // With 2 slots (Capacity != 0, so no `OrbCmd.Channel` +1), the third
+    // channel evokes the front Lightning (OrbCmd.cs:74-81).
+    let hp_before = state.creatures[0].current_hp;
+    orbs::channel_orb(&mut state, Orb::lightning());
+    orbs::channel_orb(&mut state, Orb::frost());
+    orbs::channel_orb(&mut state, Orb::dark());
+    let kinds: Vec<orbs::OrbKind> = state
+        .player
+        .orbs
+        .slots
+        .iter()
+        .filter(|o| !o.is_empty())
+        .map(orbs::OrbKind::of)
+        .collect();
+    assert_eq!(kinds, vec![orbs::OrbKind::Frost, orbs::OrbKind::Dark]);
+    assert!(
+        state.creatures[0].current_hp < hp_before,
+        "the overflowed Lightning's evoke hits the enemy"
+    );
+}
+
+/// Modded on a non-Defect: `OrbCmd.AddSlots(1)` onto Capacity 0 → 1 slot
+/// (Modded.cs), not the Defect's 3 + 1.
+#[test]
+fn modded_on_a_non_defect_gives_only_its_own_slot() {
+    install_pool();
+    let f = lookup(CardId::Modded).expect("registered");
+    let (mut state, _) = fresh_state(CardId::Modded, 0, 0);
+    state.player.character = Some(sts2_core::potions::CharacterId::Ironclad);
+    let _ = f(&mut state, None);
+    assert_eq!(state.player.orbs.capacity(), 1);
+}
+
 /// Bead `sts2-rs-q1ljh`: upgraded BulkUp grants 3/3 Strength/Dexterity
 /// per C# `BulkUp.cs:OnUpgrade` `UpgradeValueBy(1m)` on both
 /// `StrengthPower` and `DexterityPower`. Orb-slot REMOVE stays at 1
@@ -1888,7 +2033,7 @@ fn gh639_trash_to_treasure_power_channels_an_orb_on_a_generated_status() {
     let void = Card {
         uid: sts2_core::CardUid(NonZeroU32::new(u32::MAX).expect("nz")),
         card_id: CardId::Void,
-        cost: -1,
+        cost: sts2_core::CardEnergyCost::new(-1),
         card_type: CardType::Status,
         target_type: TargetType::None,
         upgraded: false,
@@ -1911,8 +2056,10 @@ fn gh639_trash_to_treasure_power_channels_an_orb_on_a_generated_status() {
 /// GH #1054 (Defect seed 1016): C# `Hook.AfterCardGeneratedForCombat` runs
 /// through `IterateCombatHookListeners`, which yields no listeners once combat
 /// is ending (`Hook.cs:177-207`, `:395-402`). A Gunk Up whose hits kill the
-/// last primary enemy still adds its Slimed (`CardPileCmd.cs:281-313` only
-/// checks `!IsInProgress`), but TrashToTreasure must NOT roll
+/// last primary enemy still generates its Slimed (`AddGeneratedCardsToCombat`
+/// only checks `!IsInProgress`), but the `CardPileCmd.Add` it calls fails on
+/// `IsEnding` (CardPileCmd.cs:312), so the Slimed reaches no pile. And
+/// TrashToTreasure must NOT roll
 /// `GetRandomOrb(CombatOrbGeneration)`. The run-level `combat_orbs` read
 /// would otherwise carry into the next combat.
 #[test]
@@ -1936,12 +2083,16 @@ fn gh1054_trash_to_treasure_skips_orb_when_gunk_up_ends_combat() {
     let before = state.run_rng.combat_orbs.counter();
     let _ = f(&mut state, Some(euid));
     assert!(
-        state
+        state.cards.iter().any(|c| c.card_id == CardId::Slimed),
+        "the Slimed is still generated"
+    );
+    assert!(
+        !state
             .player
             .discard
             .iter()
             .any(|u| state.cards[u.0.get() as usize - 1].card_id == CardId::Slimed),
-        "the Slimed is still generated into the discard pile"
+        "but `CardPileCmd.Add` fails once combat is ending"
     );
     assert_eq!(
         state.player.orbs.filled_len(),
@@ -2090,7 +2241,7 @@ fn e0vm_modded_draws_and_bumps_slot_and_cost() {
     state.cards.push(Card {
         uid: draw_uid,
         card_id: CardId::Wound,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Status,
         target_type: TargetType::Self_,
         upgraded: false,
@@ -2102,7 +2253,7 @@ fn e0vm_modded_draws_and_bumps_slot_and_cost() {
 
     let played_uid = *state.player.play.last().expect("Modded was pushed");
     let played_idx = played_uid.0.get() as usize - 1;
-    let cost_before = state.cards[played_idx].cost;
+    let cost_before = state.cards[played_idx].local_cost();
     // Fresh combat belt is lazily capacity-0; C# `AddSlots` stacks on the
     // Defect base (3), so the first MODDED yields 3 + 1 = 4 (NOT 1 — the prior
     // port capped a fresh belt at 1, Defect fuzz seed 188).
@@ -2122,7 +2273,7 @@ fn e0vm_modded_draws_and_bumps_slot_and_cost() {
         "Modded on a fresh belt establishes the 3-slot Defect base + 1"
     );
     assert_eq!(
-        state.cards[played_idx].cost,
+        state.cards[played_idx].local_cost(),
         cost_before + 1,
         "Modded's persistent cost bumps by 1"
     );
@@ -2500,7 +2651,7 @@ fn compact_transform_hand_order(version: sts2_core::GameVersion) -> Vec<CardId> 
         state.cards.push(Card {
             uid,
             card_id: id,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: ty,
             target_type: TargetType::Self_,
             ..Card::pod_defaults()
@@ -2567,5 +2718,55 @@ fn compact_transforms_in_place_one_at_a_time_v0107() {
             CardId::Zap,
         ],
         "each Fuel replaces its Status in place"
+    );
+}
+
+/// Every Defect energy card gains through `PlayerCmd.GainEnergy` (C#
+/// `Turbo.cs`, `EnergySurge.cs`, `Sunder.cs`, `Supercritical.cs`,
+/// `DoubleEnergy.cs` `OnPlay`), so `NoEnergyGainPower` zeroes the gain.
+#[test]
+fn defect_energy_cards_gain_nothing_under_no_energy_gain() {
+    install_pool();
+    for id in [
+        CardId::Turbo,
+        CardId::EnergySurge,
+        CardId::Sunder,
+        CardId::Supercritical,
+        CardId::DoubleEnergy,
+    ] {
+        let (mut state, euid) = fresh_state(id, 99, 0);
+        state.creatures[0].current_hp = 5;
+        state.player.energy = 2;
+        apply_power_to_player(&mut state, PowerKind::NoEnergyGain, 1);
+        let _ = lookup(id).expect("registered")(&mut state, Some(euid));
+        assert_eq!(
+            state.player.energy, 2,
+            "{id:?} gained energy under NoEnergyGain"
+        );
+    }
+}
+
+/// v0.113.0 `HelixDrill.cs:36-39` subtracts the in-progress play's
+/// `Resources.EnergySpent`. `CardCmd.AutoPlay` sets that to 0
+/// (CardCmd.cs:125), while Rust's `energy_spent` holds the auto-play's
+/// `EnergyValue` (the card's cost). An auto-played HelixDrill must not
+/// subtract it.
+#[test]
+fn helix_drill_v0113_auto_play_subtracts_no_energy() {
+    let (mut state, euid) = fresh_state(CardId::HelixDrill, 3, 0);
+    state.game_version = sts2_core::GameVersion::V0_113_0;
+    state.combat_log.energy_spent_this_turn = 3;
+    state.cards[0].energy_spent = 1;
+    let card = state.cards[0];
+    assert_eq!(
+        preview_helix_drill(&state, &card, Some(euid)),
+        2,
+        "hand play"
+    );
+    state.combat_log.resolving_auto_play = true;
+    assert_eq!(
+        preview_helix_drill(&state, &card, Some(euid)),
+        3,
+        "auto-play"
     );
 }

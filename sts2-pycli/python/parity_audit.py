@@ -1176,7 +1176,7 @@ def _oracle_lib_dir(base: str, version: str) -> str:
     versioned = os.path.join(base, "lib", version)
     flat = os.path.join(base, "lib")
     if (
-        version == sts2_client.DEFAULT_GAME_VERSION
+        version == sts2_client.LEGACY_GAME_VERSION
         and not os.path.isfile(os.path.join(versioned, "sts2.dll"))
         and os.path.isfile(os.path.join(flat, "sts2.dll"))
     ):
@@ -2230,7 +2230,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--coverage-character",
         default="Ironclad",
-        choices=["Ironclad", "Silent", "Defect", "Regent", "Necrobinder"],
+        choices=["Ironclad", "Silent", "Defect", "Regent", "Necrobinder", "Fool"],
         help=(
             "Which character's coverage pack to sweep with --coverage. "
             "'Ironclad' (default) is the full IC+colorless+relic+potion+"
@@ -2257,7 +2257,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--sweep-character",
         default="Ironclad",
-        choices=["Ironclad", "Silent", "Defect", "Regent", "Necrobinder"],
+        choices=["Ironclad", "Silent", "Defect", "Regent", "Necrobinder", "Fool"],
         help=(
             "Which character's card pool drives the v2 (--sweep v2) random-seed "
             "axes (upgraded / arenas / fuzz). Default 'Ironclad' reproduces the "

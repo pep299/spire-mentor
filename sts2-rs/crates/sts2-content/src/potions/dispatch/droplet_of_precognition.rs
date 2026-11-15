@@ -33,8 +33,7 @@ pub(crate) fn drink_droplet_of_precognition(
         csharp_rarity_ordinal(id_a, state.game_version)
             .cmp(&csharp_rarity_ordinal(id_b, state.game_version))
             .then_with(|| {
-                sts2_core::cards::card_model_entry(id_a)
-                    .cmp(sts2_core::cards::card_model_entry(id_b))
+                sts2_core::cards::draw_select_tiebreak(&state.cards, a, b, state.game_version)
             })
     });
     // C# `CardSelectCmd.FromSimpleGrid` auto-resolves inline when
@@ -51,6 +50,9 @@ pub(crate) fn drink_droplet_of_precognition(
         for uid in &ordered {
             if let Some(pos) = state.player.draw.iter().position(|u| u == uid) {
                 let card = state.player.draw.remove(pos);
+                // A pinned draw card leaves no stale pin behind, as the
+                // multi-candidate select resolution does (#1105).
+                sts2_core::cards::unpin(&mut state.player, card);
                 let _ = sts2_core::cards::try_add_to_hand(&mut state.player, card);
             }
         }

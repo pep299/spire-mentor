@@ -648,6 +648,31 @@ fn build_boss_relic(state: &Value) -> Option<WireDecision> {
     })
 }
 
+/// The slot a wire rest option takes in C# `room.Options`: its
+/// `option_index`, or its position for an older mod that sends none.
+fn rest_option_slot(pos: usize, o: &Value) -> i64 {
+    o.get("option_index")
+        .and_then(Value::as_i64)
+        .unwrap_or(pos as i64)
+}
+
+/// Option ids by `room.Options` slot, for `encoder::rest_option_token`. The
+/// mod sends only enabled options, so a disabled option's slot stays `""`
+/// (occupied, id unknown). So does every slot of a mod too old to send `id`.
+fn rest_option_labels(options: &[&Value]) -> Vec<String> {
+    let mut labels: Vec<String> = Vec::new();
+    for (pos, o) in options.iter().enumerate() {
+        let Ok(slot) = usize::try_from(rest_option_slot(pos, o)) else {
+            continue;
+        };
+        if labels.len() <= slot {
+            labels.resize(slot + 1, String::new());
+        }
+        labels[slot] = opt_s(o, "id").unwrap_or_default();
+    }
+    labels
+}
+
 /// `rest_site` → the "rest" surface (`rest_option`).
 fn build_rest_site(state: &Value) -> Option<WireDecision> {
     let options = enabled_options(state);
@@ -655,23 +680,20 @@ fn build_rest_site(state: &Value) -> Option<WireDecision> {
         return None;
     }
     let mut obs = base_obs(state);
-    // Use the identity on each visible bridge option, not a fixed Rest/Smith
-    // assumption. An absent ID falls back to its display label, if present.
-    obs.rest_option_labels = Some(
-        options
-            .iter()
-            .map(|o| {
-                opt_s(o, "option_id")
-                    .or_else(|| opt_s(o, "id"))
-                    .or_else(|| opt_s(o, "label"))
-                    .unwrap_or_default()
-            })
-            .collect(),
-    );
+    obs.rest_option_labels = Some(rest_option_labels(&options));
     Some(WireDecision {
         obs,
-        actions: (0..options.len())
-            .map(|idx| ActionDesc::RestOption { idx: idx as i64 })
+        // `option_index` is the option's slot in C# `room.Options` — the
+        // engine's `rest_site_options()` order the net was trained on, where
+        // a disabled Smith keeps slot 1 and Dig is 2. The mod's `index` is
+        // renumbered after it drops disabled options, so keying on position
+        // put Dig on `rest_smith`. Older mods send no `option_index`.
+        actions: options
+            .iter()
+            .enumerate()
+            .map(|(pos, o)| ActionDesc::RestOption {
+                idx: rest_option_slot(pos, o),
+            })
             .collect(),
         responses: options
             .iter()
@@ -1824,6 +1846,69 @@ mod tests {
         assert_eq!(d.labels, ["remove:BASH", "remove:ANGER"]);
     }
 
+    /// The mod drops disabled options and renumbers `index`, so a masked
+    /// Smith used to put Dig at position 1 = the net's `rest_smith` token.
+    /// `option_index` (the option's slot in C# `room.Options`, the same order
+    /// as the engine's `rest_site_options()`) keys the action instead.
+    #[test]
+    fn rest_option_idx_is_the_game_slot_not_the_position() {
+        let s = json!({
+            "type": "rest_site", "floor": 5, "act": 1, "run_state": run_state(),
+            "options": [
+                {"index": 0, "option_index": 0, "id": "HEAL", "label": "Rest", "enabled": true},
+                {"index": 1, "option_index": 2, "id": "DIG", "label": "Dig", "enabled": true}
+            ]
+        });
+        let d = build_decision(&s, "rest_site").expect("decision");
+        assert_eq!(
+            d.actions,
+            [
+                ActionDesc::RestOption { idx: 0 },
+                ActionDesc::RestOption { idx: 2 }
+            ]
+        );
+        // The reply still answers with the mod's own `index`.
+        assert_eq!(d.responses[1], json!({"action": "choose", "index": 1}));
+    }
+
+    /// The labels are the options' ids by `room.Options` slot. A disabled
+    /// Smith is not sent, so its slot stays unnamed.
+    #[test]
+    fn rest_option_labels_are_the_ids_by_slot() {
+        let s = json!({
+            "type": "rest_site", "floor": 5, "act": 1, "run_state": run_state(),
+            "options": [
+                {"index": 0, "option_index": 0, "id": "HEAL", "label": "Rest", "enabled": true},
+                {"index": 1, "option_index": 2, "id": "DIG", "label": "Dig", "enabled": true}
+            ]
+        });
+        let d = build_decision(&s, "rest_site").expect("decision");
+        assert_eq!(
+            d.obs.rest_option_labels,
+            Some(vec!["HEAL".to_owned(), String::new(), "DIG".to_owned()])
+        );
+    }
+
+    /// An older mod sends no `option_index`: keep the positional idx.
+    #[test]
+    fn rest_option_idx_falls_back_to_position_without_option_index() {
+        let s = json!({
+            "type": "rest_site", "floor": 5, "act": 1, "run_state": run_state(),
+            "options": [
+                {"index": 0, "id": "HEAL", "label": "Rest", "enabled": true},
+                {"index": 1, "id": "DIG", "label": "Dig", "enabled": true}
+            ]
+        });
+        let d = build_decision(&s, "rest_site").expect("decision");
+        assert_eq!(
+            d.actions,
+            [
+                ActionDesc::RestOption { idx: 0 },
+                ActionDesc::RestOption { idx: 1 }
+            ]
+        );
+    }
+
     #[test]
     fn disabled_options_never_reach_the_net() {
         let s = json!({
@@ -1836,7 +1921,9 @@ mod tests {
         let d = build_decision(&s, "rest_site").expect("decision");
         assert_eq!(d.labels, ["Rest"]);
         assert_eq!(d.actions, [ActionDesc::RestOption { idx: 0 }]);
-        assert_eq!(d.obs.rest_option_labels, Some(vec!["Rest".to_owned()]));
+        // This fixture's option carries no `id`, as an old mod's would not:
+        // its slot is occupied but unnamed, so the encoder stays positional.
+        assert_eq!(d.obs.rest_option_labels, Some(vec![String::new()]));
     }
 
     #[test]
@@ -1896,27 +1983,5 @@ mod tests {
         // is the field the features come from.
         assert_eq!(map.current_coord, None);
         assert_eq!(d.obs.map_coord, Some((2, 2)));
-    }
-
-    #[test]
-    fn bridge_rest_options_use_ids_after_disabled_options_are_filtered() {
-        let s = json!({
-            "type": "rest_site", "floor": 5, "act": 1,
-            "run_state": run_state(),
-            "options": [
-                {"index": 0, "id": "HEAL", "label": "Rest", "enabled": false},
-                {"index": 1, "id": "SMITH", "label": "Smith", "enabled": true},
-                {"index": 2, "id": "DIG", "label": "Dig", "enabled": true}
-            ]
-        });
-        let d = build_decision(&s, "rest_site").expect("decision");
-        assert_eq!(
-            d.obs.rest_option_labels,
-            Some(vec!["SMITH".to_owned(), "DIG".to_owned()])
-        );
-        assert_eq!(d.actions.len(), 2);
-        assert_eq!(d.actions[0], ActionDesc::RestOption { idx: 0 });
-        assert_eq!(d.actions[1], ActionDesc::RestOption { idx: 1 });
-        assert_eq!(d.responses, vec![choose(1), choose(2)]);
     }
 }

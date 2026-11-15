@@ -80,7 +80,16 @@ pub(crate) fn play_seance(state: &mut CombatState, _target: Option<CreatureUid>)
                     ))
                 })
                 .collect();
-            keyed.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+            keyed.sort_by(|a, b| {
+                a.0.cmp(&b.0).then_with(|| {
+                    sts2_core::cards::draw_select_tiebreak(
+                        &state.cards,
+                        a.2,
+                        b.2,
+                        state.game_version,
+                    )
+                })
+            });
             let options: Vec<sts2_core::ChoiceOption> = keyed
                 .iter()
                 .filter_map(|&(_, _, uid)| {
@@ -252,6 +261,8 @@ mod tests {
     fn seance_one_draw_card_auto_applies_no_choice() {
         crate::cards::dispatch::install_default_registry();
         let mut state = CombatState::default();
+        // A live player: a transform is refused once the combat is ending.
+        state.player.current_hp = 1;
         let a = mint(&mut state, CardId::StrikeNecrobinder);
         state.player.draw.push(a);
         let seance = mint(&mut state, CardId::Seance);

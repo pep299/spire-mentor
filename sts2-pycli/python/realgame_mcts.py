@@ -54,6 +54,7 @@ from typing import Any
 
 from combat_mirror import MirrorDivergence, recognize_card_select, skip_arity_from_world
 from realgame_adapter import (
+    UnsupportedGameVersionError,
     character_display_name,
     install_live_unlock_state,
     install_unlock_state_from_wire,
@@ -377,6 +378,11 @@ def pick_combat_action_mcts(
             # SimOverlay renders per-card win-probs. Fire-and-forget.
             action["annotations"] = annotations
         return action, None, engine_action
+    except UnsupportedGameVersionError:
+        # Also ahead of the blanket handler (GH #807): a build this engine has
+        # no rules for is not a bad snapshot, and a random legal move would
+        # play an unsupported game blind. The driver refuses instead.
+        raise
     except MirrorDivergence:
         # Deliberately ahead of the blanket handler below. `MirrorDivergence`
         # is a `RuntimeError`, so it used to be caught, logged as an "MCTS
@@ -411,6 +417,7 @@ def pick_card_select_mirrored(
     mirror: Any,
     *,
     sims: int | None = None,
+    picker: Any = None,
 ) -> tuple[dict[str, Any], list[int] | None]:
     """Answer a MID-COMBAT ``card_select`` off the fight's persistent mirror.
 
@@ -436,6 +443,12 @@ def pick_card_select_mirrored(
         cfg: MCTS knobs.
         mirror: The fight's :class:`combat_mirror.CombatMirror`.
         sims: Per-decision simulation budget override.
+        picker: Who picks once the mirror is parked on the world's choice:
+            ``picker(mirror, n_options=, min_select=, max_select=)`` returning
+            the option positions. ``None`` = the combat MCTS
+            (``mirror.search_choice_picks``). Instinct passes its own
+            (``realgame_instinct``), so it answers the SAME parked choice the
+            search would, through the same replay and injection.
 
     Returns:
         ``(bridge action, picked option indices)``. The caller applies the
@@ -561,13 +574,16 @@ def pick_card_select_mirrored(
     # mirror atomically either way, so state fidelity does not depend on this
     # — it is a policy-quality change. Same contract as the DLL driver
     # (`headless_eval.pick_card_select_mirrored`), which calls the same method.
-    picked = mirror.search_choice_picks(
-        call_cfg,
-        hand=wire["deck"]["hand"],
-        n_options=n,
-        min_select=min_select,
-        max_select=max_select,
-    )
+    if picker is not None:
+        picked = picker(mirror, n_options=n, min_select=min_select, max_select=max_select)
+    else:
+        picked = mirror.search_choice_picks(
+            call_cfg,
+            hand=wire["deck"]["hand"],
+            n_options=n,
+            min_select=min_select,
+            max_select=max_select,
+        )
     if not picked and min_select <= 0:
         return {"action": "skip"}, []
     if not picked:
@@ -678,6 +694,13 @@ def run(
                     result = "max_steps_reached"
                     print(f"Stopping after max_steps={max_steps}")
                     break
+    except UnsupportedGameVersionError as e:
+        # GH #807: `pick_combat_action_mcts` re-raises a build the engine has
+        # no rules for rather than answering it with a random legal move.
+        logger.error("Refusing to play: %s", e)
+        print(f"Steps: {step}\nResult: refused ({e})\nLog: {jsonl.path}")
+        jsonl.close()
+        return 2
     except (ConnectionError, TimeoutError) as e:
         logger.error("Bridge connection error after %d steps: %s", step, e)
         result = f"error: {e}"

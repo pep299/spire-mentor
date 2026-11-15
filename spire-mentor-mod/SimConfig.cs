@@ -121,6 +121,22 @@ public sealed class SimConfig
     public bool ResumeRun { get; init; } = false;
 
     /// <summary>
+    /// Which singleplayer mode an auto-started run uses: "standard" (default),
+    /// "blitz" or "dread" (v0.113.0+: that mode's screen of the singleplayer
+    /// submenu, the same route as the game's own `BlitzRunLauncher`). Exists
+    /// so the live test lane can play those modes unattended; on a build
+    /// without them the start fails loudly instead of quietly playing a
+    /// standard run.
+    /// </summary>
+    public string GameMode { get; init; } = "standard";
+
+    /// <summary>True when <see cref="GameMode"/> asks for a Blitz run.</summary>
+    public bool IsBlitz => string.Equals(GameMode?.Trim(), "blitz", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>True when <see cref="GameMode"/> asks for a Dread run.</summary>
+    public bool IsDread => string.Equals(GameMode?.Trim(), "dread", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
     /// The game's FastModeType applied at run start: "instant" (skip
     /// animations entirely — same as the dev-console `instant` command,
     /// InstantConsoleCmd.cs; best for experiments), "fast", or "normal".
@@ -130,7 +146,7 @@ public sealed class SimConfig
 
     /// <summary>
     /// Whole-game speed (<c>Engine.TimeScale</c>) applied at run start,
-    /// clamped by <see cref="SimSpeed"/> to the game's own [0.1, 4.0].
+    /// clamped by <see cref="SimSpeed"/> to [0.1, 8.0].
     /// Default 1.0 = untouched, which is the historical behaviour.
     ///
     /// Applied ONLY in Autopilot. In Advisor/Off a human is watching, and
@@ -188,11 +204,12 @@ public sealed class SimConfig
 
     /// <summary>
     /// Show "With AI partners" in the multiplayer host menu (SimAiPartnerMenu;
-    /// docs/plans/2026-11-05-ai-coop-partners.md). Off by default while the
-    /// feature is experimental (no save / continue, no human teammate next
-    /// to the AI yet); `--spire-mentor-ai-partners N` shows it too.
+    /// docs/plans/2026-11-05-ai-coop-partners.md), the lobby's "Add AI
+    /// partner" tiles and the settings' AI-partner section. On by default:
+    /// a player finds the feature without editing this file; `false` hides
+    /// all three. `--spire-mentor-ai-partners N` shows them regardless.
     /// </summary>
-    public bool AiPartnersMenu { get; init; } = false;
+    public bool AiPartnersMenu { get; init; } = true;
 
     /// <summary>
     /// Mod-side stall limit, in seconds, replacing the game's hard-coded
@@ -226,6 +243,19 @@ public sealed class SimConfig
     /// catches wedges — this cap is only the absolute backstop.
     /// </summary>
     public int RunTimeoutMinutes { get; init; } = 360;
+
+    /// <summary>
+    /// The advisor brain for this session, <c>"search"</c> or
+    /// <c>"instinct"</c> (PROTOCOL.md section 5, v5.2); null = absent, the
+    /// player's own setting applies. Precedence: when present it overrides
+    /// the BaseLib preference (SpireMentorModConfig.AdvisorBrain) for the
+    /// whole session WITHOUT being saved over it, until a player switches
+    /// brain in game (toolbar, Shift+F8, settings) -- that explicit choice
+    /// then wins and persists as usual. This is how an unattended climb picks
+    /// Instinct (tools/ascension_climb.py --advisor-brain). Any other value is
+    /// ignored with a log line (AdvisorBrainRules.ParseConf), never guessed.
+    /// </summary>
+    public string? AdvisorBrain { get; init; } = null;
 
     public static readonly SimConfig Instance = ApplyCommandLine(Load());
 
@@ -329,6 +359,7 @@ public sealed class SimConfig
                 AdvisorAutoplay = ReadBool(root, "advisor_autoplay", defaults.AdvisorAutoplay),
                 PauseOn = AutoplayPause.FromJson(root, "pause_on", defaults.PauseOn),
                 ResumeRun = ReadBool(root, "resume_run", defaults.ResumeRun),
+                GameMode = ReadString(root, "game_mode", defaults.GameMode),
                 FastMode = ReadString(root, "fast_mode", defaults.FastMode),
                 TimeScale = ReadDouble(root, "time_scale", defaults.TimeScale),
                 ClientRunConfig = ReadBool(root, "client_run_config", defaults.ClientRunConfig),
@@ -340,6 +371,7 @@ public sealed class SimConfig
                 ThinkFps = ReadInt(root, "think_fps", defaults.ThinkFps),
                 RunTimeoutMinutes = ReadInt(
                     root, "run_timeout_minutes", defaults.RunTimeoutMinutes),
+                AdvisorBrain = ReadAdvisorBrain(root),
             };
         }
         catch (Exception ex)
@@ -372,6 +404,22 @@ public sealed class SimConfig
         {
             GD.Print($"[SpireMentor] No config found at {configPath}; using built-in defaults ({ex.Message})");
         }
+    }
+
+    /// <summary>`advisor_brain`, or null when absent / null / not a brain.</summary>
+    private static string? ReadAdvisorBrain(JsonElement root)
+    {
+        string? raw = ReadNullableString(root, "advisor_brain", null);
+        string? brain = AdvisorBrainRules.ParseConf(raw);
+        if (brain == null && !string.IsNullOrWhiteSpace(raw))
+        {
+            GD.PrintErr($"[SpireMentor] advisor_brain \"{raw}\" is not \"search\" or \"instinct\"; ignored (the player's setting applies).");
+        }
+        else if (brain != null)
+        {
+            GD.Print($"[SpireMentor] advisor_brain \"{brain}\" from the conf overrides the player's setting for this session.");
+        }
+        return brain;
     }
 
     private static int ReadInt(JsonElement root, string name, int fallback) =>

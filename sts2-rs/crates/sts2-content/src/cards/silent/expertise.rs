@@ -12,14 +12,35 @@ use super::prelude::*;
 ///
 /// `OnUpgrade` is still `Cards.UpgradeValueBy(1)` → 3.
 pub(crate) fn play_expertise(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
+    if state.game_version >= sts2_core::GameVersion::V0_113_0 {
+        // v0.113.0: draw 2 (upg 3), then `PowerCmd.Apply<RetainHandPower>(1)`
+        // on the owner — no single-turn Retain on the drawn cards (decomp
+        // Expertise.cs:23-27).
+        let n: i32 = if current_card_upgraded(state) { 3 } else { 2 };
+        let _ = sts2_core::cards::draw_via_state(state, n);
+        apply_power_to_player(state, PowerKind::RetainHand, 1);
+        return EffectResult::Resolved;
+    }
     if state.game_version >= sts2_core::GameVersion::V0_111_0 {
         // v0.111.0: draw 2 (upg 3); the drawn cards Retain this turn
         // (decomp Expertise.cs:21-24).
         let n: i32 = if current_card_upgraded(state) { 3 } else { 2 };
-        let pre = state.player.hand.len();
-        let _ = sts2_core::cards::draw_via_state(state, n);
-        let drawn: smallvec::SmallVec<[sts2_core::CardUid; 4]> =
-            state.player.hand.iter().skip(pre).copied().collect();
+        let was_suspended = state.pending_draw_resume.is_some();
+        // The draw's own cards: not a Stratagem pick, not a nested draw.
+        let own = sts2_core::cards::draw_own_via_state(state, n);
+        // A draw that suspended on a reshuffle's Stratagem pick returns its
+        // cards only once it finishes: owe the Retain to it, so the cards
+        // drawn after the pick retain too (loadout Silent 1060 v0.111.0:
+        // Ricochet and Flanking stayed in C#'s hand, Rust discarded them).
+        if !was_suspended && state.pending_choice.is_some() {
+            if let Some(pdr) = state.pending_draw_resume.as_mut() {
+                let upcoming = pdr.remaining + pdr.outer_draw.remaining();
+                pdr.then_scrape_discard.retain = true;
+                pdr.then_scrape_discard.await_rest(&own, upcoming);
+                return EffectResult::Resolved;
+            }
+        }
+        let drawn = own.cards;
         for uid in drawn {
             if !state.player.retain_this_turn.contains(&uid) {
                 state.player.retain_this_turn.push(uid);

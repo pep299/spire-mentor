@@ -48,7 +48,22 @@ internal static class SimRoomNodes
     internal const string RestSiteProceedButtonPath = RestSiteRoomPath + "/ProceedButton";
     internal const string EventRoomPath = RoomContainer + "/EventRoom";
     internal const string TreasureRoomPath = RoomContainer + "/TreasureRoom";
-    internal const string MerchantRoomPath = RoomContainer + "/MerchantRoom";
+
+    /// <summary>
+    /// The live shop room, found by type through the run's room container
+    /// (`NMerchantRoom.Instance` = `NRun.MerchantRoom`, in every supported
+    /// build). Never by node path: v0.113.0 made `NMerchantRoom` abstract and
+    /// instantiates `rooms/standard_merchant_room` or
+    /// `rooms/blitz_merchant_room` instead, so `RoomContainer/MerchantRoom`
+    /// stopped existing and both lanes stood in front of a shop they could
+    /// not see (live, 2026-11-13). The game's own AutoSlay moved the same way
+    /// (v0.113.0 `ShopRoomHandler`).
+    /// </summary>
+    internal static NMerchantRoom? MerchantRoom()
+    {
+        NMerchantRoom? room = NMerchantRoom.Instance;
+        return room != null && GodotObject.IsInstanceValid(room) ? room : null;
+    }
 
     internal static Node SceneRoot => ((SceneTree)Engine.GetMainLoop()).Root;
 
@@ -106,6 +121,8 @@ internal static class NonCombatBridgeProtocol
     public const string BuyPotionAction = "buy_potion";
     public const string RemoveCardAction = "remove_card";
     public const string BuyItemAction = "buy_item";
+    /// <summary>One of the Blitz merchant's free wares (v0.113.0+, SimBlitzShop).</summary>
+    public const string BlitzChoiceAction = "blitz_choice";
     public const string EventChoiceAction = "event_choice";
     public const string CollectTreasureAction = "collect";
     public const string PickRelicAction = "pick_relic";
@@ -219,6 +236,33 @@ internal static class SimRelicOptions
 }
 
 
+/// <summary>
+/// A rest-site option's slot in <c>NRestSiteRoom.Options</c> (the player's
+/// <c>RestSiteSynchronizer</c> list: <c>RestSiteOption.Generate</c> order,
+/// minus options already taken). A disabled option keeps its slot, so this is
+/// the index the sim engine's <c>rest_option</c> action uses -- unlike the
+/// message <c>index</c>, which is renumbered over the enabled options only.
+/// </summary>
+internal static class SimRestOptionSlot
+{
+    // `object`, not RestSiteOption, so this file needs no extra game-namespace
+    // import (release content-marker budget). Equals is the option's own
+    // override (OptionId + Owner), the same test `room.Options.Contains` uses.
+    internal static int Of(NRestSiteRoom room, object option)
+    {
+        int i = 0;
+        foreach (var o in room.Options)
+        {
+            if (Equals(o, option))
+            {
+                return i;
+            }
+            i++;
+        }
+        return -1;
+    }
+}
+
 /// <summary>Rest site: the agent picks one of the enabled campfire options.</summary>
 public class SimRestSiteRoomHandler : IRoomHandler, IHandler
 {
@@ -246,9 +290,14 @@ public class SimRestSiteRoomHandler : IRoomHandler, IHandler
             return;
         }
 
+        // `index` is this message's own numbering (what `choose` answers);
+        // `option_index` is the option's slot in room.Options -- generation
+        // order, which a disabled option still occupies -- and is what the
+        // sim's `rest_option` idx means (see PROTOCOL.md `rest_site`).
         List<Dictionary<string, object>> options = buttons.Select((b, i) => new Dictionary<string, object>
         {
             ["index"] = i,
+            ["option_index"] = SimRestOptionSlot.Of(room, b.Option),
             ["id"] = b.Option.OptionId,
             ["action"] = NonCombatBridgeProtocol.RestOptionAction,
             ["label"] = b.Option.Title.GetFormattedText(),
@@ -288,6 +337,8 @@ public class SimTreasureRoomHandler : IRoomHandler, IHandler
     private const int ChestOpenSettleMs = 1000;
     private const int RelicPickSettleMs = 500;
     private static readonly TimeSpan ProceedWait = TimeSpan.FromSeconds(5);
+    // Co-op: the round ends only once every player has voted.
+    private static readonly TimeSpan RoundWait = TimeSpan.FromMinutes(10);
 
     public RoomType[] HandledTypes => new[] { RoomType.Treasure };
 
@@ -304,10 +355,12 @@ public class SimTreasureRoomHandler : IRoomHandler, IHandler
         await UiHelper.Click(chest);
         await Task.Delay(ChestOpenSettleMs, ct);
 
-        List<NTreasureRoomRelicHolder> holders = UiHelper.FindAll<NTreasureRoomRelicHolder>(room)
-            .Where(h => h.IsEnabled && h.Visible)
-            .ToList();
-        if (holders.Count > 0)
+        // Usually one pick. A solo Blitz chest (v0.113.0+) holds two relics and
+        // both are taken, one round each (TreasureRoomRelicSynchronizer
+        // `_roundsLeft`): between rounds the holders are disabled while the
+        // first relic flies to the bar, then the other comes back enabled.
+        List<NTreasureRoomRelicHolder> holders = OfferedHolders(room);
+        while (holders.Count > 0)
         {
             List<Dictionary<string, object>> options = holders
                 .Select((h, i) => SimRelicOptions.Option(i, NonCombatBridgeProtocol.CollectTreasureAction, h.Relic.Model))
@@ -325,6 +378,14 @@ public class SimTreasureRoomHandler : IRoomHandler, IHandler
             Logger.Log($"[SimTreasure] Agent chose relic {chosen.Relic.Model.Id.Entry}");
             await UiHelper.Click(chosen);
             await Task.Delay(RelicPickSettleMs, ct);
+
+            // Next round's relics, or the end of picking. A SKIP button does
+            // not count: the room enables it 2.5 s after opening, and
+            // pressing it would throw the second relic away.
+            await WaitHelper.Until(
+                () => RealProceed(room) || OfferedHolders(room) is { Count: > 0 } next && !next.Contains(chosen),
+                ct, RoundWait, "Treasure room: neither another relic nor Proceed after the pick");
+            holders = RealProceed(room) ? new List<NTreasureRoomRelicHolder>() : OfferedHolders(room);
         }
 
         await WaitHelper.Until(() => room.ProceedButton.IsEnabled, ct, ProceedWait,
@@ -332,6 +393,18 @@ public class SimTreasureRoomHandler : IRoomHandler, IHandler
         Logger.Log("[SimTreasure] Clicking proceed");
         await UiHelper.Click(room.ProceedButton);
     }
+
+    /// <summary>The relics up for picking now. Since v0.113.0 the holders
+    /// sit in one layout per relic count, all but one hidden, so the holder's
+    /// own Visible flag says nothing; and those never shown have no relic.</summary>
+    private static List<NTreasureRoomRelicHolder> OfferedHolders(NTreasureRoom room) =>
+        UiHelper.FindAll<NTreasureRoomRelicHolder>(room)
+            .Where(h => GodotObject.IsInstanceValid(h) && h.IsEnabled && h.IsVisibleInTree() && h.Relic?.Model != null)
+            .ToList();
+
+    private static bool RealProceed(NTreasureRoom room) =>
+        room.ProceedButton is { } proceed && GodotObject.IsInstanceValid(proceed) &&
+        proceed.IsEnabled && !proceed.IsSkip;
 }
 
 /// <summary>Boss / Ancient "choose a relic" overlay: the agent picks one.</summary>
@@ -389,8 +462,9 @@ public class SimShopRoomHandler : IRoomHandler, IHandler
 
     public async Task HandleAsync(Rng random, CancellationToken ct)
     {
-        NMerchantRoom room = await WaitHelper.ForNode<NMerchantRoom>(
-            SimRoomNodes.SceneRoot, SimRoomNodes.MerchantRoomPath, ct);
+        await WaitHelper.Until(() => SimRoomNodes.MerchantRoom()?.IsVisibleInTree() ?? false,
+            ct, null, "Merchant room not found");
+        NMerchantRoom room = SimRoomNodes.MerchantRoom()!;
         Logger.Log("[SimShop] Opening merchant inventory");
         room.OpenInventory();
         await Task.Delay(InventoryOpenSettleMs, ct);
@@ -402,7 +476,7 @@ public class SimShopRoomHandler : IRoomHandler, IHandler
             ct.ThrowIfCancellationRequested();
             attempts++;
 
-            ShopChoice choice = await ChooseShopOption(PurchasableSlots(room), ct);
+            ShopChoice choice = await ChooseShopOption(room, PurchasableSlots(room), ct);
             if (choice.Leave)
             {
                 stoppedEarly = true;
@@ -413,7 +487,7 @@ public class SimShopRoomHandler : IRoomHandler, IHandler
             Logger.Log($"[SimShop] Agent chose option {choice.OptionIndex}");
             // A purchase can push an overlay (e.g. a relic pickup) that only
             // completes once answered, so it must be awaited with the drain.
-            Task purchase = slot.Entry.OnTryPurchaseWrapper(room.Inventory.Inventory);
+            Task purchase = SimGameApi.Purchase(slot.Entry, room.Inventory.Inventory);
             await SimAutoSlayer.AwaitWithScreenDrainAsync(purchase, ct, "shop purchase of " + ShopEntryId(slot));
             await Task.Delay(PurchaseSettleMs, ct);
 
@@ -461,7 +535,7 @@ public class SimShopRoomHandler : IRoomHandler, IHandler
     /// Option 0 leaves; option i (1..n) buys purchasable[i-1]. With nothing
     /// purchasable there is no real choice, so it leaves without asking.
     /// </summary>
-    private static async Task<ShopChoice> ChooseShopOption(List<NMerchantSlot> purchasable, CancellationToken ct)
+    private static async Task<ShopChoice> ChooseShopOption(NMerchantRoom room, List<NMerchantSlot> purchasable, CancellationToken ct)
     {
         if (purchasable.Count == 0)
         {
@@ -481,6 +555,19 @@ public class SimShopRoomHandler : IRoomHandler, IHandler
         };
         options.AddRange(purchasable.Select((slot, i) => ShopOption(slot, i + 1)));
         int? purgeCost = SafePurgeCost(purchasable);
+        // Every slot in shopfront order, sold out or not, each buyable one
+        // naming the option that buys it. A client that mirrors the headless
+        // host (which lists the whole stock) addresses slots by this order.
+        List<Dictionary<string, object>> stock = room.Inventory.GetAllSlots()
+            .Select(slot =>
+            {
+                Dictionary<string, object> row = ShopStockRow(slot);
+                int at = purchasable.IndexOf(slot);
+                if (at >= 0)
+                    row["option"] = at + 1;
+                return row;
+            })
+            .ToList();
 
         int index = await SimAgentChoice.AskAsync(
             (_, player) =>
@@ -490,6 +577,7 @@ public class SimShopRoomHandler : IRoomHandler, IHandler
                     [NonCombatBridgeProtocol.TypeField] = NonCombatBridgeProtocol.ShopState,
                     ["options"] = options,
                     ["player_gold"] = player?.Gold ?? 0,
+                    ["stock"] = stock,
                 };
                 if (purgeCost.HasValue)
                 {
@@ -515,6 +603,12 @@ public class SimShopRoomHandler : IRoomHandler, IHandler
             ["enabled"] = slot.Entry.IsStocked && slot.Entry.EnoughGold,
             ["price"] = slot.Entry.Cost,
         };
+        // The merchant's one discounted card (MerchantCardEntry.IsOnSale);
+        // `price` is already the sale price.
+        if (slot.Entry is MerchantCardEntry saleCard)
+        {
+            option["on_sale"] = saleCard.IsOnSale;
+        }
         Dictionary<string, object?>? detail = ShopEntryDetail(slot);
         if (detail != null)
         {
@@ -538,6 +632,8 @@ public class SimShopRoomHandler : IRoomHandler, IHandler
             ["stocked"] = slot.Entry.IsStocked,
             ["affordable"] = slot.Entry.EnoughGold,
         };
+        if (slot.Entry is MerchantCardEntry saleCard)
+            row["on_sale"] = saleCard.IsOnSale;
         Dictionary<string, object?>? detail = ShopEntryDetail(slot);
         if (detail != null)
             row["item"] = detail;
@@ -556,7 +652,7 @@ public class SimShopRoomHandler : IRoomHandler, IHandler
                     SimStateExtractor.SerializeRelic(relicEntry.Model),
                 MerchantPotionEntry potionEntry when potionEntry.Model != null =>
                     SimStateExtractor.SerializePotionSlot(potionEntry.Model, -1),
-                _ => null,
+                _ => SimBlitzShop.Detail(slot.Entry),
             };
         }
         catch (Exception ex)
@@ -586,6 +682,7 @@ public class SimShopRoomHandler : IRoomHandler, IHandler
         NMerchantRelic => NonCombatBridgeProtocol.BuyRelicAction,
         NMerchantPotion => NonCombatBridgeProtocol.BuyPotionAction,
         NMerchantCardRemoval => NonCombatBridgeProtocol.RemoveCardAction,
+        _ when SimBlitzShop.IsBlitzEntry(slot.Entry) => NonCombatBridgeProtocol.BlitzChoiceAction,
         _ => NonCombatBridgeProtocol.BuyItemAction,
     };
 
@@ -596,6 +693,7 @@ public class SimShopRoomHandler : IRoomHandler, IHandler
         MerchantRelicEntry relic => relic.Model?.Id.Entry ?? "relic",
         MerchantPotionEntry potion => potion.Model?.Id.Entry ?? "potion",
         MerchantCardRemovalEntry => NonCombatBridgeProtocol.RemoveCardAction,
+        _ when SimBlitzShop.Kind(slot.Entry) is { } kind => "blitz:" + kind,
         _ => slot.Entry?.GetType().Name ?? "unknown",
     };
 
@@ -943,7 +1041,7 @@ public class SimEventRoomHandler : IRoomHandler, IHandler
         await WaitHelper.Until(() => inventory.IsOpen, ct, FakeMerchantProceedWait,
             "FakeMerchant shopfront did not open");
 
-        Task purchase = slot.Entry.OnTryPurchaseWrapper(inventory.Inventory);
+        Task purchase = SimGameApi.Purchase(slot.Entry, inventory.Inventory);
         await SimAutoSlayer.AwaitWithScreenDrainAsync(purchase, ct,
             "FakeMerchant purchase of " + SimShopRoomHandler.ShopEntryId(slot));
         await Task.Delay(FakeMerchantSettleMs, ct);
@@ -1024,7 +1122,7 @@ public class SimEventRoomHandler : IRoomHandler, IHandler
                 // Not clickable yet (line still animating): not a click. Bounded
                 // by the run watchdog like WaitHelper's waits: a hitbox that never
                 // becomes clickable (and no options) dies on the stall limit
-                // (AutoSlayTimeoutException) instead of polling forever.
+                // (a TimeoutException) instead of polling forever.
                 ct.ThrowIfCancellationRequested();
                 SimAutoSlayer.CurrentWatchdog?.Check();
                 await Task.Delay(AncientHitboxPollMs, ct);
@@ -1096,7 +1194,8 @@ public class SimEventRoomHandler : IRoomHandler, IHandler
     /// loc-key prefix; its tail is the enum id the run policy was trained on
     /// (e.g. Neow's options). <c>relic_id</c> marks relic-granting options.
     /// <c>will_kill_player</c> is the game's own lethality verdict, where
-    /// null means "could not be computed", never "safe".
+    /// null means "could not be computed", never "safe". <c>is_proceed</c>
+    /// marks the button that leaves a finished event.
     /// </summary>
     internal static List<Dictionary<string, object?>> EventOptions(List<NEventOptionButton> options) =>
         options.Select((button, i) => new Dictionary<string, object?>
@@ -1111,6 +1210,10 @@ public class SimEventRoomHandler : IRoomHandler, IHandler
             ["text_key"] = button.Option.TextKey ?? "",
             ["relic_id"] = button.Option.Relic?.Id.Entry ?? "",
             ["will_kill_player"] = SafeWillKillPlayer(button),
+            // The event is over and this button leaves the room
+            // (EventOption.IsProceed). The headless host walks to the map by
+            // itself at that point, so a client mirroring it clicks these.
+            ["is_proceed"] = button.Option.IsProceed,
         }).ToList();
 }
 

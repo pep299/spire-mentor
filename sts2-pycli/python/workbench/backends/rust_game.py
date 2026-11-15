@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from floors import engine_total_floor, game_floor
-from sts2_client import DEFAULT_GAME_VERSION, rs_engine_call
+from sts2_client import LEGACY_GAME_VERSION, rs_engine_call
 from sts2_hint import display_maps
 
 from workbench import localization
@@ -156,8 +156,9 @@ _REST_LABELS = {0: "Rest", 1: "Smith"}
 # is the Torch Head Amalgam it spawns alongside the Queen (QueenBoss.cs slots
 # ["amalgam", "queen"]); players know that node as "Queen". Keyed by monster
 # ``kind`` → encounter display name. Only the map node is renamed — both
-# monsters keep their own names as combatants.
-_BOSS_KIND_ENCOUNTER_NAME = {"TorchHeadAmalgam": "Queen"}
+# monsters keep their own names as combatants. The Kin's lead is a follower
+# (the roster mirrors C#'s spawn order, priest last); its node is "The Kin".
+_BOSS_KIND_ENCOUNTER_NAME = {"TorchHeadAmalgam": "Queen", "KinFollower": "The Kin"}
 
 
 def _boss_encounter_title(encounter_id: str) -> str:
@@ -508,6 +509,9 @@ class RustGame(GameBackend):
             self.rm.force_remove_card(name)
         for relic_id in snapshot.relics:
             self.rm.force_add_relic(relic_id)
+        # The live run already made the pickups' choices (Lead Paperweight's
+        # choose screen); left queued, they surface as the run advances.
+        self.rm.debug_clear_pending_choices()
         for card_id, _upgraded in snapshot.deck:
             self.rm.force_add_card(card_id)
         for card_id, upgraded in snapshot.deck:
@@ -789,6 +793,25 @@ class RustGame(GameBackend):
                 if result not in ("advanced", "run_over"):
                     return _err(f"{action} rejected by engine: {result}")
             return self._serialize()
+        # Claws (GH #1353): an "up to N into Maul" card_select. One
+        # ``select_cards`` picks every chosen card and confirms, as C#'s
+        # manual-confirm screen does; ``skip_select`` confirms with none. A
+        # picked card leaves the offer, so walk ascending and shift each later
+        # index down by the earlier picks (as New Leaf below).
+        if action in ("select_cards", "skip_select") and getattr(
+            self.rm, "pending_claws_select", False
+        ):
+            raw = args.get("indices", "") if action == "select_cards" else ""
+            idxs = sorted({int(s) for s in str(raw).split(",") if s.strip() != ""})
+            if len(idxs) > int(self.rm.claws_select_max) - int(self.rm.claws_select_picked):
+                return _err(f"select_cards: Claws takes at most {self.rm.claws_select_max} cards")
+            steps = [{"action": "transform_deck_card", "idx": i - n} for n, i in enumerate(idxs)]
+            steps.append({"action": "confirm_deck_selection"})
+            for step in steps:
+                result = self.rm.take_action(step)
+                if result not in ("advanced", "run_over"):
+                    return _err(f"{action} rejected by engine: {result}")
+            return self._serialize()
         # Interactive deck transform (New Leaf): likewise a single pick-N
         # card_select. C# applies transforms in ASCENDING original-index
         # order (`CardCmd.Transform`'s `PileIndexSort`), and each resolve
@@ -1016,7 +1039,9 @@ class RustGame(GameBackend):
             # sts2-rs-1hiht.
             if getattr(self.rm, "pending_deck_upgrades", 0) > 0:
                 return {"action": "upgrade_deck_card", "idx": idx}
-            if getattr(self.rm, "pending_deck_transforms", 0) > 0:
+            if getattr(self.rm, "pending_claws_select", False) or (
+                getattr(self.rm, "pending_deck_transforms", 0) > 0
+            ):
                 return {"action": "transform_deck_card", "idx": idx}
             if getattr(self.rm, "pending_deck_enchants", 0) > 0:
                 return {"action": "enchant_deck_card", "idx": idx}
@@ -1044,6 +1069,8 @@ class RustGame(GameBackend):
                 return {"action": "combat_resolve_choice", "option": None}
             if phase == "card_reward" and getattr(self.rm, "card_offer_choose_screen", False):
                 return {"action": "pick_card_reward", "idx": None}
+            if getattr(self.rm, "pending_claws_select", False):
+                return {"action": "confirm_deck_selection"}
             raise _Unsupported("skip_select not valid here")
         if action == "select_card_reward":
             return {"action": "pick_card_reward", "idx": args["card_index"]}
@@ -1153,7 +1180,7 @@ class RustGame(GameBackend):
         # and the golden bytes recorded from them — exactly as it was. A
         # reader treats the missing key as the default.
         version = getattr(self.rm, "game_version", None)
-        if isinstance(version, str) and version != DEFAULT_GAME_VERSION:
+        if isinstance(version, str) and version != LEGACY_GAME_VERSION:
             state["game_version"] = version
         # The run's master RNG seed and the map node this room sits on. The game
         # rolls a combat room's layer variants from
@@ -1471,6 +1498,22 @@ class RustGame(GameBackend):
         state["cards"] = cards
         state["min_select"] = count
         state["max_select"] = count
+        state["can_skip"] = False
+        state["context"] = "transform"
+
+    def _fill_claws_select(self, state: dict[str, Any]) -> None:
+        """Deck card_select for Claws' "transform up to N into Maul" (GH #1353).
+
+        C# ``CardSelectorPrefs(prompt, 0, 6)`` with ``RequireManualConfirmation``
+        (``Claws.cs:22-29``): any 0..=6 of the cards still offered
+        (``transform_select_deck_indices()``, ``index`` = position in that
+        list), confirmed at once.
+        """
+        cards = self._deck_subset_cards(self.rm.transform_select_deck_indices())
+        room = int(self.rm.claws_select_max) - int(self.rm.claws_select_picked)
+        state["cards"] = cards
+        state["min_select"] = 0
+        state["max_select"] = max(0, min(room, len(cards)))
         state["can_skip"] = False
         state["context"] = "transform"
 
@@ -1805,18 +1848,29 @@ class RustGame(GameBackend):
         if smith_acts and smith_ids:
             self._fill_smith(state, smith_acts, smith_ids)
             return
-        # Drive options off whichever set is live so the screen is never empty;
-        # choose_option indexes into _option_actions.
-        self._option_actions = rest_acts or list(acts)
-        # ``(option_id, enabled)`` per offered option, index-aligned with the
-        # ``rest_option`` actions above. This is what lets the UI name the
-        # option and find its plaque art: the frontend keys
-        # ``ui/rest_site/option_<option_id>.png`` and the loc row
-        # ``rest_site.OPTION_<ID>.name`` off ``option_id``.
+        # ``(option_id, enabled)`` per offered option, in ``rest_option`` idx
+        # order. This is what lets the UI name the option and find its plaque
+        # art: the frontend keys ``ui/rest_site/option_<option_id>.png`` and
+        # the loc row ``rest_site.OPTION_<ID>.name`` off ``option_id``.
         try:
             engine_opts = list(rm.rest_site_options())
         except AttributeError:  # wheel predating the accessor
             engine_opts = []
+        # choose_option indexes into _option_actions. The engine does not offer
+        # a DISABLED option (Smith with nothing to upgrade) as an action, but
+        # C# still shows it greyed, so render every engine option at its idx
+        # (``is_enabled`` False; picking it is rejected). With no enabled
+        # option left (MiniatureTent) the remaining actions — leave — follow.
+        # Without the accessor, drive off whichever set is live so the screen
+        # is never empty.
+        if engine_opts:
+            self._option_actions = [
+                {"action": "rest_option", "idx": i} for i in range(len(engine_opts))
+            ]
+            if not rest_acts:
+                self._option_actions += list(acts)
+        else:
+            self._option_actions = rest_acts or list(acts)
         options = []
         for i, a in enumerate(self._option_actions):
             if a.get("action") == "rest_option":
@@ -2016,6 +2070,7 @@ class _Unsupported(Exception):
 _PREEMPTS = (
     ("pending_deck_removals", RustGame._fill_card_removal),
     ("pending_deck_upgrades", RustGame._fill_card_upgrade),
+    ("pending_claws_select", RustGame._fill_claws_select),
     ("pending_deck_transforms", RustGame._fill_card_transform),
     ("pending_deck_enchants", RustGame._fill_card_enchant),
     ("pending_card_grants", RustGame._fill_card_grant),

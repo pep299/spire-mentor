@@ -944,8 +944,14 @@ fn listener_eternal_feather(rs: &mut RunState, room_type: RoomType) -> EffectRes
 ///
 /// [decompiled C# omitted — see the cited path]
 ///
-/// The marked card source doubles, including across a suspended choice.
-/// With no mark, a source outside Play previews the next attack on count 9.
+/// The C# card gate keys on the marked card, NOT on "the 10th attack
+/// window": an Attack auto-played inside the marked one (Uproar /
+/// BeatDown), a Skill dealing powered damage on the 9th count, and the
+/// marked card's own later replays are all `×1`. The relic channel's
+/// `DamageCtx` carries no card source, so the source is the resolving
+/// (top-of-Play) card — the card whose effect is dealing the damage. With
+/// no card in flight the no-mark branch is the hand-card preview
+/// (`Pile != Play`), which keeps the `×2` on the 9th count.
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn listener_pen_nib_modify_damage(state: &CombatState, ctx: &hooks::DamageCtx) -> hooks::DamageMul {
     use hooks::DamageMul;
@@ -967,19 +973,20 @@ fn listener_pen_nib_modify_damage(state: &CombatState, ctx: &hooks::DamageCtx) -
     if !is_player_or_osty {
         return DamageMul::ONE;
     }
-    let source = ctx.card_source;
-    if source.is_some()
-        && pen_nib_doubles(
-            state,
-            relic.counter,
-            source,
-            source.is_some_and(|uid| state.player.play.contains(&uid)),
-        )
-    {
+    let source = sts2_core::card_effects::resolving_card_uid(state);
+    if pen_nib_doubles(state, relic.counter, source, source_in_play(state, source)) {
         DamageMul::new(2, 1)
     } else {
         DamageMul::ONE
     }
+}
+
+/// C# `cardSource.Pile.Type == PileType.Play`, read live (PenNib.cs:123): a
+/// v0.107.1 Shining Strike has already moved itself to the draw top in its
+/// `OnPlay` (ShiningStrike.cs:36), so its Duplication replay is out of Play
+/// (loadout Regent 6793 v0.107.1).
+fn source_in_play(state: &CombatState, source: Option<sts2_core::CardUid>) -> bool {
+    source.is_some_and(|u| state.player.play.contains(&u))
 }
 
 /// Pen Nib's card gate for a `cardSource` that is (`source_in_play`) or is
@@ -995,6 +1002,36 @@ fn pen_nib_doubles(
         Some(marked) => source == Some(marked),
         None => !source_in_play && counter.rem_euclid(PEN_NIB_THRESHOLD) == PEN_NIB_THRESHOLD - 1,
     }
+}
+
+/// The `(num, den)` that turns the Pen Nib factor the relic listener gave a
+/// player-dealt, card-less `DamageCtx` (keyed on the resolving card) into the
+/// factor C# gives `fold_source`, a card outside the Play pile. Thrash's fold
+/// calls `Hook.ModifyDamage` with the exhausted attack, still in Hand, as
+/// `cardSource` (`Thrash.cs` OnPlay), but the relic channel's `DamageCtx`
+/// carries no card, so the listener saw Thrash. As the 9th attack the fold is
+/// x2 in C# and x1 in the listener; as the marked 10th it is the other way
+/// round. `(1, 1)` without a live Pen Nib.
+pub(crate) fn pen_nib_fold_rescale(
+    state: &CombatState,
+    fold_source: sts2_core::CardUid,
+) -> (i64, i64) {
+    let Some(relic) = state
+        .relics
+        .iter()
+        .find(|r| !r.is_melted && r.kind == RelicKind::PenNib)
+    else {
+        return (1, 1);
+    };
+    let resolving = sts2_core::card_effects::resolving_card_uid(state);
+    let seen = pen_nib_doubles(
+        state,
+        relic.counter,
+        resolving,
+        source_in_play(state, resolving),
+    );
+    let wanted = pen_nib_doubles(state, relic.counter, Some(fold_source), false);
+    (if wanted { 2 } else { 1 }, if seen { 2 } else { 1 })
 }
 
 /// `PenNib::before_card_played` — C# `PenNib.BeforeCardPlayed` →
@@ -1215,9 +1252,6 @@ fn listener_stone_cracker(state: &mut CombatState) -> EffectResult {
                 .is_some_and(sts2_core::cards::Card::is_upgradable)
         })
         .collect();
-    if candidates.is_empty() {
-        return EffectResult::NotImplemented;
-    }
     // C# `StoneCracker.cs::AfterRoomEntered`:
     //   Draw.Cards.Where(IsUpgradable)
     //       .StableShuffle(RunState.Rng.CombatCardSelection)
@@ -1239,12 +1273,18 @@ fn listener_stone_cracker(state: &mut CombatState) -> EffectResult {
         let ia = a.0.get() as usize - 1;
         let ib = b.0.get() as usize - 1;
         let (ca, cb) = (&state.cards[ia], &state.cards[ib]);
-        sts2_core::cards::card_model_compare(ca, cb)
+        sts2_core::cards::card_model_compare_for(ca, cb, state.game_version)
     };
-    state
-        .run_rng
-        .combat_card_selection
-        .stable_shuffle_by(candidates.as_mut_slice(), &cmp);
+    state.run_rng.combat_card_selection.stable_shuffle_by_for(
+        state.game_version,
+        candidates.as_mut_slice(),
+        &cmp,
+    );
+    // An empty list is shuffled too: from v0.113 that still reads one
+    // `NextUnsignedLong`, which `shuffle_for` handles.
+    if candidates.is_empty() {
+        return EffectResult::NotImplemented;
+    }
     for uid in candidates.into_iter().take(STONE_CRACKER_CARDS as usize) {
         upgrade_card_uid(state, uid);
     }
@@ -1367,11 +1407,8 @@ mod tests {
             is_melted: false,
         });
 
-        state.resolving_card = Some(CardUid::new(1).unwrap());
-
         // Powered attack dealt by the player.
         let ctx = sts2_core::hooks::DamageCtx {
-            card_source: Some(CardUid::new(1).unwrap()),
             dealer: CreatureRef::Player,
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -1405,8 +1442,8 @@ mod tests {
         set_counter(&mut state, 10);
         assert_eq!(listener(&state, &ctx), DamageMul::ONE, "11th attack: ×1");
 
-        // The counter wraps modulo ten.
-        set_counter(&mut state, 9);
+        // counter=19 → next attack is #20, divisible → ×2 again.
+        set_counter(&mut state, 19);
         assert_eq!(
             listener(&state, &ctx),
             DamageMul::new(2, 1),
@@ -1416,7 +1453,6 @@ mod tests {
         // Unpowered attack on the 10th window → ×1 (C# IsPoweredAttack gate).
         set_counter(&mut state, 9);
         let unpowered = sts2_core::hooks::DamageCtx {
-            card_source: Some(CardUid::new(1).unwrap()),
             dealer: CreatureRef::Player,
             target: CreatureRef::Player,
             props: ValueProps::MOVE.union(ValueProps::UNPOWERED),
@@ -1457,9 +1493,7 @@ mod tests {
             is_melted: false,
         });
 
-        state.resolving_card = Some(CardUid::new(1).unwrap());
         let ctx = DamageCtx {
-            card_source: Some(CardUid::new(1).unwrap()),
             dealer: CreatureRef::Player,
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -1520,8 +1554,7 @@ mod tests {
         let listener =
             sts2_core::relic_effects::lookup_modify_damage_multiplicative(CoreRelicId::PenNib)
                 .expect("PenNib multiplicative listener registered");
-        let mut hit = DamageCtx {
-            card_source: Some(tenth),
+        let hit = DamageCtx {
             dealer: CreatureRef::Player,
             target: CreatureRef::Player,
             props: ValueProps::MOVE,
@@ -1543,13 +1576,11 @@ mod tests {
 
         // It auto-plays another Attack: the 11th, not doubled.
         state.player.play.push(nested);
-        hit.card_source = Some(nested);
         let _ = dispatch_before_card_played(&mut state, &ctx_for(nested));
         assert_eq!(counter(&state), 1);
         assert_eq!(listener(&state, &hit), DamageMul::ONE, "nested 11th: ×1");
         let _ = dispatch_after_card_played(&mut state, &ctx_for(nested));
         state.player.play.pop();
-        hit.card_source = Some(tenth);
 
         // Back in the 10th: still doubled, until its own play finishes.
         assert_eq!(
@@ -2549,10 +2580,9 @@ mod tests {
             .map_or(1, |m| m.saturating_add(1));
         let uid = sts2_core::CardUid(NonZeroU32::new(next_raw).expect("non-zero"));
         state.cards.push(Card {
-            local_energy_cost: None,
             uid,
             card_id: CardId::StrikeIronclad,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -2628,7 +2658,7 @@ mod tests {
             let c = &mut state.cards[bane.0.get() as usize - 1];
             c.card_id = sts2_core::cards::CardId::AscendersBane;
             c.card_type = sts2_core::cards::CardType::Curse;
-            c.cost = -1;
+            c.cost = sts2_core::CardEnergyCost::new(-1);
             c.base_damage = 0;
         }
         let _ = dispatch_after_player_turn_start(&mut state);
@@ -2703,10 +2733,9 @@ mod tests {
             .map_or(1, |m| m.saturating_add(1));
         let uid = sts2_core::CardUid(NonZeroU32::new(next_raw).expect("non-zero"));
         state.cards.push(Card {
-            local_energy_cost: None,
             uid,
             card_id: CardId::StrikeIronclad,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type,
             target_type: TargetType::Enemy,
             upgraded,
@@ -3184,9 +3213,7 @@ mod tests {
         crate::relics::dispatch::ensure_installed();
         let mut state = CombatState::default();
         let enemy = paper_phrog_vuln_enemy(&mut state);
-        state.resolving_card = Some(CardUid::new(1).unwrap());
         let ctx = DamageCtx {
-            card_source: None,
             dealer: CreatureRef::Player,
             target: enemy,
             props: ValueProps::MOVE,
@@ -3231,7 +3258,6 @@ mod tests {
         });
         state.relics.ensure_plan();
         let ctx = DamageCtx {
-            card_source: None,
             dealer: CreatureRef::Player,
             target: enemy,
             props: ValueProps::MOVE,
@@ -3273,9 +3299,7 @@ mod tests {
             is_wax: false,
             is_melted: false,
         });
-        state.resolving_card = Some(CardUid::new(1).unwrap());
         let ctx = DamageCtx {
-            card_source: None,
             dealer: CreatureRef::Player,
             target: CreatureRef::Enemy(enemy_uid),
             props: ValueProps::MOVE,
@@ -3305,7 +3329,6 @@ mod tests {
         });
         // Unpowered hit: Vulnerable itself does not fire, so 6 stays 6.
         let unpowered = DamageCtx {
-            card_source: None,
             dealer: CreatureRef::Player,
             target: enemy,
             props: ValueProps::MOVE.union(ValueProps::UNPOWERED),
@@ -3348,10 +3371,9 @@ mod tests {
             .map_or(1, |m| m.saturating_add(1));
         let uid = CardUid(NonZeroU32::new(next_raw).expect("non-zero"));
         state.cards.push(Card {
-            local_energy_cost: None,
             uid,
             card_id,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Skill,
             target_type: TargetType::None,
             upgraded: false,

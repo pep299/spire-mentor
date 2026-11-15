@@ -362,6 +362,28 @@ fn install_listeners() {
         RelicId::Byrdpip,
         listener_byrdpip_transform_eggs as AfterObtainedRunFn,
     );
+    // v0.113.0 Byrdpip evolution: `AfterCardPlayed` counts the owner's Byrd
+    // Swoop plays (`SwoopsPlayed`, capped at 6) and `TryModifyRestSiteOptions`
+    // offers `EvolveRestSiteOption` from 6 on; picking it replaces Byrdpip
+    // with Byrdine (`RunState::do_rest_site_action(Evolve)`), whose
+    // `AfterObtained` turns every Byrd Swoop into a God Byrd and whose
+    // `BeforeCombatStart` summons the Byrdine pet.
+    register_after_card_played(
+        RelicId::Byrdpip,
+        listener_byrdpip_count_swoops as AfterCardPlayedFn,
+    );
+    sts2_core::run_effects::register_modify_rest_site_options(
+        RelicId::Byrdpip,
+        listener_byrdpip_rest_site_options as sts2_core::run_effects::ModifyRestSiteOptionsRunFn,
+    );
+    register_before_combat_start(
+        RelicId::Byrdine,
+        listener_byrdine_summon_pet as BeforeCombatStartFn,
+    );
+    register_after_obtained(
+        RelicId::Byrdine,
+        listener_byrdine_transform_swoops as AfterObtainedRunFn,
+    );
 
     // HistoryCourse (sts2-rs-ummci) — at the start of each play phase
     // after round 1, auto-play a free dupe of the last Attack/Skill the
@@ -587,13 +609,11 @@ fn install_listeners() {
         listener_hand_drill as AfterDamageGivenFn,
     );
     // PollinousCore — +2 hand-draw every `POLLINOUS_CORE_TURNS = 4`
-    // player turns. State (`_turns_seen` in Python) lives on the
-    // relic's `counter` (i32). The `before_side_turn_start` listener
-    // ticks the counter on player-side starts using a `(counter %
-    // TURNS) + 1` cycle so the counter reaches `TURNS` exactly once
-    // per 4 turns; the `modify_hand_draw` listener returns `+EXTRA`
-    // when `counter == TURNS`. Python pin
-    // `sts2-rl-agent@01c094d:sts2_env/relics/shop_event.py::PollinousCore`.
+    // player turns. `TurnsSeen` lives on the relic's `counter` (i32). In
+    // v0.107.1 the `before_side_turn_start` listener ticks it on player-side
+    // starts, the `modify_hand_draw` listener returns `+EXTRA` when
+    // `counter == TURNS`, and the turn setup resets it after the hand-draw
+    // count (`AfterModifyingHandDraw`).
     register_before_side_turn_start(
         RelicId::PollinousCore,
         listener_pollinous_core_tick as BeforeSideTurnStartFn,
@@ -966,6 +986,98 @@ fn listener_byrdpip_summon_pet(state: &mut CombatState) -> EffectResult {
     }
     let _ = state.summon_pet(sts2_core::MonsterKind::Byrdpip, BYRDPIP_PET_HP);
     EffectResult::Resolved
+}
+
+/// `Byrdpip.playsToEvolve` (`Byrdpip.cs`, v0.113.0): Byrd Swoop plays
+/// needed before the rest site offers Evolve; `SwoopsPlayed` stops there.
+pub const BYRDPIP_PLAYS_TO_EVOLVE: i32 = 6;
+
+/// v0.113.0 `Byrdpip.AfterCardPlayed`: when the owner plays a Byrd Swoop
+/// and `SwoopsPlayed < 6`, `SwoopsPlayed++`. The count is the combat
+/// relic's `counter`, which the combat exit flushes into
+/// `RunState::relic_counters[Byrdpip]` (`[SavedProperty]` in C#, so it
+/// carries across combats). v0.111.0's Byrdpip has no counter.
+fn listener_byrdpip_count_swoops(state: &mut CombatState, ctx: &CardEventCtx) -> EffectResult {
+    if state.game_version < sts2_core::GameVersion::V0_113_0
+        || ctx.card_id != sts2_core::cards::CardId::ByrdSwoop
+    {
+        return EffectResult::NotImplemented;
+    }
+    let Some(relic) = state
+        .relics
+        .iter_mut()
+        .find(|r| !r.is_melted && r.kind == RelicKind::Byrdpip)
+    else {
+        return EffectResult::NotImplemented;
+    };
+    if relic.counter >= BYRDPIP_PLAYS_TO_EVOLVE {
+        return EffectResult::NotImplemented;
+    }
+    relic.counter += 1;
+    EffectResult::Resolved
+}
+
+/// v0.113.0 `Byrdpip.TryModifyRestSiteOptions`: with `SwoopsPlayed >= 6`
+/// append an `EvolveRestSiteOption`.
+fn listener_byrdpip_rest_site_options(
+    rs: &RunState,
+    options: &mut Vec<sts2_core::runstate::RestSiteOption>,
+) -> EffectResult {
+    if rs.game_version < sts2_core::GameVersion::V0_113_0 || !rs.owns_active_relic(RelicId::Byrdpip)
+    {
+        return EffectResult::NotImplemented;
+    }
+    let swoops = rs
+        .relic_counters
+        .get(&RelicId::Byrdpip)
+        .copied()
+        .unwrap_or(0);
+    if swoops < BYRDPIP_PLAYS_TO_EVOLVE {
+        return EffectResult::NotImplemented;
+    }
+    options.push(sts2_core::runstate::RestSiteOption::Evolve);
+    EffectResult::Resolved
+}
+
+/// v0.113.0 `Byrdine.BeforeCombatStart` → `PlayerCmd.AddPet<ByrdineMonster>`.
+/// `ByrdineMonster` (9999 HP, `NOTHING_MOVE`, not interactable) has no
+/// `MonsterKind`; it behaves exactly like the Byrdpip pet, so that pet
+/// stands in for it (adding a species would widen the monster vocab).
+fn listener_byrdine_summon_pet(state: &mut CombatState) -> EffectResult {
+    if !player_owns(state, RelicKind::Byrdine) {
+        return EffectResult::NotImplemented;
+    }
+    let _ = state.summon_pet(sts2_core::MonsterKind::Byrdpip, BYRDPIP_PET_HP);
+    EffectResult::Resolved
+}
+
+/// v0.113.0 `Byrdine.AfterObtained`: every ByrdSwoop in the deck becomes a
+/// GodByrd (`CardScope.CreateCard<GodByrd>`, upgraded when the swoop was,
+/// then `CardCmd.Transform`). Like the egg transform, the new card is
+/// appended through the add-to-deck hooks.
+fn listener_byrdine_transform_swoops(rs: &mut RunState) -> EffectResult {
+    if rs.last_obtained_relic != Some(RelicId::Byrdine) {
+        return EffectResult::NotImplemented;
+    }
+    let mut indices: Vec<usize> = Vec::new();
+    let mut replacements: Vec<sts2_core::cards::Card> = Vec::new();
+    for (i, card) in rs.master_deck.iter().enumerate() {
+        if card.card_id == sts2_core::cards::CardId::ByrdSwoop {
+            if let Some(mut god) = crate::cards::spec_index::card_pod_from_id(
+                sts2_core::cards::CardId::GodByrd,
+                card.upgraded,
+            ) {
+                god.uid = card.uid;
+                indices.push(i);
+                replacements.push(god);
+            }
+        }
+    }
+    if rs.transform_specific_cards(&indices, replacements) > 0 {
+        EffectResult::Resolved
+    } else {
+        EffectResult::NotImplemented
+    }
 }
 
 /// `Byrdpip::after_obtained` — transform every `ByrdonisEgg` in the
@@ -1488,7 +1600,8 @@ fn listener_darkstone_periapt(rs: &mut RunState, ctx: &CardAddedRunCtx) -> Effec
     EffectResult::Resolved
 }
 
-/// Run-side `BingBong.AfterCardChangedPiles` (`BingBong.cs:28-38`, both builds):
+/// Run-side `BingBong.AfterCardChangedPiles` (`BingBong.cs:28-38`, v0.107.1 /
+/// v0.111.0):
 ///
 /// [decompiled C# omitted — see the cited path]
 ///
@@ -1497,6 +1610,13 @@ fn listener_darkstone_periapt(rs: &mut RunState, ctx: &CardAddedRunCtx) -> Effec
 /// it: here [`AddSource::BingBongDuplicate`]. The added card is the newest deck
 /// card with the context's id (a batch add appends every card before any
 /// listener runs, `CardPileCmd.cs:497-636`).
+///
+/// v0.113.0 drops `CardsToSkip`; the `clonedBy == null` guard alone keeps
+/// the clone from recursing. The set never decided anything here: `&&`
+/// short-circuits on `clonedBy` before `CardsToSkip.Remove` runs for the
+/// clone, and nothing else is ever in the set. So one body serves every
+/// build. (The Hoarder modifier made the same change; custom-run modifiers
+/// are not modelled.)
 ///
 /// [`AddSource::BingBongDuplicate`]: sts2_core::relic_effects::AddSource::BingBongDuplicate
 fn listener_bing_bong_run(rs: &mut RunState, ctx: &CardAddedRunCtx) -> EffectResult {
@@ -1734,7 +1854,7 @@ fn listener_lava_rock_rewards(
 
 /// `MawBank.GOLD` — gold granted per room enter until the latch fires.
 /// Python `MawBank.GOLD = 12` (`shop_event.py:2408`).
-const MAW_BANK_GOLD: i32 = 12;
+pub const MAW_BANK_GOLD: i32 = 12;
 
 /// `relic_counters[MawBank]` value written by
 /// [`listener_maw_bank_on_item_purchased`] once the player completes
@@ -1844,13 +1964,10 @@ fn listener_lava_lamp_card_reward(rs: &mut RunState, cards: &mut Vec<Card>) -> E
     // the `?` room's `Event` type through it, but `finish_event_combat` tears
     // the event down (`current_event = None`) before rolling the room
     // rewards, so only a live event counts as a non-combat room. A room-less
-    // RunState (unit fixtures) still passes.
-    let non_combat_room = match rs.current_room.map(|r| r.room_type) {
-        Some(RoomType::Shop | RoomType::RestSite | RoomType::Treasure) => true,
-        Some(RoomType::Event) => rs.current_event.is_some(),
-        _ => false,
-    };
-    if non_combat_room {
+    // RunState (unit fixtures) still passes. The act-opening Ancient is an
+    // `EventRoom` too, though Rust keeps the boss room through it (Silent
+    // v0.111.0 seed 5451: Sea Glass's slate after a clean boss fight).
+    if rs.in_non_combat_room() {
         return EffectResult::NotImplemented;
     }
     let took_damage = rs
@@ -1921,13 +2038,16 @@ fn listener_paels_tooth_after_obtained(rs: &mut RunState) -> EffectResult {
         return EffectResult::NotImplemented;
     }
     // Candidate set: master-deck (idx, card_id, upgraded) tuples for
-    // non-upgraded AND removable cards.
+    // upgradable AND removable cards. `IsUpgradable`, not `!upgraded`: a
+    // curse is never upgradable, so a Guilty must not count toward the
+    // removals queued below (the select's own filter already skips it).
     let mut candidates: Vec<(usize, sts2_core::cards::CardId, bool)> = rs
         .master_deck
         .iter()
         .enumerate()
         .filter_map(|(idx, c)| {
-            (!c.upgraded && is_paels_tooth_removable(c)).then_some((idx, c.card_id, c.upgraded))
+            (c.is_upgradable() && is_paels_tooth_removable(c))
+                .then_some((idx, c.card_id, c.upgraded))
         })
         .collect();
     // Sort by card_id for parity with Python's `reference_card_entry`
@@ -2256,15 +2376,15 @@ pub const POLLINOUS_CORE_EXTRA_CARDS: i32 = 2;
 /// (`shop_event.py::PollinousCore`).
 pub const POLLINOUS_CORE_TURNS: i32 = 4;
 
-/// `PollinousCore::before_side_turn_start` — increment the
-/// per-turn counter on the player's side using a `(counter % TURNS) + 1`
-/// cycle so the counter equals `TURNS` exactly once every `TURNS`
-/// player turns. Mirrors Python's `_turns_seen += 1` +
-/// `after_modifying_hand_draw` reset, but uses a single modular
-/// increment because there is no `after_modifying_hand_draw` channel
-/// in the Rust port; the cycle is observationally identical (fires on
-/// turns 4, 8, 12, … starting from a fresh combat). Counter
-/// persistence lives on the relic's `Relic.counter` field.
+/// v0.107.1 `PollinousCore.BeforeSideTurnStart` (PollinousCore.cs:90-97):
+/// `TurnsSeen++` on every turn start the owner takes part in, with no wrap.
+/// Only `AfterModifyingHandDraw` resets it to 0, and only on a turn whose
+/// `ModifyHandDraw` it raised (`TurnsSeen == 4`); Rust runs that reset after
+/// the turn-start `BeforeHandDraw` walk
+/// (`sts2_core::relic_effects::pendulum::pollinous_core_after_modifying_hand_draw_v0107`).
+/// A combat that ends after the tick to 4 but before the hand draw leaves
+/// 4, and the relic never fires again (loadout Defect 5189 v0.107.1). The
+/// count persists across combats on `Relic.counter`.
 fn listener_pollinous_core_tick(state: &mut CombatState, side: Side) -> EffectResult {
     if side != Side::Player {
         return EffectResult::NotImplemented;
@@ -2280,8 +2400,7 @@ fn listener_pollinous_core_tick(state: &mut CombatState, side: Side) -> EffectRe
     else {
         return EffectResult::NotImplemented;
     };
-    let cur = state.relics[idx].counter;
-    state.relics[idx].counter = (cur % POLLINOUS_CORE_TURNS) + 1;
+    state.relics[idx].counter = state.relics[idx].counter.saturating_add(1);
     EffectResult::Resolved
 }
 
@@ -2494,10 +2613,9 @@ mod tests {
             .map_or(1, |m| m.saturating_add(1));
         let uid = CardUid(NonZeroU32::new(next_raw).expect("non-zero"));
         state.cards.push(sts2_core::Card {
-            local_energy_cost: None,
             uid,
             card_id: sts2_core::cards::CardId::StrikeIronclad,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: sts2_core::cards::CardType::Attack,
             target_type: sts2_core::cards::TargetType::Enemy,
             upgraded: false,
@@ -2523,10 +2641,9 @@ mod tests {
             .map_or(1, |m| m.saturating_add(1));
         let uid = CardUid(NonZeroU32::new(next_raw).expect("non-zero"));
         state.cards.push(sts2_core::Card {
-            local_energy_cost: None,
             uid,
             card_id: sts2_core::cards::CardId::DefendIronclad,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: sts2_core::cards::CardType::Skill,
             target_type: sts2_core::cards::TargetType::Self_,
             upgraded: false,
@@ -3284,6 +3401,108 @@ mod tests {
         assert_eq!(pet_count(&state), 1, "no duplicate pet on re-summon");
     }
 
+    /// v0.113.0 `Byrdpip.AfterCardPlayed` (`Byrdpip.cs`): each Byrd Swoop
+    /// play bumps `SwoopsPlayed`, which stops at `playsToEvolve = 6`; other
+    /// cards and v0.111.0 (no counter in its `Byrdpip.cs`) leave it alone.
+    #[test]
+    fn byrdpip_counts_swoops_to_six_on_v0113_only() {
+        use sts2_core::cards::CardId;
+        let ctx = |card_id| CardEventCtx {
+            card_id,
+            card_uid: None,
+            target: None,
+            card_tags: sts2_core::cards::CardTags::default(),
+            energy_spent: 0,
+        };
+        let counter = |s: &CombatState| {
+            s.relics
+                .iter()
+                .find(|r| r.kind == RelicKind::Byrdpip)
+                .unwrap()
+                .counter
+        };
+        let mut state = CombatState {
+            game_version: sts2_core::GameVersion::V0_113_0,
+            ..Default::default()
+        };
+        push_relic(&mut state, RelicKind::Byrdpip);
+        for _ in 0..8 {
+            let _ = listener_byrdpip_count_swoops(&mut state, &ctx(CardId::ByrdSwoop));
+        }
+        let _ = listener_byrdpip_count_swoops(&mut state, &ctx(CardId::StrikeIronclad));
+        assert_eq!(counter(&state), BYRDPIP_PLAYS_TO_EVOLVE);
+
+        let mut old = CombatState {
+            game_version: sts2_core::GameVersion::V0_111_0,
+            ..Default::default()
+        };
+        push_relic(&mut old, RelicKind::Byrdpip);
+        let _ = listener_byrdpip_count_swoops(&mut old, &ctx(CardId::ByrdSwoop));
+        assert_eq!(counter(&old), 0);
+    }
+
+    /// v0.113.0 `Byrdpip.TryModifyRestSiteOptions` + `EvolveRestSiteOption`:
+    /// at 6 swoops the rest site offers EVOLVE after Heal/Smith; picking it
+    /// `RelicCmd.Replace`s Byrdpip with Byrdine in the same slot
+    /// (`RelicCmd.cs` `Obtain(replace, player, indexOfOriginal)`), and
+    /// `Byrdine.AfterObtained` turns each Byrd Swoop into a God Byrd that
+    /// keeps the swoop's upgrade. Five swoops, or v0.111.0, offer nothing.
+    #[test]
+    fn evolve_rest_site_option_replaces_byrdpip_with_byrdine() {
+        use sts2_core::cards::CardId;
+        use sts2_core::runstate::{RestSiteActionOutcome, RestSiteOption};
+        crate::relics::dispatch::ensure_installed();
+        let pod = |id, up| crate::cards::spec_index::card_pod_from_id(id, up).unwrap();
+        let mut rs = RunState::new();
+        rs.game_version = sts2_core::GameVersion::V0_113_0;
+        rs.relics = vec![RelicId::BurningBlood, RelicId::Byrdpip, RelicId::Anchor];
+        rs.master_deck = vec![
+            pod(CardId::ByrdSwoop, true),
+            pod(CardId::StrikeIronclad, false),
+            pod(CardId::ByrdSwoop, false),
+        ];
+        rs.relic_counters.insert(RelicId::Byrdpip, 5);
+        assert!(!rs.rest_site_options().contains(&RestSiteOption::Evolve));
+        rs.relic_counters.insert(RelicId::Byrdpip, 6);
+        let ids: Vec<_> = rs
+            .rest_site_options()
+            .iter()
+            .map(RestSiteOption::option_id)
+            .collect();
+        assert_eq!(ids, ["HEAL", "SMITH", "EVOLVE"]);
+
+        assert_eq!(
+            rs.do_rest_site_action(RestSiteOption::Evolve),
+            RestSiteActionOutcome::Evolved
+        );
+        assert_eq!(
+            rs.relics,
+            vec![RelicId::BurningBlood, RelicId::Byrdine, RelicId::Anchor]
+        );
+        assert!(!rs.relic_counters.contains_key(&RelicId::Byrdpip));
+        let deck: Vec<_> = rs
+            .master_deck
+            .iter()
+            .map(|c| (c.card_id, c.upgraded))
+            .collect();
+        assert_eq!(
+            deck,
+            vec![
+                (CardId::StrikeIronclad, false),
+                (CardId::GodByrd, true),
+                (CardId::GodByrd, false),
+            ]
+        );
+        assert_eq!(rs.master_deck[1].base_damage, 40);
+        assert_eq!(rs.master_deck[2].base_damage, 30);
+
+        let mut old = RunState::new();
+        old.game_version = sts2_core::GameVersion::V0_111_0;
+        old.relics = vec![RelicId::Byrdpip];
+        old.relic_counters.insert(RelicId::Byrdpip, 6);
+        assert!(!old.rest_site_options().contains(&RestSiteOption::Evolve));
+    }
+
     /// `Byrdpip::after_obtained` transforms every `ByrdonisEgg` in the
     /// master deck into a `ByrdSwoop`.
     #[test]
@@ -3592,7 +3811,7 @@ mod tests {
         let mut stomp = Card::pod_defaults();
         stomp.uid = suid;
         stomp.card_id = CardId::Stomp;
-        stomp.cost = 3;
+        stomp.cost = sts2_core::CardEnergyCost::new(3);
         state.cards.push(stomp);
         state.player.hand.push(suid);
         state.combat_log.prev_round_last_attack_skill_played =
@@ -3603,7 +3822,7 @@ mod tests {
             .iter()
             .find(|c| c.uid == suid)
             .expect("stomp")
-            .cost;
+            .local_cost();
         assert_eq!(
             cost, 2,
             "Stomp cost reduced by 1 — the attack dupe fired BeforeCardPlayed"
@@ -3639,7 +3858,7 @@ mod tests {
         let mut stomp = Card::pod_defaults();
         stomp.uid = suid;
         stomp.card_id = CardId::Stomp;
-        stomp.cost = 3;
+        stomp.cost = sts2_core::CardEnergyCost::new(3);
         state.cards.push(stomp);
         state.player.hand.push(suid);
         state.combat_log.prev_round_last_attack_skill_played =
@@ -3650,7 +3869,7 @@ mod tests {
             .iter()
             .find(|c| c.uid == suid)
             .expect("stomp")
-            .cost;
+            .local_cost();
         assert_eq!(
             cost, 0,
             "one Stomp shave per play iteration (1 play + 2 replays)"
@@ -3677,18 +3896,15 @@ mod tests {
         let mut stomp = Card::pod_defaults();
         stomp.uid = suid;
         stomp.card_id = CardId::Stomp;
-        stomp.cost = 3;
+        stomp.cost = sts2_core::CardEnergyCost::new(3);
         state.cards.push(stomp);
         state.player.draw.push(suid);
         let plays_before = state.combat_log.player_card_plays_this_combat;
         state.combat_log.prev_round_last_attack_skill_played = Some((CardId::Bash, false, None));
         let _ = sts2_core::relic_effects::dispatch_before_play_phase_start(&mut state);
         let stomp = state.cards.iter().find(|c| c.uid == suid).expect("stomp");
-        assert_eq!(stomp.cost, 3, "no BeforeCardPlayed Stomp shave");
-        assert_eq!(
-            stomp.combat_var(sts2_core::cards::VarKey::StompCostReductionThisTurn),
-            0
-        );
+        assert_eq!(stomp.local_cost(), 3, "no BeforeCardPlayed Stomp shave");
+        assert!(!stomp.cost.has_local_modifiers());
         assert_eq!(
             state.combat_log.player_card_plays_this_combat, plays_before,
             "the unplayed dupe is not a finished play"
@@ -3848,10 +4064,9 @@ mod tests {
             .map_or(1, |m| m.saturating_add(1));
         let power_uid = CardUid(NonZeroU32::new(next_raw).expect("non-zero"));
         state.cards.push(sts2_core::Card {
-            local_energy_cost: None,
             uid: power_uid,
             card_id: sts2_core::cards::CardId::DefendIronclad,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: sts2_core::cards::CardType::Power,
             target_type: sts2_core::cards::TargetType::Self_,
             upgraded: false,
@@ -4076,7 +4291,7 @@ mod tests {
         let mut card = Card {
             uid: CardUid(std::num::NonZeroU32::new(42).unwrap()),
             card_id: sts2_core::cards::CardId::DefendIronclad,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CT::Skill,
             target_type: TargetType::Self_,
             upgraded: false,
@@ -4112,7 +4327,7 @@ mod tests {
         let mk = |uid: u32| Card {
             uid: CardUid(std::num::NonZeroU32::new(uid).unwrap()),
             card_id: sts2_core::cards::CardId::DefendIronclad,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CT::Skill,
             target_type: TargetType::Self_,
             upgraded: false,
@@ -4140,7 +4355,7 @@ mod tests {
         let mut card = Card {
             uid: CardUid(std::num::NonZeroU32::new(42).unwrap()),
             card_id: sts2_core::cards::CardId::DefendIronclad,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CT::Skill,
             target_type: TargetType::Self_,
             upgraded: false,
@@ -4538,7 +4753,7 @@ mod tests {
                 (|c: &Card| c.base_damage == 30) as fn(&Card) -> bool,
             ),
             (sts2_core::cards::CardId::ExpectAFight, |c: &Card| {
-                c.cost == 3
+                c.local_cost() == 3
             }),
         ] {
             let mut rs = RunState::new();
@@ -4965,11 +5180,16 @@ mod tests {
         }
     }
 
-    /// **PollinousCore #1** — counter cycles 1→2→3→4→1 across four
-    /// player-side `before_side_turn_start` dispatches.
+    /// **PollinousCore #1** — v0.107.1 `BeforeSideTurnStart` is a plain
+    /// `TurnsSeen++` (PollinousCore.cs:90-97); only `AfterModifyingHandDraw`
+    /// resets it. A counter left at 4 by a combat that ended before its hand
+    /// draw climbs past 4 and the +2 never fires again (loadout Defect 5189
+    /// v0.107.1).
     #[test]
-    fn listener_pollinous_core_tick_cycles_modulo_turns() {
-        use sts2_core::relic_effects::dispatch_before_side_turn_start;
+    fn listener_pollinous_core_tick_never_wraps() {
+        use sts2_core::relic_effects::{
+            dispatch_before_side_turn_start, dispatch_modify_hand_draw,
+        };
         crate::relics::dispatch::ensure_installed();
         let mut state = CombatState::default();
         pollinous_core_setup(&mut state, true);
@@ -4980,16 +5200,16 @@ mod tests {
                 .map(|r| r.counter)
                 .expect("pollinous owned")
         };
-        let _ = dispatch_before_side_turn_start(&mut state, Side::Player);
-        assert_eq!(read_counter(&state), 1);
-        let _ = dispatch_before_side_turn_start(&mut state, Side::Player);
-        assert_eq!(read_counter(&state), 2);
-        let _ = dispatch_before_side_turn_start(&mut state, Side::Player);
-        assert_eq!(read_counter(&state), 3);
-        let _ = dispatch_before_side_turn_start(&mut state, Side::Player);
-        assert_eq!(read_counter(&state), 4);
-        let _ = dispatch_before_side_turn_start(&mut state, Side::Player);
-        assert_eq!(read_counter(&state), 1, "cycle wraps to 1");
+        for expected in 1..=4 {
+            let _ = dispatch_before_side_turn_start(&mut state, Side::Player);
+            assert_eq!(read_counter(&state), expected);
+        }
+        // No hand draw consumed the 4 (the combat ended): it keeps climbing.
+        for expected in 5..=12 {
+            let _ = dispatch_before_side_turn_start(&mut state, Side::Player);
+            assert_eq!(read_counter(&state), expected);
+            assert_eq!(dispatch_modify_hand_draw(&state, 5), 5, "turn {expected}");
+        }
     }
 
     /// **PollinousCore #2** — modify_hand_draw fires +EXTRA on the
@@ -5016,10 +5236,10 @@ mod tests {
             5 + POLLINOUS_CORE_EXTRA_CARDS,
             "turn 4: +{POLLINOUS_CORE_EXTRA_CARDS}"
         );
-        // Turn 5: cycle wrapped, no extra.
+        // Turn 5 without the hand draw's reset: 5, no extra.
         let _ = dispatch_before_side_turn_start(&mut state, Side::Player);
         let draw = dispatch_modify_hand_draw(&state, 5);
-        assert_eq!(draw, 5, "turn 5: counter wrapped to 1, no extra");
+        assert_eq!(draw, 5, "turn 5: counter 5, no extra");
     }
 
     /// **PollinousCore #3** — Monster-side ticks do not advance the
@@ -5120,6 +5340,33 @@ mod tests {
         for stored in &rs.paels_tooth_stored {
             assert!(!stored.upgraded, "stowed cards are not pre-upgraded");
         }
+    }
+
+    /// The tooth's pool is `IsUpgradable`, not "not yet upgraded": a curse
+    /// (`MaxUpgradeLevel => 0`) is never offered. With 4 upgradable cards
+    /// and a Guilty curse, C# auto-takes the 4 (`FromDeckGeneric`, count <=
+    /// MinSelect) and the run moves on. Rust counted the curse as a 5th
+    /// candidate and queued 5 removals, so after the 4 a `card_select` with
+    /// no offer was left open (random-loadout Necrobinder 7602 v0.107.1).
+    #[test]
+    fn listener_paels_tooth_after_obtained_skips_a_curse() {
+        crate::relics::dispatch::ensure_installed();
+        let v = sts2_core::GameVersion::V0_107_1;
+        let mut rs = RunState::new();
+        for _ in 0..4 {
+            rs.master_deck
+                .push(deck_card(sts2_core::cards::CardId::Anger));
+        }
+        rs.master_deck.push(
+            sts2_core::build_card_for_version(sts2_core::cards::CardId::Guilty, false, v)
+                .expect("Guilty spec"),
+        );
+        rs.interactive_card_removal = true;
+        rs.relics.push(RelicId::PaelsTooth);
+        rs.last_obtained_relic = Some(RelicId::PaelsTooth);
+        let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
+        assert_eq!(rs.pending_deck_removals, 4, "the curse is not upgradable");
+        assert!(rs.pending_removal_paels_tooth);
     }
 
     /// PaelsTooth caps stowage at 5 cards even if more candidates exist.
@@ -5360,6 +5607,7 @@ mod tests {
             dealer: player_uid,
             target: enemy_uid,
             damage: 7,
+            total_damage: 7,
             props: ValueProps::NONE,
             was_block_broken: true,
         };
@@ -5380,6 +5628,7 @@ mod tests {
             dealer: player_uid,
             target: enemy_uid,
             damage: 7,
+            total_damage: 7,
             props: ValueProps::NONE,
             was_block_broken: false,
         };
@@ -5402,6 +5651,7 @@ mod tests {
             dealer: enemy_uid,
             target: player_uid,
             damage: 7,
+            total_damage: 7,
             props: ValueProps::NONE,
             was_block_broken: true,
         };

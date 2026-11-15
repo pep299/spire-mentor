@@ -4,6 +4,7 @@ import CardSelect from "./CardSelect";
 import { cardBoxHeight } from "../cardGeometry";
 import { isCombatChoiceStep } from "../choiceKinds";
 import { HintsFixture } from "../hints/HintsContext";
+import { MarksFixture } from "../advice/AdviceContext";
 import type { Step } from "../api";
 
 /** Run `body` with `window.matchMedia` answering true for exactly `query`.
@@ -182,11 +183,25 @@ function stubFetch(handler: (url: string) => unknown) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("CardSelect choice-ranker chips", () => {
+  it("rings the ranker's pick like every other pick, its search % hidden", async () => {
+    stubFetch(() => RANKING);
+    const { container } = render(
+      <HintsFixture on>
+        <CardSelect step={step("add_generated_free_to_hand")} onChoose={() => {}} />
+      </HintsFixture>,
+    );
+    await waitFor(() => expect(container.querySelector(".gs-mark-best")).not.toBeNull());
+    expect(container.querySelector(".gs-mark-best")).toHaveTextContent("1");
+    expect(screen.queryByText(/61(.d)?%/)).toBeNull();
+  });
+
   it("fetches the choice ranker eagerly on a live in-combat single-pick and badges options", async () => {
     const spy = stubFetch(() => RANKING);
     render(
       <HintsFixture on>
-        <CardSelect step={step("add_generated_free_to_hand")} onChoose={() => {}} />
+        <MarksFixture marks={[]} showNumbers>
+          <CardSelect step={step("add_generated_free_to_hand")} onChoose={() => {}} />
+        </MarksFixture>
       </HintsFixture>,
     );
     await waitFor(() => expect(screen.getByText(/61(\.\d)?%/)).toBeTruthy());
@@ -216,6 +231,29 @@ describe("CardSelect choice-ranker chips", () => {
     const spy = stubFetch(() => RANKING);
     render(<CardSelect step={step("card_select")} />);
     expect(spy.mock.calls.some(([u]) => String(u).includes("/api/live/choice-ranker"))).toBe(false);
+  });
+});
+
+describe("CardSelect under the e2e advisor", () => {
+  it("badges the options with the e2e net's probability, not a search win chance", async () => {
+    stubFetch(() => ({
+      ...RANKING,
+      advisor: "e2e",
+      candidates: [
+        { key: "choice:0", label: "Strike", win_prob: 0.83, prob: 0.83, q: 0.66, visits: 0, is_best: true },
+        { key: "choice:1", label: "Defend", win_prob: 0.17, prob: 0.17, q: -0.66, visits: 0, is_best: false },
+      ],
+    }));
+    render(
+      <HintsFixture on>
+        <MarksFixture marks={[]} showNumbers>
+          <CardSelect step={step("add_generated_free_to_hand")} onChoose={() => {}} />
+        </MarksFixture>
+      </HintsFixture>,
+    );
+    await waitFor(() => expect(screen.getByText("★ Instinct 83.0%")).toBeTruthy());
+    expect(screen.getByText("Instinct 17.0%")).toBeTruthy();
+    expect(screen.queryByText(/search \d/)).toBeNull();
   });
 });
 

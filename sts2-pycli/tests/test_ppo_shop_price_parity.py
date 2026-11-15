@@ -1,4 +1,4 @@
-"""GH #27: Rust PPO shop prices match Python learning observations.
+"""Rust PPO shop prices match the Python training observations (pep299 fork).
 
 Uses one real RunManager for both producers, including discounted prices,
 sold-out slots and the legal-action/gold boundary. No game installation or
@@ -7,13 +7,10 @@ private checkpoints are needed.
 
 from __future__ import annotations
 
-import copy
 import json
-from pathlib import Path
 
 import pytest
 import sts2_rs
-from ppo.env import metrics_snapshot
 
 SEED = 984001164
 DISCOUNTS = [
@@ -22,7 +19,6 @@ DISCOUNTS = [
     (("THE_COURIER",), 4, 5),
     (("MEMBERSHIP_CARD", "THE_COURIER"), 4, 10),
 ]
-MODEL = Path(__file__).resolve().parents[1] / "data/ppo/ppo_fullrun_ironclad_cont300_it1150.onnx"
 
 
 def _enter_shop():
@@ -134,30 +130,3 @@ def test_sold_out_slots_stay_unavailable_and_price_parity_holds():
         not (a["action"] == "shop_buy_card" and a["idx"] == bought_idx)
         for a in rm.available_actions()
     )
-
-
-def test_fixed_onnx_produces_changed_distribution_when_price_input_is_corrected():
-    """Same legal actions/model/state; only legacy vs corrected price differs."""
-    pytest.importorskip("onnxruntime")
-    if not MODEL.exists():
-        pytest.skip(f"published Ironclad ONNX absent: {MODEL}")
-    from ppo.onnx_policy import OnnxPolicy
-
-    rm = _enter_shop()
-    rm.set_player(gold=99)
-    undiscounted = copy.deepcopy(rm.shop_inventory())
-    rm.debug_set_loadout(relics=[*rm.relics(), "MEMBERSHIP_CARD"])
-
-    current = _rust_obs(rm)
-    legacy = copy.deepcopy(current)
-    legacy["shop"] = undiscounted
-    actions = rm.available_actions()
-    assert len(actions) > 1
-
-    policy = OnnxPolicy(str(MODEL))
-    metrics = metrics_snapshot(rm)
-    legacy_probs, _ = policy.distribution(legacy, actions, metrics)
-    fixed_probs, _ = policy.distribution(current, actions, metrics)
-
-    assert len(legacy_probs) == len(fixed_probs) == len(actions)
-    assert any(abs(before - after) > 1e-6 for before, after in zip(legacy_probs, fixed_probs))

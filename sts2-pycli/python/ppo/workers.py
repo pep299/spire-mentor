@@ -94,9 +94,10 @@ def play_one(
     boss_sims: int | None = None,
     combat: str = "mcts",
     surrogate_path: str | None = None,
+    combat_ckpt: str | None = None,
     max_steps: int | None = None,
     search: dict[str, Any] | None = None,
-    act1: str = "overgrowth",
+    act1: str = "roll",
     curse_inject_p: float = 0.0,
 ) -> dict[str, Any]:
     """Play one full run inside the current process.
@@ -154,8 +155,8 @@ def play_one(
     if combat != "mcts":
         env_kwargs["combat"] = combat
         env_kwargs["surrogate_path"] = surrogate_path
-    if act1 != "overgrowth":
-        env_kwargs["act1"] = act1
+        env_kwargs["combat_ckpt"] = combat_ckpt
+    env_kwargs["act1"] = act1
     if curse_inject_p:
         env_kwargs["curse_inject_p"] = curse_inject_p
     # Expert mode drives every decision with the HeuristicRunAgent; policy
@@ -397,6 +398,7 @@ def _worker(
         str,
         int | None,
         float,
+        str | None,
     ],
 ) -> dict[str, Any]:
     (
@@ -414,6 +416,7 @@ def _worker(
         act1,
         sample_seed,
         curse_inject_p,
+        combat_ckpt,
     ) = args
     try:
         return play_one(
@@ -428,6 +431,7 @@ def _worker(
             boss_sims=boss_sims,
             combat=combat,
             surrogate_path=surrogate_path,
+            combat_ckpt=combat_ckpt,
             search=search,
             act1=act1,
             curse_inject_p=curse_inject_p,
@@ -466,9 +470,10 @@ def play_batch(
     sample_seeds: list[int | None] | None = None,
     combat: str = "mcts",
     surrogate_path: str | None = None,
+    combat_ckpt: str | None = None,
     mp_context: str = "spawn",
     search: dict[str, Any] | None = None,
-    act1: str = "overgrowth",
+    act1: str = "roll",
     curse_inject_p: float = 0.0,
 ) -> list[dict[str, Any]]:
     """Play `seeds` across a spawn-context process pool; one row per run.
@@ -551,6 +556,7 @@ def play_batch(
             act1,
             ssd,
             curse_inject_p,
+            combat_ckpt,
         )
         for s, a, sm, bsm, ssd in zip(seeds, ascensions, sims_seq, boss_sims_seq, sample_seq)
     ]

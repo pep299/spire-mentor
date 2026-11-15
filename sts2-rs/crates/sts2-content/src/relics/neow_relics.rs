@@ -48,28 +48,30 @@ use crate::cards::spec_index::{
 use crate::cards::CardRarity;
 use crate::potions::all::create_random_potions_out_of_combat;
 
-/// Per-character Basic Strike ids. C# `NeowsTalisman` filters Deck cards
-/// by `Rarity == Basic && Tags.Contains(CardTag.Strike)`; the Rust port
-/// does not populate the `Strike`/`Defend` `CardTag` metadata on card
-/// specs at this pin, so we match the canonical Basic Strike `CardId`s
-/// instead (each is inherently `CardRarity::Basic`). Documented
-/// divergence: a modded/non-standard Basic Strike-tagged card would not
-/// be picked up — none exist in the v0.103.2 character pools.
-const BASIC_STRIKE_IDS: &[CardId] = &[
+/// Every Basic Strike, across all characters: C#'s `Rarity == Basic &&
+/// Tags.Contains(CardTag.Strike)` filter (`NeowsTalisman.cs`,
+/// `NutritiousSoup.cs`, `GhostSeed.cs`) as a closed id list.
+/// `basic_strike_defend_lists_match_rarity_and_tags` rebuilds both lists
+/// from every `CardId`'s rarity and tags, so a new character's starter
+/// can't be left out. (The Fool's were, until the v0.113 whole-run sweep
+/// caught Neow's Talisman upgrading nothing.)
+pub(crate) const BASIC_STRIKE_IDS: &[CardId] = &[
     CardId::StrikeIronclad,
     CardId::StrikeSilent,
     CardId::StrikeDefect,
     CardId::StrikeRegent,
     CardId::StrikeNecrobinder,
+    CardId::StrikeFool,
 ];
 
-/// Per-character Basic Defend ids — see [`BASIC_STRIKE_IDS`].
-const BASIC_DEFEND_IDS: &[CardId] = &[
+/// Every Basic Defend, across all characters — see [`BASIC_STRIKE_IDS`].
+pub(crate) const BASIC_DEFEND_IDS: &[CardId] = &[
     CardId::DefendIronclad,
     CardId::DefendSilent,
     CardId::DefendDefect,
     CardId::DefendRegent,
     CardId::DefendNecrobinder,
+    CardId::DefendFool,
 ];
 
 /// Register the W9 Neow-relic run-side listeners. Called from
@@ -374,9 +376,16 @@ fn listener_neows_bones(rs: &mut RunState) -> EffectResult {
         // v0.111.0: `Neow.AllPossibleOptions` starts with the 10-entry
         // CurseOptions (decomp Neow.cs:96), so the shuffle input grows by
         // DowsingRod + NeowsSacrifice.
-        sts2_core::GameVersion::V0_111_0 => NEOWS_BONES_VALID_POOL_V0111.to_vec(),
+        sts2_core::GameVersion::V0_111_0 | sts2_core::GameVersion::V0_113_0 => {
+            NEOWS_BONES_VALID_POOL_V0111.to_vec()
+        }
     };
-    rs.rng.rewards.shuffle(&mut pool);
+    // v0.113.0: `list.UnstableShuffle(PlayerRng.NonCombatGeneration)` (same
+    // Fisher-Yates, new stream).
+    let version = rs.game_version;
+    rs.rng
+        .non_combat_or_rewards()
+        .shuffle_for(version, &mut pool);
 
     // (2) Grant the first 2, ONE AT A TIME. C# `RewardsSet(...).Offer()`
     //     awaits each relic's `AfterObtained` — including any interactive
@@ -485,7 +494,8 @@ const NEOWS_BONES_VALID_POOL_V0111: &[NeowRelic] = &[
 #[must_use]
 pub fn roll_neows_bones_curse(rs: &mut RunState) -> Option<sts2_core::cards::Card> {
     let last = NEOWS_BONES_CURSE_POOL.len().checked_sub(1)?;
-    let idx = rs.rng.niche.next_int(0, last as i32) as usize;
+    // v0.113.0 draws the curse on `PlayerRng.NonCombatGeneration`.
+    let idx = rs.rng.non_combat_or_niche().next_int(0, last as i32) as usize;
     card_pod_from_id(NEOWS_BONES_CURSE_POOL[idx], false)
 }
 
@@ -601,8 +611,9 @@ fn listener_phial_holster(rs: &mut RunState) -> EffectResult {
 
     // (2) Roll 2 random out-of-combat potions on the CombatPotionGeneration
     //     stream and procure each (PhialHolster.cs:29-33).
+    //     v0.113.0 rolls on `PlayerRng.NonCombatGeneration`.
     let potions = create_random_potions_out_of_combat(
-        rs.rng.combat_potion_mut(),
+        rs.rng.non_combat_or_combat_potion(),
         rs.character_id,
         PHIAL_HOLSTER_POTION_COUNT,
     );
@@ -705,6 +716,61 @@ mod tests {
         rs.last_obtained_relic = Some(RelicId::NeowsTalisman);
         let _ = dispatch_after_obtained(&mut rs);
         assert!(!rs.master_deck[0].upgraded);
+    }
+
+    /// The Fool on v0.113.0: Neow's Talisman upgrades the last StrikeFool
+    /// and the last DefendFool. Whole-run sweep seeds P113038/P113049
+    /// diverged at step 1 because the id lists left The Fool out.
+    #[test]
+    fn neows_talisman_upgrades_the_fools_basics() {
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.game_version = sts2_core::GameVersion::V0_113_0;
+        rs.master_deck = vec![
+            card(CardId::StrikeFool),
+            card(CardId::StrikeFool),
+            card(CardId::DefendFool),
+            card(CardId::DefendFool),
+        ];
+        rs.relics.push(RelicId::NeowsTalisman);
+        rs.last_obtained_relic = Some(RelicId::NeowsTalisman);
+        let _ = dispatch_after_obtained(&mut rs);
+        let up: Vec<bool> = rs.master_deck.iter().map(|c| c.upgraded).collect();
+        assert_eq!(up, [false, true, false, true]);
+    }
+
+    /// `BASIC_STRIKE_IDS` / `BASIC_DEFEND_IDS` are exactly the cards C#'s
+    /// `Rarity == Basic && Tags.Contains(Strike | Defend)` filter selects,
+    /// on the newest build. A new character's starter that isn't listed
+    /// fails here instead of in a whole-run sweep.
+    #[test]
+    fn basic_strike_defend_lists_match_rarity_and_tags() {
+        use crate::cards::status::helpers::tags_for_card_id;
+        use sts2_core::cards::CardTag;
+        let v = sts2_core::GameVersion::V0_113_0;
+        let basic_with = |tag: CardTag| -> Vec<CardId> {
+            CardId::all_for(v)
+                .into_iter()
+                .filter(|&id| {
+                    crate::cards::spec_index::rarity_for_card_id_in(id, v)
+                        == Some(CardRarity::Basic)
+                        && tags_for_card_id(id).contains(tag)
+                })
+                .collect()
+        };
+        let sorted = |ids: &[CardId]| {
+            let mut v = ids.to_vec();
+            v.sort_by_key(|id| id.to_python_name());
+            v
+        };
+        assert_eq!(
+            sorted(&basic_with(CardTag::Strike)),
+            sorted(BASIC_STRIKE_IDS)
+        );
+        assert_eq!(
+            sorted(&basic_with(CardTag::Defend)),
+            sorted(BASIC_DEFEND_IDS)
+        );
     }
 
     /// `NeowsBones::after_obtained` grants the first 2 shuffled valid
@@ -1057,7 +1123,7 @@ mod tests {
         assert_eq!(rs.master_deck.len(), before + 1);
         let c = rs.master_deck.last().unwrap();
         assert_eq!(c.card_id, CardId::Dowsing);
-        assert_eq!(c.cost, -1);
+        assert_eq!(c.local_cost(), -1);
         assert!(!c.is_upgradable(), "MaxUpgradeLevel => 0");
         assert_eq!(rarity_for_card_id(CardId::Dowsing), Some(CardRarity::Quest));
         assert!(rs.pending_rewards.is_empty());

@@ -246,7 +246,7 @@ class _Ctx:
         self.pending_enchantment: str = str(obs.get("pending_enchantment") or "")
         self.event_name: str = str(obs.get("event_name") or "")
         self.event_options: list[dict] = obs.get("event_options") or []
-        # Engine option IDs in action-index order, not fixed Rest/Smith slots.
+        # Engine option ids in `rest_option` idx order (`_rest_option_token`).
         self.rest_option_labels: list[str] = obs.get("rest_option_labels") or []
         self.card_reward_ids: list[str] = obs.get("card_reward_option_ids") or []
         # Scroll Boxes packs (GH #978): `card_reward_ids` holds each pack's
@@ -368,37 +368,37 @@ def _at(lst: list, i: int, what: str):
     return None
 
 
-_REST_OTHER_IDS = {
-    "DIG": 0,
-    "LIFT": 1,
-    "COOK": 2,
-    "CLONE": 3,
-    "HATCH": 4,
-    "KINDLE": 5,
-    "MEND": 6,
-}
+_REST_BASE_TOKENS = {"HEAL": ("rest_heal", 0), "REST": ("rest_heal", 0), "SMITH": ("rest_smith", 1)}
 
 
-def _rest_option_token(option_id: str | None, idx: int) -> tuple[str, int]:
-    """Stable action identity in existing ONNX fixed-kind/option-index rows.
+def _rest_option_token(labels: list[str], idx: int) -> tuple[str, int]:
+    """(fixed-token name, option-index row) for rest option ``idx``.
 
-    Heal and Smith preserve their historical token exactly, regardless of
-    shifted action index. Other option IDs occupy distinct rows under the
-    already-existing rest_other fixed-kind token (no embedding resize).
-    Missing labels in legacy recordings retain the old positional encoding.
+    ``labels`` are the engine's option ids in ``rest_option`` idx order.
+    Heal and Smith are named by identity, not position: after a Miniature
+    Tent first pick the engine drops the taken option, so Smith sits at
+    idx 0 and the positional rule called it ``rest_heal``.
+
+    Every other option keeps the ``rest_other`` token and the row it had
+    when the shipped nets were trained, which is its idx in the full
+    ``[Heal, Smith, ...]`` list. So its idx is shifted back up by the
+    number of base options that are gone. An empty label is a slot whose
+    id is unknown (the bridge sends only enabled options), and it still
+    occupies its slot. Without a label (recordings that stored the fixed
+    ``["rest", "smith"]`` pair, older mods) the rule is positional, as it
+    was. Mirrored by ``encoder.rs::rest_option_token``.
     """
-    if option_id is None:
-        if idx == 0:
-            return "rest_heal", 0
-        if idx == 1:
-            return "rest_smith", 1
-        return "rest_other", min(vocab.MAX_OPT_IDX - 1, max(0, idx))
-    identity = option_id.upper()
-    if identity in ("HEAL", "REST"):
-        return "rest_heal", 0
-    if identity == "SMITH":
-        return "rest_smith", 1
-    return "rest_other", _REST_OTHER_IDS.get(identity, vocab.MAX_OPT_IDX - 1)
+    label = _at(labels, idx, "rest option")
+    if not label:
+        name = ("rest_heal", "rest_smith")[idx] if 0 <= idx < 2 else "rest_other"
+        return name, min(vocab.MAX_OPT_IDX - 1, max(0, idx))
+    base = _REST_BASE_TOKENS.get(label.upper())
+    if base is not None:
+        return base
+    n_base = sum(1 for x in labels if x and x.upper() in _REST_BASE_TOKENS)
+    n_unknown = sum(1 for x in labels[:idx] if not x)
+    shift = max(0, 2 - n_base - n_unknown)
+    return "rest_other", min(vocab.MAX_OPT_IDX - 1, idx + shift)
 
 
 def _build_action_token(ctx: _Ctx, a: dict[str, Any]):
@@ -479,6 +479,8 @@ def _build_action_token(ctx: _Ctx, a: dict[str, Any]):
         _stamp_enchant(ctx, cat, cont, ctx.deck_ench, deck_i)
         return sec, cat, cont, aux
     if kind == "confirm_deck_selection":
+        # Claws' confirm (GH #1353) reuses the skip token: no vocab row is
+        # added, and to the net it reads as "take no (more) cards".
         return _fixed_tok("skip_card")
     if kind == "transform_deck_card":
         deck_i = _at(ctx.transform_idxs, int(a.get("idx", 0)), "transform")
@@ -550,11 +552,9 @@ def _build_action_token(ctx: _Ctx, a: dict[str, Any]):
     if kind == "leave_shop":
         return _fixed_tok("leave_shop")
     if kind == "rest_option":
-        idx = int(a.get("idx", 0))
-        option_id = _at(ctx.rest_option_labels, idx, "rest option")
-        name, stable_idx = _rest_option_token(option_id, idx)
+        name, opt_idx = _rest_option_token(ctx.rest_option_labels, int(a.get("idx", 0)))
         tok = _fixed_tok(name)
-        tok[1][7] = stable_idx
+        tok[1][7] = opt_idx
         return tok
     if kind == "event_choice":
         idx = int(a.get("idx", 0))

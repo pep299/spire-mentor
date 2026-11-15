@@ -13,6 +13,7 @@
 //! verifies that every entry in a slice has a corresponding `CardId`
 //! that resolves back through `resolve_card_name`.
 
+use super::fool::specs as fs;
 use super::status_specs_generated as st;
 use super::types::CardSpec;
 
@@ -610,6 +611,131 @@ pub const V0111_ONLY_SPECS: &[fn() -> CardSpec] = &[
     crate::cards::colorless::the_ball::spec,
     crate::cards::regent::tutor::spec,
     crate::cards::necrobinder::underworld_card::spec,
+    // v0.113.0 event cards (`EventCardPool` 28 -> 32): only ever handed out
+    // by their events, so no pool offers them. Listed here so the id-keyed
+    // lookups resolve; they share this slice's "not in v0.107.1" scan slot.
+    crate::cards::colorless::dingy_dagger::spec,
+    crate::cards::colorless::my_shinies::spec,
+    crate::cards::colorless::mighty_weapon::spec,
+    crate::cards::colorless::mighty_shield::spec,
+    crate::cards::colorless::god_byrd::spec,
+    // v0.113.0 The Fool (`crate::cards::fool`): every Fool card, so the
+    // id-keyed lookups resolve. Pool membership is `fool::FOOL_POOL_V0113`.
+    fs::all_is_well,
+    fs::anguish,
+    fs::archery,
+    fs::arrow_stab,
+    fs::blossom_shot,
+    fs::blot_out_the_sky,
+    fs::bounce,
+    fs::bow_smack,
+    fs::brace,
+    fs::brighten_up,
+    fs::cho_barbs,
+    fs::cho_chorus,
+    fs::cho_firm,
+    fs::cho_ki,
+    fs::cho_limbs,
+    fs::cho_ready,
+    fs::coda,
+    fs::compost,
+    fs::covering_fire,
+    fs::deep_stretch,
+    fs::defend_fool,
+    fs::dislike_you,
+    fs::divine_shot,
+    fs::ecstasy,
+    fs::encore,
+    fs::ennui,
+    fs::enrapture,
+    fs::ensemble,
+    fs::epic_retrieval,
+    fs::explosive_arrows,
+    fs::florescence,
+    fs::growth,
+    fs::harmonic_shield,
+    fs::heavy_shot,
+    fs::hidden_roots,
+    fs::hobbling_shot,
+    fs::honing,
+    fs::jest,
+    fs::ki_chant,
+    fs::ki_hop,
+    fs::ki_rest,
+    fs::ki_verse,
+    fs::ki_whip,
+    fs::locked_in,
+    fs::foolish_shot,
+    fs::lost_lute,
+    fs::lullaby,
+    fs::melodic_shot,
+    fs::motif,
+    fs::mourning_blow,
+    fs::mythic_form,
+    fs::nail,
+    fs::nock,
+    fs::punch_of_joy,
+    fs::quick_shot,
+    fs::quietus,
+    fs::quiver,
+    fs::rain_shot,
+    fs::rapid_shot,
+    fs::recall,
+    fs::repeat_shot,
+    fs::rhythm_strike,
+    fs::rummage,
+    fs::self_deprecate,
+    fs::serrated_arrows,
+    fs::show_off,
+    fs::simpleton,
+    fs::sky_shot,
+    fs::song_path,
+    fs::sorrowful_strike,
+    fs::steady_cadence,
+    fs::strike_fool,
+    fs::timber,
+    fs::trick_shot,
+    fs::tune,
+    fs::uproot,
+    fs::violent_chord,
+    fs::vitriol,
+    fs::wah_blast,
+    fs::wah_cho,
+    fs::wah_cho_ki,
+    fs::wah_hammer,
+    fs::wah_ki,
+    fs::wah_symphony,
+    fs::wah_sweep,
+    fs::wah_touch,
+    fs::whistling_arrows,
+    fs::wrest,
+    fs::yah,
+    fs::yoga,
+    fs::death,
+    fs::joy,
+    fs::judgement,
+    fs::justice,
+    fs::strength,
+    fs::temperance,
+    fs::the_chariot,
+    fs::the_devil,
+    fs::the_fool,
+    fs::the_lovers,
+    fs::the_emperor,
+    fs::the_empress,
+    fs::the_hanged_man,
+    fs::the_hermit,
+    fs::the_hierophant,
+    fs::the_high_priestess,
+    fs::the_magician,
+    fs::the_moon,
+    fs::the_shot,
+    fs::the_star,
+    fs::the_sun,
+    fs::the_tower,
+    fs::the_world,
+    fs::wheel_of_fortune,
+    fs::sadness,
 ];
 
 /// Auto-listed status card factories (75 entries).
@@ -737,6 +863,7 @@ pub fn specs_for_character(character: CharacterId) -> &'static [fn() -> super::t
         CharacterId::Defect => DEFECT_SPECS,
         CharacterId::Regent => REGENT_SPECS,
         CharacterId::Necrobinder => NECROBINDER_SPECS,
+        CharacterId::Fool => super::fool_pool::FOOL_SPECS,
     };
     if crate::unlocks::any_locked() {
         return unlocked_specs(character as u8, all);
@@ -793,13 +920,23 @@ fn unlocked_specs(
 /// slot ([`super::v0111::pool_spec`]: Scare -> Sidestep).
 /// Slice order is kept, so a `NextItem` index over the result still matches
 /// C#'s pool order. For v0.107.1 it yields exactly `slice.iter().map(|f| f())`.
+///
+/// v0.113.0 adds MyShinies to `ColorlessCardPool` right after MindBlast
+/// (`ColorlessCardPool.cs:62-63`), so from that build on a MindBlast slot
+/// is followed by a MyShinies one. Keyed on the card, not on the slice's
+/// address: a `const` slice has no unique address. MindBlast sits only in
+/// [`COLORLESS_SPECS`].
 pub(crate) fn specs_in(
     slice: &'static [fn() -> CardSpec],
     version: sts2_core::GameVersion,
 ) -> impl Iterator<Item = CardSpec> {
-    slice
-        .iter()
-        .map(move |f| super::v0111::pool_spec(*f, version))
+    let v0113 = version >= sts2_core::GameVersion::V0_113_0;
+    slice.iter().flat_map(move |f| {
+        let spec = super::v0111::pool_spec(*f, version);
+        let shinies =
+            (v0113 && spec.id == CardId::MindBlast).then(crate::cards::colorless::my_shinies::spec);
+        std::iter::once(spec).chain(shinies)
+    })
 }
 
 /// Sample one [`CardId`] from the union of per-character slice(s)
@@ -871,6 +1008,7 @@ pub fn basic_strike_defend_cards(character: CharacterId) -> Option<[CardId; 2]> 
         CharacterId::Defect => Some([CardId::StrikeDefect, CardId::DefendDefect]),
         CharacterId::Regent => Some([CardId::StrikeRegent, CardId::DefendRegent]),
         CharacterId::Necrobinder => Some([CardId::StrikeNecrobinder, CardId::DefendNecrobinder]),
+        CharacterId::Fool => super::fool_pool::basic_strike_defend(),
     }
 }
 
@@ -933,7 +1071,12 @@ pub fn roll_transform_replacement_basic_niche(
     if pool.is_empty() {
         return None;
     }
-    let idx = rs.rng.niche.next_int_exclusive(0, pool.len() as i32) as usize;
+    // Every caller (New Leaf, Astrolabe, Pandora's Box) moved from
+    // `Rng.Niche` to `PlayerRng.Transformations` in v0.113.0.
+    let idx = rs
+        .rng
+        .transformations_or_niche()
+        .next_int_exclusive(0, pool.len() as i32) as usize;
     Some(pool[idx])
 }
 
@@ -1114,15 +1257,51 @@ pub fn roll_noncombat_card_reward_options(rs: &mut RunState) -> Vec<CardId> {
 /// (`LastingCandy.cs:107`), so a `CardCreationSource.Other` slate skips it.
 #[must_use]
 pub fn roll_noncombat_card_reward_cards(rs: &mut RunState) -> Vec<sts2_core::cards::Card> {
+    let mut cards = roll_noncombat_card_reward_slate(rs, None, false);
+    let _ = sts2_core::run_effects::dispatch_modify_card_reward_options_late(rs, &mut cards);
+    cards
+}
+
+/// A `new CardReward(ForNonCombatWithDefaultOdds([Character.CardPool]),
+/// count, Owner)` slate (Trial `NondescriptGuilty`, Trial.cs:183 in both
+/// builds): the same hooked roll as [`roll_noncombat_card_reward_cards`] —
+/// `CardReward` stamps `IsCardReward` (CardReward.cs:115), so
+/// `Hook.ModifyCardRewardCreationOptions` (CardFactory.cs:218) lets Dingy Rug
+/// and Prismatic Gem widen the pool — but `count` cards and no upgrade roll
+/// (`ForNonCombatWithDefaultOdds` stamps `NoUpgradeRoll`,
+/// CardCreationOptions.cs:116-119). The late listeners are NOT run: the
+/// caller offers the slate through `RunState::offer_card_slate`, which runs
+/// them.
+#[must_use]
+pub fn roll_noncombat_card_reward_cards_no_upgrade(
+    rs: &mut RunState,
+    count: usize,
+) -> Vec<sts2_core::cards::Card> {
+    roll_noncombat_card_reward_slate(rs, Some(count), true)
+}
+
+/// Shared body of the `CardCreationSource.Other` card-reward rollers: fold the
+/// creation-option hooks, then roll `count` (default: the folded
+/// `num_cards`) cards at base RegularEncounter odds. `no_upgrade_roll` is
+/// C#'s `NoUpgradeRoll` flag: no upgrade float per card.
+fn roll_noncombat_card_reward_slate(
+    rs: &mut RunState,
+    count: Option<usize>,
+    no_upgrade_roll: bool,
+) -> Vec<sts2_core::cards::Card> {
     use sts2_core::card_rewards::{
         combat_card_upgrade_base_chance, roll_for_upgrade_with_dotnet, RarityContext,
     };
     let character = rs.character_id;
-    let opts =
+    let mut opts =
         rs.modify_card_reward_creation_options(sts2_core::runstate::CardRewardGenerationOptions {
             card_creation_source: "other",
             ..sts2_core::runstate::CardRewardGenerationOptions::default()
         });
+    if no_upgrade_roll {
+        opts.roll_upgrade = false;
+    }
+    let num_cards = count.unwrap_or(usize::from(opts.num_cards));
     let character_ids: Vec<CharacterId> = if !opts.character_ids.is_empty() {
         opts.character_ids.clone()
     } else if opts.use_default_character_pool {
@@ -1136,7 +1315,7 @@ pub fn roll_noncombat_card_reward_cards(rs: &mut RunState) -> Vec<sts2_core::car
     let upgrade_base = combat_card_upgrade_base_chance();
     let mut chosen: Vec<CardId> = Vec::new();
     let mut cards: Vec<sts2_core::cards::Card> = Vec::new();
-    for _ in 0..usize::from(opts.num_cards) {
+    for _ in 0..num_cards {
         let mut rarity = rs.card_rarity_odds.roll_with_base_odds_with_dotnet_for(
             version,
             &mut rs.rng.rewards,
@@ -1187,7 +1366,6 @@ pub fn roll_noncombat_card_reward_cards(rs: &mut RunState) -> Vec<sts2_core::car
             cards.push(card);
         }
     }
-    let _ = sts2_core::run_effects::dispatch_modify_card_reward_options_late(rs, &mut cards);
     cards
 }
 
@@ -1205,6 +1383,7 @@ const fn character_pool_entry(character: CharacterId) -> &'static str {
         CharacterId::Regent => "REGENT_CARD_POOL",
         CharacterId::Necrobinder => "NECROBINDER_CARD_POOL",
         CharacterId::Defect => "DEFECT_CARD_POOL",
+        CharacterId::Fool => "FOOL_CARD_POOL",
     }
 }
 
@@ -1227,14 +1406,17 @@ const fn character_pool_entry(character: CharacterId) -> &'static str {
 /// `StableShuffle` = `list.Sort()` (introsort by [`character_pool_entry`])
 /// THEN `UnstableShuffle(Niche)`; the keys are distinct so the post-sort
 /// order is fully determined, and [`crate::cards::dotnet_list_sort`] inside
-/// `stable_shuffle_by` reproduces it. Returns the 2 rewards, each a
-/// `Vec<CardId>` of 3 cards in C# generation order — the listener
+/// `stable_shuffle_by` reproduces it. Returns the 2 rewards, each 3 cards
+/// (upgrade roll and per-card hooks applied) in C# generation order — the listener
 /// [`crate::relics::shop_event::listener_kaleidoscope`] pushes each as a
 /// `Reward::Card`, surfaced by the run loop as a `card_reward` pick. Bead
 /// `sts2-rs-utgn4` (v0.107.1 Kaleidoscope; closes the PARITY13/PARITY117
 /// Neow `card_reward` whole-run residual).
 #[must_use]
-pub fn roll_kaleidoscope_card_rewards(rs: &mut RunState, owner: CharacterId) -> Vec<Vec<CardId>> {
+pub fn roll_kaleidoscope_card_rewards(
+    rs: &mut RunState,
+    owner: CharacterId,
+) -> Vec<Vec<sts2_core::cards::Card>> {
     /// `Kaleidoscope.DynamicVars.Cards` — `CanonicalVars => CardsVar(2)`.
     const CARDS: usize = 2;
     /// `StableShuffle(...).Take(3)` — pools (and thus cards) per reward.
@@ -1250,25 +1432,40 @@ pub fn roll_kaleidoscope_card_rewards(rs: &mut RunState, owner: CharacterId) -> 
         CharacterId::Necrobinder,
         CharacterId::Defect,
     ];
-    let mut rewards: Vec<Vec<CardId>> = Vec::with_capacity(CARDS);
+    let mut rewards: Vec<Vec<sts2_core::cards::Card>> = Vec::with_capacity(CARDS);
     for _ in 0..CARDS {
         // Fresh non-owner pool list each reward (C# rebuilds + reshuffles per
         // iteration of its `for i in 0..Cards` loop).
+        // v0.113.0: The Fool's pool joins `CharacterCardPools`.
+        let fool =
+            (rs.game_version >= sts2_core::GameVersion::V0_113_0).then_some(CharacterId::Fool);
         let mut pools: Vec<CharacterId> = POOL_CHARACTERS
             .iter()
             .copied()
+            .chain(fool)
             .filter(|c| *c != owner)
             .collect();
-        rs.rng
-            .niche
-            .stable_shuffle_by(&mut pools, &|a: CharacterId, b: CharacterId| {
-                character_pool_entry(a).cmp(character_pool_entry(b))
-            });
+        let version = rs.game_version;
+        rs.rng.non_combat_or_niche().stable_shuffle_by_for(
+            version,
+            &mut pools,
+            &|a: CharacterId, b: CharacterId| character_pool_entry(a).cmp(character_pool_entry(b)),
+        );
         pools.truncate(POOLS_PER_REWARD);
-        // One `CardCreationSource.Other` card per pool on the Rewards stream.
-        let mut reward_cards: Vec<CardId> = Vec::with_capacity(POOLS_PER_REWARD);
+        // One `CardCreationSource.Other` card per pool on the Rewards stream,
+        // keeping its upgrade roll (`CardFactory.cs:98-102`). Each
+        // single-card `CreateForReward` then runs `TryModifyCardRewardOptions`
+        // on its own 1-card list (`CardFactory.cs:104`) with options that
+        // lack `IsCardReward`: WingCharm draws Niche there, while SilkenTress
+        // and SilverCrucible decline.
+        let mut reward_cards: Vec<sts2_core::cards::Card> = Vec::with_capacity(POOLS_PER_REWARD);
         for ch in pools {
-            reward_cards.extend(roll_reward_options_base_odds(rs, 1, true, &[ch], false));
+            let version = rs.game_version;
+            for (id, upgraded) in roll_reward_cards_base_odds(rs, 1, true, &[ch], false) {
+                if let Some(card) = super::v0111::card_pod_for(id, upgraded, version) {
+                    reward_cards.extend(rs.offer_card_slate(vec![card], false));
+                }
+            }
         }
         rewards.push(reward_cards);
     }
@@ -1512,6 +1709,27 @@ fn roll_reward_options_base_odds(
     character_ids: &[CharacterId],
     include_colorless: bool,
 ) -> Vec<CardId> {
+    roll_reward_cards_base_odds(
+        rs,
+        count,
+        consume_upgrade_roll,
+        character_ids,
+        include_colorless,
+    )
+    .into_iter()
+    .map(|(id, _)| id)
+    .collect()
+}
+
+/// [`roll_reward_options_base_odds`] keeping each card's upgrade roll
+/// (`false` whenever `consume_upgrade_roll` is off).
+fn roll_reward_cards_base_odds(
+    rs: &mut RunState,
+    count: usize,
+    consume_upgrade_roll: bool,
+    character_ids: &[CharacterId],
+    include_colorless: bool,
+) -> Vec<(CardId, bool)> {
     use sts2_core::card_rewards::{
         combat_card_upgrade_base_chance, roll_for_upgrade_with_dotnet, RarityContext,
     };
@@ -1519,6 +1737,7 @@ fn roll_reward_options_base_odds(
     let ascension_level = rs.card_rarity_odds.ascension_level;
     let upgrade_base = combat_card_upgrade_base_chance();
     let mut chosen: Vec<CardId> = Vec::new();
+    let mut out: Vec<(CardId, bool)> = Vec::with_capacity(count);
     for _ in 0..count {
         let mut rarity = rs.card_rarity_odds.roll_with_base_odds_with_dotnet_for(
             rs.game_version,
@@ -1555,17 +1774,17 @@ fn roll_reward_options_base_odds(
             .rewards
             .next_int_exclusive(0, candidates.len() as i32) as usize;
         chosen.push(candidates[idx]);
-        if consume_upgrade_roll {
-            let _ = roll_for_upgrade_with_dotnet(
+        let upgraded = consume_upgrade_roll
+            && roll_for_upgrade_with_dotnet(
                 &mut rs.rng.rewards,
                 rarity,
                 act_index,
                 ascension_level,
                 upgrade_base,
             );
-        }
+        out.push((candidates[idx], upgraded));
     }
-    chosen
+    out
 }
 
 /// `CurseCardPool.GenerateAllCards` order (CurseCardPool.cs:20-42, identical
@@ -1915,6 +2134,13 @@ pub fn is_multiplayer_only(id: CardId) -> bool {
             | CardId::TheBall
             | CardId::Tutor
             | CardId::UnderworldCard
+            // v0.113.0 Fool MP-only cards.
+            | CardId::CompostCard
+            | CardId::CoveringFireCard
+            | CardId::Enrapture
+            | CardId::EnsembleCard
+            | CardId::SelfDeprecate
+            | CardId::Yoga
     )
 }
 
@@ -2151,6 +2377,14 @@ pub fn card_is_removable_instance(card: &sts2_core::cards::Card) -> bool {
     }
 }
 
+/// C# `CardSelectCmd.FromDeckForTransformation`'s pool test: `Type != Quest`
+/// and `IsTransformable`, which in the Deck pile is `IsRemovable` (not
+/// Eternal).
+#[must_use]
+pub fn card_is_transformable_in_deck(card: &sts2_core::cards::Card) -> bool {
+    !card.is_quest() && card_is_removable_instance(card)
+}
+
 /// The spec-only half of [`card_is_removable_instance`]: removability from a
 /// bare [`CardId`], with no instance to read enchantments off.
 ///
@@ -2188,7 +2422,7 @@ pub(crate) fn apply_upgrade_delta(
 ) {
     {
         if let Some(c) = delta.cost {
-            card.cost = c;
+            card.cost.set_base(c);
         }
         if let Some(d) = delta.base_damage {
             card.base_damage = d;
@@ -2306,6 +2540,11 @@ pub fn character_for_card_id(card_id: CardId) -> Option<CharacterId> {
                 return Some(c);
             }
         }
+    }
+    // v0.113.0 `FoolCardPool` (its 90 cards; the Fool tokens sit in
+    // `TokenCardPool`). Fool ids exist in no earlier build's state.
+    if super::fool::FOOL_POOL_V0113.contains(&card_id) {
+        return Some(CharacterId::Fool);
     }
     v0111_card_character(card_id)
 }
@@ -3026,9 +3265,11 @@ fn merchant_roll_character_card_slot(
 ) -> sts2_core::shop::ShopCardEntry {
     use sts2_core::card_rewards::RarityContext;
     use sts2_core::shop::{card_price, ShopCardEntry};
+    // v0.113.0 rolls the rarity and the upgrade on `Shops`
+    // (`CardFactory.CreateForMerchant`, `CardRarityOdds` rng override).
     let mut rarity = rs
         .card_rarity_odds
-        .roll_without_changing_odds_with_dotnet(&mut rs.rng.rewards, RarityContext::Shop);
+        .roll_without_changing_odds_with_dotnet(rs.rng.shops_or_rewards(), RarityContext::Shop);
     let version = rs.game_version;
     let mut candidates =
         merchant_character_candidates_in(character, rarity, want_type, chosen, version);
@@ -3048,7 +3289,7 @@ fn merchant_roll_character_card_slot(
         let idx = rs.rng.shops.next_int_exclusive(0, candidates.len() as i32) as usize;
         Some(candidates[idx])
     };
-    let _ = rs.rng.rewards.next_float(1.0);
+    let _ = rs.rng.shops_or_rewards().next_float(1.0);
     let price = if on_sale {
         let _discard = card_price(rarity, &mut rs.rng.shops, false, false);
         card_price(rarity, &mut rs.rng.shops, false, true)
@@ -3098,7 +3339,7 @@ fn merchant_roll_colorless_card_slot(
         let idx = rs.rng.shops.next_int_exclusive(0, candidates.len() as i32) as usize;
         Some(candidates[idx])
     };
-    let _ = rs.rng.rewards.next_float(1.0);
+    let _ = rs.rng.shops_or_rewards().next_float(1.0);
     let price = card_price(rarity, &mut rs.rng.shops, true, false);
     let card = pick.and_then(|id| {
         chosen.insert(id);
@@ -3131,21 +3372,17 @@ fn merchant_roll_relic_slot(
     slot_rarity: sts2_core::runstate::RelicRarity,
     extra_exclude: &std::collections::BTreeSet<sts2_core::relics::RelicId>,
 ) -> sts2_core::shop::ShopRelicEntry {
-    use sts2_core::shop::{
-        ShopRelicEntry, MERCHANT_RELIC_PRICE_VARIANCE_MAX, MERCHANT_RELIC_PRICE_VARIANCE_MIN,
-    };
+    use sts2_core::shop::ShopRelicEntry;
     let pulled = rs.pop_relic_from_grab_bag_back(slot_rarity, |id| {
         sts2_core::shop::is_relic_allowed_in_shops(id) && !extra_exclude.contains(&id)
     });
-    let jitter = rs.rng.shops.next_float_range(
-        MERCHANT_RELIC_PRICE_VARIANCE_MIN,
-        MERCHANT_RELIC_PRICE_VARIANCE_MAX,
-    );
+    let jitter = sts2_core::shop::merchant_relic_jitter(&mut rs.rng.shops);
     let (relic_id, cost_rarity) = match pulled {
         Some((id, bucket_rarity)) => (Some(id), bucket_rarity),
         None => (None, slot_rarity),
     };
-    let price = (f64::from(merchant_relic_cost(cost_rarity)) * jitter).round_ties_even() as i32;
+    // `(float)MerchantCost * jitter`, banker's — single precision as in C#.
+    let price = sts2_core::shop::merchant_round(merchant_relic_cost(cost_rarity), jitter);
     ShopRelicEntry {
         relic_rarity: relic_rarity_to_shop(slot_rarity),
         relic_id,
@@ -3195,6 +3432,11 @@ pub fn generate_merchant_inventory(
     let mut inv = ShopInventory::empty();
     inv.removal_cost = card_removal_cost(rs.card_shop_removals_used, rs.ascension_level);
     let mut chosen: std::collections::BTreeSet<CardId> = std::collections::BTreeSet::new();
+
+    if rs.game_version >= sts2_core::GameVersion::V0_113_0 {
+        generate_merchant_inventory_v0113(rs, character, &mut inv, &mut chosen);
+        return inv;
+    }
 
     // ── character card row: Shops sale index, then per-slot rarity(Rewards)
     //    / pick(Shops) / upgrade-noop(Rewards) / cost(Shops). ──
@@ -3254,6 +3496,75 @@ pub fn generate_merchant_inventory(
     }
 
     inv
+}
+
+/// v0.113.0 `MerchantInventory.CreateForNormalMerchant`
+/// (`MerchantInventory.cs:125-198`), every roll on `PlayerRng.Shops`. The
+/// constructor arguments are evaluated in order — relic entries
+/// (`[RollRarity(Shops), RollRarity(Shops), Shop]`, then per slot
+/// `FillSlot` + cost jitter), potion entries (3 potions, then one jitter
+/// each) — and only then does `Setup` populate the card entries (character
+/// row, then colorless: rarity / pick / upgrade no-op / cost jitter) and,
+/// LAST, roll the sale slot (`Shops.NextInt(5)`) whose `SetOnSale` re-runs
+/// `CalcCost` (one more jitter, halved).
+fn generate_merchant_inventory_v0113(
+    rs: &mut RunState,
+    character: CharacterId,
+    inv: &mut sts2_core::shop::ShopInventory,
+    chosen: &mut std::collections::BTreeSet<CardId>,
+) {
+    use sts2_core::runstate::RelicRarity;
+    use sts2_core::shop::{
+        card_price, ShopPotionEntry, ShopPotionRarity, MERCHANT_CHARACTER_CARD_TYPES,
+        MERCHANT_COLORLESS_CARD_RARITIES, MERCHANT_POTION_COUNT,
+    };
+    use sts2_core::PotionRarity;
+
+    let empty_exclude = std::collections::BTreeSet::new();
+    let r0 = sts2_core::runstate::roll_relic_rarity(&mut rs.rng.shops);
+    let r1 = sts2_core::runstate::roll_relic_rarity(&mut rs.rng.shops);
+    for slot_rarity in [r0, r1, RelicRarity::Shop] {
+        let entry = merchant_roll_relic_slot(rs, slot_rarity, &empty_exclude);
+        inv.relics.push(entry);
+    }
+
+    let potions = crate::potions::all::create_random_potions_out_of_combat(
+        &mut rs.rng.shops,
+        character,
+        MERCHANT_POTION_COUNT,
+    );
+    for kind in potions {
+        let shop_rarity = match crate::potions::all::spec_for(kind).rarity {
+            PotionRarity::Rare => ShopPotionRarity::Rare,
+            PotionRarity::Uncommon => ShopPotionRarity::Uncommon,
+            _ => ShopPotionRarity::Common,
+        };
+        inv.potions.push(ShopPotionEntry {
+            potion_rarity: shop_rarity,
+            potion_kind: Some(kind),
+            price: merchant_potion_price(rs, shop_rarity),
+        });
+    }
+
+    for &want_type in &MERCHANT_CHARACTER_CARD_TYPES {
+        let entry = merchant_roll_character_card_slot(rs, character, want_type, false, chosen);
+        inv.cards.push(entry);
+    }
+    for &rarity in &MERCHANT_COLORLESS_CARD_RARITIES {
+        let entry = merchant_roll_colorless_card_slot(rs, rarity, chosen);
+        inv.colorless_cards.push(entry);
+    }
+
+    if !inv.cards.is_empty() {
+        let sale_index = rs.rng.shops.next_int_exclusive(0, inv.cards.len() as i32) as usize;
+        let entry = &mut inv.cards[sale_index];
+        // `SetOnSale` → `CalcCost` only when the slot holds a card (C# throws
+        // on an empty slot; the pool never runs dry in practice).
+        if entry.card.is_some() {
+            entry.on_sale = true;
+            entry.price = card_price(entry.rarity, &mut rs.rng.shops, false, true);
+        }
+    }
 }
 
 /// Merchant potion price, rolled off `Shops` like the real game. See
@@ -3331,7 +3642,8 @@ pub fn restock_shop_entry(
                 .filter(|(i, _)| *i != idx)
                 .filter_map(|(_, e)| e.relic_id)
                 .collect();
-            let slot_rarity = rs.roll_reward_relic_rarity();
+            // v0.113.0: `RelicFactory.RollRarity(PlayerRng.Shops)`.
+            let slot_rarity = sts2_core::runstate::roll_relic_rarity(rs.rng.shops_or_rewards());
             let entry = merchant_roll_relic_slot(rs, slot_rarity, &exclude);
             inv.relics[idx] = entry;
         }
@@ -3524,7 +3836,7 @@ mod tests {
         assert_eq!(defend_up.base_block, 8, "upgraded Defend blocks 8");
 
         let barricade_up = card_pod_from_id(CardId::BarricadeCard, true).unwrap();
-        assert_eq!(barricade_up.cost, 2, "upgraded Barricade costs 2");
+        assert_eq!(barricade_up.local_cost(), 2, "upgraded Barricade costs 2");
     }
 
     /// Bead `sts2-rs-RP22`: C# `IsRemovable => !Eternal`. Eternal curses
@@ -3638,7 +3950,7 @@ mod tests {
         assert_eq!(claw.base_damage, 4, "upgraded Claw deals 4");
 
         let zap = card_pod_from_id(CardId::Zap, true).unwrap();
-        assert_eq!(zap.cost, 0, "upgraded Zap costs 0");
+        assert_eq!(zap.local_cost(), 0, "upgraded Zap costs 0");
     }
 
     /// `Card::upgrade()` (the runtime path used by Smith / upgrade relics)
@@ -4315,6 +4627,29 @@ mod tests {
         assert!(!pool.contains(&CardId::Injury));
         assert!(pool.contains(&CardId::Guilty));
         assert!(!pool.contains(&CardId::Prolong));
+    }
+
+    /// v0.113.0 `FoolCardPool` lists The Fool's 90 cards, so a Fool card's
+    /// `original.Pool` is the Fool pool: a run-side transform rolls another
+    /// Fool card, even for a different character's deck
+    /// (`CardFactory.GetDefaultTransformationOptions`).
+    #[test]
+    fn fool_cards_resolve_to_the_fool_pool() {
+        for &id in &super::super::fool::FOOL_POOL_V0113 {
+            assert_eq!(character_for_card_id(id), Some(CharacterId::Fool), "{id:?}");
+        }
+        // Fool tokens sit in TokenCardPool, not FoolCardPool.
+        assert_eq!(character_for_card_id(CardId::TheTower), None);
+        let pool = transform_replacement_pool(
+            CharacterId::Ironclad,
+            CardId::TrickShot,
+            sts2_core::GameVersion::V0_113_0,
+        );
+        assert!(!pool.is_empty());
+        for &id in &pool {
+            assert!(super::super::fool::FOOL_POOL_V0113.contains(&id), "{id:?}");
+        }
+        assert!(!pool.contains(&CardId::TrickShot));
     }
 
     #[test]

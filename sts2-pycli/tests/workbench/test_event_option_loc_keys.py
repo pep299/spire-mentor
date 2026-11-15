@@ -37,6 +37,16 @@ from workbench import localization, render
 _ROOT = Path(__file__).resolve().parents[3]
 _EVENTS_RS = _ROOT / "sts2-rs" / "crates" / "sts2-content" / "src" / "events"
 _LOC = Path(__file__).resolve().parents[2] / "localization_eng" / "events.json"
+_LOC_V0113 = Path(__file__).resolve().parents[2] / "localization_eng_v0.113.0" / "events.json"
+_V0113_EVENT_PREFIXES = (
+    "MUSEUM_OF_TORTURE.",
+    "SHRINE_OF_THE_WARLORD.",
+    "THERMAE_NONUPEIPE.",
+    "WATERFALL_OF_OBVIOUS_SECRETS.",
+    "WUPPY_IN_TROUBLE.",
+    # an older event's option that only v0.113.0 adds (The Fool's pool)
+    "COLORFUL_PHILOSOPHERS.pages.INITIAL.options.FOOL",
+)
 
 #: ``(loc_key, field)`` pairs whose localized template takes ``{VarName}``
 #: placeholders the engine does not supply, so they still render the engine's
@@ -161,6 +171,19 @@ def _wired() -> dict[str, set[str]]:
             names = set(_TUPLE_HEAD_RE.findall(body))
             for key in _info_loc_keys(body, source):
                 out.setdefault(key, set()).update(names)
+        # A presenter that re-points an option at a per-item key from a
+        # `const fn loc_key(self)` match (Endless Conveyor's dish) and then
+        # assigns that option's `vars` supplies those vars to every key the
+        # match can return.
+        for assign in re.finditer(
+            r"(\w+)\.loc_key\s*=\s*\w+\.loc_key\(\);\s*\n\s*\1\.vars\s*=\s*vec!\[(.*?)\];",
+            source,
+            re.S,
+        ):
+            names = set(_TUPLE_HEAD_RE.findall(assign.group(2)))
+            for table in re.finditer(r"fn loc_key\(self\)[^{]*\{(.*?)\n    \}", source, re.S):
+                for key in re.findall(r'"([^"]+)"', table.group(1)):
+                    out.setdefault(key, set()).update(names)
         # Dynamic presenters hard-code a loc_key on an EventOptionInfo /
         # helper; those are gated for existence only (their vars are runtime).
         for m in re.finditer(r'loc_key:\s*"([^"]+)"', source):
@@ -185,8 +208,15 @@ def _unsupplied() -> set[tuple[str, str]]:
 def test_every_wired_loc_key_names_a_real_row():
     """A key with no row silently degrades to the shorthand this replaced."""
     loc = json.loads(_LOC.read_text(encoding="utf-8"))
+    keys = set(_wired())
+    # The v0.113.0 events' rows live in that build's dump, which the public
+    # export leaves out; without it their keys go unchecked.
+    if _LOC_V0113.is_file():
+        loc |= json.loads(_LOC_V0113.read_text(encoding="utf-8"))
+    else:
+        keys = {k for k in keys if not k.startswith(_V0113_EVENT_PREFIXES)}
     missing = sorted(
-        key for key in _wired() if f"{key}.title" not in loc and f"{key}.description" not in loc
+        key for key in keys if f"{key}.title" not in loc and f"{key}.description" not in loc
     )
     assert missing == [], f"event option loc_key(s) with no row in events.json: {missing}"
 

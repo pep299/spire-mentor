@@ -51,21 +51,16 @@ fn tree_fingerprint<P: sts2_mcts::Policy>(m: &Mcts<P>, chosen: &sts2_core::Actio
         let children: Vec<(String, u32)> = n
             .children
             .iter()
-            .map(|(e, c)| (common::legacy_edge_text(e), c.0))
+            .map(|(e, c)| (format!("{e:?}"), c.0))
             .collect();
         let outcomes: Vec<(u32, u32)> =
             n.chance_outcomes.iter().map(|o| (o.n, o.child.0)).collect();
-        let untried = n
-            .untried_actions
-            .iter()
-            .map(common::legacy_edge_text)
-            .collect::<Vec<_>>()
-            .join(", ");
         let line = format!(
-            "{:?}|{}|{:08x}|{children:?}|{outcomes:?}|[{untried}]\n",
+            "{:?}|{}|{:08x}|{children:?}|{outcomes:?}|{:?}\n",
             n.kind,
             n.visits,
             n.value_sum.to_bits(),
+            n.untried_actions,
         );
         h = fnv1a(h, line.as_bytes());
     }
@@ -111,12 +106,15 @@ fn pin_cases() -> Vec<(CombatState, MctsConfig)> {
     ]
 }
 
-/// Captured on `5638d0252`, before either lever existed.
+/// Captured on `5638d0252`, before either lever existed; re-captured when
+/// the card cost model (`CardEnergyCost`) stopped leaving zero-valued cost
+/// keys in `combat_vars`, which the search hash (and the streams seeded from
+/// it) folds in. The bit-identity pin is unaffected: both knobs are off here.
 const PRE_CHANGE_FINGERPRINTS: [u64; 4] = [
-    0x185f_5865_cb83_2621,
-    0xf0a6_3716_ef7f_49df,
-    0xee12_e726_2d6b_d3da,
-    0x69b9_1e0e_7028_9e8f,
+    0xb2b7_6fd7_8bda_b76f,
+    0x1fcb_f661_aac3_eeb0,
+    0x85b8_ecec_60e3_05b4,
+    0xefbf_179c_ce3b_1533,
 ];
 
 fn fingerprints(edit: impl Fn(&mut MctsConfig)) -> Vec<u64> {

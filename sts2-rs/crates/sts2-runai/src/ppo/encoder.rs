@@ -185,7 +185,10 @@ fn card_kind_rows() -> &'static [(i64, i64)] {
             }
             let t = match spec.card_type {
                 CardType::Attack => 0,
-                CardType::Skill => 1,
+                // GH #1111 split Quest out of Skill. The type table keeps its
+                // five rows so promoted champions load unchanged; Quest stays
+                // on the Skill row it always had (`vocab.py` folds it too).
+                CardType::Skill | CardType::Quest => 1,
                 CardType::Power => 2,
                 CardType::Curse => 3,
                 CardType::Status => 4,
@@ -365,53 +368,11 @@ fn action_kind(a: &ActionDesc) -> &'static str {
     }
 }
 
-/// `_KIND_SURFACE` verbatim — maps an action kind to its surface-defining
-/// label, or `None` for kinds that never define a surface (`unknown`
-/// included: it carries no entry in the Python dict either).
-fn kind_surface(kind: &str) -> Option<&'static str> {
-    Some(match kind {
-        "move" => "path",
-        "pick_card_reward" | "sacrifice_card_reward" => "card-reward",
-        "pick_relic_reward" | "skip_relic" => "relic-reward",
-        "pick_boss_relic" => "boss-relic",
-        "smith_card" => "card-smith",
-        "remove_deck_card" => "card-remove",
-        "upgrade_deck_card" => "card-upgrade",
-        "transform_deck_card" | "confirm_deck_selection" => "card-transform",
-        "enchant_deck_card" => "card-enchant",
-        "grant_deck_card" => "card-grant",
-        "shop_buy_card" | "shop_buy_relic" | "shop_buy_potion" | "shop_remove_card"
-        | "leave_shop" => "shop",
-        "rest_option" => "rest",
-        "event_choice" => "event",
-        "collect_treasure" => "treasure",
-        "potion_swap" => "potion-swap",
-        _ => return None,
-    })
-}
-
-/// Finer-grained surface for the state token, from the first
-/// surface-defining action kind (skip/leave variants defer to a
-/// sibling). Mirrors `encoder.py::fine_surface`: first pass skips
-/// `skip_relic`/`leave_shop`; second pass accepts any; else
-/// `"unknown"`.
+/// Finer-grained surface for the state token: `encoder.py::fine_surface`
+/// ([`vocab::fine_surface`], which also holds `_KIND_SURFACE`).
 #[must_use]
 pub fn fine_surface(actions: &[ActionDesc]) -> &'static str {
-    const DEFERRING: [&str; 2] = ["skip_relic", "leave_shop"];
-    for a in actions {
-        let k = action_kind(a);
-        if !DEFERRING.contains(&k) {
-            if let Some(s) = kind_surface(k) {
-                return s;
-            }
-        }
-    }
-    for a in actions {
-        if let Some(s) = kind_surface(action_kind(a)) {
-            return s;
-        }
-    }
-    "unknown"
+    vocab::fine_surface(actions.iter().map(action_kind))
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────
@@ -482,31 +443,49 @@ fn fixed_tok(kind: &str, price: i64) -> (i64, Cat, ContF64) {
     (SEC_FIXED, cat, cont)
 }
 
-/// Stable rest action identity in existing ONNX embedding rows. The normal
-/// Heal/Smith tokens stay byte-identical; other option IDs share the existing
-/// rest_other fixed token but have distinct option-index rows. No vocab or
-/// tensor-width change. Old observations without IDs keep positional encoding.
-fn rest_option_token(option_id: Option<&str>, idx: i64) -> (&'static str, i64) {
-    let Some(id) = option_id else {
-        let kind = match idx {
+/// `HEAL` / `REST` / `SMITH` (any case) → that option's fixed token and row.
+fn rest_base_token(label: &str) -> Option<(&'static str, i64)> {
+    if label.eq_ignore_ascii_case("HEAL") || label.eq_ignore_ascii_case("REST") {
+        Some(("rest_heal", 0))
+    } else if label.eq_ignore_ascii_case("SMITH") {
+        Some(("rest_smith", 1))
+    } else {
+        None
+    }
+}
+
+/// (fixed-token name, option-index row) for rest option `idx`. Mirrors
+/// `encoder.py::_rest_option_token`; the rule is documented there.
+///
+/// Heal and Smith are named by identity: after a Miniature Tent first pick
+/// the engine drops the taken option, so Smith sits at idx 0. Every other
+/// option keeps `rest_other` and the row the shipped nets were trained on
+/// (its idx in the full `[Heal, Smith, ...]` list). An empty label is an
+/// unknown but occupied slot. No label at all is the old positional rule.
+fn rest_option_token(labels: &[String], idx: i64) -> (&'static str, i64) {
+    let max_row = vocab::MAX_OPT_IDX as i64 - 1;
+    let Some(label) = at(labels, idx).filter(|l| !l.is_empty()) else {
+        let name = match idx {
             0 => "rest_heal",
             1 => "rest_smith",
             _ => "rest_other",
         };
-        return (kind, idx.clamp(0, vocab::MAX_OPT_IDX as i64 - 1));
+        return (name, idx.clamp(0, max_row));
     };
-    match id.to_ascii_uppercase().as_str() {
-        "REST" | "HEAL" => ("rest_heal", 0),
-        "SMITH" => ("rest_smith", 1),
-        "DIG" => ("rest_other", 0),
-        "LIFT" => ("rest_other", 1),
-        "COOK" => ("rest_other", 2),
-        "CLONE" => ("rest_other", 3),
-        "HATCH" => ("rest_other", 4),
-        "KINDLE" => ("rest_other", 5),
-        "MEND" => ("rest_other", 6),
-        _ => ("rest_other", vocab::MAX_OPT_IDX as i64 - 1),
+    if let Some(base) = rest_base_token(label) {
+        return base;
     }
+    let n_base = labels
+        .iter()
+        .filter(|l| rest_base_token(l).is_some())
+        .count() as i64;
+    let n_unknown = labels
+        .iter()
+        .take(usize::try_from(idx).unwrap_or(0))
+        .filter(|l| l.is_empty())
+        .count() as i64;
+    let shift = (2 - n_base - n_unknown).max(0);
+    ("rest_other", (idx + shift).min(max_row))
 }
 
 /// Featurization context: obs lookups shared by the action builders.
@@ -525,6 +504,7 @@ struct Ctx<'a> {
     pending_potion_swap: &'a str,
     event_name: &'a str,
     event_options: &'a [EventOptionObs],
+    /// Engine option ids in `RestOption { idx }` order.
     rest_option_labels: &'a [String],
     card_reward_ids: &'a [String],
     /// Per-option upgrade flags aligned with `card_reward_ids`; short or
@@ -748,6 +728,8 @@ fn build_action_token(ctx: &Ctx<'_>, a: &ActionDesc) -> (i64, Cat, ContF64) {
             stamp_enchant(ctx.features, &mut cat, &mut cont, ctx.deck_ench, di);
             (sec, cat, cont)
         }
+        // Claws' confirm reuses the skip token: no vocab row is added, and
+        // to the net it reads as "take no (more) cards" (GH #1353).
         ActionDesc::ConfirmDeckSelection => fixed_tok("skip_card", 0),
         ActionDesc::TransformDeckCard { idx } => {
             let di = at(ctx.transform_idxs, *idx).copied();
@@ -851,12 +833,9 @@ fn build_action_token(ctx: &Ctx<'_>, a: &ActionDesc) -> (i64, Cat, ContF64) {
         }
         ActionDesc::LeaveShop => fixed_tok("leave_shop", 0),
         ActionDesc::RestOption { idx } => {
-            // The action index locates a CURRENT engine offer, not an action
-            // kind. Miniature Tent removes the first offer after using it.
-            let option_id = at(ctx.rest_option_labels, *idx).map(String::as_str);
-            let (name, stable_idx) = rest_option_token(option_id, *idx);
+            let (name, opt_idx) = rest_option_token(ctx.rest_option_labels, *idx);
             let (sec, mut cat, cont) = fixed_tok(name, 0);
-            cat[7] = stable_idx;
+            cat[7] = opt_idx;
             (sec, cat, cont)
         }
         ActionDesc::EventChoice { idx } => {
@@ -1336,6 +1315,14 @@ mod tests {
         assert_eq!(action_kind(&swap_actions()[0]), "potion_swap");
     }
 
+    #[test]
+    fn optional_deck_confirmation_keeps_the_transform_surface() {
+        assert_eq!(
+            fine_surface(&[ActionDesc::ConfirmDeckSelection]),
+            "card-transform"
+        );
+    }
+
     /// `model.load_compat` warm-starts an older checkpoint by copying
     /// embedding rows 0..N verbatim, so a new vocab entry is only safe if it
     /// is APPENDED — an insertion silently re-maps every trained row after
@@ -1699,7 +1686,6 @@ mod tests {
         assert_eq!(on.obs_cat[0], off.obs_cat[0]);
     }
 
-    // GH #24: use the option ID in the obs, not the current action position.
     fn rest_obs(ids: Option<&[&str]>) -> PpoObs {
         serde_json::from_value(serde_json::json!({
             "phase": "rest_site",
@@ -1715,64 +1701,55 @@ mod tests {
         .expect("rest obs")
     }
 
-    #[test]
-    fn rest_option_semantics_survive_tent_reindexing() {
-        let original = rest_obs(Some(&["HEAL", "SMITH"]));
-        let original_actions = [
-            ActionDesc::RestOption { idx: 0 },
-            ActionDesc::RestOption { idx: 1 },
-        ];
-        let original_feat = featurize_with(&original, &original_actions, Features::default());
-
-        let smith_only = rest_obs(Some(&["SMITH"]));
-        let smith_feat = featurize_with(
-            &smith_only,
-            &[ActionDesc::RestOption { idx: 0 }],
-            Features::default(),
-        );
-        assert_eq!(original_feat.act_cat[1], smith_feat.act_cat[0]);
-
-        let heal_only = rest_obs(Some(&["HEAL"]));
-        let heal_feat = featurize_with(
-            &heal_only,
-            &[ActionDesc::RestOption { idx: 0 }],
-            Features::default(),
-        );
-        assert_eq!(original_feat.act_cat[0], heal_feat.act_cat[0]);
-
-        // Old rows with the original two labels or no labels are compatible.
-        let legacy = rest_obs(Some(&["rest", "smith"]));
-        let legacy_feat = featurize_with(&legacy, &original_actions, Features::default());
-        let absent = rest_obs(None);
-        let absent_feat = featurize_with(&absent, &original_actions, Features::default());
-        assert_eq!(original_feat.act_cat, legacy_feat.act_cat);
-        assert_eq!(original_feat.act_cat, absent_feat.act_cat);
+    /// (fixed-kind index, option-index row) of every rest action token.
+    fn rest_rows(ids: Option<&[&str]>, idxs: &[i64]) -> Vec<(i64, i64)> {
+        let actions: Vec<ActionDesc> = idxs
+            .iter()
+            .map(|&idx| ActionDesc::RestOption { idx })
+            .collect();
+        featurize_with(&rest_obs(ids), &actions, Features::default())
+            .act_cat
+            .iter()
+            .map(|c| (c[6], c[7]))
+            .collect()
     }
 
+    /// After a Miniature Tent first pick the engine drops the taken option,
+    /// so Smith moves to idx 0. It must keep the Smith token (found by the
+    /// pep299 fork). Dig keeps the `rest_other` row 2 it was trained on.
     #[test]
-    fn rest_option_ids_get_distinct_existing_onnx_rows() {
-        for (id, kind, stable_idx) in [
-            ("HEAL", "rest_heal", 0),
-            ("SMITH", "rest_smith", 1),
-            ("DIG", "rest_other", 0),
-            ("LIFT", "rest_other", 1),
-            ("COOK", "rest_other", 2),
-            ("CLONE", "rest_other", 3),
-            ("HATCH", "rest_other", 4),
-            ("KINDLE", "rest_other", 5),
-            ("MEND", "rest_other", 6),
-            ("FUTURE_OPTION", "rest_other", 7),
-        ] {
-            let obs = rest_obs(Some(&[id]));
-            let feat = featurize_with(
-                &obs,
-                &[ActionDesc::RestOption { idx: 0 }],
-                Features::default(),
-            );
-            assert_eq!(feat.act_cat[0][6], vocab::fixed_index(kind) as i64);
-            assert_eq!(feat.act_cat[0][7], stable_idx);
-        }
-        // Every used ID is inside the existing 8 option-index rows.
-        assert_eq!(vocab::MAX_OPT_IDX, 8);
+    fn rest_options_are_named_by_identity_not_position() {
+        let heal = (vocab::fixed_index("rest_heal") as i64, 0);
+        let smith = (vocab::fixed_index("rest_smith") as i64, 1);
+        let other = |row| (vocab::fixed_index("rest_other") as i64, row);
+        let full = rest_rows(Some(&["HEAL", "SMITH", "DIG", "HATCH"]), &[0, 1, 2, 3]);
+        assert_eq!(full, [heal, smith, other(2), other(3)]);
+        // Heal taken: everything moved down one idx, no token changes.
+        assert_eq!(
+            rest_rows(Some(&["SMITH", "DIG", "HATCH"]), &[0, 1, 2]),
+            [smith, other(2), other(3)]
+        );
+        // Smith taken.
+        assert_eq!(rest_rows(Some(&["HEAL", "DIG"]), &[0, 1]), [heal, other(2)]);
+        // The bridge: a disabled Smith's slot is occupied but unnamed.
+        assert_eq!(
+            rest_rows(Some(&["HEAL", "", "DIG"]), &[0, 2]),
+            [heal, other(2)]
+        );
+    }
+
+    /// Recordings stored a fixed `["rest", "smith"]` (or nothing) whatever
+    /// was offered: they must featurize exactly as they always did.
+    #[test]
+    fn legacy_rest_labels_keep_the_positional_encoding() {
+        let positional = rest_rows(None, &[0, 1, 2, 3]);
+        assert_eq!(
+            rest_rows(Some(&["rest", "smith"]), &[0, 1, 2, 3]),
+            positional
+        );
+        assert_eq!(
+            rest_rows(Some(&["HEAL", "SMITH", "DIG", "HATCH"]), &[0, 1, 2, 3]),
+            positional
+        );
     }
 }

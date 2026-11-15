@@ -427,6 +427,27 @@ fn ceremonial_beast_stamp_effect(state: &mut CombatState, owner: CreatureUid) {
 /// performs it; the trailing `Intent::Buff{Strength,2}` (`BuffIntent()`) is
 /// telegraph-only with the real apply here.
 fn ceremonial_beast_plow_effect(state: &mut CombatState, owner: CreatureUid) {
+    // v0.113.0: the Strength lands only if the beast still has PlowPower
+    // (`if (base.Creature.HasPower<PlowPower>())`, decomp
+    // CeremonialBeast.cs:227) — a beast stunned by losing Plow during the
+    // charge no longer regains Strength.
+    if state.game_version >= sts2_core::GameVersion::V0_113_0 {
+        let has_plow = state
+            .creatures
+            .iter()
+            .find(|c| c.id == owner.0)
+            .is_some_and(|c| {
+                c.powers.iter().any(|u| {
+                    state
+                        .powers
+                        .get_by_id(u.0)
+                        .is_some_and(|p| p.kind == PowerKind::Plow)
+                })
+            });
+        if !has_plow {
+            return;
+        }
+    }
     sts2_core::card_effects::apply_power_to_creature(state, owner, PowerKind::Strength, 2);
 }
 
@@ -436,8 +457,15 @@ fn ceremonial_beast_plow_effect(state: &mut CombatState, owner: CreatureUid) {
 /// NOTE: the C# move uses a generic `DebuffIntent()` and the applied power
 /// is **RingingPower**, not Weak — the prior Rust intent metadata
 /// (`Weak,1`) was a fabrication.
+///
+/// `RingingPower.AfterApplied` (fresh instance only) rings every player card
+/// with no affliction; the turn-end removal clears them again.
 fn ceremonial_beast_beast_cry_effect(state: &mut CombatState, _owner: CreatureUid) {
+    let fresh = state.player_power_amount(PowerKind::Ringing) <= 0;
     apply_power_to_player_via_legacy_surface(state, PowerKind::Ringing, 1);
+    if fresh && state.player_power_amount(PowerKind::Ringing) > 0 {
+        sts2_core::monster_power_effects::ringing_after_applied(state);
+    }
 }
 
 /// Bead `sts2-rs-pdsdl`: CeremonialBeast CRUSH applies +3 Strength to self

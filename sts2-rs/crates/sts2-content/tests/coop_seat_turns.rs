@@ -250,3 +250,88 @@ fn the_seat_ahead_in_the_player_order_shuffles_first() {
     );
     assert_eq!(us_second, mate_second);
 }
+
+/// GH #989: our v0.111.0 Toasty Mittens screen parks our turn start, and the
+/// teammates' `SetupPlayerTurn` runs during that pause
+/// (`fire_side_turn_start_on_setup_pause`). The screen stays ours: the
+/// teammate's stage used to find it open, answer it as theirs, and exhaust
+/// one of OUR cards on their behalf, so we were never asked.
+#[test]
+fn our_turn_start_screen_is_not_answered_by_a_teammate_s_setup() {
+    sts2_content::relics::dispatch::ensure_installed();
+    let mut state = two_seat_fight(2, 0);
+    state.game_version = sts2_core::GameVersion::V0_111_0;
+    state.relics.push(Relic {
+        id: NonZeroU32::new(60).expect("nz"),
+        kind: RelicKind::ToastyMittens,
+        counter: 0,
+        is_wax: false,
+        is_melted: false,
+    });
+
+    let result = sts2_core::combat_loop::start_player_turn(&mut state);
+
+    assert_eq!(result, sts2_core::StepResult::PendingChoice);
+    assert_eq!(state.coop.seated, 0, "we sit in our seat");
+    let pc = state
+        .pending_choice
+        .as_ref()
+        .expect("our Mittens pick is open");
+    assert_eq!(pc.kind, sts2_core::ChoiceKind::ExhaustFromHand);
+    assert_eq!(
+        state.player.hand.len(),
+        5,
+        "nothing exhausted from our hand yet"
+    );
+    assert!(state.player.exhaust.is_empty());
+    assert_eq!(
+        state.allies[0].hand.len(),
+        5,
+        "the teammate set up their turn"
+    );
+
+    let strike = state.player.hand[0];
+    let _ = sts2_core::apply(
+        &mut state,
+        sts2_core::Action::ResolveChoice {
+            selection: smallvec::smallvec![0],
+        },
+    );
+
+    assert!(state.pending_choice.is_none());
+    assert_eq!(state.phase, CombatPhase::PlayerPlayPhase);
+    assert_eq!(
+        state.player.exhaust.as_slice(),
+        [strike],
+        "our pick exhausted our card"
+    );
+    assert_eq!(state.player.hand.len(), 4);
+    assert_eq!(
+        state.allies[0].hand.len(),
+        5,
+        "the teammate's hand is untouched"
+    );
+    assert!(state.allies[0].exhaust.is_empty());
+}
+
+/// v0.113.0 `RingingTriangle.AfterRoomEntered` (RingingTriangle.cs:19-25)
+/// applies 1 RetainHand to its OWNER: a teammate's Triangle is theirs, so it
+/// keeps their turn-1 hand, not ours.
+#[test]
+fn a_teammates_ringing_triangle_retains_their_hand_v0113() {
+    let mut state = two_seat_fight(1, 0);
+    state.game_version = sts2_core::GameVersion::V0_113_0;
+    give_mate_relic(&mut state, 53, RelicKind::RingingTriangle);
+
+    let _ = sts2_core::combat_loop::start_combat(&mut state);
+
+    assert_eq!(
+        state.player_power_amount(PowerKind::RetainHand),
+        0,
+        "their Triangle is not ours"
+    );
+    sts2_core::coop::swap_seat(&mut state, 0);
+    let theirs = state.player_power_amount(PowerKind::RetainHand);
+    sts2_core::coop::swap_seat(&mut state, 0);
+    assert_eq!(theirs, 1, "their Triangle gave them RetainHand");
+}

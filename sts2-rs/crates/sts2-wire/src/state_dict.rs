@@ -303,6 +303,13 @@ pub struct ParsedState {
     pub act_index: u8,
     /// `$.is_boss`: a boss room; false when absent.
     pub is_boss: bool,
+    /// `$.total_floor`: C# `RunState.TotalFloor`; 0 when absent. v0.113.0
+    /// TheTower reads it.
+    pub total_floor: u16,
+    /// `$.fool_state`: the v0.113.0 Fool mechanics state, encoded by
+    /// [`crate::fool_state`]; `None` when absent. Decoded only after the
+    /// piles and roster exist, since its refs are pile/roster positions.
+    pub fool_state: Option<Vec<i64>>,
 }
 
 /// One co-op teammate on the wire (`$.allies[i]`).
@@ -335,7 +342,7 @@ pub struct ParsedAlly {
     /// `$.player`'s combat-history counters for this teammate.
     pub history: SeatHistory,
     /// `$.player.cards_played_this_turn` for this teammate.
-    pub cards_played_this_turn: Option<[u32; 5]>,
+    pub cards_played_this_turn: Option<[u32; 6]>,
     /// Their orb belt, as `$.player.orbs` / `orb_slots` (GH #989: a
     /// teammate's Frost orbs block at their turn end).
     pub orbs: Option<Vec<ParsedOrb>>,
@@ -379,8 +386,8 @@ pub struct ParsedPlayer {
     pub orb_slots: Option<u32>,
     pub stars: Option<i32>,
     pub osty: Option<ParsedOsty>,
-    pub cards_played_this_turn: Option<[u32; 5]>,
-    pub cards_started_this_turn: Option<[u32; 5]>,
+    pub cards_played_this_turn: Option<[u32; 6]>,
+    pub cards_started_this_turn: Option<[u32; 6]>,
     pub block_gained_card_plays_this_turn: Option<Vec<u32>>,
     pub current_card_play: Option<u32>,
     pub next_card_play: Option<u32>,
@@ -405,16 +412,21 @@ pub struct ParsedPlayer {
 
 /// `{path}.cards_played_this_turn`: a seat's card plays started this turn, one
 /// bucket per `CardType` in its `index` order, or `None` when absent.
-fn parse_play_buckets<V: WireValue>(d: &V, path: &str) -> WireResult<Option<[u32; 5]>> {
+///
+/// Five entries (Attack..Status) is the historical shape every producer and
+/// fixture uses — the mod drops Quest plays too. GH #1111 added the `Quest`
+/// bucket; a six-entry list carries it, a five-entry list leaves it 0.
+/// Quest cards are Unplayable, so in practice it always is.
+fn parse_play_buckets<V: WireValue>(d: &V, path: &str) -> WireResult<Option<[u32; 6]>> {
     let Some(v) = extract_optional(d, "cards_played_this_turn") else {
         return Ok(None);
     };
     let cp = format!("{path}.cards_played_this_turn");
     let list = as_list(&v, &cp)?;
-    if list.len() != 5 {
-        return Err(schema_err(&cp, "must be a list of 5 counters"));
+    if list.len() != 5 && list.len() != 6 {
+        return Err(schema_err(&cp, "must be a list of 5 or 6 counters"));
     }
-    let mut buckets = [0u32; 5];
+    let mut buckets = [0u32; 6];
     for (i, item) in list.iter().enumerate() {
         buckets[i] = item
             .as_i64()
@@ -426,7 +438,7 @@ fn parse_play_buckets<V: WireValue>(d: &V, path: &str) -> WireResult<Option<[u32
 
 /// The Attack bucket of `buckets`, as an engine counter: C# reads it from
 /// History where the engine keeps a counter (Juggling, Ripple Basin).
-fn attacks_this_turn(buckets: Option<[u32; 5]>) -> i32 {
+fn attacks_this_turn(buckets: Option<[u32; 6]>) -> i32 {
     buckets.map_or(0, |b| {
         i32::try_from(b[sts2_core::cards::CardType::Attack.index()]).unwrap_or(i32::MAX)
     })
@@ -467,8 +479,8 @@ pub struct SeatHistory {
 
 /// The play tag a board's earlier card block gains carry in
 /// `TurnEvents::unmovable_card_block_plays`: a play of a rebuilt board's own
-/// past, never the one resolving (whose tag is a play count).
-pub const EARLIER_PLAY_TAG: u32 = u32::MAX;
+/// past, never the one resolving (whose tag is its card's uid).
+pub const EARLIER_PLAY_TAG: u32 = sts2_core::UNMOVABLE_EARLIER_PLAY;
 
 fn parse_seat_history<V: WireValue>(d: &V, path: &str) -> WireResult<SeatHistory> {
     let unblocked_hits_this_combat = match extract_optional(d, "unblocked_hits_this_combat") {
@@ -683,12 +695,17 @@ pub struct ParsedCard {
     /// its shave).
     ///
     /// `None` when it cannot differ from `base_cost` — which is the common
-    /// case, and always so for the Rust dialect, whose `combat_vars` already
-    /// carry the exact per-effect decomposition.
+    /// case, and always so for the Rust dialect, whose `cost_mods` already
+    /// carries the exact model.
     pub persistent_cost: Option<i32>,
     pub played_cost: Option<i32>,
     pub stable_cost: Option<i32>,
-    pub local_cost: Option<sts2_core::cards::LocalEnergyCost>,
+    /// The exact cost model (C# `CardEnergyCost`: the base plus the ordered
+    /// local modifiers), as the engine's own `state_to_dict` emits it under
+    /// `cost_mods`. When present it is adopted verbatim and the three folded
+    /// numbers above are ignored; the C# producers send only those.
+    pub cost_model: Option<sts2_core::CardEnergyCost>,
+    pub local_cost: Option<sts2_core::CardEnergyCost>,
     /// The instance's current STAR cost, local modifiers applied (C#
     /// `CardModel.CurrentStarCost`), for a card that has one.
     ///
@@ -718,10 +735,9 @@ pub struct ParsedCard {
     /// stamping 0 would reconstruct the enchantment as not there at all.
     pub enchantment_amount: Option<i32>,
     /// Per-instance scratch ([`sts2_core::Card::combat_vars`]) as
-    /// `(key, value)` pairs. This is where the transient cost modifiers
-    /// live (`FreeThisTurn`, `StompCostReductionThisTurn`,
-    /// `SneckoCostDeltaThisTurn`), alongside Rampage/Claw/GeneticAlgorithm
-    /// scaling. Empty for producers that don't carry it.
+    /// `(key, value)` pairs: Rampage/Claw/GeneticAlgorithm scaling and the
+    /// like. The energy cost modifiers are not here; they travel in
+    /// [`Self::cost_model`]. Empty for producers that don't carry it.
     pub combat_vars: Vec<(VarKey, i32)>,
     /// Extra plays the instance has gained this combat (C#
     /// `CardModel.BaseReplayCount`: Soldier's Stew, Hidden Gem, Transfigure).
@@ -793,6 +809,10 @@ pub struct ParsedEnemy {
     /// (bead `sts2-rs-3f3rz`). `None` for wires that omit it (older
     /// adapters / the C# backend, which never emitted it).
     pub move_state: Option<String>,
+    /// The move machine's per-instance state (`ai`, #1181), when the
+    /// producer sends it: the Rust `state_to_dict`, the C# headless and the
+    /// mod. See [`ParsedAiState`].
+    pub ai: Option<ParsedAiState>,
     /// Reflection-exported `Fabricator._lastSpawned` (canonical bot id,
     /// e.g. `"ZAPBOT"`), on the Fabricator's own entry. 2026-08-02 wire
     /// disclosure; when present it supersedes the max-uid inference,
@@ -805,6 +825,27 @@ pub struct ParsedEnemy {
     /// mid-fight mirror re-offered curse set 0 (the documented
     /// DISINTEGRATION off-by-one).
     pub curse_of_knowledge_counter: Option<i32>,
+}
+
+/// An enemy's `ai` object (#1181): the move machine's state that
+/// `move_state` (the current move) cannot carry and the next roll reads.
+///
+/// `log` is C#'s `MonsterMoveStateMachine.StateLog` convention: moves are
+/// logged when ROLLED, so it holds the current move unless that move was
+/// forced (`SetMoveImmediate`). `performed_first_move` is C#'s
+/// `_performedFirstMove`, `performed` the current `MoveState`'s
+/// `_performedAtLeastOnce`. `forced`, `counter` and `forced_next` exist only
+/// in the engine's own dicts (`MonsterAi::current_forced` / `counter` /
+/// `forced_next_state`). Ids are wire spellings, resolved per monster at
+/// reconstruction.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ParsedAiState {
+    pub log: Vec<String>,
+    pub performed_first_move: Option<bool>,
+    pub performed: Option<bool>,
+    pub forced: Option<bool>,
+    pub counter: Option<i32>,
+    pub forced_next: Option<String>,
 }
 // ---------------------------------------------------------------------------
 // Wire helpers — read-or-fail
@@ -889,6 +930,34 @@ fn as_entries<V: WireValue>(value: &V, path: &str) -> WireResult<Vec<(String, V)
     value
         .entries()
         .ok_or_else(|| schema_err(path, "expected dict"))
+}
+
+/// `cost_mods`: `{"base": int, "mods": [[amount, flags], ...]}`, the
+/// engine's exact [`sts2_core::CardEnergyCost`] (see `card_to_value`).
+fn parse_cost_mods<V: WireValue>(v: &V, path: &str) -> WireResult<sts2_core::CardEnergyCost> {
+    let d = as_dict(v, path)?;
+    let base = extract_i64(&d, path, "base")?;
+    let base = i8::try_from(base).map_err(|_| schema_err(path, "`base` must fit in i8"))?;
+    let mut mods = Vec::new();
+    if let Some(list) = extract_optional(&d, "mods") {
+        for (i, m) in as_list(&list, &format!("{path}.mods"))?.iter().enumerate() {
+            let mp = format!("{path}.mods[{i}]");
+            let pair = as_list(m, &mp)?;
+            let num = |j: usize| pair.get(j).and_then(WireValue::as_i64);
+            let (Some(amount), Some(flags), 2) = (num(0), num(1), pair.len()) else {
+                return Err(schema_err(&mp, "must be `[amount, flags]`"));
+            };
+            let amount =
+                i8::try_from(amount).map_err(|_| schema_err(&mp, "amount must fit in i8"))?;
+            let flags = u8::try_from(flags).map_err(|_| schema_err(&mp, "unknown flag bits"))?;
+            mods.push(
+                sts2_core::LocalCostMod::from_parts(amount, flags)
+                    .ok_or_else(|| schema_err(&mp, "unknown flag bits"))?,
+            );
+        }
+    }
+    sts2_core::CardEnergyCost::from_raw(base, &mods)
+        .ok_or_else(|| schema_err(path, "too many cost modifiers"))
 }
 
 // ---------------------------------------------------------------------------
@@ -1069,6 +1138,24 @@ pub fn parse_state_dict<V: WireValue>(d: &V) -> WireResult<ParsedState> {
             .ok_or_else(|| schema_err("$.act_index", "must be a 1-based u8"))?,
         None => 1,
     };
+    let total_floor = match extract_optional(d, "total_floor") {
+        Some(_) => u16::try_from(extract_i64(d, "$", "total_floor")?)
+            .map_err(|_| schema_err("$.total_floor", "must fit in u16"))?,
+        None => 0,
+    };
+    let fool_state = match extract_optional(d, "fool_state") {
+        Some(v) => Some(
+            v.as_array()
+                .ok_or_else(|| schema_err("$.fool_state", "must be a list of ints"))?
+                .iter()
+                .map(|w| {
+                    w.as_i64()
+                        .ok_or_else(|| schema_err("$.fool_state", "must be a list of ints"))
+                })
+                .collect::<Result<Vec<i64>, _>>()?,
+        ),
+        None => None,
+    };
     let is_boss = match extract_optional(d, "is_boss") {
         Some(_) => extract_bool(d, "$", "is_boss")?,
         None => false,
@@ -1116,6 +1203,8 @@ pub fn parse_state_dict<V: WireValue>(d: &V) -> WireResult<ParsedState> {
         coop_seat_index,
         act_index,
         is_boss,
+        total_floor,
+        fool_state,
     })
 }
 
@@ -1493,12 +1582,15 @@ fn parse_player<V: WireValue>(d: &V) -> WireResult<ParsedPlayer> {
 
     let cards_started_this_turn = optional_u32_list(d, "cards_started_this_turn")?
         .map(|v| {
-            <[u32; 5]>::try_from(v).map_err(|_| {
-                schema_err(
+            if !matches!(v.len(), 5 | 6) {
+                return Err(schema_err(
                     "$.player.cards_started_this_turn",
-                    "must be a list of 5 counters",
-                )
-            })
+                    "must be a list of 5 or 6 counters",
+                ));
+            }
+            let mut buckets = [0; 6];
+            buckets[..v.len()].copy_from_slice(&v);
+            Ok(buckets)
         })
         .transpose()?;
     let block_gained_card_plays_this_turn =
@@ -1712,87 +1804,100 @@ fn parse_powers<V: WireValue>(value: &V, path: &str) -> WireResult<Vec<ParsedPow
 fn parse_local_energy_cost<V: WireValue>(
     value: &V,
     path: &str,
-) -> WireResult<sts2_core::cards::LocalEnergyCost> {
-    use sts2_core::cards::{
-        LocalCostFunction, LocalCostModifier, LocalCostModifierKind, LocalEnergyCost,
-    };
+    native: Option<sts2_core::CardEnergyCost>,
+) -> WireResult<sts2_core::CardEnergyCost> {
+    use sts2_core::{CardEnergyCost, CostExpiry, LocalCostMod};
     let d = as_dict(value, path)?;
     let base = extract_i32(&d, path, "base")?;
     let costs_x = extract_bool(&d, path, "costs_x")?;
-    let modifiers = extract_optional(&d, "modifiers");
-    let functions = extract_optional(&d, "functions");
-    if modifiers.is_some() == functions.is_some() {
-        return Err(schema_err(
-            path,
-            "provide exactly one of modifiers or functions",
-        ));
-    }
-    let mut model = LocalEnergyCost::new(base, costs_x);
-    if let Some(values) = modifiers {
-        for (i, value) in as_list(&values, &format!("{path}.modifiers"))?
-            .iter()
-            .enumerate()
-        {
-            let p = format!("{path}.modifiers[{i}]");
-            let d = as_dict(value, &p)?;
-            let raw_kind = extract_str(&d, &p, "kind")?;
-            let kind = match raw_kind.as_str() {
-                "absolute" => LocalCostModifierKind::Absolute,
-                "relative" => LocalCostModifierKind::Relative,
-                _ => return Err(unsupported(format!("{p}.kind"), &raw_kind)),
-            };
-            let amount = extract_i32(&d, &p, "amount")?;
-            let reduce_only = extract_bool(&d, &p, "reduce_only")?;
-            let expiration = extract_i32(&d, &p, "expiration")?;
-            if !matches!(expiration, 0 | 2 | 4 | 6) {
-                return Err(schema_err(
-                    format!("{p}.expiration"),
-                    "must be 0, 2, 4 or 6",
-                ));
-            }
-            model.append(LocalCostModifier {
-                kind,
-                amount,
-                reduce_only,
-                expiration: expiration as u8,
-            });
-        }
-    }
-    if let Some(values) = functions {
-        let values = as_list(&values, &format!("{path}.functions"))?;
-        if values.len() != 4 {
+    let base = if costs_x {
+        -1
+    } else {
+        i8::try_from(base).map_err(|_| schema_err(path, "base cost exceeds i8"))?
+    };
+    if let Some(functions) = extract_optional(&d, "functions") {
+        if extract_optional(&d, "modifiers").is_some() {
             return Err(schema_err(
-                format!("{path}.functions"),
-                "must contain 4 expiry functions",
+                path,
+                "provide exactly one of modifiers or functions",
             ));
         }
-        for (i, value) in values.iter().enumerate() {
+        let native = native
+            .ok_or_else(|| schema_err(path, "functions-only local_cost requires cost_mods"))?;
+        if native.base() != base {
+            return Err(schema_err(
+                path,
+                "local_cost and cost_mods disagree on the base",
+            ));
+        }
+        let mut card = sts2_core::Card::pod_defaults();
+        card.cost = native;
+        card.card_type = if costs_x {
+            sts2_core::cards::CardType::Attack
+        } else {
+            sts2_core::cards::CardType::Status
+        };
+        let expected = card.public_local_energy_cost();
+        let functions = as_list(&functions, path)?;
+        if functions.len() != 4 {
+            return Err(schema_err(path, "must contain 4 expiry functions"));
+        }
+        for (i, (value, expected)) in functions.iter().zip(expected.functions).enumerate() {
             let p = format!("{path}.functions[{i}]");
             let d = as_dict(value, &p)?;
-            let function = LocalCostFunction {
+            let actual = sts2_core::cards::LocalCostFunction {
                 offset: extract_i32(&d, &p, "offset")?,
                 ceiling: extract_i32(&d, &p, "ceiling")?,
                 absolute_offset: extract_i32(&d, &p, "absolute_offset")?,
                 uses_base: extract_bool(&d, &p, "uses_base")?,
             };
-            if !function.uses_base && function.ceiling == i32::MAX {
-                return Err(schema_err(
-                    &p,
-                    "a constant cost function requires a ceiling",
-                ));
+            if actual != expected {
+                return Err(schema_err(&p, "local_cost and cost_mods disagree"));
             }
-            model.functions[i] = function;
         }
+        return Ok(native);
     }
-    if model
-        .costs()
-        .iter()
-        .any(|&cost| i8::try_from(cost).is_err())
-    {
-        return Err(schema_err(
-            path,
-            "local cost exceeds the engine's i8 cost range",
-        ));
+    let modifiers = get_item(&d, path, "modifiers")?;
+    let mut model = CardEnergyCost::new(base);
+    for (i, value) in as_list(&modifiers, path)?.iter().enumerate() {
+        let p = format!("{path}.modifiers[{i}]");
+        let d = as_dict(value, &p)?;
+        let kind = extract_str(&d, &p, "kind")?;
+        let amount = extract_i32(&d, &p, "amount")?;
+        let amount =
+            i8::try_from(amount).map_err(|_| schema_err(&p, "modifier amount exceeds i8"))?;
+        let reduce_only = extract_bool(&d, &p, "reduce_only")?;
+        let expiry = match extract_i32(&d, &p, "expiration")? {
+            0 => CostExpiry::Combat,
+            2 => CostExpiry::Turn,
+            4 => CostExpiry::Played,
+            6 => CostExpiry::TurnOrPlayed,
+            _ => return Err(schema_err(&p, "expiration must be 0, 2, 4 or 6")),
+        };
+        let modifier = match kind.as_str() {
+            "absolute" => LocalCostMod::absolute(amount, expiry, reduce_only),
+            "relative" => {
+                let modifier = LocalCostMod::relative(amount, expiry);
+                LocalCostMod::from_parts(
+                    amount,
+                    modifier.flags()
+                        | if reduce_only {
+                            LocalCostMod::REDUCE_ONLY
+                        } else {
+                            0
+                        },
+                )
+                .expect("known modifier flags")
+            }
+            _ => return Err(unsupported(format!("{p}.kind"), &kind)),
+        };
+        if model.mods().len() == sts2_core::energy_cost::MAX_COST_MODS {
+            return Err(schema_err(&p, "local cost exceeds the modifier capacity"));
+        }
+        model.push(modifier);
+    }
+    if native.is_some_and(|native| native != model) {
+        return Err(schema_err(path, "local_cost and cost_mods disagree"));
     }
     Ok(model)
 }
@@ -2030,49 +2135,65 @@ fn parse_card<V: WireValue>(d: &V, path: &str) -> WireResult<ParsedCard> {
     let persistent_cost = opt_i32("persistent_cost", "`persistent_cost` must be int or null")?;
     let played_cost = opt_i32("played_cost", "`played_cost` must be int or null")?;
     let stable_cost = opt_i32("stable_cost", "`stable_cost` must be int or null")?;
-    let local_cost = extract_optional(d, "local_cost")
-        .map(|v| parse_local_energy_cost(&v, &format!("{path}.local_cost")))
-        .transpose()?;
     let star_cost = opt_i32("star_cost", "`star_cost` must be int or null")?;
     let persistent_star_cost = opt_i32(
         "persistent_star_cost",
         "`persistent_star_cost` must be int or null",
     )?;
-    // Two banks require the third number. `rebank_wire_cost_after_edge`
-    // recomputes the surviving bank against `stable_cost`, which it reads back
-    // out of a combat var that DEFAULTS TO 0 — so with BOTH banks live and no
-    // `stable_cost` the second edge drives the card's cost to `0 - cost`. That
-    // is not degradation, it is corruption wearing the shape of a value.
-    //
-    // Scoped to exactly that case on purpose, not "all three or none". A wire
+    // Two folds require the third. With both `persistent_cost` and
+    // `played_cost` live, how much of the shave survives BOTH edges is not
+    // derivable from the pair (one combined modifier and two separate ones
+    // fold alike), and `folded_cost_to_model` needs it as the base. A wire
     // carrying `persistent_cost` alone is the pre-v16 dialect and is still
-    // perfectly sound: only one bank is ever live, `rebank` early-returns on
-    // the zero one, and `stable_cost` is never read. Refusing that would break
-    // every older producer for a hazard it cannot reach.
-    //
-    // Both in-tree producers derive all three from the same
-    // `FoldLocalModifiers` behind identical guards, so they ship together and
-    // this can only fire on a hand-written or third-party dict. Refusing it
-    // here is what keeps that a schema error instead of a silent miscost.
+    // sound: nothing expires on play, so the stable cost is the persistent
+    // one. Both in-tree producers send all three together, so this can only
+    // fire on a hand-written or third-party dict.
     if persistent_cost.is_some() && played_cost.is_some() && stable_cost.is_none() {
         return Err(schema_err(
             path,
-            "`persistent_cost` and `played_cost` together need `stable_cost` — with both \
-             banks live the second edge re-banks against a defaulted 0 and drives the \
-             cost to `0 - cost`",
+            "`persistent_cost` and `played_cost` together need `stable_cost`: the cost \
+             once both edges have passed is not derivable from the pair",
         ));
     }
+    let cost_model = match extract_optional(d, "cost_mods") {
+        Some(v) => Some(parse_cost_mods(&v, &format!("{path}.cost_mods"))?),
+        None => None,
+    };
+    let local_cost = extract_optional(d, "local_cost")
+        .map(|v| parse_local_energy_cost(&v, &format!("{path}.local_cost"), cost_model))
+        .transpose()?;
     let mut combat_vars: Vec<(VarKey, i32)> = Vec::new();
     if let Some(v) = extract_optional(d, "combat_vars") {
         for (name, val) in as_entries(&v, &format!("{path}.combat_vars"))? {
-            let key = var_key_from_wire(&name)
-                .ok_or_else(|| unsupported(format!("{path}.combat_vars"), &name))?;
             let amount = val
                 .as_i64()
                 .and_then(|n| i32::try_from(n).ok())
                 .ok_or_else(|| {
                     schema_err(format!("{path}.combat_vars.{name}"), "value must be an i32")
                 })?;
+            if (cost_model.is_some() || local_cost.is_some())
+                && matches!(
+                    name.as_str(),
+                    "free_this_turn"
+                        | "free_until_played"
+                        | "cost_absolutely_set"
+                        | "cost_reduction_until_played"
+                        | "cost_debt_this_combat"
+                        | "stomp_cost_reduction_this_turn"
+                        | "pinpoint_cost_reduction_this_turn"
+                        | "snecko_cost_delta_this_turn"
+                        | "snecko_roll_live"
+                        | "wire_transient_cost_this_turn"
+                        | "wire_cost_expiring_on_play"
+                        | "wire_cost_stable"
+                        | "cost_added_after_local_zero"
+                        | "flatten_osty_attacks_at_roll"
+                )
+            {
+                continue;
+            }
+            let key = var_key_from_wire(&name)
+                .ok_or_else(|| unsupported(format!("{path}.combat_vars"), &name))?;
             combat_vars.push((key, amount));
         }
     }
@@ -2143,6 +2264,7 @@ fn parse_card<V: WireValue>(d: &V, path: &str) -> WireResult<ParsedCard> {
         persistent_cost,
         played_cost,
         stable_cost,
+        cost_model,
         local_cost,
         star_cost,
         persistent_star_cost,
@@ -2263,6 +2385,12 @@ fn parse_enemy<V: WireValue>(d: &V, path: &str) -> WireResult<ParsedEnemy> {
         None => None,
     };
 
+    // Optional: the move machine's per-instance state (#1181).
+    let ai = match extract_optional(d, "ai") {
+        Some(a) => Some(parse_ai_state(&a, &format!("{path}.ai"))?),
+        None => None,
+    };
+
     // Optional reflection-exported hidden counters (2026-08-02 producers).
     let fabricator_last_spawned = match extract_optional(d, "fabricator_last_spawned") {
         Some(v) => Some(
@@ -2293,8 +2421,55 @@ fn parse_enemy<V: WireValue>(d: &V, path: &str) -> WireResult<ParsedEnemy> {
         is_escaped,
         intent_damage_known,
         move_state,
+        ai,
         fabricator_last_spawned,
         curse_of_knowledge_counter,
+    })
+}
+
+/// Parse an enemy's `ai` object into [`ParsedAiState`].
+fn parse_ai_state<V: WireValue>(a: &V, path: &str) -> WireResult<ParsedAiState> {
+    let a = as_dict(a, path)?;
+    let log = match extract_optional(&a, "log") {
+        Some(v) => v
+            .as_array()
+            .ok_or_else(|| schema_err(path, "`log` must be a list"))?
+            .iter()
+            .map(|e| {
+                e.as_str()
+                    .ok_or_else(|| schema_err(path, "`log` entries must be strings"))
+            })
+            .collect::<WireResult<Vec<String>>>()?,
+        None => Vec::new(),
+    };
+    let flag = |key: &str| -> WireResult<Option<bool>> {
+        extract_optional(&a, key)
+            .map(|v| {
+                v.as_bool()
+                    .ok_or_else(|| schema_err(path, &format!("`{key}` must be a bool")))
+            })
+            .transpose()
+    };
+    let counter = extract_optional(&a, "counter")
+        .map(|v| {
+            v.as_i64()
+                .and_then(|n| i32::try_from(n).ok())
+                .ok_or_else(|| schema_err(path, "`counter` must be an int"))
+        })
+        .transpose()?;
+    let forced_next = extract_optional(&a, "forced_next")
+        .map(|v| {
+            v.as_str()
+                .ok_or_else(|| schema_err(path, "`forced_next` must be a string"))
+        })
+        .transpose()?;
+    Ok(ParsedAiState {
+        log,
+        performed_first_move: flag("performed_first_move")?,
+        performed: flag("performed")?,
+        forced: flag("forced")?,
+        counter,
+        forced_next,
     })
 }
 
@@ -2566,6 +2741,7 @@ pub fn power_kind_from_python_name(s: &str) -> Option<PowerKind> {
     PowerKind::all()
         .iter()
         .chain(PowerKind::V0111_ONLY.iter())
+        .chain(PowerKind::V0113_ONLY.iter())
         .copied()
         .find(|k| k.python_name() == s)
 }
@@ -2585,6 +2761,7 @@ pub fn card_id_from_python_name(s: &str) -> Option<CardId> {
         CardId::all()
             .iter()
             .chain(CardId::V0111_ONLY.iter())
+            .chain(CardId::V0113_ONLY.iter())
             .copied()
     };
     if let Some(c) = ids().find(|k| k.to_python_name() == s) {
@@ -2604,6 +2781,7 @@ pub fn potion_kind_from_python_name(s: &str) -> Option<PotionKind> {
     PotionKind::ALL
         .iter()
         .chain(PotionKind::V0111_ONLY.iter())
+        .chain(PotionKind::V0113_ONLY.iter())
         .copied()
         .find(|k| k.python_name() == s)
 }
@@ -2637,7 +2815,10 @@ pub fn registry_names_for(kind: &str) -> Result<Vec<String>, String> {
     let mut set: BTreeSet<&'static str> = BTreeSet::new();
     match kind {
         "relic" => {
-            for k in RELIC_KINDS {
+            // The sorted position is a combat-ctx embedding row, so the
+            // v0.113.0-only Fool relics stay out (as "power" keeps the
+            // v0.107.1 universe).
+            for k in RELIC_KINDS.iter().filter(|k| !k.is_v0113_only()) {
                 set.insert(k.python_name());
             }
         }
@@ -2654,12 +2835,38 @@ pub fn registry_names_for(kind: &str) -> Result<Vec<String>, String> {
             }
         }
         "power_all" => {
+            // v0.107.1 + v0.111.0 powers: the e2e vocab's universe (its
+            // policy is trained on v0.111.0), so the v0.113.0-only powers map
+            // to UNK there, as v0.113.0-only cards and events do.
+            for k in PowerKind::all().iter().chain(&PowerKind::V0111_ONLY) {
+                set.insert(k.python_name());
+            }
+        }
+        "power_any" => {
             // Every build's powers, for checking a carried id: the adapters
             // dropped a power missing from "power" off the board (v0.111.0's
             // OneForAll went, and every 0-cost Attack it buffs hit for less
             // than the game's).
-            for k in PowerKind::all().iter().chain(&PowerKind::V0111_ONLY) {
+            for k in PowerKind::all()
+                .iter()
+                .chain(&PowerKind::V0111_ONLY)
+                .chain(&PowerKind::V0113_ONLY)
+            {
                 set.insert(k.python_name());
+            }
+        }
+        "card_any" => {
+            // Every build's cards, for checking a carried id -- the cards'
+            // `power_any`. "card" is the PPO vocab, frozen at v0.111.0 (its
+            // order is the nets' embedding rows), so the adapter dropped
+            // v0.113.0's (My Shinies) off the board and could not search an
+            // offer of one, though `card_id_from_python_name` parses them.
+            for k in CardId::all()
+                .iter()
+                .chain(&CardId::V0111_ONLY)
+                .chain(&CardId::V0113_ONLY)
+            {
+                set.insert(k.to_python_name());
             }
         }
         "orb" => {
@@ -2669,7 +2876,7 @@ pub fn registry_names_for(kind: &str) -> Result<Vec<String>, String> {
         }
         other => {
             return Err(format!(
-                "unknown registry kind `{other}` (expected one of: relic, relic_id, card, monster, power, power_all, potion, orb, event, boss, enchantment)"
+                "unknown registry kind `{other}` (expected one of: relic, relic_id, card, card_any, monster, power, power_all, power_any, potion, orb, event, boss, enchantment)"
             ));
         }
     }
@@ -2815,15 +3022,19 @@ fn build_card(parsed: &ParsedCard, uid: CardUid, path: &str) -> WireResult<Card>
     // always exactly one action behind the world's energy. Only the
     // base_cost-less dialect is affected: engine/DLL wires carry
     // `base_cost: -1` for X-cost cards and keep taking the first arm.
-    let registry_x_cost = spec.cost == -1 || upgraded_build.as_ref().is_some_and(|b| b.cost == -1);
+    let registry_x_cost =
+        spec.cost == -1 || upgraded_build.as_ref().is_some_and(|b| b.base_cost() == -1);
     let cost = match (parsed.base_cost, parsed.cost_override) {
         (Some(c), _) => i8::try_from(c).unwrap_or(spec.cost),
         (None, Some(_)) if registry_x_cost => -1,
         (None, Some(c)) => i8::try_from(c).unwrap_or(spec.cost),
-        (None, None) => upgraded_build.as_ref().map_or(spec.cost, |b| b.cost),
+        (None, None) => upgraded_build.as_ref().map_or(spec.cost, Card::base_cost),
+    };
+    let cost = match parsed.cost_model.or(parsed.local_cost) {
+        Some(model) => model,
+        None => folded_cost_to_model(path, cost, parsed)?,
     };
     let mut card = Card {
-        local_energy_cost: None,
         uid,
         card_id,
         cost,
@@ -2924,8 +3135,8 @@ fn build_card(parsed: &ParsedCard, uid: CardUid, path: &str) -> WireResult<Card>
         for f in &parsed.flags {
             match f.as_str() {
                 "ethereal" => card.set_combat_var(VarKey::EtherealThisCombat, 1),
-                "free_turn" => card.set_combat_var(VarKey::FreeThisTurn, 1),
-                "free_once" => card.set_combat_var(VarKey::FreeUntilPlayed, 1),
+                "free_turn" => card.set_to_free_this_turn(),
+                "free_once" => card.cost.set_until_played(0, false),
                 "unplayable" => fold(&mut card, sts2_core::cards::KeywordOverride::UNPLAYABLE),
                 "innate" => fold(&mut card, sts2_core::cards::KeywordOverride::INNATE),
                 "retain" => fold(&mut card, sts2_core::cards::KeywordOverride::RETAIN),
@@ -2985,71 +3196,6 @@ fn build_card(parsed: &ParsedCard, uid: CardUid, path: &str) -> WireResult<Card>
             mad_science_variant_of(&card)
         };
         set_mad_science_variant(&mut card, mode, rider);
-    }
-
-    // Bank the part of `cost` that a this-turn modifier is responsible for,
-    // so the turn-start restore can expire it on schedule. The producer sends
-    // the card's current cost and what that cost becomes once the turn's
-    // modifiers wear off; the difference is the transient shave, and without
-    // banking it a Stomp rebuilt mid-turn keeps its per-Attack discount for
-    // the rest of the fight.
-    //
-    // The engine's own per-effect banks describe the same fact exactly, so a
-    // producer carrying those must not also send `persistent_cost` — two
-    // representations of one shave would restore it twice. They are mutually
-    // exclusive by construction (only the C# dialects send `persistent_cost`,
-    // only `state_to_dict` sends the banks), so disagreement is a schema
-    // error rather than something to reconcile.
-    if let Some(persistent) = parsed
-        .persistent_cost
-        .filter(|_| parsed.local_cost.is_none())
-    {
-        const ENGINE_OWNED: [VarKey; 4] = [
-            VarKey::StompCostReductionThisTurn,
-            VarKey::PinpointCostReductionThisTurn,
-            VarKey::SneckoCostDeltaThisTurn,
-            VarKey::SneckoRollLive,
-        ];
-        if let Some(k) = ENGINE_OWNED
-            .iter()
-            .find(|k| card.combat_var(**k) != 0)
-            .copied()
-        {
-            return Err(schema_err(
-                path,
-                &format!(
-                    "`persistent_cost` and the engine-owned `{}` bank both describe this \
-                     turn's cost modifiers; a producer must send one or the other",
-                    var_key_wire_name(k)
-                ),
-            ));
-        }
-        let shave = persistent - i32::from(cost);
-        if shave != 0 && cost >= 0 {
-            card.set_combat_var(VarKey::WireTransientCostThisTurn, shave);
-        }
-    }
-
-    // The other transient edge. A "this turn" discount is really "this turn
-    // OR until played" (C# `SetThisTurnOrUntilPlayed`), so restoring it only
-    // at the turn boundary leaves it alive on the card that just spent it.
-    if let Some(played) = parsed.played_cost.filter(|_| parsed.local_cost.is_none()) {
-        let shave = played - i32::from(cost);
-        if shave != 0 && cost >= 0 {
-            card.set_combat_var(VarKey::WireCostExpiringOnPlay, shave);
-        }
-    }
-    // Only meaningful alongside a bank, and only then is it read. Note the
-    // ambiguity that DOES exist runs the other way: `combat_var` defaults to 0,
-    // so an absent `stable_cost` would read back as a legitimate-looking
-    // `stable == 0`. `parse_card`'s all-or-nothing gate on the trio is what
-    // makes that unreachable, not this condition.
-    if let Some(stable) = parsed.stable_cost.filter(|_| parsed.local_cost.is_none()) {
-        if card.combat_var(VarKey::WireTransientCostThisTurn) != 0
-            || card.combat_var(VarKey::WireCostExpiringOnPlay) != 0
-        {
-            card.set_combat_var(VarKey::WireCostStable, stable);
-        }
     }
 
     // The STAR half of a free card. The energy half rides `base_cost` and the
@@ -3112,10 +3258,66 @@ fn build_card(parsed: &ParsedCard, uid: CardUid, path: &str) -> WireResult<Card>
             ));
         }
     }
-    if let Some(model) = parsed.local_cost {
-        card.set_local_energy_cost(model);
+    if let Some(exact) = parsed.cost_model.or(parsed.local_cost) {
+        card.cost = exact;
     }
     Ok(card)
+}
+
+/// Rebuild a card's cost model from the C# producers' folded numbers.
+///
+/// Those dialects cannot ship the modifier list itself, only its folds:
+/// `base_cost` (every local modifier applied), `persistent_cost` (the
+/// end-of-turn ones dropped), `played_cost` (the when-played ones dropped)
+/// and `stable_cost` (both dropped). Any list that reproduces all four folds
+/// expires exactly as the real one does, so this builds the shortest one:
+/// a base of `stable` and up to three Absolute modifiers, one per lifetime
+/// whose fold differs from what precedes it.
+///
+/// A producer that omits `played_cost` says no modifier expires on play (and
+/// likewise for `persistent_cost`), which is how the older dialects that
+/// sent `persistent_cost` alone keep their meaning.
+fn folded_cost_to_model(
+    path: &str,
+    cur: i8,
+    parsed: &ParsedCard,
+) -> WireResult<sts2_core::CardEnergyCost> {
+    use sts2_core::CostExpiry;
+    let (persistent, played) = (parsed.persistent_cost, parsed.played_cost);
+    if cur < 0 || (persistent.is_none() && played.is_none()) {
+        return Ok(sts2_core::CardEnergyCost::new(cur));
+    }
+    let cur = i32::from(cur);
+    let p = persistent.unwrap_or(cur);
+    let q = played.unwrap_or(cur);
+    let stable = match (parsed.stable_cost, persistent, played) {
+        (Some(s), _, _) => s,
+        (None, _, None) => p,
+        (None, None, _) => q,
+        // `parse_card` refuses this combination.
+        (None, Some(_), Some(_)) => {
+            return Err(schema_err(
+                path,
+                "`stable_cost` is required with both banks",
+            ))
+        }
+    };
+    let base =
+        i8::try_from(stable).map_err(|_| schema_err(path, "`stable_cost` must fit in i8"))?;
+    let mut model = sts2_core::CardEnergyCost::new(base);
+    let mut fold = stable;
+    if p != stable {
+        model.set(p, CostExpiry::Played, false);
+        fold = p;
+    }
+    if q != stable {
+        model.set(q, CostExpiry::Turn, false);
+        fold = q;
+    }
+    if cur != fold {
+        model.set(cur, CostExpiry::TurnOrPlayed, false);
+    }
+    Ok(model)
 }
 
 /// Per-monster aliases from the C# wire's `MoveState` id (what the
@@ -3170,6 +3372,10 @@ const WIRE_MOVE_STATE_ALIASES: &[(MonsterKind, &str, &str)] = &[
         "POWER_SHIELD_MOVE",
         "FIRST_POWER_SHIELD",
     ),
+    // C# `MoveState("MAGIC_BOMB", MagicBombMove, …)` has no `_MOVE` segment
+    // to strip; the port named it "BOMB". Found by the #1181 move-log
+    // lockstep check (seeds 1003 / 1049).
+    (MonsterKind::MagiKnight, "MAGIC_BOMB", "BOMB"),
     (MonsterKind::Queen, "YOU_ARE_MINE_MOVE", "YOURE_MINE_MOVE"),
     (MonsterKind::ShrinkerBeetle, "SHRINKER_MOVE", "SHRINK"),
     // C# "THWACK" — the Rust port typo'd the state id as "TWACK".
@@ -3793,6 +3999,7 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
         game_version: parsed.game_version,
         is_elite: parsed.is_elite,
         act_index: parsed.act_index,
+        total_floor: parsed.total_floor,
         is_boss: parsed.is_boss,
         allies: parsed
             .allies
@@ -4512,6 +4719,16 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
             ai_at_wire_move = wire_move_state_alias(m.kind, ms)
                 .is_some_and(|alias| ai.force_current_state_by_name(alias))
                 || ai.force_current_state_by_name_relaxed(ms);
+            // The synthetic stun (below), rebuilt when the wire carries the
+            // move machine (`ai`, #1181): park on the engine's own generic
+            // `STUNNED` move, as `stun_immediate` does, so the log restore
+            // applies and the stun resumes the move it interrupted
+            // (`forced_next`, else C#'s default, the log's last move).
+            if !ai_at_wire_move && ms == "STUNNED" && m.ai.is_some() && !m.is_dead {
+                let stun = ai.ensure_generic_stun_state();
+                ai.force_current_state(stun);
+                ai_at_wire_move = true;
+            }
             let resolved = ai_at_wire_move
                 // C# `Creature.StunInternal` injects a SYNTHETIC
                 // `MoveState("STUNNED")` (follow-up = the interrupted move) that
@@ -4696,6 +4913,55 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
             ),
             other => other,
         };
+        // The AI's owner (#1181). The engine sets it before every roll
+        // (`roll_next_enemy_intents`), but a reconstructed state read before
+        // its first roll (`peek_intents`, the forecast) resolved its
+        // owner-aware branch predicates (CeremonialBeast PLOW_CHECK, …) with
+        // no owner.
+        let mut ai = ai;
+        if let Some(ai) = ai.as_mut() {
+            ai.set_owner(CreatureUid(cid));
+        }
+        // The move machine's own state (#1181): the move log the repeat rules
+        // read (`CannotRepeat`, `UseOnlyOnce`, cooldowns), the performed
+        // flags, and on the engine's own dicts the counter and a queued
+        // forced move. Applied after the per-monster counter inference above,
+        // so an exact wire counter wins over an inferred one. Only onto an AI
+        // parked on the wire's own move: the log's last entry is read against
+        // it. A logged id this AI has no state for keeps its place as
+        // `UNRESOLVED_LOGGED_MOVE`: the repeat rules count positions (cooldown
+        // windows, "last move"), and the placeholder matches no branch.
+        if let (Some(wire_ai), Some(ai), true) = (m.ai.as_ref(), ai.as_mut(), ai_at_wire_move) {
+            let resolve = |name: &str| {
+                wire_move_state_alias(m.kind, name)
+                    .and_then(|alias| ai.move_state_id_relaxed(alias))
+                    .or_else(|| ai.move_state_id_relaxed(name))
+            };
+            let log: Vec<sts2_core::monster_ai::StateId> = wire_ai
+                .log
+                .iter()
+                .map(|n| resolve(n).unwrap_or(sts2_core::MonsterAi::UNRESOLVED_LOGGED_MOVE))
+                .collect();
+            // A synthetic stun with no `forced_next` resumes what C#'s
+            // `Creature.StunInternal` defaults to: the last logged move.
+            let forced_next = wire_ai
+                .forced_next
+                .as_deref()
+                .and_then(resolve)
+                .or_else(|| {
+                    (ai.current_state_id() == sts2_core::MonsterAi::GENERIC_STUN_STATE)
+                        .then(|| log.last().copied())
+                        .flatten()
+                });
+            ai.restore_wire_instance_state(&sts2_core::WireInstanceState {
+                log: &log,
+                performed_first_move: wire_ai.performed_first_move,
+                performed: wire_ai.performed,
+                forced: wire_ai.forced,
+                counter: wire_ai.counter,
+                forced_next,
+            });
+        }
         state.creatures.push(Creature {
             id: cid,
             // The engine's dead-convention is `current_hp <= 0`; clamp in
@@ -5050,6 +5316,11 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
     state.coop.full = parsed.coop_full && !state.coop.stash.is_empty();
     state.coop.seat_index = parsed.coop_seat_index;
     apply_seat_histories(&mut state, parsed);
+    if let Some(words) = parsed.fool_state.as_deref() {
+        let f =
+            crate::fool_state::decode(&state, words).map_err(|e| schema_err("$.fool_state", &e))?;
+        state.player.fool = Some(Box::new(f));
+    }
 
     Ok(state)
 }
@@ -5070,40 +5341,32 @@ pub const fn var_key_wire_name(k: VarKey) -> &'static str {
         VarKey::ClawBuff => "claw_buff",
         VarKey::GeneticAlgorithmBlock => "genetic_algorithm_block",
         VarKey::RitualDaggerDamage => "ritual_dagger_damage",
-        VarKey::FreeThisTurn => "free_this_turn",
         VarKey::EtherealThisCombat => "ethereal_this_combat",
         VarKey::StarCostFreeThisCombat => "star_cost_free_this_combat",
         VarKey::MakeItSoInterval => "make_it_so_interval",
-        VarKey::StompCostReductionThisTurn => "stomp_cost_reduction_this_turn",
-        VarKey::PinpointCostReductionThisTurn => "pinpoint_cost_reduction_this_turn",
-        VarKey::SneckoCostDeltaThisTurn => "snecko_cost_delta_this_turn",
         VarKey::ReturnIfPlayedRound => "return_if_played_round",
         VarKey::DampenDowngradedMarker => "dampen_downgraded_marker",
         VarKey::IsDupe => "is_dupe",
         VarKey::GeneratedInCombat => "generated_in_combat",
-        VarKey::CostAbsolutelySet => "cost_absolutely_set",
         VarKey::ThrashFoldRemNum => "thrash_fold_rem_num",
         VarKey::ThrashFoldRemDen => "thrash_fold_rem_den",
-        VarKey::FreeUntilPlayed => "free_until_played",
         VarKey::WitherFakeUpgradeLevel => "wither_fake_upgrade_level",
         VarKey::PendingBatchAutoPlay => "pending_batch_auto_play",
         VarKey::AutoPlayStarX => "auto_play_star_x",
         VarKey::AutoPlayEnergyValue => "auto_play_energy_value",
-        VarKey::WireTransientCostThisTurn => "wire_transient_cost_this_turn",
-        VarKey::WireCostExpiringOnPlay => "wire_cost_expiring_on_play",
-        VarKey::WireCostStable => "wire_cost_stable",
         VarKey::Generic => "generic",
-        VarKey::SneckoRollLive => "snecko_roll_live",
-        VarKey::CostReductionUntilPlayed => "cost_reduction_until_played",
         VarKey::MidnightExhaustsCounted => "midnight_exhausts_counted",
         VarKey::EnchantmentUsed => "enchantment_used",
         VarKey::StarCostFreeThisTurn => "star_cost_free_this_turn",
         VarKey::MomentumDamage => "momentum_damage",
         VarKey::BansheesCryEtherealCounted => "banshees_cry_ethereal_counted",
         VarKey::ExhaustOnNextPlay => "exhaust_on_next_play",
-        VarKey::CostDebtThisCombat => "cost_debt_this_combat",
-        VarKey::FlattenOstyAttacksAtRoll => "flatten_osty_attacks_at_roll",
-        VarKey::CostAddedAfterLocalZero => "cost_added_after_local_zero",
+        VarKey::RegretCardsInHand => "regret_cards_in_hand",
+        VarKey::SlyOwedAfterDraw => "sly_owed_after_draw",
+        VarKey::CloneTurnFlags => "clone_turn_flags",
+        VarKey::ExhaustOwedAfterDraw => "exhaust_owed_after_draw",
+        VarKey::AfterCardDrawnDeferred => "after_card_drawn_deferred",
+        VarKey::AfterCardDrawnWalk => "after_card_drawn_walk",
     }
 }
 
@@ -5115,40 +5378,32 @@ pub fn var_key_from_wire(name: &str) -> Option<VarKey> {
         VarKey::ClawBuff,
         VarKey::GeneticAlgorithmBlock,
         VarKey::RitualDaggerDamage,
-        VarKey::FreeThisTurn,
         VarKey::EtherealThisCombat,
         VarKey::StarCostFreeThisCombat,
         VarKey::MakeItSoInterval,
-        VarKey::StompCostReductionThisTurn,
-        VarKey::PinpointCostReductionThisTurn,
-        VarKey::SneckoCostDeltaThisTurn,
         VarKey::ReturnIfPlayedRound,
         VarKey::DampenDowngradedMarker,
         VarKey::IsDupe,
         VarKey::GeneratedInCombat,
-        VarKey::CostAbsolutelySet,
         VarKey::ThrashFoldRemNum,
         VarKey::ThrashFoldRemDen,
-        VarKey::FreeUntilPlayed,
         VarKey::WitherFakeUpgradeLevel,
         VarKey::PendingBatchAutoPlay,
         VarKey::AutoPlayStarX,
         VarKey::AutoPlayEnergyValue,
-        VarKey::WireTransientCostThisTurn,
-        VarKey::WireCostExpiringOnPlay,
-        VarKey::WireCostStable,
-        VarKey::CostReductionUntilPlayed,
         VarKey::Generic,
-        VarKey::SneckoRollLive,
         VarKey::MidnightExhaustsCounted,
         VarKey::EnchantmentUsed,
         VarKey::StarCostFreeThisTurn,
         VarKey::MomentumDamage,
         VarKey::BansheesCryEtherealCounted,
         VarKey::ExhaustOnNextPlay,
-        VarKey::CostDebtThisCombat,
-        VarKey::FlattenOstyAttacksAtRoll,
-        VarKey::CostAddedAfterLocalZero,
+        VarKey::RegretCardsInHand,
+        VarKey::SlyOwedAfterDraw,
+        VarKey::CloneTurnFlags,
+        VarKey::ExhaustOwedAfterDraw,
+        VarKey::AfterCardDrawnDeferred,
+        VarKey::AfterCardDrawnWalk,
     ];
     ALL.iter().copied().find(|k| var_key_wire_name(*k) == name)
 }

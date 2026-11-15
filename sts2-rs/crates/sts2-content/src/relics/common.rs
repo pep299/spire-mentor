@@ -434,7 +434,11 @@ fn listener_juzu_bracelet(
     if !rs.owns_active_relic(RelicId::JuzuBracelet) {
         return EffectResult::NotImplemented;
     }
-    let removed = room_types.remove(&RoomType::Monster);
+    let mut removed = room_types.remove(&RoomType::Monster);
+    // v0.113.0 also strips Elite (`JuzuBracelet.cs:20`).
+    if rs.game_version >= sts2_core::GameVersion::V0_113_0 {
+        removed |= room_types.remove(&RoomType::Elite);
+    }
     if removed {
         EffectResult::Resolved
     } else {
@@ -1385,7 +1389,7 @@ mod tests {
             let card = Card {
                 uid,
                 card_id: CardId::StrikeIronclad,
-                cost: 1,
+                cost: sts2_core::CardEnergyCost::new(1),
                 card_type: CardType::Attack,
                 target_type: TargetType::Enemy,
                 upgraded: false,
@@ -1446,7 +1450,7 @@ mod tests {
         state.cards.push(Card {
             uid,
             card_id: CardId::StrikeIronclad,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -2114,10 +2118,9 @@ mod tests {
             .map_or(1, |m| m.saturating_add(1));
         let uid = sts2_core::CardUid(NonZeroU32::new(next_raw).expect("non-zero"));
         state.cards.push(Card {
-            local_energy_cost: None,
             uid,
             card_id: CardId::StrikeIronclad,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type,
             target_type: TargetType::Self_,
             upgraded: false,

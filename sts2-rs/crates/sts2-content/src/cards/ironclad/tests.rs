@@ -70,10 +70,9 @@ fn push_play_card(
     let raw = u32::try_from(state.cards.len() + 1).expect("cards len fits in u32");
     let uid = sts2_core::CardUid::new(raw).expect("non-zero uid");
     state.cards.push(Card {
-        local_energy_cost: None,
         uid,
         card_id,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: false,
@@ -102,10 +101,9 @@ fn push_draw_card(
     let raw = u32::try_from(state.cards.len() + 1).expect("cards len fits u32");
     let uid = sts2_core::CardUid::new(raw).expect("non-zero uid");
     state.cards.push(Card {
-        local_energy_cost: None,
         uid,
         card_id,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type,
         target_type,
         upgraded: false,
@@ -200,10 +198,9 @@ fn perfected_strike_counts_pile_strikes_not_orphans() {
         let raw = u32::try_from(state.cards.len() + 1).expect("fits");
         let uid = sts2_core::CardUid::new(raw).expect("non-zero");
         state.cards.push(Card {
-            local_energy_cost: None,
             uid,
             card_id: id,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -463,10 +460,9 @@ fn hemokinesis_rupture_strength_lands_after_card_resolves() {
     let raw = u32::try_from(state.cards.len() + 1).expect("fits");
     let card_uid = sts2_core::CardUid::new(raw).expect("non-zero");
     state.cards.push(Card {
-        local_energy_cost: None,
         uid: card_uid,
         card_id: CardId::Hemokinesis,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: false,
@@ -550,10 +546,9 @@ fn rupture_strength_from_galvanic_after_a_power_play_is_not_lost() {
     let raw = u32::try_from(state.cards.len() + 1).expect("fits");
     let card_uid = sts2_core::CardUid::new(raw).expect("non-zero");
     state.cards.push(Card {
-        local_energy_cost: None,
         uid: card_uid,
         card_id: CardId::Inflame,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Power,
         target_type: TargetType::Self_,
         upgraded: false,
@@ -568,6 +563,7 @@ fn rupture_strength_from_galvanic_after_a_power_play_is_not_lost() {
         affliction: None,
     });
     state.player.hand.push(card_uid);
+    sts2_core::monster_power_effects::galvanic_before_combat_start(&mut state);
     let hp_before = state.player.current_hp;
     let _ = play_card(&mut state, 0, None);
     assert_eq!(
@@ -629,13 +625,14 @@ fn rupture_strength_from_galvanic_in_a_cascade_auto_play_lands_before_the_next_c
         0,
         0,
     );
+    // GalvanicPower.BeforeCombatStart Galvanizes the Rupture.
+    sts2_core::monster_power_effects::galvanic_before_combat_start(&mut state);
     let raw = u32::try_from(state.cards.len() + 1).expect("fits");
     let cascade_uid = sts2_core::CardUid::new(raw).expect("non-zero");
     state.cards.push(Card {
-        local_energy_cost: None,
         uid: cascade_uid,
         card_id: CardId::Cascade,
-        cost: -1,
+        cost: sts2_core::CardEnergyCost::new(-1),
         card_type: CardType::Skill,
         target_type: TargetType::Self_,
         upgraded: false,
@@ -718,10 +715,9 @@ fn rupture_strength_from_corrupted_in_a_cascade_auto_play_lands_before_the_next_
     let raw = u32::try_from(state.cards.len() + 1).expect("fits");
     let cascade_uid = sts2_core::CardUid::new(raw).expect("non-zero");
     state.cards.push(Card {
-        local_energy_cost: None,
         uid: cascade_uid,
         card_id: CardId::Cascade,
-        cost: -1,
+        cost: sts2_core::CardEnergyCost::new(-1),
         card_type: CardType::Skill,
         target_type: TargetType::Self_,
         upgraded: false,
@@ -813,7 +809,7 @@ fn rupture_offering_strength_not_flushed_by_nested_hellraiser_auto_plays() {
         let c = &mut state.cards[offering.0.get() as usize - 1];
         c.card_type = CardType::Skill;
         c.target_type = TargetType::Self_;
-        c.cost = 0;
+        c.cost = sts2_core::CardEnergyCost::new(0);
         c.base_damage = 0;
     }
     let idx = u8::try_from(
@@ -1293,10 +1289,9 @@ fn push_draw_top_card(
     let raw = u32::try_from(state.cards.len() + 1).expect("cards len fits in u32");
     let uid = sts2_core::CardUid::new(raw).expect("non-zero uid");
     state.cards.push(Card {
-        local_energy_cost: None,
         uid,
         card_id,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type,
         target_type,
         upgraded: false,
@@ -1394,7 +1389,7 @@ fn havoc_auto_played_two_cost_card_triggers_intimidating_helmet() {
         6,
         0,
     );
-    state.cards[top.0.get() as usize - 1].cost = 2;
+    state.cards[top.0.get() as usize - 1].cost = sts2_core::CardEnergyCost::new(2);
     let block_before = state.player.block;
     let r = dispatch(&mut state, CardId::Havoc, None);
     assert_eq!(r, EffectResult::Resolved);
@@ -1436,7 +1431,7 @@ fn havoc_on_havoc_recurses_and_plays_underlying_card() {
         state.cards.push(Card {
             uid,
             card_id: CardId::StrikeIronclad,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -1510,7 +1505,7 @@ fn havoc_on_havoc_reshuffles_discard_into_draw() {
         state.cards.push(Card {
             uid,
             card_id: CardId::StrikeIronclad,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -1616,7 +1611,7 @@ fn push_hand_skill(state: &mut CombatState, card_id: CardId) -> sts2_core::CardU
     state.cards.push(Card {
         uid,
         card_id,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Skill,
         target_type: TargetType::Self_,
         upgraded: false,
@@ -1957,6 +1952,10 @@ fn thrash_folds_upgraded_osty_damage() {
     for (card_id, base, upgraded) in [
         (CardId::BoneShards, 9, 12),
         (CardId::Fetch, 3, 6),
+        // Poke / Snap: `OstyDamageVar(6)` / `(7)`, +3 on upgrade (Poke.cs:40,
+        // Snap.cs:49). Loadout Ironclad 5215 v0.107.1 folded Poke+ as 6.
+        (CardId::Poke, 6, 9),
+        (CardId::Snap, 7, 10),
         (CardId::Flatten, 12, 16),
         (CardId::HighFive, 11, 13),
         (CardId::Rattle, 7, 9),
@@ -2229,10 +2228,9 @@ fn push_hand_card(state: &mut CombatState, card_id: CardId) -> sts2_core::CardUi
     let raw = u32::try_from(state.cards.len() + 1).expect("cards len fits in u32");
     let uid = sts2_core::CardUid::new(raw).expect("non-zero uid");
     state.cards.push(Card {
-        local_energy_cost: None,
         uid,
         card_id,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: false,
@@ -2260,10 +2258,9 @@ fn push_hand_card_typed(
     let raw = u32::try_from(state.cards.len() + 1).expect("cards len fits in u32");
     let uid = sts2_core::CardUid::new(raw).expect("non-zero uid");
     state.cards.push(Card {
-        local_energy_cost: None,
         uid,
         card_id,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type,
         target_type: TargetType::Self_,
         upgraded: false,
@@ -2941,7 +2938,7 @@ fn armaments_opens_upgrade_choice_and_upgrades_selection() {
         state.cards.push(Card {
             uid,
             card_id: CardId::StrikeIronclad,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: *upgraded,
@@ -3013,7 +3010,7 @@ fn armaments_single_upgradable_auto_upgrades_no_choice() {
         state.cards.push(Card {
             uid,
             card_id: CardId::StrikeIronclad,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: *upgraded,
@@ -3089,21 +3086,20 @@ fn infernal_blade_spawns_attack_with_cost_zero_this_turn() {
         CardId::InfernalBlade,
         "c68o must not spawn an InfernalBlade clone (5om placeholder regression)"
     );
-    // The FreeThisTurn flag is set.
-    assert_eq!(
-        spawned.combat_var(VarKey::FreeThisTurn),
-        1,
-        "spawned card must carry FreeThisTurn=1"
+    // The FREE_THIS_TURN flag is set.
+    assert!(
+        spawned.cost.has(sts2_core::LocalCostMod::FREE_THIS_TURN),
+        "spawned card must carry FREE_THIS_TURN"
     );
     // The effective cost (queried through the dispatch resolver) is 0.
     let eff = sts2_core::hooks::effective_card_cost(&state, spawned_uid);
     assert_eq!(
         eff,
         0,
-        "effective_card_cost for FreeThisTurn card must be 0 \
-             (raw cost={}, FreeThisTurn={})",
-        spawned.cost,
-        spawned.combat_var(VarKey::FreeThisTurn),
+        "effective_card_cost for FREE_THIS_TURN card must be 0 \
+             (raw cost={}, FREE_THIS_TURN={})",
+        spawned.local_cost(),
+        spawned.cost.has(sts2_core::LocalCostMod::FREE_THIS_TURN),
     );
     // GH #357: the live A1 corpus carried five records where a
     // `generated_in_combat` card in the mirror's hand was `upgraded: true`
@@ -3164,10 +3160,12 @@ fn infernal_blade_cost_rider_clears_at_turn_end() {
 
     let spawned_uid = *state.player.hand.last().expect("hand non-empty");
     let spawned_idx = spawned_uid.0.get() as usize - 1;
-    let base_cost = state.cards[spawned_idx].cost;
+    let base_cost = state.cards[spawned_idx].base_cost();
 
     // Sanity: rider is currently set.
-    assert_eq!(state.cards[spawned_idx].combat_var(VarKey::FreeThisTurn), 1);
+    assert!(state.cards[spawned_idx]
+        .cost
+        .has(sts2_core::LocalCostMod::FREE_THIS_TURN));
     assert_eq!(
         sts2_core::hooks::effective_card_cost(&state, spawned_uid),
         0
@@ -3183,14 +3181,14 @@ fn infernal_blade_cost_rider_clears_at_turn_end() {
     // helper does — and assert effective_card_cost picks up the
     // change. The combat_loop side has its own integration test
     // around the actual cleanup-site wiring.
-    state.cards[spawned_idx].set_combat_var(VarKey::FreeThisTurn, 0);
+    state.cards[spawned_idx].cost.end_of_turn_cleanup();
 
     // Post-clear: effective cost is back to the base cost.
     let eff_after = sts2_core::hooks::effective_card_cost(&state, spawned_uid);
     assert_eq!(
         eff_after,
         i32::from(base_cost).max(0),
-        "after FreeThisTurn clear, effective_card_cost reverts to base"
+        "after FREE_THIS_TURN clear, effective_card_cost reverts to base"
     );
 }
 
@@ -3229,7 +3227,7 @@ fn battle_trance_applies_no_draw_and_second_play_is_blocked() {
         state.cards.push(Card {
             uid,
             card_id: CardId::SetupStrikeCard,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -3246,7 +3244,7 @@ fn battle_trance_applies_no_draw_and_second_play_is_blocked() {
     state.cards.push(Card {
         uid: bt_uid,
         card_id: CardId::BattleTrance,
-        cost: 0,
+        cost: sts2_core::CardEnergyCost::new(0),
         card_type: CardType::Skill,
         target_type: TargetType::Self_,
         upgraded: false,
@@ -3333,7 +3331,7 @@ fn ku80_battle_trance_upgraded_draws_four() {
         state.cards.push(Card {
             uid,
             card_id: CardId::SetupStrikeCard,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -3349,7 +3347,7 @@ fn ku80_battle_trance_upgraded_draws_four() {
     state.cards.push(Card {
         uid: bt_uid,
         card_id: CardId::BattleTrance,
-        cost: 0,
+        cost: sts2_core::CardEnergyCost::new(0),
         card_type: CardType::Skill,
         target_type: TargetType::Self_,
         upgraded: true,
@@ -3400,7 +3398,7 @@ fn expect_a_fight_gains_energy_per_attack_in_hand() {
             } else {
                 CardId::DefendIronclad
             },
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: ct,
             target_type: if matches!(ct, CardType::Attack) {
                 TargetType::Enemy
@@ -3474,7 +3472,7 @@ fn stoke_exhausts_hand_and_generates_random_ironclad_cards() {
         state.cards.push(Card {
             uid,
             card_id: CardId::StrikeIronclad,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -3541,7 +3539,7 @@ fn stoke_fires_card_generated_for_combat_listeners() {
         state.cards.push(Card {
             uid,
             card_id: CardId::StrikeIronclad,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             base_damage: 6,
@@ -3573,7 +3571,7 @@ fn primal_force_transforms_only_attacks_in_hand() {
         state.cards.push(Card {
             uid,
             card_id: id,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: ct,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -3663,7 +3661,7 @@ fn brand_exhausts_selected_card_then_grants_strength() {
         state.cards.push(Card {
             uid,
             card_id: CardId::StrikeIronclad,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             base_damage: 6,
@@ -3746,7 +3744,7 @@ fn burning_pact_exhausts_selected_card_then_draws() {
         state.cards.push(Card {
             uid,
             card_id: CardId::StrikeIronclad,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             base_damage: 6,
@@ -3761,7 +3759,7 @@ fn burning_pact_exhausts_selected_card_then_draws() {
         state.cards.push(Card {
             uid,
             card_id: CardId::StrikeIronclad,
-            cost: 1,
+            cost: sts2_core::CardEnergyCost::new(1),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             base_damage: 6,
@@ -3999,6 +3997,64 @@ fn cascade_upgraded_adds_one_extra() {
 /// (count = 0). Acts as the regression guard against the prior
 /// 1-line `EffectResult::Resolved` stub silently swallowing
 /// X-cost = 0 plays. Bead `sts2-rs-1vv5`.
+/// A combat whose last enemy is already dead, with an empty draw pile and
+/// three cards in discard.
+fn ended_combat_with_three_discards() -> CombatState {
+    install_pool();
+    sts2_core::card_effects::install_default_registry();
+    let (mut state, _enemy) = fresh_state_with_enemy(0);
+    state.game_version = sts2_core::GameVersion::V0_107_1;
+    for _ in 0..3 {
+        let uid = push_draw_top_card(
+            &mut state,
+            CardId::StrikeIronclad,
+            CardType::Attack,
+            TargetType::Enemy,
+            6,
+            0,
+        );
+        state.player.draw.retain(|u| *u != uid);
+        state.player.discard.push(uid);
+    }
+    assert!(sts2_core::combat_loop::combat_is_ending(&state));
+    state
+}
+
+/// C# `CardPileCmd.AutoPlayFromDrawPile` returns at once on
+/// `IsOverOrEnding` (CardPileCmd.cs:953-958 v0.107.1, :1148-1153 v0.111.0):
+/// no `ShuffleIfNecessary`, nothing collected. v0.107.1's `OnPlayWrapper`
+/// replay loop (CardModel.cs:1905) does not stop on combat end, so a Cascade
+/// replayed by Hidden Gem whose 2nd play wins still runs its 3rd play — and
+/// Rust reshuffled the discard there, +9 on the next combat's shuffle stream
+/// (Ironclad seed 6661, v0.107.1).
+#[test]
+fn cascade_on_an_ended_combat_does_not_reshuffle() {
+    let mut state = ended_combat_with_three_discards();
+    let cascade_uid = push_play_card(&mut state, CardId::Cascade, 0, 0);
+    state.cards[cascade_uid.0.get() as usize - 1].energy_spent = 2;
+    let before = state.run_rng.shuffle.counter();
+    let _ = dispatch(&mut state, CardId::Cascade, None);
+    assert_eq!(state.run_rng.shuffle.counter(), before, "no reshuffle");
+    assert_eq!(state.player.discard.len(), 3);
+    assert!(state.player.draw.is_empty());
+}
+
+/// Havoc / Distilled Chaos take nothing off an ended combat either (the same
+/// `AutoPlayFromDrawPile` guard).
+#[test]
+fn draw_top_auto_plays_on_an_ended_combat_take_nothing() {
+    let mut state = ended_combat_with_three_discards();
+    let before = state.run_rng.shuffle.counter();
+    assert!(!sts2_core::combat_loop::auto_play_card_from_draw_top(
+        &mut state, true
+    ));
+    sts2_core::combat_loop::auto_play_n_from_draw_top(&mut state, 3, false);
+    assert_eq!(state.run_rng.shuffle.counter(), before, "no reshuffle");
+    assert_eq!(state.player.discard.len(), 3);
+    assert!(state.player.play.is_empty());
+    assert!(state.player.exhaust.is_empty());
+}
+
 #[test]
 fn cascade_zero_energy_no_op() {
     install_pool();
@@ -4524,10 +4580,9 @@ fn push_self_card(
     let raw = u32::try_from(state.cards.len() + 1).expect("cards len fits in u32");
     let uid = sts2_core::CardUid::new(raw).expect("non-zero uid");
     state.cards.push(Card {
-        local_energy_cost: None,
         uid,
         card_id,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Skill,
         target_type: TargetType::Self_,
         upgraded,
@@ -4710,10 +4765,9 @@ fn spite_triple_hit_when_upgraded_and_hp_lost() {
     let raw = u32::try_from(state.cards.len() + 1).expect("cards len fits in u32");
     let uid = sts2_core::CardUid::new(raw).expect("non-zero uid");
     state.cards.push(Card {
-        local_energy_cost: None,
         uid,
         card_id: CardId::Spite,
-        cost: 0,
+        cost: sts2_core::CardEnergyCost::new(0),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: true,
@@ -4767,10 +4821,9 @@ fn spite_upgraded_damage_stays_5_not_9() {
     let uid = sts2_core::CardUid::new(raw).expect("non-zero uid");
     // upgraded=true + base_damage=5 (unchanged from base spec).
     state.cards.push(Card {
-        local_energy_cost: None,
         uid,
         card_id: CardId::Spite,
-        cost: 0,
+        cost: sts2_core::CardEnergyCost::new(0),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: true,
@@ -4995,10 +5048,9 @@ fn push_draw_tail(
     let raw = u32::try_from(state.cards.len() + 1).expect("cards len fits u32");
     let uid = sts2_core::CardUid::new(raw).expect("non-zero uid");
     state.cards.push(Card {
-        local_energy_cost: None,
         uid,
         card_id,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type,
         target_type: if card_type == CardType::Attack {
             TargetType::Enemy
@@ -5182,7 +5234,9 @@ fn hellraiser_strike_that_ends_the_combat_takes_no_confused_roll() {
 
     let _ = sts2_core::cards::draw_via_state(&mut state, 1);
 
-    assert!(state.player.discard.contains(&strike), "Strike auto-played");
+    // Auto-played; its move to Discard is refused once the combat is ending
+    // (`CardPileCmd.Add`, CardPileCmd.cs:312), so it stays in Play.
+    assert!(state.player.play.contains(&strike), "Strike auto-played");
     assert!(sts2_core::combat_loop::combat_is_ending(&state));
     assert_eq!(
         state.run_rng.combat_energy_costs.counter(),
@@ -5208,8 +5262,8 @@ fn hellraiser_nested_draw_rolls_confused_before_the_auto_played_strike() {
     let (mut state, pommel, defend) =
         hellraiser_pommel_then_defend(400, &[(PowerKind::Confused, 1)], seed);
     let mut probe = state.run_rng.combat_energy_costs.clone();
-    let first = probe.next_int(0, 3) as i8;
-    let second = probe.next_int(0, 3) as i8;
+    let first = probe.next_int(0, 3);
+    let second = probe.next_int(0, 3);
 
     let _ = sts2_core::cards::draw_via_state(&mut state, 1);
 
@@ -5218,8 +5272,11 @@ fn hellraiser_nested_draw_rolls_confused_before_the_auto_played_strike() {
         state.player.hand.contains(&defend),
         "Pommel drew the Defend"
     );
-    assert_eq!(state.cards[defend.0.get() as usize - 1].cost, first);
-    assert_eq!(state.cards[pommel.0.get() as usize - 1].cost, second);
+    assert_eq!(state.cards[defend.0.get() as usize - 1].local_cost(), first);
+    assert_eq!(
+        state.cards[pommel.0.get() as usize - 1].local_cost(),
+        second
+    );
 }
 
 /// ChainsOfBindingPower.AfterCardDrawn (ChainsOfBindingPower.cs:36-46) is a
@@ -5294,7 +5351,7 @@ fn hellraiser_auto_play_spends_the_pre_confused_cost() {
     let _ = dispatch(&mut state, CardId::HellraiserCard, None);
     crate::monsters::apply_power_to_player_via_legacy_surface(&mut state, PowerKind::Confused, 1);
     let strike = push_draw_tail(&mut state, CardId::StrikeIronclad, CardType::Attack, 6);
-    state.cards[strike.0.get() as usize - 1].cost = 2;
+    state.cards[strike.0.get() as usize - 1].cost = sts2_core::CardEnergyCost::new(2);
     let block_before = state.player.block;
 
     let _ = sts2_core::cards::draw_via_state(&mut state, 1);
@@ -5302,7 +5359,7 @@ fn hellraiser_auto_play_spends_the_pre_confused_cost() {
     assert!(state.player.discard.contains(&strike), "Strike auto-played");
     assert_eq!(state.player.block - block_before, 4, "played at cost 2");
     assert!(
-        state.cards[strike.0.get() as usize - 1].cost < 2,
+        state.cards[strike.0.get() as usize - 1].local_cost() < 2,
         "then rolled"
     );
 }
@@ -5998,7 +6055,7 @@ fn burning_sticks_clone_of_free_skill_keeps_free_this_turn() {
     let imp =
         sts2_core::CardUid::new(u32::try_from(state.cards.len() + 1).expect("fits")).expect("nz");
     card.uid = imp;
-    card.set_combat_var(VarKey::FreeThisTurn, 1);
+    card.set_to_free_this_turn();
     state.cards.push(card);
     state.player.hand.push(imp);
     let idx = imp.0.get() as usize - 1;
@@ -6016,9 +6073,10 @@ fn burning_sticks_clone_of_free_skill_keeps_free_this_turn() {
         0,
         "the clone carries the live free-this-turn modifier"
     );
-    assert_eq!(
-        state.cards[idx].combat_var(VarKey::FreeThisTurn),
-        0,
+    assert!(
+        !state.cards[idx]
+            .cost
+            .has(sts2_core::LocalCostMod::FREE_THIS_TURN),
         "the played original's WhenPlayed rider expired"
     );
 }

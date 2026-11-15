@@ -8,6 +8,9 @@ the CLI on real seeds.
 
 from __future__ import annotations
 
+import io
+import sys
+
 import act23_state_parity as a23
 import pytest
 from run_parity import Snap
@@ -116,7 +119,7 @@ def test_diff_nav_clean_when_aligned() -> None:
 # HP oracle-artifact classifier (issue #158 step 3)
 # --------------------------------------------------------------------------- #
 # --------------------------------------------------------------------------- #
-# Claws: C# is sent the same first-6 candidates Rust transformed atomically
+# Claws: both engines surface the select; the walk adds multi-card picks
 # --------------------------------------------------------------------------- #
 def _claws_view(n: int) -> dict:
     return {
@@ -129,21 +132,24 @@ def _claws_view(n: int) -> dict:
     }
 
 
-def test_claws_atomic_choice_picks_first_six_candidates() -> None:
-    assert a23.claws_atomic_choice(_claws_view(20)) == [
-        ("select_cards", {"indices": "0,1,2,3,4,5"})
+def test_claws_multi_choices_take_the_first_k_up_to_six() -> None:
+    assert a23.claws_multi_choices(_claws_view(20)) == [
+        ("select_cards", {"indices": ",".join(str(i) for i in range(k))}) for k in range(2, 7)
     ]
 
 
-def test_claws_atomic_choice_clamps_to_candidate_count() -> None:
-    assert a23.claws_atomic_choice(_claws_view(3)) == [("select_cards", {"indices": "0,1,2"})]
-    assert a23.claws_atomic_choice(_claws_view(0)) == []
+def test_claws_multi_choices_clamp_to_candidate_count() -> None:
+    assert a23.claws_multi_choices(_claws_view(3)) == [
+        ("select_cards", {"indices": "0,1"}),
+        ("select_cards", {"indices": "0,1,2"}),
+    ]
+    assert a23.claws_multi_choices(_claws_view(1)) == []
 
 
-def test_claws_atomic_choice_ignores_other_selects() -> None:
+def test_claws_multi_choices_ignore_other_selects() -> None:
     view = _claws_view(10)
     view["prompt_key"] = "TO_TRANSFORM"
-    assert a23.claws_atomic_choice(view) == []
+    assert a23.claws_multi_choices(view) == []
 
 
 def test_hp_artifact_peeled_in_combat() -> None:
@@ -299,6 +305,92 @@ def test_checkpoint_round_trip(tmp_path) -> None:
     resumed = a23.run_one_invincible("", from_checkpoint=ck, branch=0, max_steps=60)
     assert resumed.result.divergence is None, resumed.result.divergence
     assert resumed.result.terminal in ("max_steps", "game_over_match")
+
+
+@pytest.mark.slow
+@pytest.mark.oracle
+def test_an_a10_run_walks_on_to_the_second_boss_in_lockstep() -> None:
+    """#1181 H1 + H2: after the first act-3 boss at A10 the headless returns to
+    the map (it used to call ``EnterNextAct``, so the run stopped at
+    ``phase: cs='event' rs='map'``), and its map lists the second boss in
+    ``rows`` (it used to stop on ``map.nodes: only_rs=[(3, 15)]``). Seed 1015
+    stalled at (3, 14) before; it must now end at the second boss in step."""
+    import sts2_client
+
+    prev = sts2_client.GAME_VERSION
+    sts2_client.set_game_version("v0.111.0")
+    try:
+        run = a23.run_one_invincible("1015", "Ironclad", ascension=10, max_steps=3000)
+    finally:
+        sts2_client.set_game_version(prev)
+    assert run.result.divergence is None, run.result.divergence
+    assert run.result.terminal == "game_over_match", run.result.terminal
+    assert run.max_act == 3
+
+
+#: Monsters whose ENGINE move log differs from C#'s StateLog (#1181 lockstep
+#: check), so a log restored from C# rightly differs from the engine's own.
+#: Only CeremonialBeast is left (#1215): its STUN is the engine's real state,
+#: whose follow-up C# sends as the resume. Both roll identically.
+_ENGINE_LOG_DIVERGES = {"CeremonialBeast"}
+
+
+@pytest.mark.slow
+@pytest.mark.oracle
+def test_the_csharp_move_log_restores_the_engines_own(monkeypatch) -> None:
+    """#1181: at every lockstep combat step of an A10 run, each living enemy's
+    C# ``ai`` object (``StateLog`` ids, ``performed_first_move``,
+    ``performed``, a synthetic stun's ``forced_next``), put on the engine's own
+    dict, rebuilds the engine's own move log, current move and queued move.
+    Only the monsters in ``_ENGINE_LOG_DIVERGES`` may differ."""
+    import sts2_client
+    import sts2_rs
+
+    tally = {"checked": 0, "unexpected": []}
+    orig = a23.full_state_divs
+
+    def check(g, r):
+        cs_state, divs = orig(g, r)
+        combat = r.combat_state() if cs_state else None
+        if combat is None or divs:
+            return cs_state, divs
+        d = sts2_rs.state_to_dict(combat)
+        cs_alive = sorted(
+            (m for m in cs_state.get("monsters") or [] if m.get("alive")), key=lambda m: m["uid"]
+        )
+        rs_alive = [i for i, e in enumerate(d["encounter"]) if not e.get("is_dead") and e.get("ai")]
+        if len(cs_alive) != len(rs_alive) or any(m.get("ai") is None for m in cs_alive):
+            return cs_state, divs
+
+        def pick(e):
+            return (e["ai"]["log"], e.get("move_state"), e["ai"].get("forced_next"))
+
+        want = [pick(d["encounter"][i]) for i in rs_alive]
+        for i, m in zip(rs_alive, cs_alive, strict=True):
+            d["encounter"][i]["ai"] = {k: v for k, v in m["ai"].items()}
+        back = sts2_rs.state_to_dict(sts2_rs.state_from_dict(d))
+        for j, i in enumerate(rs_alive):
+            tally["checked"] += 1
+            got = pick(back["encounter"][i])
+            kind = d["encounter"][i].get("kind")
+            if got != want[j] and kind not in _ENGINE_LOG_DIVERGES:
+                tally["unexpected"].append((kind, want[j], got))
+        return cs_state, divs
+
+    monkeypatch.setattr(a23, "full_state_divs", check)
+    prev = sts2_client.GAME_VERSION
+    sts2_client.set_game_version("v0.111.0")
+    try:
+        run = a23.run_one_invincible(
+            "1049", "Ironclad", ascension=10, max_steps=3000, full_state=True
+        )
+    finally:
+        sts2_client.set_game_version(prev)
+    assert run.result.terminal == "game_over_match", run.result.terminal
+    assert not tally["unexpected"], tally["unexpected"][:5]
+    # Steps with a full-state split are skipped (the hand-affliction class of
+    # #1188 splits act 2 of this seed), so ~900 enemy states are checked.
+    assert tally["checked"] > 500, tally["checked"]
 
 
 # --------------------------------------------------------------------------- #
@@ -459,3 +551,137 @@ def test_graft_reports_an_engine_refusal() -> None:
 
     problems = a23._graft_loadout(_Side(), Refuses(), LOADOUT, RS_VIEW)
     assert problems == ["Rust set_player failed: 'unknown relic'"]
+
+
+def test_utf8_stdio_survives_a_cp1252_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A piped stdout on Windows is cp1252, which has no ``Δ``; the run summary
+    prints ``max |Δhp|`` and used to crash there after the whole run had passed."""
+    raw = io.BytesIO()
+    cp1252 = io.TextIOWrapper(raw, encoding="cp1252", newline="\n")
+    monkeypatch.setattr(sys, "stdout", cp1252)
+    with pytest.raises(UnicodeEncodeError):
+        print("max |Δhp|=0")
+    a23._utf8_stdio()
+    print("max |Δhp|=0")
+    sys.stdout.flush()
+    assert raw.getvalue().endswith("max |Δhp|=0\n".encode())
+
+
+def test_utf8_stdio_leaves_a_non_textiowrapper_stream_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A replaced stream without ``reconfigure`` (StringIO) is left as it is."""
+    buf = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", buf)
+    a23._utf8_stdio()
+    assert sys.stdout is buf
+
+
+# --------------------------------------------------------------------------- #
+# combat round cap: an invincible walk that stalls a fight ends as a harness cap
+# --------------------------------------------------------------------------- #
+class _CapBackend:
+    """A backend frozen at one C# ``combat_play`` decision at ``round``."""
+
+    def __init__(self, rnd: int) -> None:
+        self.view = {
+            "decision": "combat_play",
+            "type": "combat_play",
+            "round": rnd,
+            "context": {"act": 1, "floor": 3},
+            "player": {"hp": 999, "max_hp": 999, "block": 0, "gold": 0},
+            "enemies": [],
+            "hand": [],
+        }
+        self.acts: list = []
+
+    def start(self, **_kw: object) -> dict:
+        return self.view
+
+    def act(self, verb: str, **kw: object) -> dict:
+        self.acts.append((verb, kw))
+        raise RuntimeError("stop")
+
+    def close(self) -> None:
+        pass
+
+
+def _run_capped(monkeypatch: pytest.MonkeyPatch, rnd: int) -> tuple[a23.InvRun, list]:
+    cs, rs = _CapBackend(rnd), _CapBackend(rnd)
+    backends = iter([cs, rs])
+    monkeypatch.setattr(a23, "make_backend", lambda *_a, **_k: lambda: next(backends))
+    monkeypatch.setattr(a23, "enumerate_choices", lambda _g, _v: [("end_turn", {})])
+    out = a23.run_one_invincible("1", max_steps=1)
+    return out, cs.acts + rs.acts
+
+
+def test_combat_past_the_round_cap_ends_as_a_harness_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    out, acts = _run_capped(monkeypatch, a23.COMBAT_ROUND_CAP + 1)
+    assert out.result.terminal == "combat_round_cap"
+    assert out.result.divergence is not None
+    assert out.result.divergence.kind == "harness"
+    assert acts == []
+
+
+def test_combat_at_the_round_cap_carries_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    out, _acts = _run_capped(monkeypatch, a23.COMBAT_ROUND_CAP)
+    assert out.result.terminal != "combat_round_cap"
+
+
+# --------------------------------------------------------------------------- #
+# Fake Merchant: C# shop page vs Rust option-model event (GH #1294, #1342)
+# --------------------------------------------------------------------------- #
+def _fm_cs(relics: list[dict] | None = None) -> dict:
+    return {
+        "decision": "shop",
+        "event_name": "FAKE_MERCHANT",
+        "relics": relics
+        if relics is not None
+        else [
+            {"index": 0, "id": "FAKE_MANGO", "cost": 48, "is_stocked": True},
+            {"index": 1, "id": "FAKE_ANCHOR", "cost": 52, "is_stocked": True},
+        ],
+    }
+
+
+def _fm_rs(*option_ids: str) -> dict:
+    return {
+        "decision": "event_choice",
+        "options": [
+            {"index": i, "option_id": oid, "is_locked": False} for i, oid in enumerate(option_ids)
+        ],
+    }
+
+
+def test_fake_merchant_pair_matches_shop_and_option_model() -> None:
+    assert a23._fake_merchant_pair(_fm_cs(), _fm_rs("buy", "throw_foul", "leave"))
+    # A disabled option is not listed by the Rust view.
+    assert a23._fake_merchant_pair(_fm_cs(), _fm_rs("buy", "leave"))
+
+
+def test_fake_merchant_pair_rejects_other_rooms() -> None:
+    real_shop = {**_fm_cs(), "event_name": None}
+    assert not a23._fake_merchant_pair(real_shop, _fm_rs("buy", "leave"))
+    assert not a23._fake_merchant_pair(_fm_cs(), _fm_rs("leave", "fight"))
+    assert not a23._fake_merchant_pair(_fm_cs(), {"decision": "shop", "options": []})
+
+
+def test_fake_merchant_choices_mirror_first_stocked_buy_and_leave() -> None:
+    cs = _fm_cs(
+        [
+            {"index": 0, "id": "FAKE_MANGO", "cost": 48, "is_stocked": False},
+            {"index": 1, "id": "FAKE_ANCHOR", "cost": 52, "is_stocked": True},
+        ]
+    )
+    got = a23._fake_merchant_choices(cs, _fm_rs("buy", "throw_foul", "leave"))
+    assert got == [
+        ("buy_relic", {"relic_index": 1}, ("choose_option", {"option_index": 0})),
+        ("leave_room", {}, ("choose_option", {"option_index": 2})),
+    ]
+
+
+def test_fake_merchant_choices_only_leave_when_rust_cannot_buy() -> None:
+    got = a23._fake_merchant_choices(_fm_cs(), _fm_rs("leave"))
+    assert got == [("leave_room", {}, ("choose_option", {"option_index": 0}))]

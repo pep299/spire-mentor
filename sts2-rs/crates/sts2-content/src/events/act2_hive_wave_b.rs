@@ -42,6 +42,7 @@
 
 use crate::cards::CardRarity;
 use sts2_core::cards::{CardId, CardType};
+use sts2_core::dotnet_rng::Rng;
 use sts2_core::{
     CardReward, EventId, EventOptionInfo, EventOutcome, EventVarSpec, RelicId, Reward, RunState,
 };
@@ -94,6 +95,13 @@ const RELIC_TRADER_STREAM: &str = "RELIC_TRADER";
 /// stream, so a fresh stream at cursor 0 gives the same three relics whether
 /// asked while presenting the options or while resolving one.
 fn relic_trader_owned(state: &RunState) -> Vec<RelicId> {
+    relic_trader_owned_and_rng(state).0
+}
+
+/// [`relic_trader_owned`] plus the event stream right after the owned-relic
+/// `StableShuffle` — where v0.113.0's `NewRelics` rarity rolls continue
+/// (`RelicTrader.cs:51,68`: `PullNextRelicFromFront(Owner, base.Rng)`).
+fn relic_trader_owned_and_rng(state: &RunState) -> (Vec<RelicId>, Rng) {
     let mut valid: Vec<RelicId> = state
         .relics
         .iter()
@@ -101,11 +109,22 @@ fn relic_trader_owned(state: &RunState) -> Vec<RelicId> {
         .filter(|&id| crate::relics::tradable::relic_is_tradable_in(state, id))
         .collect();
     let mut rng = state.rng.named(RELIC_TRADER_STREAM);
-    rng.stable_shuffle_by(&mut valid, &|a: RelicId, b: RelicId| {
+    rng.stable_shuffle_by_for(state.game_version, &mut valid, &|a: RelicId, b: RelicId| {
         a.to_python_name().cmp(b.to_python_name())
     });
     valid.truncate(RELIC_TRADER_TRADE_COUNT);
-    valid
+    (valid, rng)
+}
+
+/// The stream `NewRelics` rolls rarities on: the player's Rewards stream
+/// through v0.111.0, the event's own stream (after the owned shuffle) from
+/// v0.113.0.
+fn relic_trader_rarity_rng(state: &RunState) -> Rng {
+    if state.game_version >= sts2_core::GameVersion::V0_113_0 {
+        relic_trader_owned_and_rng(state).1
+    } else {
+        state.rng.rewards.clone()
+    }
 }
 
 /// The three relics the trader offers back, for the options that name them.
@@ -116,7 +135,7 @@ fn relic_trader_owned(state: &RunState) -> Vec<RelicId> {
 /// this rolls against a COPY and feeds each peeked id back as an exclusion,
 /// which is what draining the bag would have done.
 fn relic_trader_stock(state: &RunState) -> Vec<RelicId> {
-    let mut rewards = state.rng.rewards.clone();
+    let mut rewards = relic_trader_rarity_rng(state);
     let mut stock: Vec<RelicId> = Vec::with_capacity(RELIC_TRADER_TRADE_COUNT);
     for _ in 0..RELIC_TRADER_TRADE_COUNT {
         let rarity = sts2_core::runstate::roll_relic_rarity(&mut rewards);
@@ -134,10 +153,16 @@ fn relic_trader_stock(state: &RunState) -> Vec<RelicId> {
 /// pulls all three in `GenerateInitialOptions` — the two you turn down are
 /// spent for the rest of the run. Every option resolves exactly one trade, so
 /// doing the pulls here leaves the bag where C# leaves it.
-fn relic_trader_take_stock(state: &mut RunState) -> Vec<RelicId> {
+///
+/// `event_rng` is the stream after the owned-relic shuffle (from v0.113.0;
+/// `None` rolls on the Rewards stream).
+fn relic_trader_take_stock(state: &mut RunState, mut event_rng: Option<Rng>) -> Vec<RelicId> {
     let mut stock: Vec<RelicId> = Vec::with_capacity(RELIC_TRADER_TRADE_COUNT);
     for _ in 0..RELIC_TRADER_TRADE_COUNT {
-        let rarity = state.roll_reward_relic_rarity();
+        let rarity = match event_rng.as_mut() {
+            Some(rng) => sts2_core::runstate::roll_relic_rarity(rng),
+            None => state.roll_reward_relic_rarity(),
+        };
         let Some(id) = state.pop_relic_from_grab_bag(rarity) else {
             break;
         };
@@ -149,8 +174,11 @@ fn relic_trader_take_stock(state: &mut RunState) -> Vec<RelicId> {
 /// C# `RelicTrader.Trade(index)`: `RelicCmd.Remove(OwnedRelics[index])` then
 /// `RelicCmd.Obtain(NewRelics[index])`.
 fn relic_trader_trade(state: &mut RunState, slot: usize) -> EventOutcome {
-    let owned = relic_trader_owned(state);
-    let stock = relic_trader_take_stock(state);
+    // One derivation of the event stream serves both the owned shuffle and
+    // the v0.113.0 rarity rolls that continue it.
+    let (owned, rng) = relic_trader_owned_and_rng(state);
+    let event_rng = (state.game_version >= sts2_core::GameVersion::V0_113_0).then_some(rng);
+    let stock = relic_trader_take_stock(state, event_rng);
     let (Some(&given), Some(&taken)) = (owned.get(slot), stock.get(slot)) else {
         // Neither can be short in a run — `relic_trader_allowed` demands 5
         // tradable relics and the bag is far from empty in Act 2 — but a
@@ -757,7 +785,7 @@ fn symbiote_can_enchant(c: &sts2_core::cards::Card) -> bool {
     c.card_type == CardType::Attack
         && !c.is_quest()
         && c.enchantments.is_empty()
-        && (c.cost >= 0 || c.is_x_cost())
+        && (c.base_cost() >= 0 || c.is_x_cost())
 }
 
 fn symbiote_approach(state: &mut RunState) -> EventOutcome {
@@ -802,7 +830,16 @@ fn symbiote_kill_fire(state: &mut RunState) -> EventOutcome {
     // `CardCmd.TransformToRandom(item, base.Rng)`. `base.Rng` is the SYMBIOTE
     // event stream with no prior draw (no CalculateVars roll precedes it), so
     // `skip_reads = 0`. Queue the interactive transform pick → `card_select`;
-    // auto mode transforms the first deck card off the same stream.
+    // auto mode transforms the first transformable deck card off the same
+    // stream. With nothing transformable the select returns empty and opens
+    // no screen (CardSelectCmd.cs), so nothing is queued.
+    let Some(first) = state
+        .master_deck
+        .iter()
+        .position(crate::cards::spec_index::card_is_transformable_in_deck)
+    else {
+        return EventOutcome::finished("No card could be transformed.");
+    };
     if state.interactive_card_transform {
         state
             .pending_deck_transforms
@@ -812,21 +849,20 @@ fn symbiote_kill_fire(state: &mut RunState) -> EventOutcome {
             });
         EventOutcome::finished("Pick a card to transform.")
     } else {
-        if let Some(original) = state.master_deck.first().map(|c| c.card_id) {
-            if let Some(new_id) = crate::cards::spec_index::roll_transform_replacement_event_stream(
-                state,
-                state.character_id,
-                original,
-                SYMBIOTE_STREAM,
-                0,
-            ) {
-                if let Some(card) = crate::cards::spec_index::card_pod_from_id(new_id, false) {
-                    state.master_deck.remove(0);
-                    state.add_card_to_deck_with_hooks(
-                        card,
-                        sts2_core::relic_effects::AddSource::EventGain,
-                    );
-                }
+        let original = state.master_deck[first].card_id;
+        if let Some(new_id) = crate::cards::spec_index::roll_transform_replacement_event_stream(
+            state,
+            state.character_id,
+            original,
+            SYMBIOTE_STREAM,
+            0,
+        ) {
+            if let Some(card) = crate::cards::spec_index::card_pod_from_id(new_id, false) {
+                state.master_deck.remove(first);
+                state.add_card_to_deck_with_hooks(
+                    card,
+                    sts2_core::relic_effects::AddSource::EventGain,
+                );
             }
         }
         EventOutcome::finished("Transformed a card.")
@@ -856,12 +892,30 @@ const SYMBIOTE_OPTIONS: &[EventOptionSpec] = &[
     },
 ];
 
+/// `Symbiote.GenerateInitialOptions`: Approach is replaced by the
+/// null-handler `APPROACH_LOCKED` option, in the same slot, when no deck card
+/// passes `Corrupted.CanEnchant`.
+fn symbiote_generate_options(state: &RunState, spec: &EventSpec) -> Vec<EventOptionInfo> {
+    let mut opts = default_option_info_from_spec(state, spec);
+    if !state.master_deck.iter().any(symbiote_can_enchant) {
+        for opt in opts.iter_mut().filter(|o| o.option_id == "approach") {
+            opt.enabled = false;
+            opt.loc_key = "SYMBIOTE.pages.INITIAL.options.APPROACH_LOCKED";
+            opt.label = "Locked".to_string();
+            opt.description = "None of your Attacks can be Enchanted.".to_string();
+            opt.vars = Vec::new();
+            opt.title_vars = Vec::new();
+        }
+    }
+    opts
+}
+
 pub const SYMBIOTE: EventSpec = EventSpec {
     id: EventId::Symbiote,
     python_name: "Symbiote",
     // C# `CurrentActIndex > 0` (Act 2+). Bead `sts2-rs-1hiht`.
     is_allowed: allowed_act_2_plus,
-    generate_options: default_option_info_from_spec,
+    generate_options: symbiote_generate_options,
     options: SYMBIOTE_OPTIONS,
 };
 
@@ -1063,6 +1117,7 @@ fn card_type_word(card_type: CardType) -> &'static str {
         CardType::Power => "Power",
         CardType::Status => "Status",
         CardType::Curse => "Curse",
+        CardType::Quest => "Quest",
     }
 }
 
@@ -1144,6 +1199,17 @@ pub const WATERLOGGED_QUILL_COST: i32 = 55;
 /// `CanonicalVars[2] = GoldVar("PricklySpongeGold", 99)` (Python
 /// pin `act2.py:1223`'s 155 drifted). Bead `sts2-rs-rcner`.
 pub const WATERLOGGED_SPONGE_COST: i32 = 99;
+/// v0.113.0 Prickly Sponge cost (`PricklySpongeGold` 99 -> 120).
+pub const WATERLOGGED_SPONGE_COST_V0113: i32 = 120;
+
+/// The Prickly Sponge cost for the run's build.
+fn waterlogged_sponge_cost(state: &RunState) -> i32 {
+    if state.game_version >= sts2_core::GameVersion::V0_113_0 {
+        WATERLOGGED_SPONGE_COST_V0113
+    } else {
+        WATERLOGGED_SPONGE_COST
+    }
+}
 
 fn waterlogged_bloody_ink(state: &mut RunState) -> EventOutcome {
     state.gain_max_hp(WATERLOGGED_INK_MAX_HP);
@@ -1157,13 +1223,17 @@ fn waterlogged_tentacle_quill(state: &mut RunState) -> EventOutcome {
 }
 
 fn waterlogged_prickly_sponge(state: &mut RunState) -> EventOutcome {
-    lose_gold_saturating(state, WATERLOGGED_SPONGE_COST);
+    let cost = waterlogged_sponge_cost(state);
+    lose_gold_saturating(state, cost);
     queue_card_reward(state);
-    EventOutcome::finished("Paid 99g, queued enchant-2-cards-with-Steady reward.")
+    EventOutcome::finished(format!(
+        "Paid {cost}g, queued enchant-2-cards-with-Steady reward."
+    ))
 }
 
 fn waterlogged_options(state: &RunState, _spec: &EventSpec) -> Vec<EventOptionInfo> {
     let gold = state.gold;
+    let sponge_cost = waterlogged_sponge_cost(state);
     vec![
         EventOptionInfo {
             option_id: "bloody_ink",
@@ -1192,13 +1262,13 @@ fn waterlogged_options(state: &RunState, _spec: &EventSpec) -> Vec<EventOptionIn
             loc_key: "WATERLOGGED_SCRIPTORIUM.pages.INITIAL.options.PRICKLY_SPONGE",
             vars: Vec::new(),
             title_vars: Vec::new(),
-            label: if gold >= WATERLOGGED_SPONGE_COST {
-                "Prickly Sponge (99g)".to_string()
+            label: if gold >= sponge_cost {
+                format!("Prickly Sponge ({sponge_cost}g)")
             } else {
                 "Prickly Sponge".to_string()
             },
             description: "Enchant 2 cards with Steady.".to_string(),
-            enabled: gold >= WATERLOGGED_SPONGE_COST,
+            enabled: gold >= sponge_cost,
         },
     ]
 }
@@ -1236,7 +1306,12 @@ const WATERLOGGED_SCRIPTORIUM_OPTIONS: &[EventOptionSpec] = &[
             ),
             ("Cards", EventVarSpec::Int(2)),
         ],
-        vars_fn: None,
+        vars_fn: Some(|s| {
+            vec![
+                ("PricklySpongeGold", waterlogged_sponge_cost(s).into()),
+                ("Cards", 2.into()),
+            ]
+        }),
         title_vars_fn: None,
         handler: waterlogged_prickly_sponge,
     },
@@ -1578,7 +1653,19 @@ fn whispering_hug(state: &mut RunState) -> EventOutcome {
     // C# Hug: `CardSelectCmd.FromDeckForTransformation` (pick 1) →
     // `CardCmd.TransformToRandom(item, base.Rng)` — the EVENT stream,
     // read #2 (CalculateVars' gold roll consumed read #1 at entry) —
-    // then 9 unblockable damage only after the transform.
+    // then 9 unblockable damage only after the transform. With nothing
+    // transformable the select returns empty, opens no screen
+    // (CardSelectCmd.cs), and the damage follows at once.
+    let Some(first) = state
+        .master_deck
+        .iter()
+        .position(crate::cards::spec_index::card_is_transformable_in_deck)
+    else {
+        let lost = state.lose_hp(WHISPERING_HUG_DAMAGE);
+        return EventOutcome::finished(format!(
+            "No card could be transformed, took {lost} damage."
+        ));
+    };
     if state.interactive_card_transform {
         state
             .pending_deck_transforms
@@ -1589,23 +1676,23 @@ fn whispering_hug(state: &mut RunState) -> EventOutcome {
             });
         EventOutcome::finished("Pick a card to transform (9 damage follows).")
     } else {
-        // Auto mode (parity-fuzz / headless): transform the first deck
-        // card with the same event-stream roll, then take the damage.
-        if let Some(original) = state.master_deck.first().map(|c| c.card_id) {
-            if let Some(new_id) = crate::cards::spec_index::roll_transform_replacement_event_stream(
-                state,
-                state.character_id,
-                original,
-                WHISPERING_HOLLOW_STREAM,
-                1,
-            ) {
-                if let Some(card) = crate::cards::spec_index::card_pod_from_id(new_id, false) {
-                    state.master_deck.remove(0);
-                    state.add_card_to_deck_with_hooks(
-                        card,
-                        sts2_core::relic_effects::AddSource::EventGain,
-                    );
-                }
+        // Auto mode (parity-fuzz / headless): transform the first
+        // transformable deck card with the same event-stream roll, then take
+        // the damage.
+        let original = state.master_deck[first].card_id;
+        if let Some(new_id) = crate::cards::spec_index::roll_transform_replacement_event_stream(
+            state,
+            state.character_id,
+            original,
+            WHISPERING_HOLLOW_STREAM,
+            1,
+        ) {
+            if let Some(card) = crate::cards::spec_index::card_pod_from_id(new_id, false) {
+                state.master_deck.remove(first);
+                state.add_card_to_deck_with_hooks(
+                    card,
+                    sts2_core::relic_effects::AddSource::EventGain,
+                );
             }
         }
         let lost = state.lose_hp(WHISPERING_HUG_DAMAGE);
@@ -1806,6 +1893,31 @@ mod tests {
         );
     }
 
+    /// A Lizard Tail that has revived you is `IsUsedUp` (`_wasUsed`), so
+    /// `RelicModel.IsTradable` is false and `GetValidRelics` skips it
+    /// (LizardTail.cs, RelicModel.cs, both builds). The spent flag is the
+    /// relic's run counter (1 once consumed). Rust kept it in the shuffled
+    /// list and dealt different slots (random-loadout Necrobinder 8948
+    /// v0.111.0: Bronze Scales traded where C# traded Akabeko).
+    #[test]
+    fn relic_trader_skips_a_spent_lizard_tail() {
+        let mut rs = trader_state();
+        rs.relics.push(RelicId::LizardTail);
+        let mut without = rs.clone();
+        without.relics.pop();
+        rs.relic_counters.insert(RelicId::LizardTail, 1);
+        assert_eq!(
+            relic_trader_owned(&rs),
+            relic_trader_owned(&without),
+            "a spent Lizard Tail must not lengthen the shuffled list"
+        );
+        rs.relic_counters.insert(RelicId::LizardTail, 0);
+        assert!(
+            crate::relics::tradable::relic_is_tradable_in(&rs, RelicId::LizardTail),
+            "an armed Lizard Tail is tradable"
+        );
+    }
+
     #[test]
     fn slippery_bridge_hold_on_takes_base_damage() {
         let mut rs = fresh();
@@ -1884,7 +1996,7 @@ mod tests {
         assert_eq!(rs.current_hp, 40 - STONE_PUSH_DAMAGE);
         assert!(rs.master_deck[0].enchantments.is_empty());
         assert_eq!(
-            rs.master_deck[1].enchantments.as_slice(),
+            rs.master_deck[1].enchantments.to_vec(),
             &[(EnchantmentId::Vigorous, STONE_PUSH_VIGOROUS)]
         );
 
@@ -1917,6 +2029,46 @@ mod tests {
         rs.master_deck.push(card(CardId::StrikeDefect));
         let opts = (STONE_OF_ALL_TIME.generate_options)(&rs, &STONE_OF_ALL_TIME);
         assert!(opts[1].enabled);
+    }
+
+    /// `Symbiote.GenerateInitialOptions`: Approach becomes the null-handler
+    /// `APPROACH_LOCKED` option, in its slot, when no deck card passes
+    /// `Corrupted.CanEnchant`.
+    #[test]
+    fn symbiote_approach_locked_without_an_enchantable_attack() {
+        crate::cards::dispatch::ensure_installed();
+        let card = |id| crate::cards::spec_index::card_pod_from_id(id, false).unwrap();
+        let mut rs = fresh();
+        rs.master_deck = vec![card(CardId::ForbiddenGrimoire)];
+        let opts = (SYMBIOTE.generate_options)(&rs, &SYMBIOTE);
+        assert!(!opts[0].enabled);
+        assert_eq!(
+            opts[0].loc_key,
+            "SYMBIOTE.pages.INITIAL.options.APPROACH_LOCKED"
+        );
+        assert!(opts[1].enabled, "Kill with Fire stays open");
+        rs.master_deck.push(card(CardId::StrikeIronclad));
+        let opts = (SYMBIOTE.generate_options)(&rs, &SYMBIOTE);
+        assert!(opts[0].enabled);
+    }
+
+    /// `FromDeckForTransformation` returns empty with no select when no deck
+    /// card is transformable (CardSelectCmd.cs). Two Eternal Forbidden
+    /// Grimoires: C# finished the event, Rust opened an empty card_select
+    /// (loadout Necrobinder 8771 v0.107.1).
+    #[test]
+    fn symbiote_kill_with_fire_queues_no_pick_without_a_transformable_card() {
+        crate::cards::dispatch::ensure_installed();
+        let card = |id| crate::cards::spec_index::card_pod_from_id(id, false).unwrap();
+        let mut rs = fresh();
+        rs.interactive_card_transform = true;
+        rs.master_deck = vec![
+            card(CardId::ForbiddenGrimoire),
+            card(CardId::ForbiddenGrimoire),
+        ];
+        run(&SYMBIOTE, "kill_fire", &mut rs);
+        assert!(rs.pending_deck_transforms.is_empty());
+        assert_eq!(rs.master_deck.len(), 2);
     }
 
     #[test]
@@ -2175,6 +2327,9 @@ mod tests {
     fn whispering_hug_interactive_queues_event_stream_transform_with_post_damage() {
         let mut rs = fresh();
         rs.interactive_card_transform = true;
+        let mut strike = sts2_core::cards::Card::pod_defaults();
+        strike.card_id = sts2_core::cards::CardId::StrikeIronclad;
+        rs.master_deck.push(strike);
         run(&WHISPERING_HOLLOW, "hug", &mut rs);
         // Damage is deferred to the transform resolve (C# fires it only
         // after the pick), so HP is untouched here.
@@ -2188,6 +2343,24 @@ mod tests {
         assert_eq!(pending.post_hp_loss, WHISPERING_HUG_DAMAGE);
         assert!(pending.fixed_target.is_none());
         assert!(rs.pending_rewards.is_empty());
+    }
+
+    /// `FromDeckForTransformation` returns empty with no select when no deck
+    /// card is transformable; Hug's damage still follows (WhisperingHollow.cs).
+    #[test]
+    fn whispering_hug_without_a_transformable_card_only_takes_damage() {
+        crate::cards::dispatch::ensure_installed();
+        let mut rs = fresh();
+        rs.interactive_card_transform = true;
+        rs.master_deck =
+            vec![
+                crate::cards::spec_index::card_pod_from_id(CardId::ForbiddenGrimoire, false)
+                    .unwrap(),
+            ];
+        run(&WHISPERING_HOLLOW, "hug", &mut rs);
+        assert!(rs.pending_deck_transforms.is_empty());
+        assert_eq!(rs.current_hp, 40 - WHISPERING_HUG_DAMAGE);
+        assert_eq!(rs.master_deck[0].card_id, CardId::ForbiddenGrimoire);
     }
 
     #[test]

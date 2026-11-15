@@ -378,10 +378,9 @@ fn turret_operator_reload_effect(state: &mut CombatState, owner: CreatureUid) {
 /// `SpectralKnight.cs:60-68` `HexMove`:
 /// `await PowerCmd.Apply<HexPower>(target, 2m, …)` to the player. The
 /// telegraph `DebuffIntent` applies nothing, so the Hex stack lands here.
-/// NOTE: `HexPower`'s card-affliction behavior (afflict all cards →
-/// Hexed/Ethereal on play) is NOT yet wired in the Rust engine — only the
-/// `PowerKind::Hex` stack is tracked here. Behavioral wiring is tracked by
-/// `sts2-rs-l7k3d`.
+/// A fresh Hex fires `HexPower.AfterApplied`: every player card with no
+/// affliction becomes `Hexed(2)`, i.e. Ethereal while the power lives
+/// (`monster_power_effects::hex_after_applied`).
 fn spectral_knight_hex_effect(state: &mut CombatState, owner: CreatureUid) {
     // Co-op: each player's Hex records this knight.
     sts2_core::coop::each_player(state, |state| {
@@ -391,7 +390,12 @@ fn spectral_knight_hex_effect(state: &mut CombatState, owner: CreatureUid) {
 
 /// [`spectral_knight_hex_effect`] for the seated player alone.
 fn spectral_knight_hex_effect_seated(state: &mut CombatState, owner: CreatureUid) {
+    let fresh = state.player_power_amount(PowerKind::Hex) <= 0;
     apply_power_to_player_via_legacy_surface(state, PowerKind::Hex, 2);
+    let amount = state.player_power_amount(PowerKind::Hex);
+    if fresh && amount > 0 {
+        sts2_core::monster_power_effects::hex_after_applied(state, amount);
+    }
     // C# `HexPower.AfterDeath` (`HexPower.cs:37-43`) removes the power when
     // its APPLIER dies — stamp the applier so the death path
     // (`remove_hex_from_dead_applier`) can drop it (sweep seed 4170:
@@ -645,7 +649,6 @@ fn aeonglass_ebb_effect(state: &mut CombatState, owner: CreatureUid) {
 fn aeonglass_increasing_intensity_effect(state: &mut CombatState, owner: CreatureUid) {
     use sts2_core::ascension::{get_value_if_ascension, AscensionLevel::DeadlyEnemies};
     use sts2_core::card_effects::PileKind;
-    use sts2_core::cards::VarKey;
 
     let base_strength = crate::ascension_scaling::scaled_buff(
         state.ascension,
@@ -665,16 +668,16 @@ fn aeonglass_increasing_intensity_effect(state: &mut CombatState, owner: Creatur
     // 2. WitherUpgradeCount++.
     let count_after = count_before + 1;
     aeonglass_set_wither_upgrade_count(state, count_after);
-    // 3. Add `wither_amount` Withers, each matched to the new upgrade count.
+    // 3. Add `wither_amount` Withers; the generated-for-combat dispatch
+    // matches each to the new upgrade count (`AfterCardGeneratedForCombat`).
     // Co-op: every player the move targets gets these cards.
     sts2_core::coop::each_player(state, |state| {
         for _ in 0..wither_amount {
-            let card_uid = crate::cards::status::spawn_wither(state, PileKind::Discard);
-            for _ in 0..count_after {
-                if let Some(card) = state.cards.get_mut(card_uid.0.get() as usize - 1) {
-                    let next = card.combat_var(VarKey::WitherFakeUpgradeLevel) + 1;
-                    card.set_combat_var(VarKey::WitherFakeUpgradeLevel, next);
-                }
+            let uid = crate::cards::status::spawn_wither(state, PileKind::Discard);
+            // v0.113 adds each Wither at `CardPilePosition.Random`
+            // (Aeonglass.cs:162-163): one `Rng.Shuffle.NextInt(Count + 1)`.
+            if state.game_version >= sts2_core::GameVersion::V0_113_0 {
+                state.insert_card_into_discard_pile(uid, true);
             }
         }
     });
@@ -1397,6 +1400,10 @@ pub fn create_frog_knight_ai() -> MonsterAi {
 /// `GlobeHead` — SHOCKING_SLAP → THUNDER_STRIKE → GALVANIC_BURST →
 /// SHOCKING_SLAP.
 pub fn create_globe_head_ai() -> MonsterAi {
+    // GalvanicPower's AfterCardEnteredCombat leg rides the monster-power
+    // registry; install it the first time a GlobeHead spawns (as VitalSpark).
+    static INSTALL_GALVANIC: std::sync::Once = std::sync::Once::new();
+    INSTALL_GALVANIC.call_once(sts2_core::monster_power_effects::install_galvanic_power_handlers);
     let mut s = BTreeMap::new();
     s.insert(
         "SHOCKING_SLAP",
@@ -2517,7 +2524,7 @@ fn queen_puppet_strings_effect(state: &mut CombatState, _owner: CreatureUid) {
 ///    `BURN_BRIGHT_FOR_ME_BRANCH` to the
 ///    OFF_WITH_YOUR_HEAD / EXECUTION / ENRAGE chain).
 /// 4. If Queen's current move is `BURN_BRIGHT_FOR_ME_MOVE`, we
-///    [`force_current_state`](sts2_core::monster_ai::MonsterAi::force_current_state)
+///    [`force_current_state_unlogged`](sts2_core::monster_ai::MonsterAi::force_current_state_unlogged)
 ///    to `ENRAGE_MOVE` — that is C# `SetMoveImmediate(EnragedState)`.
 ///    Otherwise we let the normal graph + flipped counter carry her
 ///    into the OFF_WITH_YOUR_HEAD chain on the next roll.
@@ -2553,7 +2560,9 @@ fn queen_after_death(
         //   turn start (CombatManager.cs:745) moves on from ENRAGE to its
         //   follow-up, so she skips ENRAGE and goes to OFF_WITH_YOUR_HEAD
         //   (Necrobinder act-3 checkpoint branch 1001#b3, v0.111.0).
-        ai.force_current_state("ENRAGE_MOVE");
+        // C# never logs a `SetMoveImmediate`d state; BURN_BRIGHT stays logged
+        // from its roll (#1215).
+        ai.force_current_state_unlogged("ENRAGE_MOVE");
         queen.intent = ai.current_move().intents.first().copied();
     }
 }
@@ -2935,10 +2944,13 @@ pub(crate) fn adaptable_after_death(state: &mut CombatState, owner: CreatureUid)
     // intent roll (`enemy_turn_end::roll_next_enemy_intents`, now that the
     // creature is alive) resolves the branch and telegraphs the post-revive
     // move. Bead `sts2-rs-jnf4a`.
+    //
+    // `SetMoveImmediate` never logs RESPAWN, and the move it displaces was
+    // logged when C# rolled it, so the force is the unlogged one (#1215).
     if let Some(c) = state.creatures.iter_mut().find(|c| c.id == owner.0) {
         if let Some(ai) = c.ai.as_mut() {
             ai.set_counter(respawns_after);
-            ai.force_current_state("RESPAWN");
+            ai.force_current_state_unlogged("RESPAWN");
             ai.on_move_performed();
         }
     }
@@ -3167,6 +3179,62 @@ mod tests {
         }
         // C# uses `% 3`, so idx 3 wraps back to CHOMP (idx 0).
         assert_eq!(create_scroll_of_biting_ai(3).current_state_id(), "CHOMP");
+    }
+
+    /// #1215: C# `TriggerDeadState` → `SetMoveImmediate(DeadState)`
+    /// (TestSubject.cs:171) never logs RESPAWN, and the BITE it displaces
+    /// stays logged from its roll: C#'s log reads `[…, SKULL_BASH, BITE,
+    /// MULTI_CLAW]`, not `[…, SKULL_BASH, RESPAWN, MULTI_CLAW]`.
+    #[test]
+    fn test_subject_respawn_logs_the_displaced_move_not_respawn() {
+        use std::num::NonZeroU32;
+
+        use smallvec::SmallVec;
+        use sts2_core::monsters::test_subject;
+        use sts2_core::{
+            Creature, CreatureUid, IntentHistory, MonsterId, MonsterKind, Power, PowerUid,
+        };
+
+        let mut ai = create_test_subject_ai();
+        ai.on_move_performed(); // BITE
+        ai.roll_move_seeded(0); // → SKULL_BASH
+        ai.on_move_performed();
+        ai.roll_move_seeded(0); // → BITE, telegraphed when it dies
+        assert_eq!(ai.current_state_id(), "BITE");
+
+        let mut state = CombatState::default();
+        let owner_raw = NonZeroU32::new(1).expect("nz");
+        let owner = CreatureUid(owner_raw);
+        let adaptable_pid = NonZeroU32::new(1).expect("nz");
+        let mut powers: SmallVec<[PowerUid; 8]> = SmallVec::new();
+        powers.push(PowerUid(adaptable_pid));
+        state
+            .powers
+            .push(Power::new(adaptable_pid, PowerKind::Adaptable, 1));
+        state.creatures.push(Creature {
+            id: owner_raw,
+            current_hp: 0,
+            max_hp: test_subject::FIRST_FORM_HP,
+            block: 0,
+            powers,
+            species: Some(MonsterKind::TestSubject),
+            monster_id: MonsterId("TestSubject"),
+            intent: None,
+            intent_history: IntentHistory::default(),
+            ai: Some(ai),
+        });
+        state.enemy_uids.push(owner);
+
+        adaptable_after_death(&mut state, owner);
+
+        let mut ai = state.creatures[0].ai.clone().expect("ai");
+        assert_eq!(ai.move_history(), ["BITE", "SKULL_BASH", "BITE"]);
+        ai.set_owner(owner);
+        assert_eq!(ai.roll_move_with_combat_seeded(0, &state).id, "MULTI_CLAW");
+        assert_eq!(
+            ai.wire_move_log().as_slice(),
+            ["BITE", "SKULL_BASH", "BITE", "MULTI_CLAW"]
+        );
     }
 
     fn run_three_moves(ai: &mut MonsterAi) -> Vec<&'static str> {
@@ -4374,6 +4442,74 @@ mod tests {
         assert_eq!(levels, vec![2, 2], "both Withers synced to upgrade count 2");
     }
 
+    /// v0.113 adds the Wither at `CardPilePosition.Random` in Discard: one
+    /// `Rng.Shuffle` read per Wither (Aeonglass.cs:162-163); v0.111 appends.
+    #[test]
+    fn aeonglass_wither_random_discard_position_v0113() {
+        use sts2_core::{CombatState, GameVersion, MonsterKind};
+        for (version, reads) in [(GameVersion::V0_111_0, 0), (GameVersion::V0_113_0, 1)] {
+            let mut state = CombatState {
+                game_version: version,
+                ..CombatState::default()
+            };
+            state.player.current_hp = 70;
+            state.player.max_hp = 70;
+            let _player = state.init_player_creature();
+            let owner = state.spawn_enemy(MonsterKind::Aeonglass);
+            state.set_creature_ai(owner, create_aeonglass_ai());
+            let before = state.run_rng.shuffle.counter();
+            aeonglass_increasing_intensity_effect(&mut state, owner);
+            assert_eq!(
+                state.run_rng.shuffle.counter() - before,
+                reads,
+                "{version:?}"
+            );
+            assert_eq!(state.player.discard.len(), 1);
+        }
+    }
+
+    /// C# `Aeonglass.AfterCardGeneratedForCombat` matches EVERY Wither
+    /// generated for combat, and `CardCmd.Transform` raises that hook, so a
+    /// card transformed into a Wither (Entropy rolling Wither off a Dazed)
+    /// starts at the boss's `WitherUpgradeCount`, not level 0 (loadout Defect
+    /// 1241 v0.107.1).
+    #[test]
+    fn aeonglass_matches_a_card_transformed_into_a_wither() {
+        use sts2_core::card_effects::PileKind;
+        use sts2_core::cards::{CardId, VarKey};
+        use sts2_core::{CombatState, MonsterKind};
+
+        let mut state = CombatState::default();
+        state.player.current_hp = 70;
+        state.player.max_hp = 70;
+        let _player = state.init_player_creature();
+        let owner = state.spawn_enemy(MonsterKind::Aeonglass);
+        state.set_creature_ai(owner, create_aeonglass_ai());
+        aeonglass_set_wither_upgrade_count(&mut state, 4);
+
+        let dazed = crate::cards::status::spawn_dazed(&mut state, PileKind::Hand);
+        let wither = sts2_core::card_effects::transform_card_in_place(
+            &mut state,
+            dazed,
+            sts2_core::cards::Card {
+                card_id: CardId::Wither,
+                card_type: sts2_core::cards::CardType::Status,
+                ..sts2_core::cards::Card::pod_defaults()
+            },
+        )
+        .expect("transformed");
+        let level =
+            state.cards[wither.0.get() as usize - 1].combat_var(VarKey::WitherFakeUpgradeLevel);
+        assert_eq!(
+            state.cards[wither.0.get() as usize - 1].card_id,
+            CardId::Wither
+        );
+        assert_eq!(
+            level, 4,
+            "the transformed-in Wither is matched to the count"
+        );
+    }
+
     #[test]
     fn queen_opens_with_puppet_strings_then_youre_mine_then_burn_bright() {
         // Counter==0 (HasAmalgamDied=false), so YOURE_MINE_NOW_BRANCH
@@ -4566,6 +4702,17 @@ mod tests {
         let ai = queen.ai.as_ref().expect("queen has ai");
         assert_eq!(ai.current_state_id(), "ENRAGE_MOVE");
         assert_eq!(queen.intent, ai.current_move().intents.first().copied());
+        // #1215: C# logged BURN_BRIGHT at its roll and never logs the
+        // `SetMoveImmediate`d ENRAGE, not even after it runs.
+        let logged = [
+            "PUPPET_STRINGS_MOVE",
+            "YOURE_MINE_MOVE",
+            "BURN_BRIGHT_FOR_ME_MOVE",
+        ];
+        assert_eq!(ai.wire_move_log().as_slice(), logged);
+        let mut ai = ai.clone();
+        ai.on_move_performed();
+        assert_eq!(ai.move_history(), logged);
     }
 
     /// Negative path for `sts2-rs-6g4v4`: the listener ignores deaths of
@@ -5041,6 +5188,10 @@ mod tests {
             PowerKind::PossessStrength,
             1,
         );
+        // A second, living enemy (TheForgotten in the real encounter): with
+        // TheLost the last one, its death would leave the combat `IsEnding`
+        // and C#'s `PowerCmd.Apply` would return nothing (PowerCmd.cs:69).
+        let _ = combat.spawn_enemy(MonsterKind::Nibbit);
         (combat, lost)
     }
 

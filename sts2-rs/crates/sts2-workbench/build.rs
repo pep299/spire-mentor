@@ -31,6 +31,7 @@ const GAME_FILES: &[(&str, &str)] = &[
     ("localization_eng/card_keywords.json", "{}"),
     ("localization_eng/cards.json", "{}"),
     ("localization_eng/characters.json", "{}"),
+    ("localization_eng/encounters.json", "{}"),
     ("localization_eng/events.json", "{}"),
     ("localization_eng/monsters.json", "{}"),
     ("localization_eng/orbs.json", "{}"),
@@ -58,7 +59,7 @@ const VERSIONED_ONLY_FILES: &[(&str, &str)] = &[("card_tags.json", "{}")];
 /// The non-default game builds with a sibling bundle under `data/game/<ver>/`.
 /// Keep in step with `sts2_core::GameVersion::ALL` (a `data.rs` test
 /// checks) and `bundle_workbench_data.py`'s `_VERSIONS`.
-const VERSIONED: &[&str] = &["v0.111.0"];
+const VERSIONED: &[&str] = &["v0.111.0", "v0.113.0"];
 
 fn main() {
     println!("cargo::rustc-check-cfg=cfg(workbench_game_data)");

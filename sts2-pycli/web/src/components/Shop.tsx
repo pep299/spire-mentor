@@ -1,4 +1,9 @@
-import type { CSSProperties } from "react";
+import { MarkBadge } from "../advice/AdviceContext";
+import { markClass, markFor, useAdviceMarks } from "../advice/useAdviceMarks";
+import type { Mark } from "../advice/marks";
+import { useState, type CSSProperties } from "react";
+import { createPortal } from "react-dom";
+import { useMediaQuery, TOUCH_QUERY } from "../useMediaQuery";
 import type { Step, ChooseHandler, Card, Relic, Potion } from "../api";
 import { assetUrl } from "../api";
 import CardFrame from "./CardFrame";
@@ -128,10 +133,26 @@ export default function Shop({ step, onChoose }: { step: Step; onChoose?: Choose
   // this task's brief) is a passive display with no activation click of its
   // own — see the Task 10 report for the full judgement call.
   const sound = useSound();
+  // TOUCH: there is no hover, so a ware's effect text could not be read before
+  // buying it (a tap bought it). On a touchscreen the first tap opens the
+  // ware's sheet instead (name, what it does, price) and the sheet's button
+  // buys. Every ware is tappable for that, sold or too dear included.
+  const touch = useMediaQuery(TOUCH_QUERY);
+  const [ware, setWare] = useState<{
+    key: string; kind: "relic" | "potion"; name: string; image: string | null | undefined;
+    description: string | undefined; cost: number | undefined; soldOut: boolean; affordable: boolean;
+    buy: () => void;
+  } | null>(null);
 
+  // The run policy's marks (advice/marks.ts): on the ware, the card, the
+  // removal service (the policy names the card to remove, so any removal pick
+  // marks the service) and Leave.
+  const { marks } = useAdviceMarks();
+  const removalMark = [...marks.values()].find((m) => m.key.startsWith("select_cards|")) ?? null;
   const buy = (action: string, args: Record<string, unknown>, cost?: number, stocked?: boolean) => ({
     disabled: !onChoose || !stocked || (cost != null && cost > gold),
     onClick: () => onChoose?.(action, args),
+    mark: markFor(marks, action, args),
   });
 
   const buyRelic = (relic: Relic) => {
@@ -177,7 +198,7 @@ export default function Shop({ step, onChoose }: { step: Step; onChoose?: Choose
     description: string | undefined,
     cost: number | undefined,
     available: boolean | undefined,
-    b: { disabled: boolean; onClick: () => void },
+    b: { disabled: boolean; onClick: () => void; mark?: Mark | null },
   ) => {
     const affordable = (cost ?? 0) <= gold;
     // "Sold" means the slot is EMPTY — someone bought it. Not being able to
@@ -189,15 +210,21 @@ export default function Shop({ step, onChoose }: { step: Step; onChoose?: Choose
     const cls =
       `gs-shop-item is-${kind}` +
       (soldOut ? " is-soldout" : "") +
-      (!affordable ? " is-unaffordable" : "");
+      (!affordable ? " is-unaffordable" : "") +
+      markClass(b.mark ?? null);
+    const inspectFirst = touch && !!onChoose;
+    const open = () => setWare({ key: `${kind}:${name}:${cost}`, kind, name, image, description, cost, soldOut, affordable,
+      buy: b.onClick });
     return (
       <button
         className={cls}
-        disabled={b.disabled}
-        onClick={b.onClick}
+        disabled={inspectFirst ? false : b.disabled}
+        aria-disabled={inspectFirst && b.disabled ? true : undefined}
+        onClick={inspectFirst ? open : b.onClick}
         title={(description ? `${name} — ${description}` : name)
           + (soldOut ? " (sold out)" : !affordable ? " (too expensive)" : "")}
       >
+        <MarkBadge mark={b.mark ?? null} />
         <span className="gs-shop-itemart" aria-hidden="true">
           {image ? (
             <img src={image} alt="" />
@@ -325,7 +352,8 @@ export default function Shop({ step, onChoose }: { step: Step; onChoose?: Choose
                 }
               >
                 <span className="gs-shop-cardshadow" aria-hidden="true" />
-                <CardFrame card={framed} width={CARD_W} onClick={b.disabled ? undefined : b.onClick} />
+                <CardFrame card={framed} width={CARD_W} onClick={b.disabled ? undefined : b.onClick}
+                  mark={b.mark?.tier} step={b.mark?.order} />
                 {/* The discounted card's "%" tag, pinned where merchant_card.tscn
                     pins its SaleVisual: a Sprite2D at (146.3, -153.2) on the
                     300x422 card, i.e. centred on 98.8% / 13.7% of the frame. */}
@@ -405,7 +433,7 @@ export default function Shop({ step, onChoose }: { step: Step; onChoose?: Choose
             {removalCost != null ? (
               <button
                 className={
-                  "gs-shop-removal" + (removalCost > gold ? " is-unaffordable" : "")
+                  "gs-shop-removal" + (removalCost > gold ? " is-unaffordable" : "") + markClass(removalMark)
                 }
                 disabled={!onChoose || removalCost > gold}
                 onClick={() => onChoose?.("remove_card", {})}
@@ -448,7 +476,8 @@ export default function Shop({ step, onChoose }: { step: Step; onChoose?: Choose
               </div>
             )}
 
-            <button className="gs-shop-hexbtn" disabled={!onChoose} onClick={() => onChoose?.("leave_room", {})}>
+            <button className={`gs-shop-hexbtn${markClass(markFor(marks, "leave_room"))}`} disabled={!onChoose}
+              onClick={() => onChoose?.("leave_room", {})}>
               <span className="gs-shop-hexface">Leave shop</span>
             </button>
             {adv.byKey.has("leave") && (
@@ -460,6 +489,27 @@ export default function Shop({ step, onChoose }: { step: Step; onChoose?: Choose
         </div>
       </div>
 
+      {/* In the body: the scene is a stacking context whose grade layers
+          would paint over a sheet left inside it. */}
+      {ware && onChoose && createPortal(
+        <div className="gs-shop-sheet" role="dialog" aria-label={ware.name}>
+          <span className="gs-shop-sheetart" aria-hidden="true">
+            {ware.image ? <img src={ware.image} alt="" /> : <span className="gs-shop-noart">{ware.name.charAt(0)}</span>}
+          </span>
+          <div className="gs-shop-sheettext">
+            <b>{ware.name}</b>
+            <span>{ware.description ?? (ware.kind === "relic" ? "A relic." : "A potion.")}</span>
+          </div>
+          <div className="gs-shop-sheetbtns">
+            <button type="button" className="gs-shop-sheetbuy" disabled={ware.soldOut || !ware.affordable}
+              onClick={() => { const buyIt = ware.buy; setWare(null); buyIt(); }}>
+              {ware.soldOut ? "Sold out" : !ware.affordable ? `Too expensive (${ware.cost} gold)` : `Buy for ${ware.cost} gold`}
+            </button>
+            <button type="button" className="gs-shop-sheetclose" onClick={() => setWare(null)}>✕ Close</button>
+          </div>
+        </div>,
+        document.body,
+      )}
       {/* Air, then grade, then the near plane — everything from here down is
           painted OVER the props, which is what makes them sit IN the tent
           instead of being pasted on it at full brightness. */}

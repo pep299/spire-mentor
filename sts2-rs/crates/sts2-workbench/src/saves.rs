@@ -79,11 +79,9 @@ pub fn build_save(
         "line": line,
         "node_values": node_values,
     });
-    // GH #801: written only for a non-default build (a v0.107.1 save keeps
-    // its bytes); `RunIdentity::from_save` reads absence as v0.107.1.
-    if !game_version.is_default() {
-        out["game_version"] = json!(game_version.as_str());
-    }
+    // GH #801: always written, so a save names its build;
+    // `RunIdentity::from_save` reads absence (an older save) as v0.107.1.
+    out["game_version"] = json!(game_version.as_str());
     out
 }
 
@@ -122,6 +120,9 @@ pub struct RunIdentity {
     /// carries no `game_version` (GH #801). An unknown value also reads as
     /// the default here — `Workbench::restore_save` rejects it first.
     pub game_version: GameVersion,
+    /// The run was built as the e2e student's training run (run-mode only;
+    /// absent = false).
+    pub e2e_setup: bool,
 }
 
 impl RunIdentity {
@@ -148,6 +149,10 @@ impl RunIdentity {
             act1: s("act1", DEFAULT_ACT1),
             run_mode: payload.get("run_mode").and_then(Value::as_bool),
             game_version: crate::session::game_version_of(payload).unwrap_or_default(),
+            e2e_setup: payload
+                .get("e2e_setup")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         }
     }
 
@@ -199,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn build_save_names_only_a_non_default_build() {
+    fn build_save_names_its_build() {
         let progress = Progress {
             act: json!(1),
             floor: json!(0),
@@ -222,8 +227,9 @@ mod tests {
                 &[],
             )
         };
+        // Every save names its build, the legacy one included.
         let old = args(GameVersion::V0_107_1);
-        assert!(old.get("game_version").is_none(), "{old}");
+        assert_eq!(old["game_version"], "v0.107.1");
         let new = args(GameVersion::V0_111_0);
         assert_eq!(new["game_version"], "v0.111.0");
         assert_eq!(

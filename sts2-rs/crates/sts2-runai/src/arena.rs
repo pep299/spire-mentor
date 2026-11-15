@@ -194,6 +194,7 @@ pub fn character_token(c: CharacterId) -> &'static str {
         CharacterId::Defect => "defect",
         CharacterId::Regent => "regent",
         CharacterId::Necrobinder => "necrobinder",
+        CharacterId::Fool => "fool",
     }
 }
 
@@ -207,11 +208,9 @@ pub fn character_token(c: CharacterId) -> &'static str {
 pub enum Act1Choice {
     /// The single Act 1 this engine modelled before the Underdocks port.
     ///
-    /// The default, deliberately: it keeps every existing panel, report and
-    /// champion measurement meaning exactly what it meant before, and it
-    /// matches `PpoRunEnv`, which does not pass `act1` at all. Change this
-    /// default and you silently re-base every historical win-rate number.
-    #[default]
+    /// This was the default until act choice became seed-driven everywhere.
+    /// Win-rate numbers measured before that change, with no explicit act,
+    /// describe this act alone; compare them against an `overgrowth` arm.
     Overgrowth,
     /// The Act 1 ported in #544/#553.
     Underdocks,
@@ -224,6 +223,10 @@ pub enum Act1Choice {
     /// change with everything downstream of it. Pair `overgrowth` against
     /// `underdocks` when you want a paired difficulty delta; use `roll` to
     /// measure the *deployed* mixture.
+    ///
+    /// The default: the real game picks the act from the seed, and the C#
+    /// host, the PyO3 `RunManager` and `PpoRunEnv` all default to it too.
+    #[default]
     Roll,
 }
 
@@ -303,8 +306,7 @@ pub struct CellSpec {
     pub max_steps: usize,
     pub livelock_stall_limit: usize,
     /// Which Act-1 model this cell walks (GH #544). Defaults to
-    /// [`Act1Choice::Overgrowth`] everywhere, so a caller that does not
-    /// mention it measures exactly what it measured before the port.
+    /// [`Act1Choice::Roll`], the real game's seed-driven pick.
     pub act1: Act1Choice,
     /// Collect §3.6 audit records for this cell.
     pub audit: bool,
@@ -314,6 +316,9 @@ pub struct CellSpec {
     pub ablate: Option<AblationSurface>,
 }
 
+/// The act of a report row that predates the `act1` field. Every such run
+/// walked Overgrowth, so this stays `overgrowth` although the arena now
+/// defaults to `roll`.
 fn default_act1_token() -> String {
     Act1Choice::Overgrowth.token().to_string()
 }
@@ -959,7 +964,7 @@ fn apply_card_injection(
         let (name, upgraded) = parse_inject_token(token);
         let card_id = sts2_content::names::card_id_from_str(name)
             .ok_or_else(|| format!("STS2_RUNAI_INJECT_CARDS: unknown card token '{token}'"))?;
-        let pod = sts2_content::cards::spec_index::card_pod_from_id(card_id, upgraded)
+        let pod = sts2_content::cards::v0111::card_pod_for(card_id, upgraded, rm.game_version)
             .ok_or_else(|| format!("STS2_RUNAI_INJECT_CARDS: no spec for '{token}'"))?;
         rm.run_state.master_deck.push(pod);
         added += 1;
@@ -1665,13 +1670,13 @@ mod tests {
         );
     }
 
-    /// The default must stay Overgrowth. Every historical arena number, every
-    /// champion win rate and `PpoRunEnv` (which does not pass `act1` at all)
-    /// assume it; flipping it silently re-bases all of them.
+    /// The default is the seed-driven roll, the same as the PyO3 `RunManager`,
+    /// `PpoRunEnv` and the C# host. A report row without an `act1` field
+    /// predates the roll and so still reads as Overgrowth.
     #[test]
-    fn the_default_act1_is_overgrowth() {
-        assert_eq!(Act1Choice::default(), Act1Choice::Overgrowth);
-        assert_eq!(spec(1).act1, Act1Choice::Overgrowth);
+    fn the_default_act1_is_the_seed_roll() {
+        assert_eq!(Act1Choice::default(), Act1Choice::Roll);
+        assert_eq!(spec(1).act1, Act1Choice::Roll);
         assert_eq!(default_act1_token(), "overgrowth");
     }
 

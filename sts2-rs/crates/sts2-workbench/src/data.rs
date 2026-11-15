@@ -61,6 +61,7 @@ pub const fn engine_wiki_version(version: GameVersion) -> &'static str {
     match version {
         GameVersion::V0_107_1 => ENGINE_WIKI_VERSION,
         GameVersion::V0_111_0 => "v0.111.0",
+        GameVersion::V0_113_0 => "v0.113.0",
     }
 }
 
@@ -213,6 +214,9 @@ pub struct Data {
     pub loc_potions: LocMap,
     /// `localization_eng/characters.json`.
     pub loc_characters: LocMap,
+    /// `localization_eng/encounters.json` (encounter titles, e.g. a boss's
+    /// name for the seed checker).
+    pub loc_encounters: LocMap,
     /// `localization_eng/events.json`.
     pub loc_events: LocMap,
     /// `localization_eng/monsters.json`.
@@ -254,6 +258,9 @@ macro_rules! bundled {
             GameVersion::V0_107_1 => base,
             GameVersion::V0_111_0 => {
                 include_str!(concat!(env!("OUT_DIR"), "/game/v0.111.0/", $name))
+            }
+            GameVersion::V0_113_0 => {
+                include_str!(concat!(env!("OUT_DIR"), "/game/v0.113.0/", $name))
             }
         };
         if own.is_empty() {
@@ -323,6 +330,10 @@ impl Data {
                 "localization_eng/characters.json",
                 bundled!(version, "localization_eng/characters.json"),
             ),
+            loc_encounters: parse(
+                "localization_eng/encounters.json",
+                bundled!(version, "localization_eng/encounters.json"),
+            ),
             loc_events: parse(
                 "localization_eng/events.json",
                 bundled!(version, "localization_eng/events.json"),
@@ -362,6 +373,9 @@ impl Data {
                     GameVersion::V0_107_1 => "{}",
                     GameVersion::V0_111_0 => {
                         include_str!(concat!(env!("OUT_DIR"), "/game/v0.111.0/card_tags.json"))
+                    }
+                    GameVersion::V0_113_0 => {
+                        include_str!(concat!(env!("OUT_DIR"), "/game/v0.113.0/card_tags.json"))
                     }
                 };
                 let overlay: BTreeMap<String, serde_json::Value> =

@@ -30,10 +30,23 @@ PROJECT = os.path.join(REPO_ROOT, "src", "Sts2Headless", "Sts2Headless.csproj")
 # and the pytest option do that, before any `Game` is spawned).
 # ──────────────────────────────────────────────────────────────────────────────
 
-#: The default build: stable Steam. Moves when the beta goes stable.
-DEFAULT_GAME_VERSION = "v0.107.1"
+#: The build a tool, test run or new workbench run gets when it names none.
+#: Moves when a newer build becomes the one worth working on.
+DEFAULT_GAME_VERSION = "v0.111.0"
+#: What an artifact that names NO build is: a save, replay, run log, bridge
+#: envelope or wire dict without a ``game_version`` key is v0.107.1, the only
+#: build there was before the key existed. It is also the build whose tables
+#: sit unprefixed on disk (``localization_eng/``, ``data/game/``), the build
+#: of the flat ``lib/`` layout, and Rust's ``GameVersion::default()``. It never
+#: moves; :data:`DEFAULT_GAME_VERSION` did (2026-11-14, was the same value).
+#: New files always name their build, so nothing new depends on this.
+LEGACY_GAME_VERSION = "v0.107.1"
 #: Every build the oracle can be compiled for (mirrors the csproj check).
-SUPPORTED_GAME_VERSIONS: tuple[str, ...] = ("v0.107.1", "v0.111.0")
+SUPPORTED_GAME_VERSIONS: tuple[str, ...] = ("v0.107.1", "v0.111.0", "v0.113.0")
+#: Steam beta builds whose content the engine has only partly ported: the
+#: advisor answers on them, and labels the answer approximate (GH #1303).
+#: Empty since v0.113.0's port landed (#1319 run level, #1330 The Fool's cards).
+BETA_GAME_VERSIONS: frozenset[str] = frozenset()
 GAME_VERSION_ENV = "STS2_GAME_VERSION"
 
 
@@ -90,7 +103,7 @@ def lib_dir(version: str | None = None) -> str:
     base = os.path.join(REPO_ROOT, "lib")
     versioned = os.path.join(base, ver)
     if (
-        ver == DEFAULT_GAME_VERSION
+        ver == LEGACY_GAME_VERSION
         and not os.path.isfile(os.path.join(versioned, "sts2.dll"))
         and os.path.isfile(os.path.join(base, "sts2.dll"))
     ):
@@ -173,6 +186,46 @@ def rs_engine_call(fn: Any, /, *args: Any, version: str | None = None, **kwargs:
     """
     ver = normalize_game_version(version) if version else GAME_VERSION
     return fn(*args, game_version=ver, **kwargs)
+
+
+class GameVersionMismatch(AssertionError):
+    """An engine object simulates another game build than the one asked for.
+
+    An ``AssertionError``, not a ``ValueError``: fight builders read a
+    ``ValueError`` as "this row does not build" and skip the row, so a version
+    mix must not look like one.
+    """
+
+
+def require_game_version(version: str) -> str:
+    """:func:`normalize_game_version`, raising :class:`GameVersionMismatch`.
+
+    For a build a caller asks an engine object for: an unsupported one must
+    not surface as the ``ValueError`` fight builders skip a row on.
+    """
+    try:
+        return normalize_game_version(version)
+    except ValueError as exc:
+        raise GameVersionMismatch(str(exc)) from exc
+
+
+def check_game_version(obj: Any, version: str | None = None, *, what: str = "engine object") -> Any:
+    """Return ``obj`` once its ``game_version`` getter reads ``version``.
+
+    ``version`` defaults to the selected :data:`GAME_VERSION`. ``RunManager``
+    and ``CombatState`` both carry the getter. Rust never reads
+    ``STS2_GAME_VERSION``, so an engine call without ``game_version=`` builds
+    v0.107.1 whatever the selection; reading the build back is what catches it.
+
+    Raises:
+        GameVersionMismatch: ``obj`` simulates another build, has no getter,
+            or ``version`` names no supported build.
+    """
+    ver = require_game_version(version) if version else GAME_VERSION
+    got = getattr(obj, "game_version", None)
+    if got != ver:
+        raise GameVersionMismatch(f"{what} simulates {got!r}, expected {ver!r}")
+    return obj
 
 
 # A drained stderr line that means the WORLD threw, not that it logged. The C#
@@ -278,7 +331,7 @@ def oracle_available(version: str | None = None) -> bool:
                 return not fh.read(24).startswith(b"version https://git-lfs")
         except OSError:
             return False
-    if ver != DEFAULT_GAME_VERSION:
+    if ver != LEGACY_GAME_VERSION:
         return False
     game_dir = _resolve_game_dir()
     return bool(game_dir) and os.path.isfile(os.path.join(game_dir, "sts2.dll"))
@@ -485,14 +538,14 @@ class Game:
         if not oracle_available():
             raise OracleUnavailable(
                 f"no game assembly for {GAME_VERSION}: lib/{GAME_VERSION}/sts2.dll is missing"
-                + (" and STS2_GAME_DIR is unset" if GAME_VERSION == DEFAULT_GAME_VERSION else "")
+                + (" and STS2_GAME_DIR is unset" if GAME_VERSION == LEGACY_GAME_VERSION else "")
                 + " — run `just import-game` (see docs/bring-your-own-game.md)"
             )
         env = os.environ.copy()
         env[GAME_VERSION_ENV] = GAME_VERSION
         # The Steam-install fallback only for the default build: an auto-detected
         # install holds whatever build Steam last updated to.
-        game_dir = _resolve_game_dir() if GAME_VERSION == DEFAULT_GAME_VERSION else None
+        game_dir = _resolve_game_dir() if GAME_VERSION == LEGACY_GAME_VERSION else None
         if game_dir:
             env["STS2_GAME_DIR"] = game_dir
         self.proc = subprocess.Popen(
@@ -559,7 +612,7 @@ class Game:
         if ready.get("type") != "ready":
             raise RuntimeError(f"Expected ready, got: {ready}")
         # Builds before GH #789 do not report a version; they are all v0.107.1.
-        built_for = ready.get("game_version", DEFAULT_GAME_VERSION)
+        built_for = ready.get("game_version", LEGACY_GAME_VERSION)
         if built_for != GAME_VERSION:
             self.close()
             raise RuntimeError(
@@ -712,9 +765,9 @@ class Game:
                 ``"underdocks"``, or ``"roll"`` to reproduce the real lobby's
                 seed-driven pick off the ``act_selection`` stream. STS2 ships
                 TWO acts at index 0 and the roll happens in ``StartRunLobby``,
-                which this harness bypasses; leaving this None keeps the
-                historical default (``GetDefaultList()`` => Overgrowth), which
-                is what made every act-1 parity number so far vacuous.
+                which this harness bypasses. None means ``"roll"``, as in the
+                real game with everything unlocked and discovered (it used to
+                mean Overgrowth on every seed).
             interactive_potion_swap: GH #1069. A potion reward that finds a
                 full belt parks as a ``potion_swap`` decision (discard a held
                 potion to take it, or decline), as the real reward screen

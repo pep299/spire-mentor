@@ -781,9 +781,8 @@ fn attack_potion_opens_choose_one_of_three_free() {
         .find(|c| c.uid == new_uid)
         .expect("arena");
     assert_eq!(spawned.card_type, CardType::Attack);
-    assert_eq!(
-        spawned.combat_var(VarKey::FreeThisTurn),
-        1,
+    assert!(
+        spawned.cost.has(sts2_core::LocalCostMod::FREE_THIS_TURN),
         "chosen card is free this turn (C# SetToFreeThisTurn)"
     );
     assert_eq!(
@@ -851,7 +850,7 @@ fn skill_potion_opens_choose_one_skill_free() {
         .find(|c| c.uid == new_uid)
         .expect("arena");
     assert_eq!(spawned.card_type, CardType::Skill);
-    assert_eq!(spawned.combat_var(VarKey::FreeThisTurn), 1);
+    assert!(spawned.cost.has(sts2_core::LocalCostMod::FREE_THIS_TURN));
 }
 
 #[test]
@@ -875,7 +874,7 @@ fn power_potion_opens_choose_one_power_free() {
         .find(|c| c.uid == new_uid)
         .expect("arena");
     assert_eq!(spawned.card_type, CardType::Power);
-    assert_eq!(spawned.combat_var(VarKey::FreeThisTurn), 1);
+    assert!(spawned.cost.has(sts2_core::LocalCostMod::FREE_THIS_TURN));
 }
 
 #[test]
@@ -910,7 +909,7 @@ fn colorless_potion_opens_choose_one_modifier_free() {
         "unexpected card_type {:?}",
         spawned.card_type
     );
-    assert_eq!(spawned.combat_var(VarKey::FreeThisTurn), 1);
+    assert!(spawned.cost.has(sts2_core::LocalCostMod::FREE_THIS_TURN));
 }
 
 #[test]
@@ -1485,10 +1484,11 @@ fn install_is_idempotent() {
     ensure_installed();
     let b = potion_effects::registered_count();
     assert_eq!(a, b);
-    // The 63 v0.107.1 potions plus the v0.111.0-only Ambergris (GH #792).
+    // The 63 v0.107.1 potions, the v0.111.0-only Ambergris (GH #792) and the
+    // three v0.113.0 Fool potions.
     assert_eq!(
         a,
-        PotionKind::ALL.len() + PotionKind::V0111_ONLY.len(),
+        PotionKind::ALL.len() + PotionKind::V0111_ONLY.len() + PotionKind::V0113_ONLY.len(),
         "expected every potion of every build registered"
     );
     assert_eq!(
@@ -1552,7 +1552,7 @@ fn snecko_oil_draws_seven_and_randomizes_hand_costs() {
         let mut card = Card::pod_defaults();
         let uid = sts2_core::CardUid::new(raw).expect("nz");
         card.uid = uid;
-        card.cost = 5;
+        card.cost = sts2_core::CardEnergyCost::new(5);
         state.cards.push(card);
         state.player.draw.push(uid);
     }
@@ -1570,9 +1570,9 @@ fn snecko_oil_draws_seven_and_randomizes_hand_costs() {
             .find(|c| c.uid == uid)
             .expect("card in arena");
         assert!(
-            (0..=3).contains(&card.cost),
+            (0..=3).contains(&card.local_cost()),
             "snecko-randomized cost {} out of 0..=3",
-            card.cost
+            card.local_cost()
         );
     }
 }
@@ -1583,23 +1583,63 @@ fn snecko_oil_draws_seven_and_randomizes_hand_costs() {
 /// C# still offered it with 0 stars).
 #[test]
 fn snecko_oil_keeps_a_free_this_turn_star_cost_free() {
-    use sts2_core::cards::{Card, CardId, VarKey};
+    use sts2_core::cards::{Card, CardId};
     ensure_installed();
     let mut state = fresh_state_with_player(50, 50);
     let uid = sts2_core::CardUid::new(1).expect("nz");
     let mut card = Card::pod_defaults();
     card.uid = uid;
     card.card_id = CardId::ParticleWall;
-    card.set_combat_var(VarKey::FreeThisTurn, 1);
+    card.set_to_free_this_turn();
     state.cards.push(card);
     state.player.hand.push(uid);
     assert_eq!(sts2_core::effective_star_cost(&state.cards[0]), 0);
     state.snecko_randomize_hand_costs();
-    assert_eq!(state.cards[0].combat_var(VarKey::FreeThisTurn), 0);
+    assert!(
+        !state.cards[0]
+            .cost
+            .has(sts2_core::LocalCostMod::FREE_THIS_TURN),
+        "the roll's Absolute supersedes the energy zero"
+    );
     assert_eq!(
         sts2_core::effective_star_cost(&state.cards[0]),
         0,
         "the star half of SetToFreeThisTurn survives the energy roll"
+    );
+}
+
+/// An `AddUntilPlayed(-1)` banked BEFORE the roll (v0.111.0 RocketPunch after
+/// a player-made Status) folds first, and the roll is an Absolute modifier
+/// appended after it, so the shown cost is the roll alone. Once the roll
+/// expires at turn end, the -1 applies to the base again. Loadout Defect
+/// v0.111.0 1307: RocketPunch rolled 2, C# 2, Rust 1.
+#[test]
+fn snecko_oil_roll_owns_the_cost_over_an_earlier_until_played_reduction() {
+    use sts2_core::cards::Card;
+    ensure_installed();
+    let mut state = fresh_state_with_player(50, 50);
+    let uid = sts2_core::CardUid::new(1).expect("nz");
+    let mut card = Card::pod_defaults();
+    card.uid = uid;
+    card.cost = sts2_core::CardEnergyCost::new(2);
+    card.cost.add_until_played(-1);
+    state.cards.push(card);
+    state.player.hand.push(uid);
+    assert_eq!(state.cards[0].local_cost(), 1);
+    let before = state.run_rng.combat_energy_costs.clone();
+    state.snecko_randomize_hand_costs();
+    let mut replay = before;
+    let roll = replay.next_int(0, 3);
+    assert_eq!(
+        state.cards[0].local_cost(),
+        roll,
+        "the roll is the shown cost"
+    );
+    state.cards[0].cost.end_of_turn_cleanup();
+    assert_eq!(
+        state.cards[0].local_cost(),
+        1,
+        "past the roll the until-played -1 applies to the base 2 again"
     );
 }
 
@@ -1614,7 +1654,7 @@ fn snecko_oil_preserves_x_cost_sentinel() {
     let mut card = Card::pod_defaults();
     let uid = sts2_core::CardUid::new(1).expect("nz");
     card.uid = uid;
-    card.cost = -1;
+    card.cost = sts2_core::CardEnergyCost::new(-1);
     state.cards.push(card);
     state.player.hand.push(uid);
     let _ = dispatch(&mut state, PotionKind::SneckoOil, None);
@@ -1623,18 +1663,16 @@ fn snecko_oil_preserves_x_cost_sentinel() {
         .iter()
         .find(|c| c.uid == uid)
         .expect("x-cost card still present");
-    assert_eq!(after.cost, -1, "X-cost sentinel must be preserved");
+    assert_eq!(after.local_cost(), -1, "X-cost sentinel must be preserved");
 }
 
 /// Bead `sts2-rs-2e9q2` follow-up: Snecko Oil's cost randomization is a
 /// per-turn override (C# `EnergyCost.SetThisTurnOrUntilPlayed`), not a
 /// permanent rewrite — a card that is NOT played reverts to its base cost
-/// at the owner's next turn start. The roll delta is banked in
-/// `SneckoCostDeltaThisTurn` and undone by
-/// `restore_snecko_costs_for_turn_start`.
+/// at the owner's next turn start (`EndOfTurnCleanup`).
 #[test]
 fn snecko_oil_cost_randomization_reverts_at_turn_start() {
-    use sts2_core::cards::{Card, VarKey};
+    use sts2_core::cards::Card;
     ensure_installed();
     let mut state = fresh_state_with_player(50, 50);
     state.rng = sts2_core::dotnet_rng::Rng::new(3_i32);
@@ -1642,41 +1680,33 @@ fn snecko_oil_cost_randomization_reverts_at_turn_start() {
     let mut card = Card::pod_defaults();
     let uid = sts2_core::CardUid::new(1).expect("nz");
     card.uid = uid;
-    card.cost = 2;
+    card.cost = sts2_core::CardEnergyCost::new(2);
     state.cards.push(card);
     state.player.draw.push(uid);
 
     let _ = dispatch(&mut state, PotionKind::SneckoOil, None);
-    let randomized = state.cards.iter().find(|c| c.uid == uid).unwrap().cost;
-    assert!(
-        (0..=3).contains(&randomized),
-        "randomized cost {randomized} out of 0..=3"
-    );
-    // The banked delta records the shift from base cost 2.
-    let banked = state
+    let randomized = state
         .cards
         .iter()
         .find(|c| c.uid == uid)
         .unwrap()
-        .combat_var(VarKey::SneckoCostDeltaThisTurn);
-    assert_eq!(
-        banked,
-        i32::from(randomized) - 2,
-        "banked delta == roll - base"
+        .local_cost();
+    assert!(
+        (0..=3).contains(&randomized),
+        "randomized cost {randomized} out of 0..=3"
     );
+    // The base is untouched; the roll is a modifier.
+    assert_eq!(state.cards[0].base_cost(), 2);
 
-    // Turn-start restore reverts to the base cost and clears the slot.
-    state.restore_snecko_costs_for_turn_start();
-    let c = state.cards.iter().find(|c| c.uid == uid).unwrap();
+    // `EndOfTurnCleanup` drops the roll.
+    let c = state.cards.iter_mut().find(|c| c.uid == uid).unwrap();
+    c.cost.end_of_turn_cleanup();
     assert_eq!(
-        c.cost, 2,
+        c.local_cost(),
+        2,
         "Snecko cost reverts to base at the next turn start"
     );
-    assert_eq!(
-        c.combat_var(VarKey::SneckoCostDeltaThisTurn),
-        0,
-        "delta slot cleared after revert"
-    );
+    assert!(!c.cost.has_local_modifiers(), "no modifier left");
 }
 
 /// Bead `sts2-rs-0fazg`: SoldiersStew scans Strike-tagged cards
@@ -1874,7 +1904,7 @@ fn push_test_card(
     let uid = sts2_core::CardUid::new(uid_raw).expect("non-zero card uid");
     state.cards.push(Card {
         uid,
-        cost,
+        cost: sts2_core::CardEnergyCost::new(cost),
         upgraded,
         ..Card::pod_defaults()
     });
@@ -1970,7 +2000,7 @@ fn touch_of_insanity_opens_make_free_choice_then_resolves() {
     assert!(!offered.contains(&free), "free card is not a candidate");
     // Nothing zeroed until resolved.
     let idx1 = c1.0.get() as usize - 1;
-    assert_eq!(state.cards[idx1].cost, 1);
+    assert_eq!(state.cards[idx1].local_cost(), 1);
 
     // Resolve: make the first candidate (c1) free.
     let selection: smallvec::SmallVec<[u8; 4]> = [0u8].into_iter().collect();
@@ -1979,12 +2009,16 @@ fn touch_of_insanity_opens_make_free_choice_then_resolves() {
     assert!(state.pending_choice.is_none());
     let chosen = offered[0];
     let chosen_idx = chosen.0.get() as usize - 1;
-    assert_eq!(state.cards[chosen_idx].cost, 0, "chosen card now free");
+    assert_eq!(
+        state.cards[chosen_idx].local_cost(),
+        0,
+        "chosen card now free"
+    );
     // The other candidate is unchanged.
     let other = if chosen == c1 { c2 } else { c1 };
     let other_idx = other.0.get() as usize - 1;
     assert!(
-        state.cards[other_idx].cost > 0,
+        state.cards[other_idx].local_cost() > 0,
         "unchosen candidate unchanged"
     );
 }
@@ -2009,16 +2043,50 @@ fn touch_of_insanity_single_candidate_auto_frees() {
         "single candidate → no prompt"
     );
     let idx = c1.0.get() as usize - 1;
-    assert_eq!(state.cards[idx].cost, 0, "the lone candidate is freed");
+    assert_eq!(
+        state.cards[idx].local_cost(),
+        0,
+        "the lone candidate is freed"
+    );
+}
+
+/// C# filters on the cost with modifiers, not the printed one: a Flatten an
+/// Osty attack already zeroed is no option, so the lone 2-cost card is freed
+/// with no prompt (loadout Necrobinder 3159 v0.111.0).
+#[test]
+fn touch_of_insanity_skips_a_card_whose_modified_cost_is_zero() {
+    ensure_installed();
+    let mut state = fresh_state_with_player(80, 80);
+    let c1 = push_test_card(&mut state, 1, 2, false);
+    let flatten = push_test_card(&mut state, 2, 2, false);
+    state.cards[flatten.0.get() as usize - 1].card_id = sts2_core::cards::CardId::Flatten;
+    for uid in [c1, flatten] {
+        state.player.hand.push(uid);
+    }
+    state.combat_log.osty_attacks_this_turn = 1;
+    sts2_core::card_effects::flatten_after_osty_attack(&mut state);
+    assert_eq!(
+        sts2_core::hooks::effective_card_cost(&state, flatten),
+        0,
+        "the Osty attack zeroed Flatten"
+    );
+
+    let _ = dispatch(&mut state, PotionKind::TouchOfInsanity, None);
+
+    assert!(state.pending_choice.is_none(), "Flatten is not an option");
+    assert_eq!(
+        state.cards[c1.0.get() as usize - 1].local_cost(),
+        0,
+        "the other card is freed"
+    );
 }
 
 /// gh#180 (CALAMITY): a TouchOfInsanity-freed card that is later upgraded
 /// in-combat by a cost-reducing upgrade (CALAMITY 3→2 via ARMAMENTS+1)
 /// must STAY at cost 0, not underflow to -1. C# `SetThisCombat(0)` is an
 /// Absolute local cost modifier that owns the evaluated cost while
-/// `UpgradeBy(-1)` only mutates the base; the collapsed Rust base+modifier
-/// model needs `CostAbsolutelySet` so `Card::upgrade` takes the clamp branch.
-/// Without the flag the additive branch computes 0 + (2-3) = -1, which
+/// `UpgradeBy(-1)` only mutates the base (and clamps Absolute amounts above
+/// the lowered base). An additive model would compute 0 + (2-3) = -1, which
 /// `is_x_cost()` reads as an X-cost and drains all energy on play.
 #[test]
 fn touch_of_insanity_freed_calamity_upgrade_does_not_underflow_to_x_cost() {
@@ -2034,7 +2102,7 @@ fn touch_of_insanity_freed_calamity_upgrade_does_not_underflow_to_x_cost() {
         crate::cards::spec_index::card_pod_from_id(sts2_core::cards::CardId::CalamityCard, false)
             .expect("Calamity pod");
     calamity.uid = uid;
-    let base_cost = calamity.cost;
+    let base_cost = calamity.local_cost();
     assert_eq!(base_cost, 3, "Calamity base cost is 3 (sanity)");
     state.cards.push(calamity);
     state.player.hand.push(uid);
@@ -2045,18 +2113,20 @@ fn touch_of_insanity_freed_calamity_upgrade_does_not_underflow_to_x_cost() {
         EffectResult::Resolved
     );
     let idx = uid.0.get() as usize - 1;
-    assert_eq!(state.cards[idx].cost, 0, "Calamity freed to cost 0");
-    assert_eq!(
-        state.cards[idx].combat_var(VarKey::CostAbsolutelySet),
-        1,
-        "free-this-combat sets the absolute-cost flag",
+    assert_eq!(state.cards[idx].local_cost(), 0, "Calamity freed to cost 0");
+    assert!(
+        state.cards[idx]
+            .cost
+            .has(sts2_core::LocalCostMod::FREE_THIS_COMBAT),
+        "free this combat is an Absolute(0) combat modifier",
     );
 
     // ARMAMENTS+1 upgrades a card in hand mid-combat: Calamity 3→2 base.
     let upgraded = state.cards[idx].upgrade();
     assert!(upgraded, "Calamity upgrades in-combat");
     assert_eq!(
-        state.cards[idx].cost, 0,
+        state.cards[idx].local_cost(),
+        0,
         "freed card stays free after a cost-reducing upgrade (no -1 underflow)",
     );
     assert!(
@@ -2073,26 +2143,30 @@ fn touch_of_insanity_freed_calamity_upgrade_does_not_underflow_to_x_cost() {
 /// bank from the new 0, leaving a -1 "X-cost" that drained all energy.
 #[test]
 fn touch_of_insanity_over_snecko_roll_stays_free_after_roll_expires() {
-    use sts2_core::cards::VarKey;
     ensure_installed();
     let mut state = fresh_state_with_player(80, 80);
     let uid = push_test_card(&mut state, 1, 0, false);
     state.player.hand.push(uid);
     let idx = uid.0.get() as usize - 1;
-    // A Snecko roll 0 -> 1 as `snecko_randomize_hand_costs` banks it.
-    state.cards[idx].cost = 1;
-    state.cards[idx].set_combat_var(VarKey::SneckoCostDeltaThisTurn, 1);
-    state.cards[idx].set_combat_var(VarKey::SneckoRollLive, 1);
-    state.cards[idx].set_combat_var(VarKey::CostAbsolutelySet, 1);
+    // A Snecko roll 0 -> 1: `SetThisTurnOrUntilPlayed(1)`.
+    state.cards[idx]
+        .cost
+        .set_this_turn_or_until_played(1, false);
     assert_eq!(
         dispatch(&mut state, PotionKind::TouchOfInsanity, None),
         EffectResult::Resolved
     );
-    assert_eq!(state.cards[idx].cost, 0);
-    state.cards[idx].expire_snecko_roll();
-    assert_eq!(state.cards[idx].cost, 0, "the freed card stays at 0");
+    assert_eq!(state.cards[idx].local_cost(), 0);
+    state.cards[idx].cost.end_of_turn_cleanup();
+    assert_eq!(
+        state.cards[idx].local_cost(),
+        0,
+        "the freed card stays at 0"
+    );
     assert!(!state.cards[idx].is_x_cost());
-    assert_eq!(state.cards[idx].combat_var(VarKey::CostAbsolutelySet), 1);
+    assert!(state.cards[idx]
+        .cost
+        .has(sts2_core::LocalCostMod::FREE_THIS_COMBAT));
 }
 
 #[test]
@@ -2107,7 +2181,7 @@ fn touch_of_insanity_noop_on_all_free_hand() {
     );
     // Card still at cost 0; no panic from empty candidate set.
     let c = state.cards.iter().find(|c| c.uid == free).expect("card");
-    assert_eq!(c.cost, 0);
+    assert_eq!(c.local_cost(), 0);
 }
 
 #[test]
@@ -2159,7 +2233,7 @@ fn bottled_potential_reshuffles_hand_into_draw_and_draws_five() {
 /// single-pick `AddFromDiscardFree` choice in DISCARD-PILE ORDER and
 /// draws ZERO RNG (C# `FromSimpleGrid` is a pure player choice —
 /// LiquidMemories.cs:25-30). Resolving moves the chosen card to hand,
-/// stamps `FreeThisTurn=1`, and zeroes its effective cost this turn.
+/// stamps `FREE_THIS_TURN`, and zeroes its effective cost this turn.
 #[test]
 fn liquid_memories_opens_discard_choice_no_rng_then_resolves_free_this_turn() {
     ensure_installed();
@@ -2216,14 +2290,17 @@ fn liquid_memories_opens_discard_choice_no_rng_then_resolves_free_this_turn() {
         "unchosen card stays in discard"
     );
     // C# `SetToFreeThisTurn()` is a TEMPORARY override, not a base-cost
-    // mutation: the card keeps its base cost (2) but carries FreeThisTurn=1
+    // mutation: the card keeps its base cost (2) but carries FREE_THIS_TURN
     // so its effective cost is 0 this turn / until played.
     let c = state.cards.iter().find(|c| c.uid == d1).expect("card");
-    assert_eq!(c.cost, 2, "base cost preserved (not permanently zeroed)");
     assert_eq!(
-        c.combat_var(sts2_core::cards::VarKey::FreeThisTurn),
-        1,
-        "chosen card flagged FreeThisTurn"
+        c.base_cost(),
+        2,
+        "base cost preserved (not permanently zeroed)"
+    );
+    assert!(
+        c.cost.has(sts2_core::LocalCostMod::FREE_THIS_TURN),
+        "chosen card flagged FREE_THIS_TURN"
     );
     assert_eq!(
         sts2_core::hooks::effective_card_cost(&state, d1),
@@ -2259,10 +2336,9 @@ fn liquid_memories_single_discard_auto_frees_no_prompt_no_rng() {
     assert!(state.player.discard.is_empty(), "card removed from discard");
     assert!(state.player.hand.contains(&d1), "card moved to hand");
     let c = state.cards.iter().find(|c| c.uid == d1).expect("card");
-    assert_eq!(
-        c.combat_var(sts2_core::cards::VarKey::FreeThisTurn),
-        1,
-        "lone card flagged FreeThisTurn"
+    assert!(
+        c.cost.has(sts2_core::LocalCostMod::FREE_THIS_TURN),
+        "lone card flagged FREE_THIS_TURN"
     );
 }
 
@@ -2950,6 +3026,30 @@ fn entropic_brew_fills_belt_off_combat_potion_generation() {
     );
 }
 
+/// v0.113.0 `EntropicBrew.cs:26` rolls on `PlayerRng.NonCombatGeneration`,
+/// leaving `CombatPotionGeneration` untouched.
+#[test]
+fn entropic_brew_v0113_fills_belt_off_non_combat_generation() {
+    use sts2_core::potions::{CharacterId, MAX_POTIONS};
+    let mut state = fresh_state_with_player(50, 50);
+    state.player.character = Some(CharacterId::Ironclad);
+    state.run_rng.game_version = sts2_core::GameVersion::V0_113_0;
+    state.player.potions.push(PotionKind::BlockPotion);
+    let open = MAX_POTIONS - 1;
+
+    let cpg_before = state.run_rng.combat_potion_generation.counter();
+    let ncg_before = state.run_rng.non_combat_generation.counter();
+    crate::potions::all::entropic_brew_fill_belt(&mut state);
+
+    assert_eq!(state.player.potions.len(), MAX_POTIONS, "belt filled");
+    assert_eq!(state.run_rng.combat_potion_generation.counter(), cpg_before);
+    assert_eq!(
+        state.run_rng.non_combat_generation.counter() - ncg_before,
+        2 * open as u32,
+        "2 draws per filled slot"
+    );
+}
+
 /// EntropicBrew drunk from slot 0 of [Brew, Energy, _] refills the HOLE
 /// first: C# `RemovePotionInternal` nulls the slot without compacting and
 /// `AddPotionInternal` takes `_potionSlots.IndexOf(null)` (`Player.cs:640`,
@@ -3037,5 +3137,57 @@ fn entropic_brew_vetoed_by_sozu_rolls_once_and_adds_nothing() {
         state.run_rng.combat_potion_generation.counter() - cpg_before,
         2,
         "one roll, then the vetoed procure breaks the loop"
+    );
+}
+
+/// Every generate-and-choose screen that makes its pick free (Splash,
+/// Discovery, Abundance, the Attack/Skill/Power/Colorless potions) calls
+/// `SetToFreeThisTurn()` BEFORE `AddGeneratedCardToCombat` (`Splash.cs`,
+/// `Discovery.cs`, `AttackPotion.cs`, ...). So a picked Stomp's
+/// `AfterCardEnteredCombat` shave (`AddThisTurn(-attacks)`, `Stomp.cs`) folds
+/// AFTER the local zero: the local cost goes below 0, and
+/// `Hook.ModifyEnergyCostInCombat` returns a negative cost untouched, so
+/// Borrowed Time's +2 never lands. Pushing the zero after the shave left the
+/// local cost at 0 and the card at 2 (loadout Necrobinder 7931 v0.107.1:
+/// Splash picked a Stomp, C# 0, Rust 2).
+#[test]
+fn free_generated_pick_is_free_before_it_enters_combat() {
+    use sts2_core::cards::{CardId, CardType};
+    ensure_installed();
+    let mut state = fresh_state_for_character(CharacterId::Necrobinder);
+    let pid = std::num::NonZeroU32::new(1).expect("nz");
+    state.powers.push(sts2_core::Power {
+        id: pid,
+        kind: sts2_core::PowerKind::BorrowedTime,
+        amount: 2,
+        counter: 0,
+        applier: None,
+        skip_next_tick: false,
+    });
+    state.player.powers.push(sts2_core::PowerUid(pid));
+    state.player.cards_played_this_turn[CardType::Attack.index()] = 1;
+    state.request_card_choice(
+        sts2_core::ChoiceKind::AddGeneratedFreeToHand,
+        vec![sts2_core::ChoiceOption {
+            card_id: CardId::Stomp,
+            upgraded: true,
+            card_uid: None,
+            source_pile: None,
+        }],
+        1,
+        1,
+        true,
+    );
+
+    resolve_choice_pick(&mut state, 0);
+
+    let uid = *state.player.hand.last().expect("the pick is in hand");
+    let stomp = &state.cards[uid.0.get() as usize - 1];
+    assert_eq!(stomp.card_id, CardId::Stomp);
+    assert_eq!(stomp.local_cost(), -1, "0, then the -1 shave");
+    assert_eq!(
+        sts2_core::hooks::effective_card_cost(&state, uid),
+        0,
+        "a negative local cost skips Borrowed Time"
     );
 }

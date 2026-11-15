@@ -62,10 +62,9 @@ fn add_enemy(state: &mut CombatState, hp: i32) -> CreatureUid {
 fn add_card(state: &mut CombatState, id: u32, card_type: sts2_core::cards::CardType) -> CardUid {
     let uid = CardUid::new(id).expect("non-zero card uid");
     state.cards.push(Card {
-        local_energy_cost: None,
         uid,
         card_id: CardId::StrikeIronclad,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type,
         target_type: TargetType::Enemy,
         upgraded: false,
@@ -180,6 +179,9 @@ fn noxious_fumes_flashes_on_the_owners_turn_even_with_no_enemy_to_poison() {
 #[test]
 fn juggernaut_flashes_only_when_its_guard_holds() {
     let mut state = state_with_power(PowerKind::Juggernaut, 3);
+    // A live player: at 0 HP the combat is ending and Juggernaut is silent.
+    state.player.current_hp = 50;
+    state.player.max_hp = 50;
     add_enemy(&mut state, 40);
 
     sts2_core::hooks::dispatch_after_block_gained(
@@ -709,10 +711,9 @@ fn a_disarmed_run_gets_a_byte_identical_effect_vector() {
 /// which take ownership of the card they spawn.
 fn make_card(card_type: sts2_core::cards::CardType) -> Card {
     Card {
-        local_energy_cost: None,
         uid: CardUid::new(1).expect("non-zero card uid"),
         card_id: CardId::StrikeIronclad,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type,
         target_type: TargetType::Enemy,
         upgraded: false,
@@ -810,6 +811,9 @@ fn coolant_flashes_on_an_empty_orb_belt() {
 fn hailstorm_flashes_only_when_its_guard_holds() {
     let mut state = state_with_power(PowerKind::Hailstorm, 4);
     add_enemy(&mut state, 40);
+    // A living player: at 0 HP the combat is ending and `OrbCmd.Channel`
+    // does nothing (OrbCmd.cs:70).
+    state.player.current_hp = 80;
 
     // C# `HailstormPower.cs:37` is nested inside `frostOrbs >= FrostOrbs(1)`.
     // With a Lightning-only belt the threshold fails and nothing flashes —
@@ -1287,7 +1291,7 @@ fn add_hand_card(
 ) -> CardUid {
     let uid = add_card(state, id, card_type);
     let idx = uid.get() as usize - 1;
-    state.cards[idx].cost = cost;
+    state.cards[idx].cost = sts2_core::CardEnergyCost::new(cost);
     state.cards[idx].target_type = TargetType::None;
     state.cards[idx].base_damage = 0;
     state.player.hand.push(uid);
@@ -1859,7 +1863,6 @@ fn imbalanced_flashes_only_when_fully_blocked() {
     // Give the enemy a MonsterAi with a counter, so `ai.set_counter(1)` has
     // somewhere to land (a `None` ai just silently no-ops the stun half).
     let ctx = sts2_core::hooks::DamageCtx {
-        card_source: None,
         dealer: CreatureRef::Enemy(enemy),
         target: CreatureRef::Player,
         props: ValueProps::MOVE,
@@ -1884,7 +1887,6 @@ fn painful_stabs_flashes_only_when_a_wound_is_actually_added() {
     let enemy = add_enemy(&mut state, 40);
     push_enemy_power(&mut state, 1, enemy, PowerKind::PainfulStabs, 2);
     let ctx = sts2_core::hooks::DamageCtx {
-        card_source: None,
         dealer: CreatureRef::Enemy(enemy),
         target: CreatureRef::Player,
         props: ValueProps::MOVE,
@@ -1897,6 +1899,9 @@ fn painful_stabs_flashes_only_when_a_wound_is_actually_added() {
     // C# as long as `list.Any(UnblockedDamage > 0)` upstream — that filter
     // is applied by the caller, not this dispatcher, so drive it directly.
     sts2_core::hooks::dispatch_after_damage_given(&mut state, &ctx, 5, 5, false);
+    // The Wounds (and the flash) wait for the attack command's end.
+    assert_eq!(flash_rows(&state, PowerKind::PainfulStabs), 0);
+    sts2_core::combat_loop::flush_painful_stabs_wounds(&mut state, enemy);
     assert_eq!(flash_rows(&state, PowerKind::PainfulStabs), 1);
     assert_eq!(
         state.player.discard.len(),
@@ -1914,7 +1919,6 @@ fn flutter_flashes_only_when_it_hits_zero() {
     let enemy = add_enemy(&mut state, 40);
     push_enemy_power(&mut state, 1, enemy, PowerKind::Flutter, 2);
     let ctx = sts2_core::hooks::DamageCtx {
-        card_source: None,
         dealer: CreatureRef::Player,
         target: CreatureRef::Enemy(enemy),
         props: ValueProps::MOVE,
@@ -1974,7 +1978,6 @@ fn slippery_flashes_only_when_unblocked_damage_lands() {
     let enemy = add_enemy(&mut state, 40);
     push_enemy_power(&mut state, 1, enemy, PowerKind::Slippery, 3);
     let ctx = sts2_core::hooks::DamageCtx {
-        card_source: None,
         dealer: CreatureRef::Player,
         target: CreatureRef::Enemy(enemy),
         props: ValueProps::MOVE,
@@ -1997,7 +2000,6 @@ fn the_gambit_flashes_only_on_a_powered_unblocked_hit_to_the_player() {
     push_player_power(&mut state, 1, PowerKind::TheGambit, 1);
     let dealer = add_enemy(&mut state, 40);
     let ctx = sts2_core::hooks::DamageCtx {
-        card_source: None,
         dealer: CreatureRef::Enemy(dealer),
         target: CreatureRef::Player,
         props: ValueProps::UNPOWERED,
@@ -2010,7 +2012,6 @@ fn the_gambit_flashes_only_on_a_powered_unblocked_hit_to_the_player() {
     // Re-apply (nothing removed it) and drive a powered hit.
     push_player_power(&mut state, 2, PowerKind::TheGambit, 1);
     let powered_ctx = sts2_core::hooks::DamageCtx {
-        card_source: None,
         dealer: CreatureRef::Enemy(dealer),
         target: CreatureRef::Player,
         props: ValueProps::MOVE,
@@ -2975,7 +2976,6 @@ fn paper_cuts_skips_a_dead_dealer() {
     let enemy = add_enemy(&mut state, 40);
     push_enemy_power(&mut state, 1, enemy, PowerKind::PaperCuts, 2);
     let ctx = sts2_core::hooks::DamageCtx {
-        card_source: None,
         dealer: CreatureRef::Enemy(enemy),
         target: CreatureRef::Player,
         props: ValueProps::MOVE,

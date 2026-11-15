@@ -1,31 +1,39 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { assetUrl, type Card, type CombatLogRow, type Enemy, type MctsConfig, type Score, type Step } from "../api";
+import { characterArt } from "../characters";
 import Combatant from "./Combatant";
-import { DEFAULT_DYING_FADE_SECONDS, spriteBodyH } from "./combatantMetrics";
-import KaiserCrabGroup, { type CrabArm } from "./KaiserCrabGroup";
+import { DEFAULT_DYING_FADE_SECONDS, hpBarWidth, spriteBodyH } from "./combatantMetrics";
+import KaiserCrabGroup, { type ArmAt, type CrabArm } from "./KaiserCrabGroup";
+import type { PartChrome } from "./partChrome";
+import { CRAB_ROOT_DX, CRAB_ROOT_Y, CRAB_SETUP_SCALE, crabArmMount } from "./crabMount";
 import DecimillipedeGroup, { SEGMENT_SCALE } from "./DecimillipedeGroup";
-import { decimillipedeSpan } from "./decimillipedeLayout";
+import { decimillipedeDrop, decimillipedeSpan } from "./decimillipedeLayout";
 import MctsControls from "./MctsControls";
 import Hand from "./Hand";
+import CardFrame from "./CardFrame";
 import PileViewer from "./PileViewer";
-import PotionTray from "./PotionTray";
 import { isBrowserChord, isTextInput } from "../keys";
 import { enemyLabeller } from "../enemyLabels";
 import { stageFraming, stageZoom } from "../stageZoom";
+import { StageZoomContext, isSmallPhoneScreen, phoneGroundLimit, usePhone } from "../phone";
+import { CHROME, SPLIT, heldSplitHeight, shiftSplit, splitChromeBelow, splitLayout, splitPowerCells, splitZoomWidth, type SplitCreature, type SplitLayout, type SplitPlace } from "../portraitSplit";
+import { ZOOM_GUTTER, portraitZoomLeft } from "../zoomPlacement";
 import { rigBox } from "../rigBounds";
+import PlayerBand from "./PlayerBand";
+import { useInspect, useInspectSuppress } from "../inspect/useInspect";
+import InspectSheet from "../inspect/InspectSheet";
 import {
-  GROUND_Y, ROOM_BG_OFFSET_X, ROOM_CANVAS_W, ROOM_CANVAS_H, SCENE_CY, SCENE_W,
-  aspectFit, boundsWidth, cameraFor, fitScene, instanceScale, placeEnemies, placeOsty, placePlayer, rowHalfWidths,
-  renderedSize, roomCanvasScale, sceneFramingFor, type Camera, type Slot,
+  ROOM_BG_OFFSET_X, ROOM_CANVAS_W, ROOM_CANVAS_H, SCENE_CY, SCENE_W,
+  aspectFit, boundsWidth, cameraFor, fitScene, lowestFootY, instanceScale, placeEnemies, placeOsty, placePlayer, rowHalfWidths,
+  renderedSize, roomCanvasScale, sceneFitHeight, sceneFramingFor, type Camera, type Slot,
 } from "../scene";
 import { deathBurstRadiusFor, dissolveSecondsFor } from "../effects/dissolve";
 import { useHints } from "../hints/useHints";
 import { useEffectsMode } from "../effects/useEffectsMode";
-import { combatDiff } from "../effects/combatDiff";
 import { attackingEnemies } from "../effects/enemyTurn";
 import { actionStream } from "../effects/actionStream";
 import { EffectScheduler, rafClock, type Clock } from "../effects/scheduler";
-import { HIT_SPACING_MS, TOTAL_SETTLE_MS } from "../effects/timing";
+import { AUTO_CARD_SHOW_MS, HIT_SPACING_MS, TOTAL_SETTLE_MS } from "../effects/timing";
 import { loadManifest, type DissolveEffect, type VfxManifest } from "../effects/manifest";
 import {
   loadBindings, effectsForEvent, reportSubstitution, deathFadeFor, shouldFadeAfterDeath,
@@ -46,7 +54,8 @@ import {
   shakeStrengthForDamage,
   type ShakeStrength,
 } from "../effects/screenShake";
-import { cuesForCombat } from "../sound/triggers";
+import { cuesForCombat, cuesForEvent, transitionCues } from "../sound/triggers";
+import type { SoundCue } from "../sound/types";
 import { cueForUi } from "../sound/runCues";
 import TargetingArrow from "./TargetingArrow";
 import { DESIGN_HEIGHT, type Point } from "./arrowGeometry";
@@ -54,7 +63,12 @@ import { artSlugs, atmosphereVars, pickScene, resolveScene, sceneAtmosphere,
   sceneScale } from "./roomScenes";
 import { matchEncounter, nextSpawnSlot, slotNamed } from "./encounterSlots";
 import RoomLayers from "./RoomLayers";
+import { useAdviceMarks } from "../advice/useAdviceMarks";
+import { END_TURN_KEY, GRADE_TEXT, type Grade } from "../advice/marks";
 import { roomArtUrls, sceneArtUrls, useArtReady } from "./roomPreload";
+import ZoomCard from "./ZoomCard";
+import { heldIndex, hold, tapCard, tapEnemy, tapStage, type Held, type TapResult } from "../handSelect";
+import { useZoomPlacement } from "../useZoomPlacement";
 
 function needsTarget(card: { target_type?: string }): boolean {
   const t = card.target_type ?? "";
@@ -62,6 +76,36 @@ function needsTarget(card: { target_type?: string }): boolean {
 }
 
 type PileKind = "draw" | "discard" | "exhaust";
+
+/** A rig's drawn width in scene px as a box SYMMETRIC about its root (a slot
+ *  centres the root, so a scythe reaching far left counts on both sides), or
+ *  `undefined` when the rig has no measured bounds. */
+function rootSymWidth(rig: string | null | undefined, rigScale: number | null | undefined): number | undefined {
+  const b = rigBox(rig);
+  const sc = Math.abs(rigScale ?? 0);
+  if (!b || !sc) return undefined;
+  return 2 * Math.max(-b.x, b.x + b.w) * sc;
+}
+
+/** A rig's measured idle ink box in scene px: its width and its centre right
+ *  of the root. `undefined` without measured bounds, or for a rig drawn
+ *  mirrored (a negative scale), whose box this does not flip. */
+function inkBox(rig: string | null | undefined, rigScale: number | null | undefined): { w: number; cx: number } | undefined {
+  const b = rigBox(rig);
+  if (!b || !(rigScale != null && rigScale > 0) || !(b.w > 0)) return undefined;
+  return { w: b.w * rigScale, cx: (b.x + b.w / 2) * rigScale };
+}
+
+/** The phone-portrait split's figure gap: px between the stage's left edge,
+ *  the figure, Osty and the status block (real px). */
+const SPLIT_FIG_GAP = 8;
+/** Half the band's 34 px block shield, which overhangs the status block's
+ *  left edge (PlayerBand). */
+const SPLIT_SHIELD_HALF = 17;
+/** Real px Osty's HP bar and nameplate take under its feet in the band. */
+const SPLIT_OSTY_CHROME = 44;
+/** The narrowest Osty's HP bar gets in the band, real px. */
+const SPLIT_OSTY_MIN_W = 60;
 
 /**
  * Which creature this is, for anything that must survive the fight changing
@@ -114,7 +158,7 @@ function PilePlaque({ label, count, kind, onClick }: {
 
 /** Characters with extracted layered energy-orb art under
  *  ui/combat/energy_counters/<char>/. */
-const ORB_CHARACTERS = new Set(["ironclad", "silent", "defect", "regent", "necrobinder"]);
+const ORB_CHARACTERS = new Set(["ironclad", "silent", "defect", "regent", "necrobinder", "fool"]);
 
 /** Derive the orb-art character from the backend's energy icon path
  *  (`sprite_fonts/<char>_energy_icon.png`) — the step payload carries no
@@ -246,8 +290,6 @@ export default function Board({
   step,
   onPlayCard,
   onEndTurn,
-  onUsePotion,
-  onDiscardPotion,
   onHint,
   onPeek,
   attack,
@@ -256,9 +298,8 @@ export default function Board({
   onAutoplay,
   onAutoplayToEnd,
   onSearch,
-  autoHints,
-  onToggleHints,
   hintBusy,
+  moveGrade,
   showScores = false,
   hintConfig,
   onHintConfig,
@@ -269,8 +310,6 @@ export default function Board({
   step: Step;
   onPlayCard?: (cardIndex: number, targetIndex?: number) => void;
   onEndTurn?: () => void;
-  onUsePotion?: (slot: number, targetIndex?: number) => void;
-  onDiscardPotion?: (slot: number) => void;
   onHint?: () => void;
   /** P: peek at the AI's next action (Coach style; press-first). */
   onPeek?: () => void;
@@ -283,9 +322,10 @@ export default function Board({
   onAutoplay?: () => void;
   onAutoplayToEnd?: () => void;
   onSearch?: () => void;
-  autoHints?: boolean;
-  onToggleHints?: () => void;
   hintBusy?: boolean;
+  /** The verdict over the card just played (advice/marks.ts `gradeMove`),
+   *  floating up from the hand; `nonce` restarts it. */
+  moveGrade?: { grade: Grade; nonce: number } | null;
   /** Live play: reveal the per-card win-prob overlays for THIS position. True
    *  when the global hints switch is on, or when the player just asked for a
    *  hint here (H / the hint button). Replay ignores it — see `shownScores`. */
@@ -308,7 +348,26 @@ export default function Board({
 }) {
   const s = step.state;
   const p = s.player;
-  const [pendingCard, setPendingCard] = useState<number | null>(null);
+  const phone = usePhone();
+  // The card armed for a target, and (PHONE only) the hand card shown zoomed
+  // (ZoomCard). Selection lives here rather than in Hand so one tap can both
+  // zoom a card and arm it — see handSelect.ts. `selectedCard` is always null
+  // on a desktop or a touch tablet.
+  //
+  // Both are held TOGETHER WITH THE STATE THEY WERE PICKED IN (`Held`) and
+  // read back only against that same state. A hand index can be a position,
+  // so once `s` moves on (the card was played or discarded, the turn ended)
+  // the same number may name a different card; clearing it in an effect left
+  // one painted frame zooming / arming that other card. A desktop's armed
+  // card keeps its old behaviour and survives a state change.
+  const sRef = useRef(s);
+  sRef.current = s;
+  const [pendingHeld, setPendingHeld] = useState<Held<typeof s>>(null);
+  const [selectedHeld, setSelectedHeld] = useState<Held<typeof s>>(null);
+  const setPendingCard = useCallback((i: number | null) => setPendingHeld(hold(i, sRef.current)), []);
+  const setSelectedCard = useCallback((i: number | null) => setSelectedHeld(hold(i, sRef.current)), []);
+  const pendingCard = phone ? heldIndex(pendingHeld, s) : pendingHeld?.index ?? null;
+  const selectedCard = phone ? heldIndex(selectedHeld, s) : null;
   const [hoverEnemy, setHoverEnemy] = useState<number | null>(null);
   const [pile, setPile] = useState<PileKind | null>(null);
   // Memoized so a state without enemies doesn't hand the callbacks below a
@@ -383,6 +442,15 @@ export default function Board({
   // play to end) are all press-first: nothing is revealed until you click, so
   // they stay available with the switch off. `showScores` carries the "you
   // just asked for a hint here" case down from the parent.
+  // Phone: tap-to-inspect. Off while a card is armed for a target, when a tap
+  // on a creature means "target this" (the provider's `disabled` rule, which
+  // needs Board's state, so it is registered rather than passed as a prop).
+  const inspect = useInspect();
+  useInspectSuppress(pendingCard != null);
+  // The open item is a snapshot: close it whenever the combat state moves (a
+  // power expires, an enemy dies, the turn ends) rather than show stale text.
+  const closeInspect = inspect.close;
+  useEffect(() => { closeInspect(); }, [s, closeInspect]);
   const hints = useHints();
   const { mode } = useEffectsMode();
   const sound = useSound();
@@ -395,6 +463,10 @@ export default function Board({
   // current emitter without depending on it.
   const soundRef = useRef(sound);
   soundRef.current = sound;
+  // Per-event sounds for `full` mode, keyed by the event OBJECT the scheduler
+  // later hands to `applyEvent` (it passes the same objects through). Weak, so
+  // an event that has fired holds nothing.
+  const eventCuesRef = useRef(new WeakMap<EffectEvent, SoundCue[]>());
   const prevStateRef = useRef<typeof s | null>(null);
   // The `actionNode` whose rows the effect below last played. See its use
   // there: it is how a slice that has caught up with the state is told from
@@ -402,6 +474,9 @@ export default function Board({
   const playedNodeRef = useRef<number | null>(null);
   const [fx, setFx] = useState<Record<string, Fx>>({});
   const fxNonce = useRef(0);
+  // The card the engine just auto-played (Stampede, Havoc, Mayhem, …), shown
+  // over the stage for a moment — see `applyEvent`'s `cardPlay` arm.
+  const [autoCard, setAutoCard] = useState<{ card: Card; nonce: number } | null>(null);
   // Enemies drawn as corpses: killed by the action being played, so already
   // gone from `s.enemies`. `fading` is the second half of a death — see the
   // render-phase mount below and `applyEvent`'s `death` arm.
@@ -449,7 +524,23 @@ export default function Board({
      *  px (`spriteBodyH`, size jitter included). Remembered for the fight like
      *  the widths, so the scene framing it caps (`sceneFramingFor`) holds
      *  still when the tall one dies — a corpse leaving must not zoom the room. */
-    crowns: Map<string, number> }>({ key: "", widths: new Map(), slots: new Map(), order: [], crowns: new Map() });
+    crowns: Map<string, number>;
+    /** `enemyKey` -> its drawn width symmetric about its root, scene px
+     *  (`rootSymWidth`), for the portrait split; kept for the fight like the
+     *  widths. */
+    draws: Map<string, number>;
+    /** `enemyKey` -> its rig's measured idle ink box, scene px: width and
+     *  centre right of the root (`inkBox`), for the portrait split. */
+    inks: Map<string, { w: number; cx: number }>;
+    /** A multi-rig boss's part count (`rig_group` -> the most parts this
+     *  fight has shown), for the portrait split: each part's share of the
+     *  boss's slot is cut by it, so a part's death never re-shares it. */
+    parts: Map<string, number>;
+    /** Every Decimillipede segment rig this fight has shown: the split
+     *  stands the animal on their span, so a segment leaving does not move
+     *  the others. */
+    segRigs: Set<string> }>({ key: "", widths: new Map(), slots: new Map(), order: [], crowns: new Map(), draws: new Map(),
+    inks: new Map(), parts: new Map(), segRigs: new Set() });
   // Mount the corpse DURING RENDER — not from the state effect below.
   //
   // The scheduler emits an action's FIRST event synchronously inside that
@@ -724,6 +815,27 @@ export default function Board({
   // turns a 3-hit attack into three separately-timed damage numbers instead
   // of one net total landing all at once.
   const applyEvent = useCallback((e: EffectEvent) => {
+    // This event's sounds, resolved when its transition landed (`full` mode
+    // only; every other mode voices the whole transition at once). Read off
+    // the event object itself, so a drained, superseded event still plays
+    // its own transition's sounds.
+    const cues = eventCuesRef.current.get(e);
+    if (cues?.length) soundRef.current.emit(cues);
+    if (e.kind === "cardPlay") {
+      // An auto-played card (GH #1155). The game flies it to the play area and
+      // resolves it there; without this the board showed only its
+      // consequences, and under "End turn" nothing said a card was played at
+      // all. Not an `fx` entry: bumping the player's nonce would make them
+      // flinch, and the card is not something that happened TO them.
+      const an = ++fxNonce.current;
+      setAutoCard({ card: e.card, nonce: an });
+      const t = window.setTimeout(() => {
+        setAutoCard((cur) => (cur?.nonce === an ? null : cur));
+        dyingTimers.current = dyingTimers.current.filter((id) => id !== t);
+      }, AUTO_CARD_SHOW_MS);
+      dyingTimers.current.push(t);
+      return;
+    }
     if (e.kind === "attack") {
       // The `attack` variant is the actor's lunge (types.ts). The state
       // effect below only ever produces one for an enemy — either from a
@@ -1034,44 +1146,10 @@ export default function Board({
     // snapshot diff was always empty there; now that rows can arrive
     // independently of the state, say so explicitly rather than relying on it.
     if (!prev || prev === s || mode === "off") return; // fx:off settles instantly; autoplay/reduced still shows calm cues
-    const diffEvents = combatDiff(prev, s);
     // Enemies that struck this enemy turn — the intent-sniffing fallback for
     // a recording with no combat log (or one whose rows don't resolve to a
     // board slot). Used below only when the log-driven stream stayed silent.
     const attackers = attackingEnemies(prev, s);
-    // Sound rides the SNAPSHOT DIFF, not the per-hit stream below — a
-    // deliberate, recorded divergence from the spec's §3 (see its Status
-    // block). Moving it would emit per-hit cues, which is what the game does,
-    // but it is a behaviour change that has to be verified against the
-    // `sound/__tests__/triggers.test.ts` expectations rather than assumed, and
-    // this sub-project changed no sound code. The visible consequence: a
-    // 3-hit attack shows three numbers, three shakes and three slashes but
-    // plays ONE hit cue.
-    //
-    // `sound.emit` is a no-op while
-    // the switch is off, and applies the fx mode itself, so nothing here needs
-    // to know either. The intent is read from `prev`: by `s` the enemy has
-    // already rolled its NEXT move. `enemyName` resolves from `prev` first —
-    // a killed enemy is absent from `s` by definition, so a `s`-only lookup
-    // would drop every death cue.
-    if (soundRef.current.map) {
-      soundRef.current.emit(
-        cuesForCombat(diffEvents, {
-          map: soundRef.current.map,
-          attackers,
-          enemyName: (i) =>
-            (prev.enemies ?? []).find((e) => e.index === i)?.name ??
-            (s.enemies ?? []).find((e) => e.index === i)?.name,
-          enemyIntent: (i) => (prev.enemies ?? []).find((e) => e.index === i)?.intents?.[0],
-          character: prev.player?.name,
-          // The two snapshots, for the cues that are a count moving rather
-          // than an `EffectEvent`: the turn banners, card deal/exhaust and
-          // the orb queue. See `triggers.ts`'s `rhythmCues`/`orbCues`.
-          prev,
-          next: s,
-        }),
-      );
-    }
 
     // Per-hit events from the engine log, reconciled against the snapshot
     // diff for the kinds the log has no entry for (heal, power removal) and
@@ -1084,6 +1162,57 @@ export default function Board({
     const events = actionStream(rows, prev, s);
     const streamHasAttack = events.some((e) => e.kind === "attack");
     const hadFallback = !streamHasAttack && attackers.length > 0;
+    // No log to pace a per-hit sequence from — just "this enemy struck". The
+    // player still reacts (flinch) even when the hit was fully blocked — that
+    // yields no `hurt` event, log or no log — unless the stream already
+    // described a real player hit itself.
+    const fallbackEvents: EffectEvent[] = !hadFallback ? [] : [
+      ...attackers.map((index): EffectEvent => ({ kind: "attack", target: { side: "enemy", index } })),
+      ...(events.some((e) => (e.kind === "hurt" || e.kind === "fullyBlocked") && e.target.side === "player")
+        ? []
+        : [{ kind: "fullyBlocked", target: { side: "player" } } as EffectEvent]),
+    ];
+
+    // Sound. `sound.emit` is a no-op while the switch is off and applies the
+    // fx mode itself. The intent is read from `prev`: by `s` the enemy has
+    // already rolled its NEXT move. `enemyName` resolves from `prev` first —
+    // a killed enemy is absent from `s` by definition, so a `s`-only lookup
+    // would drop every death cue.
+    const map = soundRef.current.map;
+    if (map) {
+      const cueCtx = {
+        map,
+        enemyName: (i: number) =>
+          (prev.enemies ?? []).find((e) => e.index === i)?.name ??
+          (s.enemies ?? []).find((e) => e.index === i)?.name,
+        enemyIntent: (i: number) => (prev.enemies ?? []).find((e) => e.index === i)?.intents?.[0],
+        character: prev.player?.name,
+        // The two snapshots, for the cues that are a count moving rather
+        // than an `EffectEvent`: the turn banners, card deal/exhaust and
+        // the orb queue. See `triggers.ts`'s `rhythmCues`/`orbCues`.
+        prev,
+        next: s,
+      };
+      if (mode === "full") {
+        // Sound rides the per-hit stream, like the visuals: the transition's
+        // own cues (banners, deal, orbs) now, and each event's when the
+        // scheduler reaches it (`applyEvent`). A 3-hit attack therefore
+        // sounds three impacts in step with its three numbers and shakes,
+        // and each enemy's move is heard as it acts — not the whole enemy
+        // turn as one chord on the first frame. Resolved HERE, not in
+        // `applyEvent`, because a superseded transition's queued events are
+        // drained after the next transition's snapshots have replaced these.
+        const now = transitionCues(cueCtx);
+        if (now.length) soundRef.current.emit(now);
+        for (const e of [...fallbackEvents, ...events]) eventCuesRef.current.set(e, cuesForEvent(e, cueCtx));
+      } else {
+        // Every other mode settles in one beat, so it sounds as one beat —
+        // each sound once. With the log, the `attack` events name the exact
+        // moves and the intent guess stands down, as it does for the visuals.
+        soundRef.current.emit(cuesForCombat(events, { ...cueCtx, attackers: hadFallback ? attackers : [] }));
+      }
+    }
+
     if (events.length === 0 && !hadFallback) return;
     // Replace, not merge: this is a NEW action, and each target's fx entry
     // (dmgs, flash, shake, blocked, blockPop, blockShatter, powerPop) belongs
@@ -1094,19 +1223,10 @@ export default function Board({
     // action, so a busy fight could leave a shatter/flash showing well past
     // the action that caused it.
     setFx({});
-    if (hadFallback) {
-      // No log to pace a per-hit sequence from — just "this enemy struck",
-      // so apply it immediately (bypassing the scheduler) exactly like the
-      // board did before this task, rather than paying the scheduler's
-      // per-kind advance (see timing.ts) for a single guessed beat.
-      for (const idx of attackers) applyEvent({ kind: "attack", target: { side: "enemy", index: idx } });
-      // The player still reacts (flinch) even when the hit was fully
-      // blocked — that yields no `hurt` event, log or no log — unless the
-      // stream already described a real player hit itself.
-      if (!events.some((e) => (e.kind === "hurt" || e.kind === "fullyBlocked") && e.target.side === "player")) {
-        applyEvent({ kind: "fullyBlocked", target: { side: "player" } });
-      }
-    }
+    // The no-log guess is applied immediately (bypassing the scheduler)
+    // exactly like the board did before per-hit playback, rather than paying
+    // the scheduler's per-kind advance (see timing.ts) for a single guessed beat.
+    for (const e of fallbackEvents) applyEvent(e);
     // MERGE, don't replace: `play()` below drains any still-queued events
     // from the PREVIOUS transition first (the scheduler's supersede rule —
     // see scheduler.ts), and a queued `death` among them needs its own
@@ -1145,36 +1265,78 @@ export default function Board({
     return () => window.clearTimeout(t);
   }, [step.idx, s, mode, onPlayCard, applyEvent, actionNode]);
 
-  const clickCard = useCallback((card: { index: number; target_type?: string }) => {
-    if (!onPlayCard) return;
-    // Picking a card UP. `NMouseCardPlay.StartCardDrag` (`:336`) plays this
-    // the moment the card leaves the hand under the cursor; the workbench's
-    // click IS that gesture, so it fires here rather than on the play itself
-    // (which has its own three-layer cue — see `cuesForCard`).
+  // Picking a card UP. `NMouseCardPlay.StartCardDrag` (`:336`) plays this
+  // the moment the card leaves the hand under the cursor; the workbench's
+  // click IS that gesture, so it fires on the click (on a phone, on the first
+  // tap that selects a playable card) rather than on the play itself (which
+  // has its own three-layer cue — see `cuesForCard`).
+  const cardSelectCue = useCallback(() => {
     const snd = soundRef.current;
     if (snd?.map) {
       const cue = cueForUi(snd.map, "cardSelect");
       if (cue) snd.emit([cue]);
     }
+  }, []);
+
+  const clickCard = useCallback((card: { index: number; target_type?: string }) => {
+    if (!onPlayCard) return;
+    cardSelectCue();
     if (!needsTarget(card)) onPlayCard(card.index, undefined);
     // One legal target, so we pick it for you rather than making you aim at
     // the only thing there is.
     else if (enemies.length === 1) onPlayCard(card.index, enemies[0].index);
     else setPendingCard(card.index);
-  }, [onPlayCard, enemies]);
+  }, [onPlayCard, enemies, cardSelectCue, setPendingCard]);
+
+  // ---- phone: zoom-on-select, two-tap play (handSelect.ts) -----------------
+  const applyTap = useCallback((r: TapResult) => {
+    setSelectedCard(r.selected);
+    setPendingCard(r.pending);
+    if (r.play && onPlayCard) onPlayCard(r.play.card, r.play.target);
+  }, [onPlayCard, setPendingCard, setSelectedCard]);
+
+  const tapHandCard = useCallback((card: Card) => {
+    const canPlay = card.can_play !== false;
+    const r = tapCard({ selected: selectedCard, pending: pendingCard },
+      { index: card.index, needsTarget: needsTarget(card), canPlay },
+      { live: !!onPlayCard, enemies: enemies.map((e) => e.index) });
+    if (onPlayCard && canPlay && selectedCard !== card.index) cardSelectCue();
+    applyTap(r);
+  }, [selectedCard, pendingCard, onPlayCard, enemies, applyTap, cardSelectCue]);
+
+  /** A thumb dragged along the hand: the card under it is selected (zoomed,
+   *  an attack armed) as a first tap would, and never played. */
+  const browseHandCard = useCallback((card: Card) => {
+    if (selectedCard !== card.index) tapHandCard(card);
+  }, [selectedCard, tapHandCard]);
 
   const clickEnemy = useCallback((enemyIndex: number) => {
+    if (phone) { applyTap(tapEnemy({ selected: selectedCard, pending: pendingCard }, enemyIndex)); return; }
     if (onPlayCard && pendingCard != null) {
       onPlayCard(pendingCard, enemyIndex);
       setPendingCard(null);
     }
-  }, [onPlayCard, pendingCard]);
+  }, [onPlayCard, pendingCard, phone, selectedCard, applyTap, setPendingCard]);
+
+  // A tap on the stage that reaches it (powers, intents, block and the sheet
+  // stop propagation while they can inspect) closes the inspect sheet; on a
+  // phone a tap on EMPTY stage also cancels the zoom and the armed card. The
+  // hand, the zoom and — while a card is armed — the enemies are not empty
+  // stage: their own handlers have already acted on the tap.
+  const onStageClick = (ev: React.MouseEvent) => {
+    if (inspect.item) inspect.close();
+    if (!phone || (selectedCard == null && pendingCard == null)) return;
+    const t = ev.target as Element;
+    if (t.closest(".gs-handslot, .gs-zoomcard")) return;
+    if (pendingCard != null && t.closest("[data-enemy-index]")) return;
+    applyTap(tapStage());
+  };
 
   useEffect(() => {
     if (!onPlayCard) return; // interactive (live) combat only
     function onKey(e: KeyboardEvent) {
       if (isTextInput(e.target) || isBrowserChord(e)) return;
-      if (e.key === "Escape") { setPendingCard(null); return; }
+      if (e.key === "Escape") { setPendingCard(null); setSelectedCard(null); return; }
       if (e.key === "e" || e.key === "E") { e.preventDefault(); onEndTurn?.(); return; }
       // H / G / S mirror the buttons below, which are press-first and so are
       // not gated by the hints switch. Pressing a key IS asking.
@@ -1197,7 +1359,7 @@ export default function Board({
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onPlayCard, onEndTurn, onHint, onPeek, onPlayRecommended, onAutoplay, onAutoplayToEnd, onSearch, pendingCard, enemies, s.hand, clickCard, clickEnemy]);
+  }, [onPlayCard, onEndTurn, onHint, onPeek, onPlayRecommended, onAutoplay, onAutoplayToEnd, onSearch, pendingCard, enemies, s.hand, clickCard, clickEnemy, setPendingCard, setSelectedCard]);
 
   // Per-card / per-potion / end-turn win-prob overlays are UNPROMPTED advice —
   // they appear next to every option without you doing anything — so in LIVE
@@ -1207,7 +1369,16 @@ export default function Board({
   const shownScores = !onPlayCard || showScores || hints.on ? scores : undefined;
   // A zero-visit row was never searched (the run-AI skips a forced move), so it
   // has no win-prob to overlay.
-  const endScore = shownScores?.find((sc) => sc.stable_idx === -1 && sc.visits !== 0);
+  // The engine's number on the plate rides only with "engine numbers" on;
+  // the advice itself is the mark (advice/marks.ts).
+  const { marks: adviceMarks, showNumbers } = useAdviceMarks();
+  const endScore = showNumbers
+    ? shownScores?.find((sc) => sc.stable_idx === -1 && sc.visits !== 0) : undefined;
+  const endMark = adviceMarks.get(END_TURN_KEY) ?? null;
+  // The plan's first targeted move: its target wears the reticle.
+  const reticleTarget = [...adviceMarks.values()]
+    .filter((m) => m.order != null && m.targetIndex != null)
+    .sort((a, b) => a.order! - b.order!)[0]?.targetIndex ?? null;
 
   const action = step.chosen_action as { action?: string; args?: { card_index?: number; target_index?: number } } | null;
   const playedIndex = action?.action === "play_card" ? action.args?.card_index : undefined;
@@ -1257,22 +1428,24 @@ export default function Board({
   // While a card waits for a target the game hangs the arrow off it, throws it
   // at the cursor and snaps it to whatever enemy is under it.
   const [aimTo, setAimTo] = useState<Point | null>(null);
+  // Not on a phone: there is no pointer to follow (spec: no targeting arrow on
+  // touch); the valid targets keep the enemy highlight instead.
   useEffect(() => {
     const el = ref.current;
-    if (pendingCard == null || !el) { setAimTo(null); return; }
+    if (pendingCard == null || !el || phone) { setAimTo(null); return; }
     const onMove = (ev: MouseEvent) => {
       const b = el.getBoundingClientRect();
       setAimTo({ x: ev.clientX - b.left, y: ev.clientY - b.top });
     };
     el.addEventListener("mousemove", onMove);
     return () => el.removeEventListener("mousemove", onMove);
-  }, [pendingCard]);
+  }, [pendingCard, phone]);
 
   // Where the aiming arrow currently points: the hovered enemy if there is one
   // (the game snaps), else the raw cursor. Read from the DOM at render time
   // like the replay arrow — the fan and the arena both move under it.
   let aimArrow: Aim | null = null;
-  if (pendingCard != null && aimTo && ref.current) {
+  if (pendingCard != null && aimTo && ref.current && !phone) {
     const el = ref.current;
     const card = el.querySelector(`[data-card-index="${pendingCard}"]`);
     if (card) {
@@ -1424,7 +1597,9 @@ export default function Board({
       c: e, part: e.rig_part ?? "left", dataIndex: e.index,
       // Numbered over the LIVE list only — a dying corpse keeps its plain name.
       label: liveIdx >= 0 ? labelOf(e.index) : undefined,
-      hotkey: !isDying && onPlayCard && pendingCard != null && liveIdx >= 0 && liveIdx < 9 ? liveIdx + 1 : undefined,
+      // Not on a phone: there is no keyboard to press it on, and the badge
+      // stood every enemy 17px higher the moment an attack was armed.
+      hotkey: !phone && !isDying && onPlayCard && pendingCard != null && liveIdx >= 0 && liveIdx < 9 ? liveIdx + 1 : undefined,
       onClick: !isDying && onPlayCard && pendingCard != null ? () => clickEnemy(e.index) : undefined,
       onHoverChange: !isDying && onPlayCard ? (h: boolean) => setHoverEnemy(h ? e.index : null) : undefined,
       // Test Subject's rig has no shared "idle" clip, only one
@@ -1572,9 +1747,23 @@ export default function Board({
   // can place exactly.
   const rowKey = `${step.meta?.act ?? ""}|${step.meta?.floor ?? ""}`;
   if (rowRosterRef.current.key !== rowKey) {
-    rowRosterRef.current = { key: rowKey, widths: new Map(), slots: new Map(), order: [], crowns: new Map() };
+    rowRosterRef.current = { key: rowKey, widths: new Map(), slots: new Map(), order: [], crowns: new Map(), draws: new Map(),
+      inks: new Map(), parts: new Map(), segRigs: new Set() };
   }
   const roster = rowRosterRef.current.widths;
+  // The most parts each multi-rig boss has shown this fight: a part's death
+  // must not re-share the boss's split slot among the survivors.
+  const partsSeen = rowRosterRef.current.parts;
+  const partCount = (group: string, live: number) => {
+    const n = Math.max(partsSeen.get(group) ?? 0, live);
+    partsSeen.set(group, n);
+    return n;
+  };
+  const crabPartN = partCount("kaiser_crab", crabParts.length);
+  const segPartN = partCount("decimillipede", segParts.length);
+  for (const d of segParts) if (d.e.rig) rowRosterRef.current.segRigs.add(d.e.rig);
+  /** The span of every segment the fight has shown, for the split. */
+  const segSpanFight = decimillipedeSpan([...rowRosterRef.current.segRigs]);
   const crowns = rowRosterRef.current.crowns;
   for (const d of rowEnemies) {
     const k = enemyKey(d.e);
@@ -1584,6 +1773,10 @@ export default function Board({
         boundsH: d.e.rig_bounds_h, boundsW: d.e.rig_bounds_w,
       }));
       crowns.set(k, spriteBodyH(d.e, true));
+      const dw = rootSymWidth(d.e.rig, d.e.rig_scale);
+      if (dw != null) rowRosterRef.current.draws.set(k, dw * instanceScale(d.e));
+      const ink = inkBox(d.e.rig, d.e.rig_scale);
+      if (ink) rowRosterRef.current.inks.set(k, { w: ink.w * instanceScale(d.e), cx: ink.cx * instanceScale(d.e) });
     }
   }
   // Wire order IS the game's row order (the engine keeps enemies in slot order
@@ -1626,13 +1819,42 @@ export default function Board({
     const y = camY(gameSlots[i].y) - (crowns.get(k) ?? 0) * camera.scale;
     crownY = crownY == null ? y : Math.min(crownY, y);
   });
+  // The Kaiser Crab's arms stand off the row, on their own markers; their
+  // intents hang at each arm's IntentPos.
+  if (enemies.some((e) => e.rig_group === "kaiser_crab")) {
+    for (const part of ["left", "right"]) {
+      const a = crabArmMount(part);
+      if (!a) continue;
+      const y = camY(a.y) - a.intentH * camera.scale;
+      crownY = crownY == null ? y : Math.min(crownY, y);
+    }
+  }
   // The scene's framing: the stage's compact framing, pulled back for a fight
   // whose tallest enemy would otherwise lose its intent (and its head) off the
   // top. Only the fighters and the room take it; `zoom` — the cards, the orb,
   // the plate — keeps the full framing, as the game's own encounter camera
   // scales the scene container and not the UI over it.
-  const sceneFraming = sceneFramingFor(stageBox.w, stageBox.h, framing, crownY);
-  const fit = fitScene(stageBox.w, stageBox.h, sceneFraming);
+  //
+  // On a phone the scene is fitted into the stage's TOP part, so every
+  // fighter's power rows end above the hand strip (and the portrait chrome row
+  // on it) rather than under the cards' tap boxes — see `sceneFitHeight`.
+  //
+  // The line fitted is the LOWEST foot line on the stage, not just the
+  // ground: an encounter with authored slots (see `authored` below) can stand
+  // a creature up to 16 scene px under it (Exoskeletons' "second" at 756).
+  // Every slot the encounter authors counts, occupied or not, so a spawn onto
+  // a low marker mid-fight does not re-fit the scene under the player.
+  const authored = matchEncounter(rowEnemies.map((d) => d.e), artSlugs);
+  const groundLimit = phoneGroundLimit(phone, stageBox.h, zoom);
+  // The zoomed card, only while it is still in the hand (the state effect above
+  // clears the selection on the next commit; this covers the frame between).
+  const zoomCard = phone && selectedCard != null ? s.hand.find((c) => c.index === selectedCard) ?? null : null;
+  const zoomAt = useZoomPlacement(stageRef, zoomCard != null, phone, zoom);
+  const fitH = groundLimit == null ? stageBox.h
+    : sceneFitHeight(stageBox.w, stageBox.h, framing, crownY,
+      camY(lowestFootY(authored?.slots.map((m) => m.y) ?? [])), groundLimit);
+  const sceneFraming = sceneFramingFor(stageBox.w, fitH, framing, crownY);
+  const fit = fitScene(stageBox.w, fitH, sceneFraming);
   /** Stage px per SCENE px, camera included — what every rig is drawn at. */
   const pxPerScene = fit.k * camera.scale;
   // The screen shake's amplitudes are authored in scene px, so it converts
@@ -1672,7 +1894,6 @@ export default function Board({
   // lays into egg5, then egg4, then egg3, while the wire lists its board in
   // SLOT order (`SortEnemiesBySlotName`) — egg3 first. So the claimed slots are
   // sorted before they are handed out, or the three hatchlings come out mirrored.
-  const authored = matchEncounter(rowEnemies.map((d) => d.e), artSlugs);
   const held = rowRosterRef.current.slots;
   if (authored) {
     const newcomers = rowEnemies.filter((d) => !held.has(enemyKey(d.e)));
@@ -1743,6 +1964,170 @@ export default function Board({
    *  here, never the background. */
   const actorScale = pxPerScene * rowFit;
 
+  // ---- Phone portrait: the split (portraitSplit.ts) ----
+  // Every portrait fight: the enemies across the top of the stage, the player
+  // figure in a band right above the controls row, its status block beside it.
+  // Solved ONCE PER FIGHT from the fight's roster (the additive per-fight maps
+  // above, so a death keeps its slot empty and only a never-seen enemy — a
+  // summon — re-solves) and the stage size: nothing per-turn reaches it.
+  // Authored encounter slots are not used here; a Kaiser Crab or a
+  // Decimillipede is ONE solver creature. Landscape, a touch tablet and a
+  // desktop never get here (`split` is null).
+  const splitSmall = phone === "portrait" && isSmallPhoneScreen();
+  const pCrown = spriteBodyH(p, false);
+  // The band draws the figure and Osty at a fixed height ON THE GLASS, which
+  // is the rig's measured head (`Combatant`'s `onCrown`), not its authored
+  // box: the box reaches ~9% (the Ironclad) to ~50% (Osty) above the drawn
+  // head. Until a rig has measured, its authored crown stands in. Keyed by
+  // rig, so a new character re-measures.
+  const [inkCrowns, setInkCrowns] = useState<Record<string, number>>({});
+  const reportCrown = useCallback((rig: string | null | undefined) => (crown: number) => {
+    if (!rig || !(crown > 0)) return;
+    setInkCrowns((prev) => (Math.abs((prev[rig] ?? 0) - crown) < 0.5 ? prev : { ...prev, [rig]: crown }));
+  }, []);
+  const drawnCrown = (rig: string | null | undefined, authored: number) => (rig && inkCrowns[rig]) || authored;
+  /** The fight's crab rig (the room in the row layout) as one creature: its
+   *  whole rig box, standing on the arms' markers. Scene px. */
+  const crabSplit = (() => {
+    if (!crabRig?.rig) return null;
+    const b = rigBox(crabRig.rig);
+    if (!b) return null;
+    const feetY = Math.max(...["left", "right"].map((part) => crabArmMount(part)?.y ?? CRAB_ROOT_Y));
+    /** How far the arms' feet stand below the rig's root. */
+    const drop = feetY - CRAB_ROOT_Y;
+    return {
+      drop,
+      /** The rig box's centre, right of the root. */
+      cx: (b.x + b.w / 2) * CRAB_SETUP_SCALE,
+      creature: { crownH: (b.y + b.h) * CRAB_SETUP_SCALE + drop, footW: b.w * CRAB_SETUP_SCALE } as SplitCreature,
+    };
+  })();
+  // A Necrobinder fight, Osty alive or dead (a dead Osty is `{ alive: false }`
+  // on the wire), so Osty's death and return never re-solve the split.
+  const hasOsty = !!s.osty;
+  const splitRosterSize = rowOrder.length + (segParts.length ? 1 : 0) + (crabSplit ? 1 : 0);
+  // Hysteresis on the stage height (`heldSplitHeight`): within one fight,
+  // roster, width and zoom, a height change under `SPLIT.margin` real px
+  // keeps the last solve, shifted onto the stage below, instead of
+  // rescaling every enemy. Read and written during render, like the roster
+  // maps; it is idempotent, so a repeated render lands on the same value.
+  const splitHoldKey = `${phone}|${rowKey}|${splitRosterSize}|${stageBox.w}|${zoom}|${splitSmall}|${hasOsty}`;
+  const splitHoldRef = useRef<{ key: string; h: number } | null>(null);
+  const prevHold = splitHoldRef.current;
+  const splitSolveH = heldSplitHeight(prevHold?.key === splitHoldKey ? prevHold.h : null, stageBox.h, zoom);
+  if (prevHold?.key !== splitHoldKey || prevHold.h !== splitSolveH) {
+    splitHoldRef.current = { key: splitHoldKey, h: splitSolveH };
+  }
+  /** Scene px the Decimillipede's legs reach below its root. */
+  const segLegs = decimillipedeDrop([...rowRosterRef.current.segRigs]) * SEGMENT_SCALE;
+  const solved: { layout: SplitLayout; segDrop: number } | null = useMemo(() => {
+    if (phone !== "portrait") return null;
+    const { crowns: cr, widths, draws, inks } = rowRosterRef.current;
+    const solve = (drop: number) => splitLayout({
+      stageW: stageBox.w, stageH: splitSolveH, k: zoom, small: splitSmall,
+      enemies: [
+        ...rowOrder.map((k) => ({ crownH: cr.get(k) ?? 0, footW: widths.get(k) ?? 0, drawW: draws.get(k),
+          inkW: inks.get(k)?.w })),
+        ...(segParts.length
+          ? [{ crownH: Math.max(...segParts.map((d) => spriteBodyH(d.e, true))) + drop,
+            footW: (segSpanFight.right - segSpanFight.left) * SEGMENT_SCALE, noColumn: true }] : []),
+        ...(crabSplit ? [crabSplit.creature] : []),
+      ],
+      refCrown: pCrown, rowScale: actorScale, osty: hasOsty,
+    });
+    const plain = solve(0);
+    if (!segParts.length || !(segLegs > 0)) return { layout: plain, segDrop: 0 };
+    // The Decimillipede stands on its legs, its HP bars and powers under
+    // them, where that costs it no size (a stage with height to spare: the
+    // animal is as wide as the stage). On a stage where height binds, the
+    // bars hang from its root, across the legs, and it keeps its size.
+    const stood = solve(segLegs);
+    return stood.chrome === plain.chrome && stood.scale >= plain.scale * 0.98
+      ? { layout: stood, segDrop: segLegs } : { layout: plain, segDrop: 0 };
+    // Pinned per fight: the roster maps are additive refs read here, and the
+    // row scale and the player's crown follow from the fight and the stage.
+    // Only a new fight, a never-seen enemy, the stage size or the zoom (a
+    // rotation) re-solves it. The key leaves out values this solve reads that
+    // are assumed fixed for a fight: `actorScale` (the row's), `pCrown` (the
+    // player's authored crown), the segments' span and `crabSplit` (the boss rigs).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phone, rowKey, splitRosterSize, stageBox.w, splitSolveH, zoom, splitSmall, hasOsty]);
+  const splitDy = stageBox.h - splitSolveH;
+  const solvedSplit = solved?.layout ?? null;
+  const segDrop = solved?.segDrop ?? 0;
+  const split = useMemo(() => solvedSplit && shiftSplit(solvedSplit, splitDy), [solvedSplit, splitDy]);
+  /** An enemy's split place, by the slot the fight gave it (`rowOrder`). */
+  const splitPlaceOf = (e: Enemy): SplitPlace | undefined => {
+    const at = rowOrder.indexOf(enemyKey(e));
+    return split && at >= 0 ? split.enemies[at] : undefined;
+  };
+  /** An enemy's solver slot, design px (`SplitLayout.slots`). */
+  const splitSlotOf = (e: Enemy): number | undefined => {
+    const at = rowOrder.indexOf(enemyKey(e));
+    return split && at >= 0 ? split.slots[at] : undefined;
+  };
+  /** The slot less its power column: what the body, its HP bar and its
+   *  name may span, design px. The HP bar is capped to it, so neighbouring
+   *  bars keep the solver's gap. */
+  const splitBodySlot = (slot: number) => slot - (split ? CHROME[split.chrome].side / zoom : 0);
+  /** A multi-rig boss's targetable parts (the crab's arms, the
+   *  Decimillipede's segments) share its ONE solver slot evenly and take the
+   *  fight's chrome from it, like any enemy: `at` is the boss's solver index,
+   *  `n` its parts. */
+  const splitPartChrome = (at: number, n: number): PartChrome | undefined => {
+    if (!split || !(n > 0) || split.slots[at] == null) return undefined;
+    const slot = split.slots[at] / n;
+    return { chrome: split.chrome, cells: splitPowerCells(slot * zoom, zoom),
+      bodySlot: splitBodySlot(slot), slot, slotReal: slot * zoom };
+  };
+  /** Feet at `place.foot`, centred on `place.x`, drawn at `scale`. */
+  const splitStyle = (place: SplitPlace, spriteH: number, scale: number, z = 1): React.CSSProperties => ({
+    position: "absolute",
+    left: place.x,
+    top: place.foot - spriteH * scale,
+    transform: "translateX(-50%)",
+    zIndex: z,
+  });
+  // The band, real px. The figure is drawn `figureReal` tall; its width is
+  // the drawn rig's (symmetric about the root) or the sprite box's (0.7x its
+  // height), whichever is wider, so nothing stands on it.
+  const splitBand = split ? (() => {
+    const figS = split.figureReal / zoom / drawnCrown(p.rig, pCrown);
+    // Sized off the AUTHORED crown, which is the taller: the band's left edge
+    // never moves when the rig measures.
+    const figW = Math.max(
+      Math.max(playerWidth, rootSymWidth(p.rig, p.rig_scale) ?? 0) * (split.figureReal / pCrown), 0.7 * split.figureReal);
+    const figure = { x: (SPLIT_FIG_GAP + figW / 2) / zoom, foot: split.figureFoot };
+    let osty: { place: SplitPlace; scale: number; w: number } | null = null;
+    if (ostyAlive && s.osty) {
+      const oCrown = spriteBodyH({ rig: s.osty.rig, rig_scale: s.osty.rig_scale, rig_bounds_h: s.osty.rig_bounds_h }, false);
+      const oS = SPLIT.osty / zoom / drawnCrown(s.osty.rig, oCrown);
+      const oFoot = boundsWidth({ rig: s.osty.rig, rigScale: s.osty.rig_scale, boundsH: s.osty.rig_bounds_h });
+      const w = Math.max(SPLIT_OSTY_MIN_W, 0.7 * SPLIT.osty,
+        // At the DRAWN scale: Osty's authored box reaches ~50% over its drawn
+        // head, so sized off the box it would stand on the status block once
+        // its rig measured. (The band then settles once, as the rig loads.)
+        Math.max(oFoot, rootSymWidth(s.osty.rig, s.osty.rig_scale) ?? 0) * oS * zoom);
+      osty = { scale: oS, w,
+        place: { x: (SPLIT_FIG_GAP + figW + SPLIT_FIG_GAP + w / 2) / zoom,
+          foot: split.figureFoot - SPLIT_OSTY_CHROME / zoom } };
+    }
+    const rest = SPLIT_FIG_GAP + figW + SPLIT_FIG_GAP + (osty ? osty.w + SPLIT_FIG_GAP : 0) + SPLIT_SHIELD_HALF;
+    // While a card is zoomed, the status block (shield, HP bar, orbs, powers)
+    // steps right of the zoom, so the player keeps their block and powers in
+    // sight while choosing a card. The zoom's right edge comes from the same
+    // numbers `zoomPlacement` uses, not from a measurement; only the block
+    // moves (figure, Osty, enemies and controls stay put).
+    const zoomW = splitZoomWidth(splitSmall);
+    const zoomRight = portraitZoomLeft(stageBox.w * zoom, zoomW) + zoomW;
+    const left = zoomCard ? Math.max(rest, zoomRight + SPLIT_FIG_GAP + SPLIT_SHIELD_HALF) : rest;
+    return {
+      figure, figS, osty, left,
+      width: Math.max(0, stageBox.w * zoom - (zoomCard ? ZOOM_GUTTER : SPLIT.gutter) - left),
+      top: split.figureFoot - split.figureReal / zoom,
+    };
+  })() : null;
+
   /** Place one fighter: its rig root on the scene's ground line at `slot.x`,
    *  with the combatant column hung above so the sprite's feet land there. */
   const slotStyle = (slot: Slot, spriteH: number, z = 1): React.CSSProperties => ({
@@ -1753,8 +2138,34 @@ export default function Board({
     zIndex: z,
   });
 
+  // A stage too short for the enemies' chrome (a small phone with its
+  // browser bars): the cramped split gave up the room under the feet, so the
+  // powers and names go rather than hang over the player band.
+  const splitBare = split != null && split.cramped
+    && split.belowReal + 0.5 < splitChromeBelow(split.chrome, splitSmall);
+
+  /** The character's layered faceted orb (ui/combat/energy_counters/):
+   *  base + swirl + core + rim + facets composite the game's ruby. */
+  const energyOrb = (
+    <div className="gs-energy" title={`energy ${s.energy}/${s.max_energy}`}>
+      {(() => {
+        const ch = orbCharacter(s.energy_image);
+        return [1, 2, 3, 4, 5].map((n) => (
+          <img key={n} className="gs-orb-layer" alt="" aria-hidden="true" draggable={false}
+            src={assetUrl(characterArt(ch, `ui/combat/energy_counters/${ch}/${ch}_orb_layer_${n}.png`))} />
+        ));
+      })()}
+      <span className="gs-gem-val">{s.energy}/{s.max_energy}</span>
+    </div>
+  );
+
   return (
-    <div ref={ref} className="gs-board" data-scene-ready={roomReady ? "1" : "0"}
+    <div ref={ref}
+      className={`gs-board${phone ? ` gs-phone gs-phone-${phone}` : ""}${split ? " gs-split" : ""}${splitBare ? " gs-split-bare" : ""}`}
+      data-armed={pendingCard != null ? "1" : undefined}
+      data-split={split ? `${split.chrome} s=${(split.scale * zoom).toFixed(3)} back=${split.backCount}`
+        + (split.overReal > 0 ? ` over=${split.overReal.toFixed(1)}` : "") : undefined}
+      data-awaits-target={phone && pendingCard != null ? "1" : undefined} data-scene-ready={roomReady ? "1" : "0"}
       // `clip`, not `hidden`: see .gs-arena-stage in game-skin.css — a hidden
       // box is still a scroll container, and focusing a card scrolled it.
       style={{ position: "relative", height: "100%", display: "flex", flexDirection: "column",
@@ -1774,7 +2185,11 @@ export default function Board({
           layer; when it lands, the room fades in whole. See roomPreload.ts and
           the rules on .gs-arena-stage[data-room-ready]. */}
       <div className="gs-arena-stage" ref={stageRef} data-room-ready={roomReady ? "1" : "0"}
+        // A tap on empty stage closes the inspect sheet. Powers, intents,
+        // block, relics and the sheet stop propagation, so they never reach it.
+        onClick={phone || inspect.item ? onStageClick : undefined}
         style={{ "--gs-k": zoom, ...atmosphereVars(roomScene) } as React.CSSProperties}>
+      <StageZoomContext.Provider value={zoom}>
       {/* The zoom layer. Everything in the scene is authored in px against a
           ~800px stage, so on anything shorter (a laptop at 768, a tablet in
           landscape at 640) the actors oversail the frame and get clipped away
@@ -1851,16 +2266,9 @@ export default function Board({
         })()}
         {/* The character's layered faceted orb (ui/combat/energy_counters/):
             base + swirl + core + rim + facets composite the game's ruby. */}
-        <div className="gs-energy" title={`energy ${s.energy}/${s.max_energy}`}>
-          {(() => {
-            const ch = orbCharacter(s.energy_image);
-            return [1, 2, 3, 4, 5].map((n) => (
-              <img key={n} className="gs-orb-layer" alt="" aria-hidden="true" draggable={false}
-                src={assetUrl(`ui/combat/energy_counters/${ch}/${ch}_orb_layer_${n}.png`)} />
-            ));
-          })()}
-          <span className="gs-gem-val">{s.energy}/{s.max_energy}</span>
-        </div>
+        {/* Portrait split, a card zoomed: the centred card covers this spot,
+            so the orb is drawn in the player band instead (`PlayerBand`). */}
+        {!(splitBand && zoomCard) && energyOrb}
         <PilePlaque label="draw" kind="draw" count={s.draw_pile_count} onClick={() => setPile("draw")} />
         <PilePlaque label="discard" kind="discard" count={s.discard_pile_count} onClick={() => setPile("discard")} />
         {/* The game has no persistent exhaust pile in the HUD — the affordance
@@ -1873,7 +2281,8 @@ export default function Board({
             pile) — inert/disabled in replay, clickable in live play. The real
             button art (ui/combat_ui/) with its extracted glow layer on hover;
             turn number and the win-prob hint overlay the plate. */}
-        <button type="button" className="gs-endturn" onClick={onEndTurn} disabled={!onEndTurn}
+        <button type="button" className={`gs-endturn${endMark ? ` gs-mark-${endMark.tier}` : ""}`}
+          onClick={onEndTurn} disabled={!onEndTurn}
           title={onEndTurn ? "End Turn (E)" : "End Turn (replay)"}>
           <img className="gs-endturn-art" src={assetUrl("ui/combat_ui/end_turn_button.png")}
             alt="" aria-hidden="true" draggable={false} />
@@ -1882,6 +2291,11 @@ export default function Board({
           <span className="gs-endturn-face">
             <span>End Turn {s.round}</span>
             {endScore && <span className="gs-endturn-score">{endScore.win_prob.toFixed(2)}</span>}
+            {endMark?.order != null && (
+              <span className={`gs-badge gs-step-tag gs-step-${endMark.tier}`} aria-label={`step ${endMark.order}`}>
+                {endMark.order}
+              </span>
+            )}
           </span>
         </button>
       {/* The fighters, in SCENE coordinates. Every slot below is the game's
@@ -1894,36 +2308,40 @@ export default function Board({
           The layer is inert and sits between the room's foreground and the
           hand; each combatant re-enables its own pointer. */}
       <div className="gs-actors" aria-hidden={false} ref={actorsRef}>
-        {/* The Kaiser Crab boss AS THE ROOM (see crabParts above). Two things
-            about it are unlike every other creature, and both come from the
-            game mounting the rig on the combat-room BACKGROUND rather than
-            standing it in the room:
-
-            * It is FRAMED, not stood up. The rig is flushed to the top of the
-              stage, because that is what the reference shows — no room art
-              above the boss at all — and because a background is composed to
-              the frame, not to the ground line. Everything else follows: at its
-              authored 0.5 scene px per rig unit it is ~2050 px wide against the
-              1920 px scene, so a claw hangs off each edge with the player
-              centred between them.
-            * Its two arms are ORDINARY creature nodes (`KaiserCrabBoss.Slots`
-              places Crusher and Rocket from Marker2Ds), so their HP bars and
-              intents stand on the ground line under each claw — not up on the
-              claw, which is where fitting them to the rig used to put them. */}
+        {/* The Kaiser Crab boss AS THE ROOM (see crabParts above), mounted
+            where the game mounts it: the rig hangs off the combat-room
+            background at the setup scene's own position and 0.55 scale
+            (crabMount.ts, read off the PCK), through the encounter camera like
+            the room art — so its face, its claws and the player between them
+            land where the game draws them on any stage. Its two arms are
+            ORDINARY creatures on the encounter's markers, with the game's own
+            HP bar width and intent height. */}
         {crabRig?.rig && crabParts.length > 0 && (() => {
-          const pxPerUnit = Math.abs(crabRig.rig_scale ?? 0.5) * pxPerScene;
-          const box = rigBox(crabRig.rig);
-          // Flush the silhouette's top to the top of the stage. The rig box is
-          // the generated one, so the crab lands framed on the very first
-          // frame — waiting for ~5 MB of atlas would drop it in from the sky.
-          const topAboveRoot = (box ? box.y + box.h : 1550) * pxPerUnit;
-          const rootTop = topAboveRoot;
+          // Portrait split: the whole rig is the last solver creature, its
+          // arms' feet on that creature's foot line.
+          const crabAt = split && crabSplit ? split.enemies[split.enemies.length - 1] : null;
+          const k = crabAt ? split!.scale : pxPerScene;
+          const pxPerUnit = CRAB_SETUP_SCALE * k;
+          const rootLeft = crabAt ? crabAt.x - crabSplit!.cx * k : stageX(CRAB_ROOT_DX);
+          const rootTop = crabAt ? crabAt.foot - crabSplit!.drop * k : stageY(CRAB_ROOT_Y);
+          const armAt: Record<string, ArmAt | undefined> = {};
+          for (const part of ["left", "right"]) {
+            const a = crabArmMount(part);
+            if (!a) continue;
+            armAt[part] = {
+              x: crabAt ? (a.dx + a.boundsCx - CRAB_ROOT_DX) * k : stageX(a.dx + a.boundsCx) - rootLeft,
+              y: crabAt ? (a.y - CRAB_ROOT_Y) * k : stageY(a.y) - rootTop,
+              hpW: a.hpW * k,
+              intentH: a.intentH * k,
+            };
+          }
           return (
-            <div style={{ position: "absolute", left: stageX(0), top: rootTop, zIndex: 0 }}>
+            <div style={{ position: "absolute", left: rootLeft, top: rootTop, zIndex: 0 }}>
               <KaiserCrabGroup rig={crabRig.rig} arms={crabParts.map(armOf)}
-                pxPerUnit={pxPerUnit}
-                groundBelowRoot={stageY(GROUND_Y) - rootTop}
-                clampHalfW={stageBox.w / 2} locStrings={manifest?.locStrings}
+                pxPerUnit={pxPerUnit} armAt={armAt}
+                clampX={{ min: -rootLeft, max: stageBox.w - rootLeft }}
+                locStrings={manifest?.locStrings}
+                split={crabAt ? splitPartChrome(split!.enemies.length - 1, crabPartN) : undefined}
                 onRigEvent={onCrabRigEvent} />
             </div>
           );
@@ -1931,10 +2349,16 @@ export default function Board({
         {/* Player. The Defect's orb belt goes down INTO the Combatant: the game
             hangs it on an arc around the creature, which needs the rig's crown
             and feet. */}
+        {/* Portrait split: the figure alone (`noChrome`), drawn at its fixed
+            height in the band; its HP bar, block, orbs and powers are the
+            band's (below). */}
         <div className="gs-side gs-side-player"
-          style={slotStyle({ x: playerX, y: playerSlot.y }, spriteBodyH(p, false), 2)}>
+          style={splitBand ? splitStyle(splitBand.figure, pCrown, splitBand.figS, 2)
+            : slotStyle({ x: playerX, y: playerSlot.y }, spriteBodyH(p, false), 2)}>
           <Combatant c={{ ...p, powers: s.player_powers }} isEnemy={false} anchor="player"
-            pxPerScene={actorScale} orbs={s.orbs} orbSlots={s.orb_slots}
+            pxPerScene={splitBand ? splitBand.figS : actorScale}
+            orbs={splitBand ? undefined : s.orbs} orbSlots={splitBand ? undefined : s.orb_slots}
+            noChrome={!!splitBand} onCrown={splitBand ? reportCrown(p.rig) : undefined}
             actionAnim={fx["player"]?.flash ? "hurt" : "attack"}
             actionNonce={oneShot["player"]}
             effects={fx["player"]} locStrings={manifest?.locStrings} />
@@ -1947,12 +2371,34 @@ export default function Board({
           };
           return (
             <div className="gs-side gs-side-osty"
-              style={slotStyle(ostySlot, spriteBodyH(osty, false), 2)}>
-              <Combatant c={osty} isEnemy={false} anchor="osty" pxPerScene={actorScale}
+              style={splitBand?.osty ? splitStyle(splitBand.osty.place, spriteBodyH(osty, false), splitBand.osty.scale, 2)
+                : slotStyle(ostySlot, spriteBodyH(osty, false), 2)}>
+              <Combatant c={osty} isEnemy={false} anchor="osty"
+                pxPerScene={splitBand?.osty ? splitBand.osty.scale : actorScale}
+                hpWidth={splitBand?.osty ? splitBand.osty.w / zoom : undefined}
+                onCrown={splitBand?.osty ? reportCrown(s.osty?.rig) : undefined}
                 locStrings={manifest?.locStrings} />
             </div>
           );
         })()}
+        {/* Portrait split: the player's status block beside the figure, laid
+            out in REAL px (a 1/k counter-scale inside the zoom layer), centred
+            on the figure and running to the right gutter. Inside .gs-actors so
+            VfxLayer finds the orbs anchor on it. */}
+        {splitBand && (
+          <div className="gs-playerband"
+            style={{ position: "absolute", left: splitBand.left / zoom, top: splitBand.top,
+              width: splitBand.width, height: split!.figureReal,
+              transform: `scale(${1 / zoom})`, transformOrigin: "0 0", zIndex: 2,
+              "--gs-k": 1 } as React.CSSProperties}>
+            <StageZoomContext.Provider value={1}>
+              <PlayerBand player={p} powers={s.player_powers ?? []} widthPx={splitBand.width}
+                orbs={s.orbs} orbSlots={s.orb_slots} effects={fx["player"]}
+                energy={zoomCard ? energyOrb : undefined}
+                locStrings={manifest?.locStrings} />
+            </StageZoomContext.Provider>
+          </div>
+        )}
         {/* Enemies, in row order. A multi-rig boss occupies ONE row slot. */}
         {rowEnemies.map((d) => {
           const { e, isDying } = d;
@@ -1960,11 +2406,21 @@ export default function Board({
           // Its OWN slot, the one the fight handed it — not its position in the
           // list of who is still alive. See `slotOf`.
           const slot = slotOf(e);
-          if (!slot) return null;
+          const place = splitPlaceOf(e);
+          if (split ? !place : !slot) return null;
+          const sSlot = splitSlotOf(e);
           return (
             <div key={`${enemyKey(e)}-${isDying ? "d" : "l"}`} className="gs-side"
-              style={slotStyle(slot, spriteBodyH(e, true), 1)}>
-              <Combatant c={e} isEnemy dataIndex={e.index} pxPerScene={actorScale} label={a.label}
+              data-split-slot={sSlot != null ? (sSlot * zoom).toFixed(1) : undefined}
+              style={place && split ? splitStyle(place, spriteBodyH(e, true), split.scale, 1)
+                : slotStyle(slot!, spriteBodyH(e, true), 1)}>
+              <Combatant c={e} isEnemy dataIndex={e.index} pxPerScene={split ? split.scale : actorScale} label={a.label}
+                powerChrome={split?.chrome}
+                powerCells={sSlot != null ? splitPowerCells(sSlot * zoom, zoom) : undefined}
+                hpWidth={sSlot != null && split ? Math.min(hpBarWidth(e.max_hp), splitBodySlot(sSlot)) : undefined}
+                // The ink is centred in the slot; the box and its chrome are too.
+                bodyDx={split ? -(rowRosterRef.current.inks.get(enemyKey(e))?.cx ?? 0) * split.scale : 0}
+                reticle={reticleTarget === e.index}
                 hotkey={a.hotkey} onClick={a.onClick} onHoverChange={a.onHoverChange}
                 animation={a.animation} actionAnim={a.actionAnim}
                 actionAnimCandidates={a.actionAnimCandidates} holdLast={a.holdLast}
@@ -1975,9 +2431,14 @@ export default function Board({
           );
         })}
         {segSlot && segParts.length > 0 && (
-          <div style={{ position: "absolute", left: stageX(segSlot.x * rowFit),
-            top: stageY(segSlot.y), zIndex: 1 }}>
-            <DecimillipedeGroup segments={segParts.map(armOf)} pxPerScene={actorScale}
+          <div style={split
+            ? { position: "absolute", zIndex: 1,
+              left: split.enemies[rowOrder.length].x - (segSpanFight.left + segSpanFight.right) / 2 * SEGMENT_SCALE * split.scale,
+              top: split.enemies[rowOrder.length].foot - segDrop * split.scale }
+            : { position: "absolute", left: stageX(segSlot.x * rowFit), top: stageY(segSlot.y), zIndex: 1 }}>
+            <DecimillipedeGroup segments={segParts.map(armOf)} pxPerScene={split ? split.scale : actorScale}
+              split={split ? splitPartChrome(rowOrder.length, segPartN) : undefined}
+              drop={split ? segDrop * split.scale : 0}
               locStrings={manifest?.locStrings} />
           </div>
         )}
@@ -2014,25 +2475,31 @@ export default function Board({
           stage, so this is all that keeps the hand strip at the bottom of the
           column (and the room's ground line above it). */}
       <div className="gs-arena" />
-      <Hand cards={s.hand} playedIndex={playedIndex} onCardClick={onPlayCard ? clickCard : undefined} scores={shownScores} previewDamageFor={previewDamageFor} framing={sceneFraming} />
-      {/* The belt is IN the scene (stage left edge, above the energy orb), not
-          under it. As a flex sibling BELOW the stage it rendered as a lone
-          rounded chip on app-black in the gutter under the viewport — the
-          "orphaned green relic chip" both r4 lenses logged (it is neither a
-          relic nor orphaned code: it is this tray, showing the run's one
-          Powdered Demise, duplicating the sockets GameHud already draws in
-          the band). Kept rather than deleted because it, and not the band,
-          carries Use/Discard and the win-prob hint. */}
-      {((p.potions && p.potions.length > 0) || p.max_potion_slot_count) && (
-        <PotionTray
-          potions={p.potions ?? []}
-          slots={p.max_potion_slot_count}
-          scores={shownScores}
-          onUse={onUsePotion ? (slot) => onUsePotion(slot) : undefined}
-          onDiscard={onDiscardPotion}
-        />
+      {moveGrade && (
+        <div key={moveGrade.nonce} className={`gs-move-grade gs-move-grade--${moveGrade.grade}`}
+          role="status" data-testid="move-grade">
+          {GRADE_TEXT[moveGrade.grade]}
+        </div>
       )}
+      <Hand cards={s.hand} playedIndex={playedIndex} onCardClick={onPlayCard ? clickCard : undefined} scores={shownScores} previewDamageFor={previewDamageFor} framing={sceneFraming}
+        selectedIndex={phone ? selectedCard : null} onCardTap={phone ? tapHandCard : undefined}
+        onCardBrowse={phone ? browseHandCard : undefined} />
+      {zoomCard && zoomAt && (
+        <ZoomCard card={zoomCard} placement={zoomAt} onTap={() => tapHandCard(zoomCard)}
+          onClose={() => applyTap(tapStage())} live={!!onPlayCard}
+          awaitsTarget={pendingCard === zoomCard.index && enemies.length > 1}
+          wouldPlay={tapCard({ selected: zoomCard.index, pending: pendingCard },
+            { index: zoomCard.index, needsTarget: needsTarget(zoomCard), canPlay: zoomCard.can_play !== false },
+            { live: !!onPlayCard, enemies: enemies.map((e) => e.index) }).play != null}
+          winProb={showNumbers ? shownScores?.find((x) => x.stable_idx === zoomCard.index)?.win_prob : undefined}
+          previewDamage={previewDamageFor(zoomCard)} />
+      )}
+      {/* The potion belt is the HUD band's (GameHud → PotionTray), where the
+          game keeps it; the scene no longer carries a second copy. */}
       </div>
+      </StageZoomContext.Provider>
+      {/* Outside the zoom layer: real px, overlaying the stage (no layout height). */}
+      <InspectSheet />
       </div>
 
       {onEndTurn && (
@@ -2062,12 +2529,6 @@ export default function Board({
               search (S)
             </button>
           )}
-          {onToggleHints && (
-            <button onClick={onToggleHints} style={{ color: autoHints ? "var(--accent-strong)" : "var(--muted)" }}
-              title="advice style: 💡 Hints shows the AI's scores unprompted; 🎓 Coach shows nothing until you ask (H, P) and grades your turn after">
-              {autoHints ? "💡 hints" : "🎓 coach"}
-            </button>
-          )}
           {hintBusy && <span style={{ color: "var(--muted)" }}>thinking…</span>}
           {pendingCard != null && <span style={{ color: "var(--accent-strong)" }}>select a target…</span>}
           {hintConfig && onHintConfig && (
@@ -2075,6 +2536,16 @@ export default function Board({
               <MctsControls config={hintConfig} onChange={onHintConfig} disabled={hintBusy} />
             </span>
           )}
+        </div>
+      )}
+
+      {autoCard && (
+        // Keyed by nonce so a second auto-play in the same action (Stampede 2,
+        // a Havoc chain) restarts the animation instead of being swallowed.
+        <div key={autoCard.nonce} className="gs-autoplay-card" data-testid="autoplay-card"
+          aria-live="polite" aria-label={`auto-played ${autoCard.card.name}`}>
+          <CardFrame card={autoCard.card} width={150} />
+          <span className="gs-autoplay-tag">auto-played</span>
         </div>
       )}
 

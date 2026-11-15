@@ -77,10 +77,12 @@ pub fn write_run_log(sess: &Session, now_iso: &str) -> Option<RunLog> {
         "act1": sess.act1,
         "backend": sess.backend(),
     });
-    // GH #801: only a non-default build is named (a v0.107.1 log keeps its
-    // bytes); `run_identity` reads absence as v0.107.1.
-    if !sess.game_version.is_default() {
-        meta["game_version"] = json!(sess.game_version.as_str());
+    // GH #801: always named, so a log says which build it is;
+    // `run_identity` reads absence (an older log) as v0.107.1.
+    meta["game_version"] = json!(sess.game_version.as_str());
+    // Named only for an e2e start; `run_identity` reads absence as false.
+    if sess.e2e_setup() {
+        meta["e2e_setup"] = json!(true);
     }
     lines.push(record(step, ts, "meta", meta));
     let log_wpa = |lines: &mut Vec<String>, step: u64, i: usize| {
@@ -703,6 +705,10 @@ impl ReplayStore {
                 .unwrap_or("rust")
                 .to_string(),
             game_version: crate::session::parse_game_version(self.head.get("game_version")).ok()?,
+            e2e_setup: self
+                .head
+                .get("e2e_setup")
+                .is_some_and(crate::render::py::truthy),
         })
     }
 
@@ -740,6 +746,8 @@ pub struct RunIdentity {
     /// The build the run was played in; v0.107.1 when the meta carries no
     /// `game_version` (GH #801).
     pub game_version: sts2_core::GameVersion,
+    /// The run was built as the e2e student's training run.
+    pub e2e_setup: bool,
 }
 
 /// `resume_capability`: whether "play from here" can take this recording

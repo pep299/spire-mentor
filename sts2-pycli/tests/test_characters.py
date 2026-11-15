@@ -44,8 +44,9 @@ class TestSeedCanonicalization:
 
 
 #: A Necrobinder seed whose Neow offers Scroll Boxes, per game build: v0.111.0
-#: rehashed every seed (XxHash64), so ECHO rolls a different Neow there.
-SCROLL_BOXES_SEED = {"v0.107.1": "ECHO", "v0.111.0": "ECHO1"}
+#: rehashed every seed (XxHash64), so ECHO rolls a different Neow there;
+#: v0.113.0 changed the Neow offer, so ECHO1 rolls none there (C# headless).
+SCROLL_BOXES_SEED = {"v0.107.1": "ECHO", "v0.111.0": "ECHO1", "v0.113.0": "ECHO2"}
 
 
 class TestScrollBoxes:
@@ -81,6 +82,37 @@ class TestScrollBoxes:
         deck_names = [c.get("name") for c in (p.get("deck") or [])]
         for name in pack0:
             assert name in deck_names, f"{name} should be in the deck after picking its pack"
+
+
+@pytest.mark.oracle
+def test_a_card_reward_after_the_scroll_boxes_pack_surfaces(monkeypatch):
+    """On v0.111.0 seed 7709, Neow's Bones (option 2) offers Scroll Boxes and
+    Lost Coffer. After the pack, the same RewardsSet.Offer obtains Lost Coffer,
+    whose AfterObtained offers a card reward. The headless released the pack's
+    continuation on the game thread, where that blocking card reward parked the
+    thread that has to answer it: no reply to select_bundle (OracleHang, every
+    character). The real game shows the card reward screen; so must we."""
+    if not (sts2_client.oracle_available("v0.111.0") and sts2_client.oracle_built("v0.111.0")):
+        pytest.skip("C# oracle for v0.111.0 unavailable")
+    monkeypatch.setenv(sts2_client.REPLY_TIMEOUT_ENV, "60")
+    prev = sts2_client.GAME_VERSION
+    sts2_client.set_game_version("v0.111.0")
+    g = Game()
+    try:
+        state = g.start(character="Ironclad", seed="7709")
+        names = _neow_offer_names(state)
+        assert names[2] == "Neow's Bones", names
+        state = g.act("choose_option", option_index=2)
+        assert state["decision"] == "bundle_select", state.get("decision")
+        state = g.act("select_bundle", bundle_index=0)
+        assert state["decision"] == "card_reward", state.get("decision")
+        deck = (state.get("player") or {}).get("deck_size")
+        state = g.act("select_card_reward", card_index=0)
+        # The picked card, then the curse Neow's Bones adds once its Offer returns.
+        assert (state.get("player") or {}).get("deck_size") == deck + 2
+    finally:
+        g.close()
+        sts2_client.set_game_version(prev)
 
 
 class TestCharacterMechanics:

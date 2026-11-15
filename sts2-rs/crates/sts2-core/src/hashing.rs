@@ -239,8 +239,8 @@ pub fn chance_outcome_hash(state: &CombatState) -> u64 {
 /// the arena walk. Folding the piles alone was not enough: the walk hashes
 /// each card's mutable fields keyed by its uid, so any per-instance trace
 /// re-bound the outcome to WHICH instance it was. Playing a card leaves
-/// such traces (zero-valued `PendingBatchAutoPlay` / `FreeThisTurn` /
-/// `FreeUntilPlayed` combat vars on the played instance), so Havoc /
+/// such traces (a zero-valued `PendingBatchAutoPlay` combat var on the
+/// played instance), so Havoc /
 /// Cascade / Mayhem onto identical cards still fanned out one outcome per
 /// instance. [`card_observational_key`] hashes the whole card minus its
 /// uid, a superset of the walk's fields, so no content is lost.
@@ -534,11 +534,15 @@ fn hash_enemies_cards_items_pending_skipping<E: HashEncoding, H: Hasher>(
         // card (this block runs once per card, every node expansion).
         c.card_id.hash(h);
         c.cost.hash(h);
-        if let Some(model) = c.local_energy_cost {
-            0x10u8.hash(h);
-            model.hash(h);
+        // GH #1111 split Quest out of Skill. A Quest card's type is a pure
+        // function of its `card_id` (hashed above), so hashing it as the
+        // Skill it used to be loses nothing and keeps every digest — and the
+        // search streams seeded from it — identical to before the split.
+        if c.card_type == crate::cards::CardType::Quest {
+            crate::cards::CardType::Skill.hash(h);
+        } else {
+            c.card_type.hash(h);
         }
-        c.card_type.hash(h);
         c.target_type.hash(h);
         c.upgraded.hash(h);
         c.base_damage.hash(h);
@@ -548,8 +552,8 @@ fn hash_enemies_cards_items_pending_skipping<E: HashEncoding, H: Hasher>(
         // (declaration order vs lexicographic), but equality is preserved
         // — equal maps still produce the same canonical sequence, which is
         // all the hash contract requires.
-        hash_entries_by_key(c.combat_vars.as_slice(), h);
-        hash_entries_by_key(c.enchantments.as_slice(), h);
+        hash_entries_by_key(c.combat_vars.keys(), c.combat_vars.values(), h);
+        hash_entries_by_key(c.enchantments.keys(), c.enchantments.values(), h);
         // Card afflictions (Bound / ChainsOfBinding "freeze" from the Queen
         // boss, etc.) are real searchable state: two hands differing only in
         // which cards are Bound are genuinely different positions and must
@@ -624,8 +628,10 @@ fn hash_enemies_cards_items_pending_skipping<E: HashEncoding, H: Hasher>(
         c.ap.force_exhaust.hash(h);
         c.batch.hash(h);
     }
-    if state.pending_play_phase_tail {
-        0xC1u8.hash(h);
+    match state.pending_play_phase_tail {
+        None => {}
+        Some(crate::PlayPhaseTail::AfterPlayPhaseStart) => 0xC1u8.hash(h),
+        Some(crate::PlayPhaseTail::AfterImbued) => 0xC2u8.hash(h),
     }
     // GH #1129: a select captured from the enemy side. The snapshot is the
     // same for every state reached from one enemy side, so the answers given
@@ -646,14 +652,15 @@ fn hash_enemies_cards_items_pending_skipping<E: HashEncoding, H: Hasher>(
 /// out-of-order map is still sorted exactly as before (a `Vec` of
 /// references, `sort_unstable_by_key`), so the hash bytes are the same on
 /// both paths, a repeated key included.
-fn hash_entries_by_key<K: Copy + Ord + Hash, H: Hasher>(entries: &[(K, i32)], h: &mut H) {
-    if entries.windows(2).all(|w| w[0].0 <= w[1].0) {
-        for (k, v) in entries {
+fn hash_entries_by_key<K: Copy + Ord + Hash, H: Hasher>(keys: &[K], vals: &[i32], h: &mut H) {
+    if keys.windows(2).all(|w| w[0] <= w[1]) {
+        for (k, v) in keys.iter().zip(vals) {
             k.hash(h);
             v.hash(h);
         }
         return;
     }
+    let entries: Vec<(K, i32)> = keys.iter().copied().zip(vals.iter().copied()).collect();
     let mut sorted: Vec<_> = entries.iter().collect();
     sorted.sort_unstable_by_key(|(k, _)| *k);
     for (k, v) in sorted {
@@ -704,6 +711,12 @@ fn hash_run_rng_set<H: Hasher>(rr: &RunRngSet, h: &mut H) {
     ] {
         hash_rng_seed(stream.seed(), h);
         stream.counter().hash(h);
+    }
+    // v0.113.0's `non_combat_generation` stream is folded in only for builds
+    // that draw from it, so every pre-v0.113.0 digest stays byte-identical.
+    if rr.game_version >= crate::GameVersion::V0_113_0 {
+        hash_rng_seed(rr.non_combat_generation.seed(), h);
+        rr.non_combat_generation.counter().hash(h);
     }
     // `map_rngs` is a `BTreeMap` — deterministic key iteration order.
     for (act_index, rng) in &rr.map_rngs {
@@ -1027,6 +1040,12 @@ fn hash_player_tail<E: HashEncoding, H: Hasher>(
     // `power.id`, masking counter/applier diffs on player-side stacked
     // powers like Unmovable / CrimsonMantle / Inferno).
     E::player_powers(p, state, h);
+
+    // v0.113.0 The Fool: arrows / impaled lists / melody tallies. Folded only
+    // when present, so every pre-Fool hash keeps its byte stream.
+    if let Some(f) = p.fool.as_deref() {
+        crate::fool::hash_into(f, h);
+    }
 
     // Defect orb belt. Bead `sts2-rs-jyd15`: the orb belt
     // (Lightning/Frost/Dark passive + evoke payloads) is observable
@@ -1787,8 +1806,8 @@ mod tests {
             let u = CardUid::new(n).expect("non-zero");
             s.player.draw.retain(|x| *x != u);
             let card = &mut s.cards[n as usize - 1];
-            card.set_combat_var(crate::cards::VarKey::FreeThisTurn, 0);
-            assert!(!card.combat_vars.as_slice().is_empty(), "fixture: a trace");
+            card.set_combat_var(crate::cards::VarKey::StarCostFreeThisTurn, 0);
+            assert!(!card.combat_vars.to_vec().is_empty(), "fixture: a trace");
             match pile {
                 "discard" => s.player.discard.push(u),
                 "exhaust" => s.player.exhaust.push(u),
@@ -1818,7 +1837,7 @@ mod tests {
         // A card in a face-up pile with genuinely different content (a
         // non-zero var, not a zeroed trace) must not dedup either.
         let mut boosted = take(1, "exhaust");
-        boosted.cards[0].set_combat_var(crate::cards::VarKey::FreeThisTurn, 1);
+        boosted.cards[0].set_to_free_this_turn();
         assert_ne!(
             chance_outcome_hash(&take(2, "exhaust")),
             chance_outcome_hash(&boosted),
@@ -1901,7 +1920,7 @@ mod tests {
     fn observational_key_masks_non_x_energy_spent_only() {
         let base = crate::Card {
             uid: crate::CardUid::new(1).expect("nz"),
-            cost: 2,
+            cost: crate::CardEnergyCost::new(2),
             ..crate::Card::pod_defaults()
         };
         let mut played = base;
@@ -1911,7 +1930,10 @@ mod tests {
             card_observational_key(&played)
         );
 
-        let x = crate::Card { cost: -1, ..base };
+        let x = crate::Card {
+            cost: crate::CardEnergyCost::new(-1),
+            ..base
+        };
         let mut x_played = x;
         x_played.energy_spent = 3;
         assert!(x.is_x_cost());
@@ -1940,12 +1962,14 @@ mod tests {
         };
         let fold = |entries: &[(VarKey, i32)]| {
             let mut h = new_hasher();
-            hash_entries_by_key(entries, &mut h);
+            let ks: Vec<VarKey> = entries.iter().map(|e| e.0).collect();
+            let vs: Vec<i32> = entries.iter().map(|e| e.1).collect();
+            hash_entries_by_key(&ks, &vs, &mut h);
             h.finish()
         };
         let mut keys = [
-            VarKey::FreeThisTurn,
-            VarKey::CostAbsolutelySet,
+            VarKey::EtherealThisCombat,
+            VarKey::IsDupe,
             VarKey::RampageDamage,
         ];
         keys.sort_unstable();
@@ -2049,7 +2073,7 @@ mod tests {
             let mut c = Card {
                 uid: CardUid::new(1).unwrap(),
                 card_id: CardId::StrikeIronclad,
-                cost: 1,
+                cost: crate::CardEnergyCost::new(1),
                 card_type: CardType::Attack,
                 target_type: TargetType::Enemy,
                 base_damage: 6,
@@ -2521,7 +2545,7 @@ mod tests {
         cs.cards.push(Card {
             uid: u1,
             card_id: CardId::Bash,
-            cost: 2,
+            cost: crate::CardEnergyCost::new(2),
             base_damage: 8,
             combat_vars: [(VarKey::RampageDamage, 5)].into_iter().collect(),
             enchantments: [(EnchantmentId::Steady, 1)].into_iter().collect(),

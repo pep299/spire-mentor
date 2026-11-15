@@ -68,10 +68,9 @@ fn push_play_card(
     let raw = u32::try_from(state.cards.len() + 1).expect("cards len fits in u32");
     let uid = sts2_core::CardUid::new(raw).expect("non-zero uid");
     state.cards.push(Card {
-        local_energy_cost: None,
         uid,
         card_id,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: false,
@@ -95,10 +94,9 @@ fn push_hand_card(state: &mut CombatState, card_id: CardId) -> sts2_core::CardUi
     let raw = u32::try_from(state.cards.len() + 1).expect("cards len fits in u32");
     let uid = sts2_core::CardUid::new(raw).expect("non-zero uid");
     state.cards.push(Card {
-        local_energy_cost: None,
         uid,
         card_id,
-        cost: 1,
+        cost: sts2_core::CardEnergyCost::new(1),
         card_type: CardType::Attack,
         target_type: TargetType::Enemy,
         upgraded: false,
@@ -1446,17 +1444,17 @@ fn kingly_kick_loses_one_cost_per_draw() {
     let uid = state.add_card_to_draw_pile(Card {
         uid: CardUid::new(u32::MAX).expect("nz placeholder"),
         card_id: CardId::KinglyKick,
-        cost: 4,
+        cost: sts2_core::CardEnergyCost::new(4),
         ..Card::pod_defaults()
     });
     let _ = state.draw_into_hand(1);
     let idx = uid.0.get() as usize - 1;
-    assert_eq!(state.cards[idx].cost, 3, "first draw: cost 4 -> 3");
+    assert_eq!(state.cards[idx].local_cost(), 3, "first draw: cost 4 -> 3");
     // Put it back and draw again to confirm the per-draw decrement.
     state.player.hand.clear();
     state.player.draw.push(uid);
     let _ = state.draw_into_hand(1);
-    assert_eq!(state.cards[idx].cost, 2, "second draw: cost 3 -> 2");
+    assert_eq!(state.cards[idx].local_cost(), 2, "second draw: cost 3 -> 2");
 }
 
 /// KnockoutBlow: kill grants 5 Stars.
@@ -1953,7 +1951,7 @@ fn stardust_x_is_captured_before_the_sealed_throne_star() {
     apply_power_to_player(&mut state, PowerKind::TheSealedThrone, 1);
     let uid = push_hand_card(&mut state, CardId::Stardust);
     state.cards[uid.0.get() as usize - 1].base_damage = 5;
-    state.cards[uid.0.get() as usize - 1].cost = 0;
+    state.cards[uid.0.get() as usize - 1].cost = sts2_core::CardEnergyCost::new(0);
     let hp0 = state.creatures[0].current_hp;
     let step = sts2_core::combat_loop::play_card(&mut state, 0, Some(0));
     assert_eq!(step, sts2_core::StepResult::Advanced);
@@ -2020,6 +2018,8 @@ fn hexed_auto_played_card_counts_as_an_ethereal_play() {
     strike.uid = sts2_core::CardUid::new(raw).expect("nz");
     state.player.draw.push(strike.uid);
     state.cards.push(strike);
+    // HexPower.AfterApplied afflicts every card already in combat.
+    sts2_core::monster_power_effects::hex_after_applied(&mut state, 1);
     let step = sts2_core::combat_loop::play_card(&mut state, 0, None);
     assert_eq!(step, sts2_core::StepResult::Advanced);
     assert_eq!(state.combat_log.ethereal_cards_played_this_combat, 2);
@@ -2040,7 +2040,7 @@ fn stardust_replay_reuses_the_spent_star_x() {
     apply_power_to_player(&mut state, PowerKind::Duplication, 1);
     let uid = push_hand_card(&mut state, CardId::Stardust);
     state.cards[uid.0.get() as usize - 1].base_damage = 5;
-    state.cards[uid.0.get() as usize - 1].cost = 0;
+    state.cards[uid.0.get() as usize - 1].cost = sts2_core::CardEnergyCost::new(0);
     let hp0 = state.creatures[0].current_hp;
     let step = sts2_core::combat_loop::play_card(&mut state, 0, Some(0));
     assert_eq!(step, sts2_core::StepResult::Advanced);
@@ -2353,10 +2353,9 @@ fn bombardment_auto_plays_from_exhaust_at_turn_start() {
         let raw = u32::try_from(state.cards.len() + 1).expect("fits");
         let uid = sts2_core::CardUid::new(raw).expect("non-zero");
         state.cards.push(Card {
-            local_energy_cost: None,
             uid,
             card_id: CardId::Bombardment,
-            cost: 3,
+            cost: sts2_core::CardEnergyCost::new(3),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -2448,10 +2447,9 @@ fn bombardment_follows_rampart_block() {
         let raw = u32::try_from(state.cards.len() + 1).expect("fits");
         let uid = sts2_core::CardUid::new(raw).expect("non-zero");
         state.cards.push(Card {
-            local_energy_cost: None,
             uid,
             card_id: CardId::Bombardment,
-            cost: 3,
+            cost: sts2_core::CardEnergyCost::new(3),
             card_type: CardType::Attack,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -2721,7 +2719,7 @@ fn auto_played_decisions_decisions_waits_for_each_repeat() {
     state.player.hand.retain(|u| *u != decisions);
     state.player.draw.push(decisions);
     let catastrophe = push_hand_skill(&mut state, CardId::Catastrophe);
-    state.cards[catastrophe.get() as usize - 1].cost = 0;
+    state.cards[catastrophe.get() as usize - 1].cost = sts2_core::CardEnergyCost::new(0);
     state.phase = sts2_core::CombatPhase::PlayerPlayPhase;
     state.side = sts2_core::Side::Player;
     let hand_index = u8::try_from(state.player.hand.len() - 1).expect("fits");
@@ -4296,4 +4294,72 @@ fn the_sealed_throne_upgrade_v0107_is_minus_one_cost_no_innate() {
     let d = crate::cards::regent::the_sealed_throne::upgrade().expect("upgrade delta");
     assert_eq!(d.cost, Some(0i8), "v0.107.1 upgrade drops cost 1 → 0");
     assert_eq!(d.keywords, None, "v0.107.1 upgrade no longer adds Innate");
+}
+
+/// C# `IterateHookListeners` runs the player's powers before the relics, so
+/// `VoidFormPower.AfterCardPlayed` (VoidFormPower.cs:98-108) counts the Power
+/// play that spends the last free card BEFORE `MummifiedHand.AfterCardPlayed`
+/// (MummifiedHand.cs:16-46) reads `CostsEnergyOrStars(includeGlobalModifiers)`.
+/// Mummified Hand therefore sees Defend cost 1 again and frees it (pool 1),
+/// skipping the Strike that is already free this turn. Rust charged Void Form
+/// after every listener, saw nothing costing energy and fell back to the
+/// favorable pool holding the Strike (loadout Regent 5023, v0.111.0).
+#[test]
+fn mummified_hand_sees_void_form_spent_by_the_power_play() {
+    install_pool();
+    crate::cards::dispatch::ensure_installed();
+    crate::relics::dispatch::ensure_installed();
+    for version in [
+        sts2_core::GameVersion::V0_107_1,
+        sts2_core::GameVersion::V0_111_0,
+    ] {
+        let (mut state, _enemy) = fresh_state_with_enemy(200);
+        state.game_version = version;
+        let _ = state.init_player_creature();
+        state.phase = sts2_core::CombatPhase::PlayerPlayPhase;
+        state.player.energy = 3;
+        state.relics.push(sts2_core::Relic {
+            id: NonZeroU32::new(1).expect("non-zero"),
+            kind: sts2_core::RelicKind::MummifiedHand,
+            counter: 0,
+            is_wax: false,
+            is_melted: false,
+        });
+        apply_power_to_player(&mut state, PowerKind::VoidForm, 1);
+        let power = push_hand_card(&mut state, CardId::Inflame);
+        state.cards[power.0.get() as usize - 1].card_type = CardType::Power;
+        state.cards[power.0.get() as usize - 1].target_type = TargetType::Self_;
+        let strike = push_hand_card(&mut state, CardId::StrikeRegent);
+        state.cards[strike.0.get() as usize - 1].set_to_free_this_turn();
+        let defend = push_hand_card(&mut state, CardId::DefendRegent);
+        state.cards[defend.0.get() as usize - 1].card_type = CardType::Skill;
+        state.cards[defend.0.get() as usize - 1].target_type = TargetType::Self_;
+
+        let step = sts2_core::combat_loop::play_card(&mut state, 0, None);
+        assert_eq!(step, sts2_core::StepResult::Advanced, "{version:?}");
+        let free = |uid: sts2_core::CardUid| {
+            state.cards[uid.0.get() as usize - 1]
+                .cost
+                .has(sts2_core::LocalCostMod::FREE_THIS_TURN)
+        };
+        assert!(free(defend), "{version:?}: Mummified Hand frees Defend");
+        assert_eq!(
+            sts2_core::combat_loop::void_form_cards_played_this_turn(&state),
+            1,
+            "{version:?}: the Power play spent Void Form once"
+        );
+    }
+}
+
+/// Alignment gains through `PlayerCmd.GainEnergy` (C# `Alignment.cs` `OnPlay`),
+/// so `NoEnergyGainPower` zeroes it.
+#[test]
+fn alignment_gains_nothing_under_no_energy_gain() {
+    install_pool();
+    let (mut state, _e) = fresh_state_with_enemy(200);
+    state.player.energy = 1;
+    apply_power_to_player(&mut state, PowerKind::NoEnergyGain, 1);
+    let _ = push_play_card(&mut state, CardId::Alignment, 0, 0);
+    let _ = dispatch(&mut state, CardId::Alignment, None);
+    assert_eq!(state.player.energy, 1);
 }

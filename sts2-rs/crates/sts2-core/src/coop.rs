@@ -677,6 +677,26 @@ pub fn every_player(state: &mut CombatState, mut body: impl FnMut(&mut CombatSta
     }
 }
 
+/// `PlayerCmd.GainEnergy(amount)` for every living player on the seated
+/// player's side, in the run's player order: v0.113.0 `CompostPower.AfterDeath`
+/// (`GetTeammatesOf(Owner).Where(c => c.IsAlive && c.IsPlayer)`, which
+/// includes the owner). Unlike [`every_player`] it reaches everyone from
+/// inside a seat pass too: a teammate's Compost hears the death there, and
+/// its energy is still everybody's. Solo, the seated player alone.
+pub fn every_player_gains_energy(state: &mut CombatState, amount: i32) {
+    if !has_seats(state) {
+        state.gain_energy(amount);
+        return;
+    }
+    for id in seats_in_run_order(state) {
+        with_seat(state, id, |state| {
+            if state.player.current_hp > 0 {
+                state.gain_energy(amount);
+            }
+        });
+    }
+}
+
 /// The seat id of `allies[ally]`: its [`SeatStash::seat`], or `ally + 1`
 /// without stashes (nobody but us is ever seated then).
 #[must_use]
@@ -1586,6 +1606,41 @@ pub fn teammates_threatened(state: &CombatState) -> bool {
 pub(crate) fn run_seat_stage(state: &mut CombatState, stage: SeatRun) {
     let after = seats_ahead(state)..state.allies.len();
     run_seats(state, stage, after);
+}
+
+/// [`run_seat_stage`] while the seated player's own turn start is parked on a
+/// screen of theirs (Toasty Mittens' exhaust, Toolbox, a Stratagem reshuffle
+/// in the draw). The open choice and the resume records that go with it are
+/// one per state, not per seat, so they are set aside while the teammates'
+/// stages run and put back after. Left in place, a teammate's stage took the
+/// screen for its own and answered it as theirs (GH #989: the host's Mittens
+/// pick went to seat 1000 and the host's Strike stayed in hand).
+pub(crate) fn run_seat_stage_beside_park(state: &mut CombatState, stage: SeatRun) {
+    let choice = state.pending_choice.take();
+    let draw = state.pending_draw_resume.take();
+    let collect = state.pending_collect_resume.take();
+    let autoplay = state.pending_autoplay_resume.take();
+    run_seat_stage(state, stage);
+    debug_assert!(
+        state.is_over
+            || (state.pending_choice.is_none()
+                && state.pending_draw_resume.is_none()
+                && state.pending_collect_resume.is_none()
+                && state.pending_autoplay_resume.is_none()),
+        "a teammate's stage left a suspension open"
+    );
+    if choice.is_some() {
+        state.pending_choice = choice;
+    }
+    if draw.is_some() {
+        state.pending_draw_resume = draw;
+    }
+    if collect.is_some() {
+        state.pending_collect_resume = collect;
+    }
+    if autoplay.is_some() {
+        state.pending_autoplay_resume = autoplay;
+    }
 }
 
 /// [`run_seat_stage`] for the teammates ahead of us in the run's player order,

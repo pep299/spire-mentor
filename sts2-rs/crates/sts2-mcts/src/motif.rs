@@ -213,7 +213,7 @@ pub fn motifs_at(state: &CombatState) -> Vec<Motif> {
                 let Some(card) = state.cards.iter().find(|c| c.uid == *uid) else {
                     continue;
                 };
-                if card.cost == 0 {
+                if card.base_cost() >= 0 && card.local_cost() <= 0 {
                     free_play = true;
                 }
                 if card.card_type == sts2_core::cards::CardType::Power {
@@ -277,10 +277,9 @@ mod tests {
         for (i, &(id, cost, dmg, target, card_type)) in hand.iter().enumerate() {
             let uid = CardUid::new((i + 1) as u32).unwrap();
             cards.push(Card {
-                local_energy_cost: None,
                 uid,
                 card_id: id,
-                cost,
+                cost: sts2_core::CardEnergyCost::new(cost),
                 card_type,
                 target_type: target,
                 upgraded: false,

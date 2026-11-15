@@ -854,6 +854,28 @@ def test_a_potion_screen_is_searched_end_to_end() -> None:
     assert advisor.live is not None, "answering is side-effect free on the fight"
 
 
+def test_an_offer_of_a_v0113_card_is_searched() -> None:
+    """A Colorless Potion offering My Shinies (a v0.113.0 card) is searched.
+
+    The adapter used to check card ids against the PPO vocab, frozen at
+    v0.111.0, so the offer raised ``card id 'MY_SHINIES' doesn't map to any
+    of [...]`` and fell to the deck-pick fallback -- for Instinct and the
+    search alike.
+    """
+    advisor, screen = _potion_screen("COLORLESS_POTION")
+    screen["prompt_key"] = "COLORLESS_POTION.selectionScreenPrompt"
+    screen["cards"] = [
+        {"id": "MY_SHINIES", "name": "My Shinies", "index": 0},
+        {"id": "MIND_BLAST", "name": "Mind Blast", "index": 1},
+        {"id": "FINESSE", "name": "Finesse", "index": 2},
+    ]
+    advice = advisor.answer_card_select(screen, HONEST, 8)
+
+    assert advice is not None, advisor.declines
+    assert advice["note"].startswith("combat MCTS"), advice["note"]
+    assert [o["label"] for o in advice["options"]] == ["My Shinies", "Mind Blast", "Finesse"]
+
+
 # ---------------------------------------------------------------------------
 # Hook-opened screens
 #
@@ -1805,6 +1827,87 @@ class TestRememberedPicks:
         advisor = self._primed()
         advisor.drop("new fight")
         assert advisor.next_remembered_pick("PREPARED", _offer("DEFEND", "SURVIVOR")) is None
+
+
+class TestUpToNPilePicks:
+    """Pick 2 of an "up to N" combat pile pick (Neow's Fury, #1206).
+
+    The mod asks again after each card it takes, with ``selected_count``.
+    Only the first ask's plan may continue the selection; without one, the
+    answer is to confirm what is taken (``skip``). Both brains answer
+    through :meth:`AdvisorMirror.answer_card_select`, so both are tested.
+    """
+
+    @staticmethod
+    def _pick_two(selected: int, *names: str) -> dict[str, Any]:
+        return {
+            "cards": _offer(*names),
+            "min_select": 0,
+            "max_select": 2,
+            "source_model": None,  # pick 2 arrives without its source
+            "source_kind": "card",
+            "screen": "NCombatPileCardSelectScreen",
+            "selected_count": selected,
+            "combat": {},
+        }
+
+    @staticmethod
+    def _primed() -> AdvisorMirror:
+        advisor = AdvisorMirror(HONEST)
+        advisor.remember_picks("NEOWS_FURY", _offer("BASH", "INFLAME", "DEFEND"), [1, 0])
+        return advisor
+
+    @staticmethod
+    def _search(advisor: AdvisorMirror, state: dict[str, Any]) -> dict[str, Any] | None:
+        import realgame_advisor as ra
+
+        return ra._searched_card_select_advice(state, advisor, HONEST, 8)
+
+    @staticmethod
+    def _instinct(advisor: AdvisorMirror, state: dict[str, Any]) -> dict[str, Any] | None:
+        import realgame_instinct as ri
+
+        # `_dispatch` skips `advise`'s net load; the picker never runs here.
+        return ri.InstinctAdvisor()._dispatch(state, "card_select", HONEST, advisor, None, 8)
+
+    @pytest.mark.parametrize("brain", ["_search", "_instinct"])
+    def test_the_planned_second_pick_is_served(self, brain: str) -> None:
+        advisor = self._primed()
+        # The world took INFLAME, as planned; BASH is next.
+        advice = getattr(self, brain)(advisor, self._pick_two(1, "BASH", "DEFEND"))
+        assert advice is not None
+        assert advice["best"] == {"action": "choose", "index": 0, "label": "Bash"}
+
+    @pytest.mark.parametrize("brain", ["_search", "_instinct"])
+    def test_without_a_plan_it_confirms_what_is_taken(self, brain: str) -> None:
+        # No live mirror and no plan: a fresh search would plan two picks
+        # again. Confirming is the answer, not a decline.
+        advice = getattr(self, brain)(AdvisorMirror(HONEST), self._pick_two(1, "BASH", "DEFEND"))
+        assert advice is not None
+        assert advice["best"]["action"] == "skip"
+        assert not any(o["is_best"] for o in advice["options"])
+
+    @pytest.mark.parametrize("brain", ["_search", "_instinct"])
+    def test_a_spent_plan_confirms(self, brain: str) -> None:
+        advisor = AdvisorMirror(HONEST)
+        advisor.remember_picks("NEOWS_FURY", _offer("BASH", "INFLAME", "DEFEND"), [1])
+        advice = getattr(self, brain)(advisor, self._pick_two(1, "BASH", "DEFEND"))
+        assert advice is not None
+        assert advice["best"]["action"] == "skip"
+
+    def test_a_world_that_took_another_card_confirms(self) -> None:
+        # The world took DEFEND, not the planned INFLAME: the plan is void.
+        advice = self._search(self._primed(), self._pick_two(1, "BASH", "INFLAME"))
+        assert advice is not None
+        assert advice["best"]["action"] == "skip"
+
+    def test_the_first_ask_is_not_affected(self) -> None:
+        # selected_count 0 (or absent) is the first ask: the usual path, which
+        # without a live mirror declines.
+        assert self._search(AdvisorMirror(HONEST), self._pick_two(0, "BASH", "DEFEND")) is None
+        state = self._pick_two(0, "BASH", "DEFEND")
+        del state["selected_count"]
+        assert self._search(AdvisorMirror(HONEST), state) is None
 
 
 def test_note_names_the_desynced_paths() -> None:

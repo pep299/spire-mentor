@@ -295,6 +295,29 @@ pub fn enter_combat_from_roster(
     roster: &[(MonsterKind, MonsterSpawnArgs, i32)],
     room_type: sts2_core::runstate::RoomType,
 ) -> CombatState {
+    enter_combat_from_roster_in_slots(rs, roster, &[], room_type)
+}
+
+/// [`enter_combat_from_roster`] for an encounter with a slot model:
+/// `member_slots` (an [`crate::encounters::EncounterDef::member_slots`]) is
+/// stamped onto the roster right after it spawns, BEFORE `start_combat`.
+///
+/// C# names every slot in `GenerateMonstersWithSlots`, before the combat
+/// starts, so a summon that happens inside combat entry already sees them:
+/// Whispering Earring auto-plays turn 1 inside `start_player_turn`, and a
+/// Void Form among those plays runs the whole enemy turn there too — a
+/// Fabricator's opening spawn then lands at `Encounter.GetNextSlot`
+/// (Fabricator.cs:115) and `CombatManager.AddCreature` re-sorts by slot
+/// (CombatState.cs:678). Stamping after entry left the summoner slot-less at
+/// that moment, so its bots were appended behind it (Regent seed 6673,
+/// v0.107.1). An empty `member_slots` is the slot-less entry.
+#[must_use]
+pub fn enter_combat_from_roster_in_slots(
+    rs: &RunState,
+    roster: &[(MonsterKind, MonsterSpawnArgs, i32)],
+    member_slots: &[u8],
+    room_type: sts2_core::runstate::RoomType,
+) -> CombatState {
     use sts2_core::runstate::RoomType;
     // Carry the run's ascension level into combat so monster HP
     // (ToughEnemies, >= A8) and attack damage (DeadlyEnemies, >= A9)
@@ -455,8 +478,13 @@ pub fn enter_combat_from_roster(
     state.relics.extend(relics);
 
     state.act_index = rs.act_index;
+    state.total_floor = u16::try_from(rs.csharp_total_floor().max(0)).unwrap_or(u16::MAX);
 
     spawn_roster(&mut state, roster);
+    // Slot model before anything can summon (see the doc comment). Inert for
+    // an empty `member_slots`; every shipped roster is already slot-ascending,
+    // so this only informs a later add.
+    state.assign_encounter_slots(member_slots);
 
     // `FurCoat.BeforeCombatStart` (FurCoat.cs:130-149): on one of the relic's
     // marked map points every hittable (living) enemy is set to 1 HP
@@ -637,18 +665,35 @@ pub fn exit_combat(rs: &mut RunState, combat: &CombatState) {
     // `ShouldGiveRewards => false`) offers an empty set
     // (`RewardsCmd.OfferForRoomEnd` → `EmptyForRoom`, `RewardsCmd.cs:26-29`),
     // so none of the room's extras below (Grimoire, Royalties, Heist) are
-    // offered. Ported from manojnuthakki/spire-mentor 9262b2d6e.
+    // offered on v0.107.1. Ported from manojnuthakki/spire-mentor 9262b2d6e.
+    // v0.111.0's `BattlewornDummy.Resume` instead concatenates
+    // `combatRoom.ExtraRewards` after its own setting reward and offers the
+    // lot (`BattlewornDummy.cs:110-116`) — unless the dummy ran out of time,
+    // which returns before any reward (`:76-79`).
     //
-    // A Boss room in the last act is empty too: `RewardsSet.WithRewardsFromRoom`
-    // returns before the `ExtraRewards` merge (`RewardsSet.cs:91-94`, both
-    // builds). That covers the final boss and the A10 first boss. Rust's
-    // `act_index` is 1-based, so the last act is `>= 3`, the same predicate
-    // `RunManager::exit_combat_and_transition` uses.
+    // A Boss room in the last act is empty too before v0.113.0:
+    // `RewardsSet.WithRewardsFromRoom` returns before the `ExtraRewards`
+    // merge (`RewardsSet.cs:91-94` in v0.107.1 and v0.111.0). That covers the
+    // final boss and the A10 first boss. v0.113.0 only skips the room's
+    // default rewards there and still merges `combatRoom.ExtraRewards`
+    // (`RewardsSet.cs:96-103`), so Royalties / Heist / Grimoire pay out at
+    // the last-act boss too. Rust's `act_index` is 1-based, so the last act
+    // is `>= 3`, the same predicate `RunManager::exit_combat_and_transition`
+    // uses.
     let last_act_boss = rs.act_index >= 3
-        && rs.current_room.map(|r| r.room_type) == Some(sts2_core::runstate::RoomType::Boss);
+        && rs.current_room.map(|r| r.room_type) == Some(sts2_core::runstate::RoomType::Boss)
+        && rs.game_version < sts2_core::GameVersion::V0_113_0;
     let room_gives_rewards = !last_act_boss
         && match &rs.event_combat {
-            Some(req) => req.encounter.grants_base_room_rewards(),
+            Some(req) => {
+                req.encounter.grants_base_room_rewards()
+                    || (rs.game_version >= sts2_core::GameVersion::V0_111_0
+                        && matches!(
+                            req.encounter,
+                            sts2_core::events::EventEncounter::BattlewornDummy(_)
+                        )
+                        && !combat.event_combat_timed_out)
+            }
             None => true,
         };
     let grimoire_stacks = combat.player_power_amount(sts2_core::PowerKind::ForbiddenGrimoire);
@@ -695,46 +740,6 @@ pub fn exit_combat(rs: &mut RunState, combat: &CombatState) {
     // during the fight, rewards added after).
     rs.gold = combat.gold;
 
-    // Royalties combat-victory gold (C# `RoyaltiesPower.AfterCombatEnd` →
-    // `room.AddExtraReward(player, new GoldReward(Amount))`). The Regent's
-    // `RoyaltiesCard` applies N stacks of `Royalties` mid-combat (Gold.BaseValue
-    // = 30); on a WON combat each stack is worth 1 gold, auto-collected with the
-    // rest of the reward set. This is the `Royalties` arm the `AddExtraReward`
-    // TODO above (Heist / Swipe / Royalties / TheHunt) flagged as pending — a
-    // flat grant (no RNG, stream-faithful). Granted here AFTER the RP17
-    // `rs.gold = combat.gold` writeback so it isn't clobbered, and gated on
-    // victory (a lost combat has no rewards screen, so the extra reward is never
-    // collected — mirrors C# and the `royalties_gold_on_victory` helper's
-    // `_on_victory` contract). The base reward gold is added separately by
-    // `apply_combat_gold_and_potion`; final = base + royalties, matching C#.
-    if combat.player_won && room_gives_rewards {
-        let royalties_stacks = combat.player_power_amount(sts2_core::PowerKind::Royalties);
-        if royalties_stacks > 0 {
-            rs.gain_gold(sts2_core::powers::regent::royalties_gold_on_victory(
-                royalties_stacks,
-            ));
-        }
-    }
-
-    // GH #604: `HeistPower.BeforeDeath` gold-back. C# `HeistPower.cs:19-28`
-    // adds a `GoldReward(Amount, wasGoldStolenBack: true)` to the combat room
-    // when the gremlin CARRYING the merc's stolen gold is killed; a gremlin
-    // that flees keeps it. The engine banks the amount on
-    // `CombatState::heist_recovered_gold` at the damage-death chokepoint
-    // (`damage.rs`, next to the `SwipePower` card reclaim), so all that is left
-    // here is settling it into run gold. This is the `Heist` arm of the
-    // `AddExtraReward` TODO the `Royalties` block above started working
-    // through.
-    //
-    // Victory-gated for the same reason as Royalties: an extra reward is
-    // collected off the rewards screen, which a lost combat never shows. Flat
-    // (no RNG), so — like Royalties — it cannot desync the `rewards` stream.
-    // Runs AFTER the RP17 `rs.gold = combat.gold` writeback so it is not
-    // clobbered by it.
-    if combat.player_won && room_gives_rewards && combat.heist_recovered_gold > 0 {
-        rs.gain_gold(combat.heist_recovered_gold);
-    }
-
     // Run-master propagation for scaling cards (C# `DeckVersion.BuffFromPlay`).
     // The Scythe and Genetic Algorithm `OnPlay` buff BOTH the combat copy AND
     // the run-master deck card (`(base.DeckVersion as TheScythe)?.BuffFromPlay`,
@@ -747,6 +752,9 @@ pub fn exit_combat(rs: &mut RunState, combat: &CombatState) {
     // Goopy bumps the deck copy's enchantment amount on every play
     // (`Goopy.AfterCardPlayed`: `DeckVersion.Enchantment.Amount++`), GH #952.
     propagate_goopy_to_master_deck(rs, combat);
+    // ShowOff's kill raises the deck copy's Aim too (`ShowOff.IncreaseAim`:
+    // `(base.DeckVersion as ShowOff)?.IncreaseAim(amount)`), GH #1337.
+    propagate_show_off_to_master_deck(rs, combat);
 
     // Bead `sts2-rs-RP13`: ThievingHopper / SwipePower run-deck steal. C#
     // `SwipePower.Steal` permanently removes the stolen card from the run deck
@@ -851,7 +859,8 @@ pub fn exit_combat(rs: &mut RunState, combat: &CombatState) {
                 .collect();
             if let Ok(last) = i32::try_from(upgradable.len().wrapping_sub(1)) {
                 if !upgradable.is_empty() {
-                    let idx = rs.rng.niche.next_int(0, last) as usize;
+                    // v0.113.0: `PlayerRng.NonCombatGeneration.NextItem`.
+                    let idx = rs.rng.non_combat_or_niche().next_int(0, last) as usize;
                     let deck_idx = upgradable[idx];
                     let version = rs.game_version;
                     rs.master_deck[deck_idx].upgrade_for(version);
@@ -904,6 +913,40 @@ pub fn exit_combat(rs: &mut RunState, combat: &CombatState) {
             // already-owned exclusion); it only drops out of every hook
             // listener list. `None` once all 4 wax relics are gone.
             let _ = rs.melt_next_wax_relic();
+        }
+    }
+
+    // The extra rewards below are collected off the reward screen, after
+    // every `AfterCombatEnd` hook above has run: a Toy Box melt has already
+    // taken a wax Bowler Hat out of `ModifyGoldGained` (Regent loadout
+    // v0.111.0 seed 7135: Royalties paid 30, not 37).
+    //
+    // They are fixed-amount `GoldReward`s the fight added to its room (C#
+    // `CombatRoom.AddExtraReward`), queued here in insertion order and
+    // collected by `RunState::grant_extra_reward_gold` right after the room's
+    // base gold and before its potion (`RewardsSet` sorts the set by
+    // `RewardsSetIndex`: gold 1, potion 2). Victory-gated: a lost combat
+    // never shows the rewards screen. Queued AFTER the RP17
+    // `rs.gold = combat.gold` writeback, so nothing clobbers them.
+    //
+    // GH #604: `HeistPower.BeforeDeath` gold-back (`HeistPower.cs`) adds a
+    // `GoldReward(Amount, wasGoldStolenBack: true)` when the gremlin CARRYING
+    // the merc's stolen gold is killed; a gremlin that flees keeps it. The
+    // engine banks the amount on `CombatState::heist_recovered_gold` at the
+    // damage-death chokepoint. Added mid-combat, so ahead of Royalties.
+    if combat.player_won && room_gives_rewards && combat.heist_recovered_gold > 0 {
+        rs.pending_extra_reward_gold
+            .push(combat.heist_recovered_gold);
+    }
+    // Royalties (`RoyaltiesPower.AfterCombatEnd` ->
+    // `room.AddExtraReward(player, new GoldReward(Amount))`): each stack the
+    // Regent's `RoyaltiesCard` applied is worth 1 gold on a won combat.
+    if combat.player_won && room_gives_rewards {
+        let royalties_stacks = combat.player_power_amount(sts2_core::PowerKind::Royalties);
+        if royalties_stacks > 0 {
+            rs.pending_extra_reward_gold.push(
+                sts2_core::powers::regent::royalties_gold_on_victory(royalties_stacks),
+            );
         }
     }
 }
@@ -1088,6 +1131,43 @@ fn propagate_goopy_to_master_deck(rs: &mut RunState, combat: &CombatState) {
             };
             let master = m.enchantment(EnchantmentId::Goopy);
             m.set_enchantment(EnchantmentId::Goopy, master.max(amount));
+        }
+    }
+}
+
+/// Fold each deck ShowOff's `IncreasedAim` back onto its master-deck card
+/// (C# `ShowOff.IncreaseAim` raises `DeckVersion` too; `IncreasedAim` is a
+/// `[SavedProperty]`). GH #1337.
+///
+/// The value lives in the card's [`sts2_core::cards::VarKey::Generic`] var
+/// (`sts2_core::fool::show_off_after_death`). Each master card reads its own
+/// combat copy through [`CombatState::deck_link`] (C# `DeckVersion`), so a
+/// ShowOff generated in the fight, which has no deck card, feeds nothing.
+/// Without a link there is no identity to follow and nothing is folded.
+/// Only grows, like the scaler fold-back.
+fn propagate_show_off_to_master_deck(rs: &mut RunState, combat: &CombatState) {
+    use sts2_core::cards::{CardId, VarKey};
+
+    let Some(link) = combat
+        .deck_link
+        .filter(|l| l.len as usize == rs.master_deck.len())
+    else {
+        return;
+    };
+    for (i, m) in rs.master_deck.iter_mut().enumerate() {
+        if m.card_id != CardId::ShowOffCard {
+            continue;
+        }
+        let Some(c) = link
+            .uid_of(i)
+            .and_then(|uid| combat.cards.get(uid.get() as usize - 1))
+            .filter(|c| c.card_id == CardId::ShowOffCard)
+        else {
+            continue;
+        };
+        let grown = c.combat_var(VarKey::Generic);
+        if grown > m.combat_var(VarKey::Generic) {
+            m.set_combat_var(VarKey::Generic, grown);
         }
     }
 }
@@ -1992,7 +2072,6 @@ mod tests {
         // the dispatcher routes through `on_after_damage_received_lava_lamp`,
         // which latches `Relic.counter = 1`.
         let ctx = sts2_core::hooks::DamageCtx {
-            card_source: None,
             // LavaLamp gates on `target == Player`; dealer is
             // unused so any variant is fine. Mirror the "unknown
             // dealer" shape from the Phase-2 fixture: `Player`.
@@ -2113,7 +2192,6 @@ mod tests {
             .expect("player-Creature initialized");
         // UNBLOCKABLE damage must NOT trip the flag (Python parity).
         let ctx = sts2_core::hooks::DamageCtx {
-            card_source: None,
             dealer: sts2_core::hooks::CreatureRef::Enemy(player_uid),
             target: sts2_core::hooks::CreatureRef::Player,
             props: sts2_core::hooks::ValueProps::UNBLOCKABLE,
@@ -2166,7 +2244,6 @@ mod tests {
         reset_lava_lamp_flag(&mut rs);
         let mut state = enter_combat(&rs, select_first(act1_normal_pool()));
         let ctx = sts2_core::hooks::DamageCtx {
-            card_source: None,
             dealer: sts2_core::hooks::CreatureRef::Player,
             target: sts2_core::hooks::CreatureRef::Player,
             props: sts2_core::hooks::ValueProps::NONE,
@@ -2366,6 +2443,58 @@ mod tests {
         );
     }
 
+    /// GH #1337: `ShowOff.IncreaseAim` also raises the deck copy
+    /// (`(base.DeckVersion as ShowOff)?.IncreaseAim(amount)`, `ShowOff.cs`,
+    /// `IncreasedAim` is a `[SavedProperty]`), so a kill's Aim outlasts the
+    /// fight. A ShowOff generated mid-combat has no `DeckVersion`: its growth
+    /// stays in the fight.
+    #[test]
+    fn show_off_aim_persists_across_combat_round_trip() {
+        use sts2_core::cards::{CardId, VarKey};
+
+        crate::cards::dispatch::ensure_installed();
+
+        let show_off = || {
+            crate::cards::spec_index::card_pod_from_id(CardId::ShowOffCard, false)
+                .expect("show off spec")
+        };
+        let mut rs = fresh_run();
+        rs.master_deck.push(show_off());
+        rs.master_deck.push(show_off());
+
+        let mut state = enter_combat(&rs, select_first(act1_normal_pool()));
+        let link = state.deck_link.expect("a run combat links its deck");
+        let first = link.uid_of(0).expect("master[0] has a combat copy");
+        state.cards[first.get() as usize - 1].set_combat_var(VarKey::Generic, 4);
+        // A ShowOff generated in the fight, grown past both deck copies.
+        let mut generated = show_off();
+        generated.uid = sts2_core::CardUid::new(u32::try_from(state.cards.len() + 1).expect("u32"))
+            .expect("nz");
+        generated.set_combat_var(VarKey::Generic, 9);
+        state.cards.push(generated);
+
+        exit_combat(&mut rs, &state);
+        assert_eq!(
+            rs.master_deck[0].combat_var(VarKey::Generic),
+            4,
+            "the kill's IncreasedAim reaches the deck ShowOff"
+        );
+        assert_eq!(
+            rs.master_deck[1].combat_var(VarKey::Generic),
+            0,
+            "the other ShowOff keeps its own; the generated one has no deck card"
+        );
+
+        let state2 = enter_combat(&rs, select_first(act1_normal_pool()));
+        let link2 = state2.deck_link.expect("link");
+        let copy = &state2.cards[link2.uid_of(0).expect("copy").get() as usize - 1];
+        assert_eq!(
+            copy.combat_var(VarKey::Generic),
+            4,
+            "the next combat's ShowOff starts from the raised Aim"
+        );
+    }
+
     /// GH #952: Goopy's `AfterCardPlayed` also bumps the deck copy's amount
     /// (`base.Card.DeckVersion.Enchantment.Amount++`, `Goopy.cs`), so the growth
     /// outlasts the fight. Only the combat copies of master-deck cards fold
@@ -2493,6 +2622,10 @@ mod tests {
 
         exit_combat(&mut rs, &combat);
 
+        // The reward screen collects the queued extra gold.
+
+        rs.grant_extra_reward_gold();
+
         assert_eq!(
             rs.gold,
             gold_before + 30,
@@ -2500,16 +2633,71 @@ mod tests {
         );
     }
 
-    /// A Boss room in the last act offers an EMPTY reward set: C#
-    /// `RewardsSet.WithRewardsFromRoom` returns before the `ExtraRewards`
-    /// merge (`RewardsSet.cs:91-94`, both builds), so Royalties gold,
-    /// Grimoire removals and Heist gold-back are never offered there
-    /// (Ironclad seed 2164, v0.111.0: Royalties 40 paid at the final boss).
-    /// An earlier act's boss still pays them.
+    /// C# collects the Royalties extra reward from the reward screen, after
+    /// every `AfterCombatEnd` hook has run, so a Toy Box melt in that walk
+    /// already took a wax Bowler Hat out of `ModifyGoldGained`: the 30 gold
+    /// arrives unscaled. Rust granted it inside `exit_combat` before the melt,
+    /// at x1.25 (Regent loadout v0.111.0 seed 7135: 37 instead of 30).
+    #[test]
+    fn exit_combat_royalties_gold_misses_a_bowler_hat_toy_box_melts() {
+        let mut rs = fresh_run();
+        rs.relics.push(sts2_core::RelicId::ToyBox);
+        rs.relics.push(sts2_core::RelicId::BowlerHat);
+        rs.wax_relics.insert(sts2_core::RelicId::BowlerHat);
+        rs.relic_counters.insert(
+            sts2_core::RelicId::ToyBox,
+            crate::relics::shop_event::TOY_BOX_COMBATS - 1,
+        );
+        let gold_before = rs.gold;
+        let mut combat = enter_combat(&rs, select_first(act1_normal_pool()));
+        combat.player_won = true;
+        let player_uid = combat
+            .player
+            .creature_uid
+            .expect("player-Creature initialized");
+        sts2_core::card_effects::apply_power_to_creature(
+            &mut combat,
+            player_uid,
+            sts2_core::PowerKind::Royalties,
+            30,
+        );
+
+        exit_combat(&mut rs, &combat);
+
+        // The reward screen collects the queued extra gold.
+
+        rs.grant_extra_reward_gold();
+
+        assert!(
+            !rs.owns_active_relic(sts2_core::RelicId::BowlerHat),
+            "melted"
+        );
+        assert_eq!(
+            rs.gold,
+            gold_before + 30,
+            "the melted hat no longer scales it"
+        );
+    }
+
+    /// A Boss room in the last act offers an EMPTY reward set before
+    /// v0.113.0: C# `RewardsSet.WithRewardsFromRoom` returns before the
+    /// `ExtraRewards` merge (`RewardsSet.cs:91-94` in v0.107.1 / v0.111.0),
+    /// so Royalties gold, Grimoire removals and Heist gold-back are never
+    /// offered there (Ironclad seed 2164, v0.111.0: Royalties 40 paid at the
+    /// final boss). An earlier act's boss still pays them. v0.113.0 skips only
+    /// the default rewards and merges the extras (`RewardsSet.cs:96-103`;
+    /// act23 Regent:1003: Royalties+ paid 40 at the final boss).
     #[test]
     fn exit_combat_no_extra_rewards_on_last_act_boss() {
-        for (act, expect_extras) in [(2, true), (3, false)] {
+        use sts2_core::GameVersion::{V0_111_0, V0_113_0};
+        for (act, version, expect_extras) in [
+            (2, V0_111_0, true),
+            (3, V0_111_0, false),
+            (2, V0_113_0, true),
+            (3, V0_113_0, true),
+        ] {
             let mut rs = fresh_run();
+            rs.game_version = version;
             rs.act_index = act;
             rs.current_room = Some(sts2_core::runstate::Room::new(
                 sts2_core::runstate::RoomType::Boss,
@@ -2536,6 +2724,10 @@ mod tests {
 
             exit_combat(&mut rs, &combat);
 
+            // The reward screen collects the queued extra gold.
+
+            rs.grant_extra_reward_gold();
+
             let (gold, removals) = if expect_extras {
                 (
                     gold_before + 55,
@@ -2544,8 +2736,11 @@ mod tests {
             } else {
                 (gold_before, vec![])
             };
-            assert_eq!(rs.gold, gold, "act {act} boss gold");
-            assert_eq!(rs.pending_rewards, removals, "act {act} boss removals");
+            assert_eq!(rs.gold, gold, "act {act} {version:?} boss gold");
+            assert_eq!(
+                rs.pending_rewards, removals,
+                "act {act} {version:?} boss removals"
+            );
         }
     }
 
@@ -2673,16 +2868,15 @@ mod tests {
         );
     }
 
-    /// A fight whose encounter gives no rewards (Battleworn Dummy,
-    /// `ShouldGiveRewards => false`, `BattlewornDummyEventEncounter.cs:28`)
-    /// offers an EMPTY set (`RewardsCmd.OfferForRoomEnd` →
-    /// `EmptyForRoom`, `RewardsCmd.cs:26-29`; `CombatRoom.cs:255` skips
-    /// `OfferRoomEndRewards` outright), so the room's `ExtraRewards` —
-    /// Royalties' gold, Forbidden Grimoire's removals — are never offered.
-    #[test]
-    fn a_no_rewards_event_fight_grants_none_of_its_extras() {
+    /// Exit a won Battleworn Dummy fight carrying 30 Royalties, Forbidden
+    /// Grimoire and 42 Heist gold; returns (gold gained, rewards staged).
+    fn battleworn_extras_after_exit(
+        version: sts2_core::GameVersion,
+        timed_out: bool,
+    ) -> (i32, usize) {
         use sts2_core::events::{BattlewornDummySetting, EventCombatRequest, EventEncounter};
         let mut rs = fresh_run();
+        rs.game_version = version;
         rs.event_combat = Some(EventCombatRequest::resuming(
             EventEncounter::BattlewornDummy(BattlewornDummySetting::Setting1),
             sts2_core::events::EventId::BattlewornDummy,
@@ -2698,18 +2892,55 @@ mod tests {
         combat.gold = rs.gold;
         combat.heist_recovered_gold = 42;
         combat.player_won = true;
+        combat.event_combat_timed_out = timed_out;
         let gold = rs.gold;
         let pending = rs.pending_rewards.len();
 
         exit_combat(&mut rs, &combat);
 
-        assert_eq!(rs.gold, gold, "no Royalties or Heist gold");
-        assert_eq!(rs.pending_rewards.len(), pending, "no Grimoire removals");
+        // The reward screen collects the queued extra gold.
+
+        rs.grant_extra_reward_gold();
+
+        (rs.gold - gold, rs.pending_rewards.len() - pending)
+    }
+
+    /// v0.107.1: a fight whose encounter gives no rewards (Battleworn Dummy,
+    /// `ShouldGiveRewards => false`, `BattlewornDummyEventEncounter.cs:28`)
+    /// offers an EMPTY set (`RewardsCmd.OfferForRoomEnd` →
+    /// `EmptyForRoom`, `RewardsCmd.cs:26-29`; `CombatRoom.cs:255` skips
+    /// `OfferRoomEndRewards` outright) and `BattlewornDummy.Resume` never
+    /// reads the room's `ExtraRewards`, so Royalties' gold, Forbidden
+    /// Grimoire's removals and Heist's gold are never offered.
+    #[test]
+    fn a_no_rewards_event_fight_grants_none_of_its_extras_v0107() {
+        assert_eq!(
+            battleworn_extras_after_exit(sts2_core::GameVersion::V0_107_1, false),
+            (0, 0)
+        );
+    }
+
+    /// v0.111.0 `BattlewornDummy.Resume` (`BattlewornDummy.cs:110-116`)
+    /// concatenates `combatRoom.ExtraRewards` onto its own reward list and
+    /// offers them, unless the dummy ran out of time (the early `DEFEAT`
+    /// return at `:76-79`). Parity seed Regent 6104 v0.111.0.
+    #[test]
+    fn battleworn_fight_offers_its_extras_on_v0111_unless_timed_out() {
+        assert_eq!(
+            battleworn_extras_after_exit(sts2_core::GameVersion::V0_111_0, false),
+            (30 + 42, 1),
+            "Royalties + Heist gold and one Grimoire removal reward"
+        );
+        assert_eq!(
+            battleworn_extras_after_exit(sts2_core::GameVersion::V0_111_0, true),
+            (0, 0),
+            "RanOutOfTime offers nothing"
+        );
     }
 
     /// GH #604: C# `HeistPower.BeforeDeath` hands the merc's stolen gold back
-    /// as a `GoldReward` when the carrier is killed. `exit_combat` settles the
-    /// engine-side ledger into run gold — on a WON combat only, since an extra
+    /// as a `GoldReward` when the carrier is killed. `exit_combat` queues the
+    /// engine-side ledger as reward gold — on a WON combat only, since an extra
     /// reward is collected off a rewards screen a lost combat never shows.
     #[test]
     fn exit_combat_returns_heist_gold_on_victory_only() {
@@ -2721,6 +2952,8 @@ mod tests {
         let before = rs.gold;
         combat.player_won = false;
         exit_combat(&mut rs, &combat);
+        // The reward screen collects the queued extra gold.
+        rs.grant_extra_reward_gold();
         assert_eq!(
             rs.gold, before,
             "a lost combat never reaches the rewards screen"
@@ -2733,6 +2966,8 @@ mod tests {
         let before = rs.gold;
         combat.player_won = true;
         exit_combat(&mut rs, &combat);
+        // The reward screen collects the queued extra gold.
+        rs.grant_extra_reward_gold();
         assert_eq!(
             rs.gold,
             before + 42,

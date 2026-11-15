@@ -76,6 +76,47 @@ pub enum NeowRelic {
 }
 
 impl NeowRelic {
+    /// Every variant, in declaration order.
+    pub const ALL: [Self; 30] = [
+        Self::ArcaneScroll,
+        Self::BoomingConch,
+        Self::GoldenPearl,
+        Self::LeadPaperweight,
+        Self::LostCoffer,
+        Self::NeowsTorment,
+        Self::NewLeaf,
+        Self::PreciseScissors,
+        Self::PhialHolster,
+        Self::WingedBoots,
+        Self::MassiveScroll,
+        Self::FishingRod,
+        Self::Kaleidoscope,
+        Self::LavaRock,
+        Self::SmallCapsule,
+        Self::NutritiousOyster,
+        Self::StoneHumidifier,
+        Self::NeowsTalisman,
+        Self::Pomander,
+        Self::CursedPearl,
+        Self::HeftyTablet,
+        Self::LargeCapsule,
+        Self::LeafyPoultice,
+        Self::PrecariousShears,
+        Self::SilverCrucible,
+        Self::NeowsBones,
+        Self::SilkenTress,
+        Self::ScrollBoxes,
+        Self::DowsingRod,
+        Self::NeowsSacrifice,
+    ];
+
+    /// The variant whose [`Self::snake_case_id`] is `id` (the game's relic
+    /// `Id.Entry`, e.g. `"MASSIVE_SCROLL"`), or `None`.
+    #[must_use]
+    pub fn from_snake_case_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|r| r.snake_case_id() == id)
+    }
+
     /// Convert to the matching [`RelicId`]. Every Neow-offer variant now
     /// has a first-class `RelicId` counterpart (W9a-e); the return type
     /// stays `Option` for call-site stability and forward-compat with any
@@ -246,7 +287,7 @@ pub fn curse_pool_for(version: crate::GameVersion) -> &'static [NeowRelic] {
     match version {
         crate::GameVersion::V0_107_1 => CURSE_POOL,
         // v0.111.0: CurseOptions grew 8 -> 10 (decomp Neow.cs:96).
-        crate::GameVersion::V0_111_0 => CURSE_POOL_V0111,
+        crate::GameVersion::V0_111_0 | crate::GameVersion::V0_113_0 => CURSE_POOL_V0111,
     }
 }
 
@@ -359,7 +400,8 @@ pub fn roll_neow_offers_for(version: crate::GameVersion, rng: &mut Rng) -> NeowO
     // (6) UnstableShuffle (Neow.cs:278). `Rng::shuffle` is exactly
     //     UnstableShuffle (Fisher-Yates with `next_int(0, idx)`); see
     //     `dotnet_rng.rs::Rng::shuffle` doc-comment.
-    rng.shuffle(&mut positive_pool);
+    // v0.113.0: one parent `NextUnsignedLong` seeds the shuffle's child Rng.
+    rng.shuffle_for(version, &mut positive_pool);
 
     NeowOffers {
         positive_1: positive_pool[0],
@@ -371,6 +413,16 @@ pub fn roll_neow_offers_for(version: crate::GameVersion, rng: &mut Rng) -> NeowO
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_neow_relic_round_trips_through_its_id() {
+        let mut seen = std::collections::HashSet::new();
+        for r in NeowRelic::ALL {
+            assert!(seen.insert(r), "{r:?} listed twice");
+            assert_eq!(NeowRelic::from_snake_case_id(r.snake_case_id()), Some(r));
+        }
+        assert_eq!(NeowRelic::from_snake_case_id("NOT_A_RELIC"), None);
+    }
 
     #[test]
     fn same_seed_produces_same_offers() {

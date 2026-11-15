@@ -467,6 +467,9 @@ fn infested_prism_pulsate_effect(state: &mut CombatState, owner: CreatureUid) {
         2,
     );
     apply_power_to_creature(state, owner, PowerKind::VitalSpark, amount);
+    // C# `VitalSparkPower.AfterPowerAmountChanged`: every Tainted card takes
+    // the new amount.
+    sts2_core::monster_power_effects::vital_spark_sync_tainted_amounts(state, owner);
 }
 
 /// `DecimillipedeSegment` BULK — `DecimillipedeSegment.cs:194`
@@ -593,6 +596,7 @@ fn thievery_steal_from_seated(state: &mut CombatState, owner: CreatureUid) -> bo
     use crate::cards::CardRarity;
     use sts2_core::cards::{CardType, EnchantmentId};
 
+    let v0113 = state.game_version >= sts2_core::GameVersion::V0_113_0;
     // Real-deck cards in Draw then Discard pile order (`DeckVersion != null`,
     // `ThievingHopper.cs:203`). ANY combat-generated card has a null
     // `DeckVersion` in C# — not just Statuses: a Calamity/Stoke/JackOfAll-
@@ -611,6 +615,11 @@ fn thievery_steal_from_seated(state: &mut CombatState, owner: CreatureUid) -> bo
             let card = &state.cards[uid.get() as usize - 1];
             card.card_type != CardType::Status
                 && card.combat_var(sts2_core::cards::VarKey::GeneratedInCombat) == 0
+                // v0.113.0: `&& c.Rarity != CardRarity.Quest` (decomp
+                // ThievingHopper.cs:197) — Quest cards can't be stolen.
+                && !(v0113
+                    && rarity_for_card_id_in(card.card_id, state.game_version)
+                        == Some(CardRarity::Quest))
         })
         .collect();
     if candidates.is_empty() {
@@ -663,11 +672,14 @@ fn thievery_steal_from_seated(state: &mut CombatState, owner: CreatureUid) -> bo
     };
 
     // `RunRng.CombatCardGeneration.NextItem(items)` — one max-exclusive draw.
+    // v0.113.0: `CombatCardSelection` (decomp ThievingHopper.cs:212).
     let len = i32::try_from(items.len()).unwrap_or(i32::MAX);
-    let idx = state
-        .run_rng
-        .combat_card_generation
-        .next_int_exclusive(0, len) as usize;
+    let rng = if v0113 {
+        &mut state.run_rng.combat_card_selection
+    } else {
+        &mut state.run_rng.combat_card_generation
+    };
+    let idx = rng.next_int_exclusive(0, len) as usize;
     let stolen = items[idx];
 
     // `CardPileCmd.RemoveFromCombat(cardToSteal)` — removes the card from its
@@ -812,7 +824,8 @@ fn ovicopter_lay_eggs_effect(state: &mut CombatState, _owner: CreatureUid) {
 /// Bead `sts2-rs-z4jsg`: ToughEgg HATCH_MOVE body. C# `ToughEgg.cs::
 /// HatchMove` → `Hatch()`:
 ///   1. `PowerCmd.Remove<HatchPower>(Owner)` + remove every remaining
-///      non-Minion power (`Powers.Where(p => !(p is MinionPower))`) —
+///      non-Minion power (`Powers.Where(p => !(p is MinionPower))`; v0.113.0
+///      also keeps `ImpaledPower`) —
 ///      a hatching egg sheds player-applied debuffs (Vulnerable, …) but
 ///      keeps its Minion tag.
 ///   2. Re-roll HP: `RunRng.Niche.NextInt(HatchlingMinHp=19,
@@ -838,7 +851,13 @@ fn tough_egg_hatch_effect(state: &mut CombatState, owner: CreatureUid) {
                     state
                         .powers
                         .iter()
-                        .find(|p| p.id == pu.0 && p.kind != PowerKind::Minion)
+                        // v0.113.0 also keeps `ImpaledPower` (the arrows stay
+                        // lodged); it cannot exist on an earlier build.
+                        .find(|p| {
+                            p.id == pu.0
+                                && p.kind != PowerKind::Minion
+                                && p.kind != PowerKind::Impaled
+                        })
                         .map(|p| p.id)
                 })
                 .collect()
@@ -920,8 +939,16 @@ fn entomancer_pheromone_spit_effect(state: &mut CombatState, uid: CreatureUid) {
 /// hive as 0 and grows it (decomp Entomancer.cs:59-63). A power at 0 is
 /// removed, so amount 0 here means absent.
 fn entomancer_spit_strength(state: &CombatState, uid: CreatureUid) -> i32 {
-    let hive = entomancer_personal_hive_amount(state, uid);
-    if state.game_version >= sts2_core::GameVersion::V0_111_0 && hive == 0 {
+    entomancer_spit_strength_for_hive(
+        state.game_version,
+        entomancer_personal_hive_amount(state, uid),
+    )
+}
+
+/// [`entomancer_spit_strength`] for a hive of `hive`: a spit that grants 1
+/// also grows the hive by 1 (`entomancer_pheromone_spit_effect`).
+pub(crate) fn entomancer_spit_strength_for_hive(version: sts2_core::GameVersion, hive: i32) -> i32 {
+    if version >= sts2_core::GameVersion::V0_111_0 && hive == 0 {
         return 2;
     }
     if hive < 3 {
@@ -953,7 +980,7 @@ pub(crate) fn set_buff_intent_amount(
 /// Read the `PersonalHive` counter on `owner` (0 if absent). Shared by
 /// PHEROMONE_SPIT (ramp gate) and the AfterDamageReceived hook (Dazed
 /// count).
-fn entomancer_personal_hive_amount(state: &CombatState, owner: CreatureUid) -> i32 {
+pub(crate) fn entomancer_personal_hive_amount(state: &CombatState, owner: CreatureUid) -> i32 {
     state
         .creatures
         .iter()
@@ -2476,6 +2503,78 @@ pub fn create_infested_prism_ai(_slot: InfestedPrismSlot) -> MonsterAi {
     MonsterAi::new(s, "JAB")
 }
 
+/// v0.113.0 `InfestedPrism` — JAB → JAB_2 → WHIRLWIND → PULSATE → JAB
+/// (decomp `v0.113.0/…/InfestedPrism.cs:54-69`). Radiate is gone (its slot is
+/// a second Jab state), and Pulsate trades its 20/22 Block for 1 Vulnerable
+/// on the player (intent Attack + Debuff + Buff). The A9 values come from the
+/// shared tables (`JAB`, `WHIRLWIND`, `PULSATE` rows) plus
+/// `V0113_ATTACK_VALUES` (`JAB_2`).
+#[must_use]
+pub fn create_infested_prism_v0113_ai() -> MonsterAi {
+    static INSTALL_VITAL_SPARK: std::sync::Once = std::sync::Once::new();
+    INSTALL_VITAL_SPARK
+        .call_once(sts2_core::monster_power_effects::install_vital_spark_power_handlers);
+    let mut s = BTreeMap::new();
+    s.insert(
+        "JAB",
+        mv("JAB", smallvec![Intent::Attack { damage: 15 }], "JAB_2"),
+    );
+    s.insert(
+        "JAB_2",
+        mv(
+            "JAB_2",
+            smallvec![Intent::Attack { damage: 15 }],
+            "WHIRLWIND",
+        ),
+    );
+    s.insert(
+        "WHIRLWIND",
+        mv(
+            "WHIRLWIND",
+            smallvec![Intent::MultiAttack { damage: 5, hits: 3 }],
+            "PULSATE",
+        ),
+    );
+    s.insert(
+        "PULSATE",
+        MonsterState::Move(MoveState {
+            id: "PULSATE",
+            effect: infested_prism_pulsate_v0113_effect,
+            intents: smallvec![
+                Intent::Attack { damage: 8 },
+                Intent::Debuff {
+                    kind: PowerKind::Vulnerable,
+                    amount: 1,
+                },
+                Intent::Buff {
+                    kind: PowerKind::VitalSpark,
+                    amount: 2,
+                },
+            ],
+            follow_up: Some("JAB"),
+            must_perform_once: false,
+        }),
+    );
+    MonsterAi::new(s, "JAB")
+}
+
+/// v0.113.0 `InfestedPrism.PulsateMove` (decomp `InfestedPrism.cs:93-100`):
+/// the Attack (primary intent, `perform_intent`), then
+/// `PowerCmd.Apply<VulnerablePower>(targets, 1)`, then VitalSpark on self.
+fn infested_prism_pulsate_v0113_effect(state: &mut CombatState, owner: CreatureUid) {
+    apply_power_to_player_via_legacy_surface(state, PowerKind::Vulnerable, 1);
+    let amount = crate::ascension_scaling::scaled_buff(
+        state.ascension,
+        state.game_version,
+        sts2_core::MonsterKind::InfestedPrism,
+        "PULSATE",
+        PowerKind::VitalSpark,
+        2,
+    );
+    apply_power_to_creature(state, owner, PowerKind::VitalSpark, amount);
+    sts2_core::monster_power_effects::vital_spark_sync_tainted_amounts(state, owner);
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Boss encounters
 // ────────────────────────────────────────────────────────────────────────────
@@ -2847,6 +2946,60 @@ pub fn create_rocket_ai() -> MonsterAi {
         ),
     );
     MonsterAi::new(s, "TARGETING_RETICLE_MOVE")
+}
+
+/// v0.113 `Rocket`: the same five-state cycle with renamed move ids
+/// (`Rocket.cs:81-94` v0.113.0): TARGETING_RETICLE -> CALCULATING,
+/// PRECISION_BEAM -> PRECISE_SMASH, LASER -> ROCKET_CLAW. The extra
+/// `PRECISE_SMASH_MOVE_2` state is listed but never linked, so the cycle and
+/// damages are unchanged (Dread plating/+5 is `mode`, not ported).
+pub fn create_rocket_v0113_ai() -> MonsterAi {
+    let mut s = BTreeMap::new();
+    s.insert(
+        "CALCULATING_MOVE",
+        mv(
+            "CALCULATING_MOVE",
+            smallvec![Intent::Attack { damage: 3 }],
+            "PRECISE_SMASH_MOVE",
+        ),
+    );
+    s.insert(
+        "PRECISE_SMASH_MOVE",
+        mv(
+            "PRECISE_SMASH_MOVE",
+            smallvec![Intent::Attack { damage: 18 }],
+            "CHARGE_UP_MOVE",
+        ),
+    );
+    s.insert(
+        "CHARGE_UP_MOVE",
+        mv_eff(
+            "CHARGE_UP_MOVE",
+            smallvec![Intent::Buff {
+                kind: PowerKind::Strength,
+                amount: 2
+            }],
+            "ROCKET_CLAW_MOVE",
+            rocket_charge_up_effect,
+        ),
+    );
+    s.insert(
+        "ROCKET_CLAW_MOVE",
+        mv(
+            "ROCKET_CLAW_MOVE",
+            smallvec![Intent::Attack { damage: 31 }],
+            "RECHARGE_MOVE",
+        ),
+    );
+    s.insert(
+        "RECHARGE_MOVE",
+        mv(
+            "RECHARGE_MOVE",
+            smallvec![Intent::Sleep],
+            "CALCULATING_MOVE",
+        ),
+    );
+    MonsterAi::new(s, "CALCULATING_MOVE")
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -4272,6 +4425,33 @@ mod tests {
             .max_hp
     }
 
+    /// v0.113.0 `ToughEgg.HatchMove` sheds every power except Minion and
+    /// `ImpaledPower`.
+    #[test]
+    fn tough_egg_hatch_keeps_impaled() {
+        let mut state = CombatState {
+            game_version: sts2_core::GameVersion::V0_113_0,
+            run_rng: sts2_core::run_rng_set::RunRngSet::new(7),
+            ..CombatState::default()
+        };
+        let egg = state.spawn_enemy(MonsterKind::ToughEgg);
+        state.set_creature_ai(egg, create_tough_egg_ai());
+        apply_power_to_creature(&mut state, egg, PowerKind::Impaled, 1);
+        apply_power_to_creature(&mut state, egg, PowerKind::Vulnerable, 2);
+        tough_egg_hatch_effect(&mut state, egg);
+        let kinds: Vec<PowerKind> = state
+            .creatures
+            .iter()
+            .find(|c| c.id == egg.0)
+            .expect("egg alive")
+            .powers
+            .iter()
+            .filter_map(|pu| state.powers.iter().find(|p| p.id == pu.0).map(|p| p.kind))
+            .collect();
+        assert!(kinds.contains(&PowerKind::Impaled), "{kinds:?}");
+        assert!(!kinds.contains(&PowerKind::Vulnerable), "{kinds:?}");
+    }
+
     /// v0.107.1 `ToughEgg.cs:172`: `NextInt(HatchlingMinHp, HatchlingMaxHp)`
     /// is max-exclusive, so the hatchling never rolls 22.
     #[test]
@@ -5585,7 +5765,7 @@ mod tests {
         state.cards.push(Card {
             uid: CardUid(card_uid),
             card_id: CardId::Expose,
-            cost: 0,
+            cost: sts2_core::CardEnergyCost::new(0),
             card_type: CardType::Skill,
             target_type: TargetType::Enemy,
             upgraded: false,
@@ -5886,6 +6066,55 @@ mod tests {
             .and_then(|c| c.ai.as_ref())
             .map(sts2_core::MonsterAi::current_state_id)
             .unwrap()
+    }
+
+    /// Slumber ticks at its own listener position in the enemy turn-end walk
+    /// (SlumberPower.cs `AfterSideTurnEnd`). The beetle got Slumber at spawn,
+    /// before the player's Demise, so on its last sleeping turn Slumber
+    /// reaches 0 and `WakeUpMove` sheds the Plating BEFORE Demise's
+    /// unblockable damage lands. Rust ticked Slumber after the walk, so the
+    /// Demise hit woke it through the damage path and kept the Plating
+    /// (Necrobinder loadout v0.107.1 seed 7405).
+    #[test]
+    fn slumber_ticks_before_a_later_demise_and_sheds_the_plating() {
+        use sts2_core::card_effects::apply_power_to_creature;
+        use sts2_core::hooks::{dispatch_after_turn_end, TurnSideCtx};
+        use sts2_core::Side;
+
+        let mut state = CombatState::default();
+        state.player.current_hp = 70;
+        state.player.max_hp = 70;
+        let _ = state.init_player_creature();
+        let uid = spawn_real_slumbering_beetle(&mut state);
+        let slumber = state
+            .powers
+            .iter_mut()
+            .find(|p| p.kind == PowerKind::Slumber)
+            .unwrap();
+        slumber.amount = 1;
+        apply_power_to_creature(&mut state, uid, PowerKind::Demise, 9);
+        let hp0 = state
+            .creatures
+            .iter()
+            .find(|c| c.id == uid.0)
+            .unwrap()
+            .current_hp;
+
+        dispatch_after_turn_end(&mut state, &TurnSideCtx { side: Side::Enemy });
+
+        assert!(!state.powers.iter().any(|p| p.kind == PowerKind::Slumber));
+        assert!(
+            !state.powers.iter().any(|p| p.kind == PowerKind::Plating),
+            "the turn-end wake sheds the Plating before Demise hits",
+        );
+        let hp1 = state
+            .creatures
+            .iter()
+            .find(|c| c.id == uid.0)
+            .unwrap()
+            .current_hp;
+        assert_eq!(hp0 - hp1, 9, "Demise still hits");
+        assert_eq!(beetle_move(&state, uid), "ROLL_OUT_MOVE");
     }
 
     /// **End-to-end SlumberingBeetle wake (turn-end path)** (`sts2-rs-ybtmu`):

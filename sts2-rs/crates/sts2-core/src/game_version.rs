@@ -38,11 +38,19 @@ pub enum GameVersion {
     /// v0.111.0 — the Steam `public-beta` build (commit `41cef1ea`).
     #[serde(rename = "v0.111.0")]
     V0_111_0,
+    /// v0.113.0 — the Steam `public-beta` build (commit `16ac0fe3`). Same
+    /// seeding as v0.111.0; content differences branch on `>= V0_113_0`.
+    #[serde(rename = "v0.113.0")]
+    V0_113_0,
 }
 
 impl GameVersion {
     /// Every supported build, oldest first.
-    pub const ALL: [GameVersion; 2] = [GameVersion::V0_107_1, GameVersion::V0_111_0];
+    pub const ALL: [GameVersion; 3] = [
+        GameVersion::V0_107_1,
+        GameVersion::V0_111_0,
+        GameVersion::V0_113_0,
+    ];
 
     /// The canonical `vX.Y.Z` spelling (what [`fmt::Display`] prints).
     #[must_use]
@@ -50,8 +58,18 @@ impl GameVersion {
         match self {
             GameVersion::V0_107_1 => "v0.107.1",
             GameVersion::V0_111_0 => "v0.111.0",
+            GameVersion::V0_113_0 => "v0.113.0",
         }
     }
+
+    /// The build a NEW run gets when the caller names none: a workbench
+    /// start request, the launcher's first pick. Moves when a newer build
+    /// becomes the one worth playing (2026-11-14: v0.111.0).
+    ///
+    /// Not [`GameVersion::default()`], which is v0.107.1 and never moves: that
+    /// is what a stored artefact with no `game_version` IS, and what every
+    /// golden, digest and fixture predating this enum was recorded on.
+    pub const NEW_RUN_DEFAULT: GameVersion = GameVersion::V0_111_0;
 
     /// Whether this is the default build ([`GameVersion::V0_107_1`]).
     ///
@@ -94,7 +112,9 @@ impl GameVersion {
             GameVersion::V0_107_1 => {
                 u64::from(crate::dotnet_rng::deterministic_hash_code(text) as u32)
             }
-            GameVersion::V0_111_0 => xxhash_rust::xxh64::xxh64(text.as_bytes(), 0),
+            GameVersion::V0_111_0 | GameVersion::V0_113_0 => {
+                xxhash_rust::xxh64::xxh64(text.as_bytes(), 0)
+            }
         }
     }
 
@@ -118,7 +138,7 @@ impl GameVersion {
     pub fn run_seed_hash(self, seed: &str) -> u64 {
         match self {
             GameVersion::V0_107_1 => self.seed_hash(seed),
-            GameVersion::V0_111_0 => match seed.strip_prefix("old") {
+            GameVersion::V0_111_0 | GameVersion::V0_113_0 => match seed.strip_prefix("old") {
                 Some(rest) => u64::from(crate::dotnet_rng::deterministic_hash_code(rest) as u32),
                 None => self.seed_hash(seed),
             },
@@ -150,7 +170,7 @@ impl GameVersion {
     pub fn seed_add(self, a: u64, b: u64) -> u64 {
         match self {
             GameVersion::V0_107_1 => u64::from((a as u32).wrapping_add(b as u32)),
-            GameVersion::V0_111_0 => a.wrapping_add(b),
+            GameVersion::V0_111_0 | GameVersion::V0_113_0 => a.wrapping_add(b),
         }
     }
 
@@ -185,7 +205,7 @@ impl GameVersion {
     pub fn normalize_seed(self, seed: u64) -> u64 {
         match self {
             GameVersion::V0_107_1 => u64::from(seed as u32),
-            GameVersion::V0_111_0 => seed,
+            GameVersion::V0_111_0 | GameVersion::V0_113_0 => seed,
         }
     }
 }
@@ -215,6 +235,7 @@ impl FromStr for GameVersion {
         match bare {
             "0.107.1" => Ok(GameVersion::V0_107_1),
             "0.111.0" => Ok(GameVersion::V0_111_0),
+            "0.113.0" => Ok(GameVersion::V0_113_0),
             _ => Err(ParseGameVersionError(s.to_string())),
         }
     }

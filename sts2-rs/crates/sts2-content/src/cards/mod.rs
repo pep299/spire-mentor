@@ -16,6 +16,7 @@
 //! table only; nothing reads it.
 
 pub mod dispatch;
+pub mod draw_then;
 // What a card face shows for a value the card only knows at play time.
 pub mod preview;
 pub mod types;
@@ -57,6 +58,10 @@ pub mod necrobinder;
 //   installer: regent::install_pool
 pub mod regent;
 
+// v0.113.0 The Fool.
+//   installer: fool::install_pool
+pub mod fool;
+
 // Generated POD spec modules — bead sts2-rs-pmf (P6-1b).
 // Compiled to catch CardSpec-shape regressions; not re-exported.
 pub(crate) mod card_upgrades_generated;
@@ -74,3 +79,6 @@ pub mod v0111;
 // The C# pools in `GenerateAllCards()` order and the co-op generation pools
 // derived from them (GH #991).
 pub mod pool_order;
+
+/// The Fool's card pool seam (v0.113.0); see the module doc.
+pub mod fool_pool;

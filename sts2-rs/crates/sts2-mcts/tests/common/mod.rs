@@ -20,20 +20,7 @@ use sts2_core::{
 /// 一時コスト導入前に固定した探索木の表記を保つ。
 /// コスト情報が存在する場合は文字列に含め、比較対象から除外しない。
 pub fn legacy_edge_text(edge: &sts2_mcts::EdgeAction) -> String {
-    match edge {
-        sts2_mcts::EdgeAction::PlayCard {
-            card_id,
-            upgraded,
-            cost,
-            local_cost: None,
-            free,
-            affliction,
-            target,
-        } => format!(
-            "PlayCard {{ card_id: {card_id:?}, upgraded: {upgraded}, cost: {cost}, free: {free}, affliction: {affliction:?}, target: {target:?} }}"
-        ),
-        _ => format!("{edge:?}"),
-    }
+    format!("{edge:?}")
 }
 
 /// Same as [`build_handful`] but with full control over the cultist's
@@ -87,10 +74,9 @@ pub fn build_handful(
             _ => CardType::Skill,
         };
         cards_arena.push(Card {
-            local_energy_cost: None,
             uid,
             card_id,
-            cost,
+            cost: sts2_core::CardEnergyCost::new(cost),
             card_type,
             target_type,
             upgraded: false,
@@ -130,12 +116,13 @@ pub fn build_handful(
         creature_uid: None,
         pet_uid: None,
         shivs_played_this_turn: 0,
-        cards_played_this_turn: [0; 5],
+        cards_played_this_turn: [0; 6],
         powered_hits_this_turn: 0,
         powered_hits_by_target_this_turn: smallvec::SmallVec::new(),
         powered_hits_at_card_play_start: 0,
         attack_command_suppressed_this_play: false,
         vigor_latch_card: None,
+        fool: None,
         generated_cards_this_combat: 0,
         skills_played_this_turn: 0,
         card_plays_started_this_turn: 0,
@@ -191,7 +178,7 @@ pub fn build_handful(
         pending_snecko_cost_randomize: false,
         pending_cluster_resume: None,
         pending_collect_resume: None,
-        pending_play_phase_tail: false,
+        pending_play_phase_tail: None,
         pending_hand_draw_resume: None,
         pending_relic_hand_draw_resume: None,
         pending_wlp_retain_resume: false,
@@ -221,6 +208,7 @@ pub fn build_handful(
         is_elite: false,
         is_boss: false,
         act_index: 1,
+        total_floor: 0,
         active_attack: None,
         energy_wasted: 0,
         cards_drawn: 0,
@@ -256,7 +244,7 @@ pub fn build_vertical_slice_hp(seed: u64, player_hp: i32, cultist_hp: i32) -> Co
         cards_arena.push(Card {
             uid,
             card_id: spec.id,
-            cost: spec.cost,
+            cost: sts2_core::CardEnergyCost::new(spec.cost),
             card_type: spec.card_type,
             target_type: spec.target_type,
             upgraded: false,
@@ -289,12 +277,13 @@ pub fn build_vertical_slice_hp(seed: u64, player_hp: i32, cultist_hp: i32) -> Co
         creature_uid: None,
         pet_uid: None,
         shivs_played_this_turn: 0,
-        cards_played_this_turn: [0; 5],
+        cards_played_this_turn: [0; 6],
         powered_hits_this_turn: 0,
         powered_hits_by_target_this_turn: smallvec::SmallVec::new(),
         powered_hits_at_card_play_start: 0,
         attack_command_suppressed_this_play: false,
         vigor_latch_card: None,
+        fool: None,
         generated_cards_this_combat: 0,
         skills_played_this_turn: 0,
         card_plays_started_this_turn: 0,
@@ -350,7 +339,7 @@ pub fn build_vertical_slice_hp(seed: u64, player_hp: i32, cultist_hp: i32) -> Co
         pending_snecko_cost_randomize: false,
         pending_cluster_resume: None,
         pending_collect_resume: None,
-        pending_play_phase_tail: false,
+        pending_play_phase_tail: None,
         pending_hand_draw_resume: None,
         pending_relic_hand_draw_resume: None,
         pending_wlp_retain_resume: false,
@@ -380,6 +369,7 @@ pub fn build_vertical_slice_hp(seed: u64, player_hp: i32, cultist_hp: i32) -> Co
         is_elite: false,
         is_boss: false,
         act_index: 1,
+        total_floor: 0,
         active_attack: None,
         energy_wasted: 0,
         cards_drawn: 0,
@@ -436,7 +426,7 @@ pub fn new_cards(state: &mut CombatState, ids: &[CardId]) -> Vec<CardUid> {
         cards.push(Card {
             uid,
             card_id: id,
-            cost: spec.cost,
+            cost: sts2_core::CardEnergyCost::new(spec.cost),
             card_type: spec.card_type,
             target_type: spec.target_type,
             base_damage: spec.base_damage,

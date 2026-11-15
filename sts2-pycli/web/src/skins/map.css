@@ -274,6 +274,11 @@
 @media (max-width: 760px) {
   .gsm-parch-body { padding-left: 16px; padding-right: 16px; }
 }
+/* A phone held upright: the act's seven columns have to fit the paper
+   (MapView's `colFit`), so the gutters give them every px they can. */
+@media (max-width: 480px) {
+  .gsm-parch-body { padding-left: 4px; padding-right: 4px; }
+}
 /* Phone landscape: the scene's 480px floor is taller than the whole screen,
    which put the Proceed banner — pinned to the scene's bottom — below the
    fold of the outer scroller. The sheet is the screen; let it be short. */
@@ -464,3 +469,10 @@
 /* text on parchment (empty state, reconstructed rows) */
 .gsm-on-parch { color: var(--gsm-ink); }
 .gsm-muted-parch { color: var(--gsm-ink-soft); }
+
+/* The AI's pick on the map (MapView, advice/marks.ts): a breathing gold ring. */
+.gsm-advice > circle:first-child { filter: var(--mark-best); }
+.gsm-advice--good > circle:first-child { filter: var(--mark-good); }
+.gsm-advice--best > circle:first-child { animation: gsm-advice-breathe 1.8s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+@keyframes gsm-advice-breathe { 50% { transform: scale(1.08); opacity: .75; } }
+@media (prefers-reduced-motion: reduce) { .gsm-advice--best > circle:first-child { animation: none; } }

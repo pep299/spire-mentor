@@ -221,6 +221,10 @@ pub fn calculated_value(
             crate::cards::defect::helix_drill::preview_helix_drill,
             ValueKind::Count,
         ),
+        CardId::MyShinies => (
+            crate::cards::colorless::my_shinies::preview_my_shinies,
+            ValueKind::Count,
+        ),
         CardId::KnifeTrap => (
             crate::cards::silent::knife_trap::preview_knife_trap,
             ValueKind::Count,
@@ -277,14 +281,17 @@ pub fn calculated_value(
     };
     let raw = f(state, card, target);
     Some(match kind {
-        ValueKind::Damage => modified_damage(state, raw, CreatureRef::Player, target, card.uid),
+        ValueKind::Damage => modified_damage(state, raw, CreatureRef::Player, target),
         // No living Osty means no hit at all, so the face shows nothing to fold.
         ValueKind::OstyDamage => match sts2_core::card_effects::osty_dealer_ref(state) {
-            Some(dealer) => modified_damage(state, raw, dealer, target, card.uid),
+            Some(dealer) => modified_damage(state, raw, dealer, target),
             None => raw.max(0),
         },
         ValueKind::Block => sts2_core::hooks::modify_block(
-            state,
+            // A face preview has no `cardPlay`: Stretch answers it unspent.
+            sts2_core::fool::stretch_preview_state(state, card.uid)
+                .as_ref()
+                .unwrap_or(state),
             raw,
             &sts2_core::hooks::BlockCtx {
                 target: CreatureRef::Player,
@@ -319,10 +326,8 @@ fn modified_damage(
     raw: i32,
     dealer: CreatureRef,
     target: Option<CreatureUid>,
-    card_source: sts2_core::CardUid,
 ) -> i32 {
     let ctx = sts2_core::hooks::DamageCtx {
-        card_source: Some(card_source),
         dealer,
         target: target.map_or_else(|| absent_creature(state), CreatureRef::Enemy),
         props: sts2_core::hooks::ValueProps::MOVE,

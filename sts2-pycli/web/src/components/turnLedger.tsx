@@ -1,7 +1,7 @@
 import type { CombatLogRow } from "../api";
 import { readableRows } from "../combatlog";
 import { LogLine } from "./logLine";
-import type { DetailMode } from "./turnLedgerState";
+import { keptInNet, type DetailMode } from "./turnLedgerState";
 
 /**
  * Shared turn-ledger pieces for the two history logs (LiveLog / EventLog).
@@ -12,7 +12,8 @@ import type { DetailMode } from "./turnLedgerState";
  * own colouring). A `net / full` toggle (persisted) decides how much of the
  * tape is inlined: `net` keeps only what the enemies did — the turn chips already
  * summarize the player's side, and the step label says what was played —
- * while `full` shows every row.
+ * plus anything an AUTO-played card did (the step label never names those:
+ * Stampede's attack resolves under "End turn"), while `full` shows every row.
  */
 
 export function DetailToggle({ mode, onChange }: {
@@ -81,8 +82,8 @@ export function ColoredDetail({ line }: { line: string }) {
  * The detail block under one history step.
  *
  * With a combat-log slice: the coloured sentences (net mode keeps only the
- * enemy turn's rows — the red-guttered "what happened to you" — plus any
- * defeat lines from the diff details). Without one: the diff detail lines,
+ * enemy turn's rows — the red-guttered "what happened to you" — and the rows
+ * of any auto-played card, plus any defeat lines from the diff details). Without one: the diff detail lines,
  * coloured. `dim` de-emphasizes steps ahead of the current position.
  */
 export function StepEvents({ rows: allRows, details, mode, dim }: {
@@ -119,7 +120,12 @@ export function StepEvents({ rows: allRows, details, mode, dim }: {
       </>
     );
   }
-  const kept = mode === "full" ? rows : rows.filter((r) => r.side === "enemy");
+  // `net` keeps the enemy's turn, every auto-played card's rows and the cards
+  // a play moved: the step label says what the PLAYER played, never what
+  // Stampede / Havoc / Mayhem played for them (GH #1155), nor which card Brand
+  // exhausted or Survivor discarded (GH #1015), so dropping those would hide
+  // what happened.
+  const kept = mode === "full" ? rows : rows.filter(keptInNet);
   const deaths = details.filter((d) => d.includes("☠"));
   return (
     <>

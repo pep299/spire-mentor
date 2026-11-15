@@ -1,0 +1,7 @@
+{
+ "action": "select_cards",
+ "args": {
+  "indices": "2"
+ },
+ "policy": "combat_mcts"
+}

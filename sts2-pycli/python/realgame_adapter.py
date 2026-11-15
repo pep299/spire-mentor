@@ -136,7 +136,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from sts2_client import DEFAULT_GAME_VERSION, SUPPORTED_GAME_VERSIONS, normalize_game_version
+from sts2_client import LEGACY_GAME_VERSION, SUPPORTED_GAME_VERSIONS, normalize_game_version
 
 logger = logging.getLogger(__name__)
 
@@ -162,7 +162,7 @@ def envelope_game_version(msg: dict[str, Any]) -> str:
 
     Read from the envelope's ``game_version`` (``SimStateExtractor.ApplyEnvelope``,
     PROTOCOL.md section 1). Absent, ``None`` or blank -- every mod build before
-    the field -- means :data:`sts2_client.DEFAULT_GAME_VERSION` (v0.107.1), so an
+    the field -- means :data:`sts2_client.LEGACY_GAME_VERSION` (v0.107.1), so an
     old mod gets exactly the engine it always got.
 
     Raises:
@@ -171,7 +171,7 @@ def envelope_game_version(msg: dict[str, Any]) -> str:
     """
     raw = msg.get("game_version")
     if raw is None or (isinstance(raw, str) and not raw.strip()):
-        return DEFAULT_GAME_VERSION
+        return LEGACY_GAME_VERSION
     if not isinstance(raw, str):
         raise UnsupportedGameVersionError(raw)
     try:
@@ -207,6 +207,43 @@ _OSTY_PET_ID = "OSTY"
 #: ``run_state.character`` value the headless twin gates its "no Osty" sentinel
 #: on (RunSimulator.cs:3988-3990).
 _NECROBINDER_CHARACTER_ID = "NECROBINDER"
+
+
+class UnsupportedCharacterError(ValueError):
+    """A board with a character the engine does not simulate yet (v0.113.0's
+    The Fool). ``str(exc)`` is the player-facing HUD note; ``raw`` the id."""
+
+    def __init__(self, raw: str) -> None:
+        self.raw = raw
+        name = _UNSUPPORTED_CHARACTER_NAMES[raw]
+        super().__init__(
+            f"{name} support is coming soon to Spire Mentor. Until then there is no advice "
+            f"for runs with this character (supported: {', '.join(CHARACTER_ID_TO_DISPLAY.values())})."
+        )
+
+
+#: Display names of characters the engine does not simulate yet.
+_UNSUPPORTED_CHARACTER_NAMES = {"FOOL": "The Fool"}
+
+
+def check_supported_characters(msg: dict[str, Any]) -> None:
+    """Refuse a board whose own character or any ally's is one the engine
+    knows it cannot simulate (`_UNSUPPORTED_CHARACTER_NAMES`).
+
+    Only that named set is refused. Any other id outside
+    ``CHARACTER_ID_TO_DISPLAY`` (a modded or renamed character) passes, as
+    do absent / blank ids: the adapter then infers the character from card
+    ids, as it did before the gate existed.
+
+    Raises:
+        UnsupportedCharacterError: the first known-unsupported character id.
+    """
+    run_state = msg.get("run_state")
+    ids = [run_state.get("character") if isinstance(run_state, dict) else None]
+    ids += [a.get("character") for a in (msg.get("allies") or []) if isinstance(a, dict)]
+    for cid in ids:
+        if isinstance(cid, str) and cid.strip().upper() in _UNSUPPORTED_CHARACTER_NAMES:
+            raise UnsupportedCharacterError(cid.strip().upper())
 
 
 def character_display_name(character_id: str | None) -> str | None:
@@ -546,6 +583,13 @@ def _translate_enemy(enemy: dict[str, Any], index: int) -> dict[str, Any]:
     curse_counter = enemy.get("curse_of_knowledge_counter")
     if isinstance(curse_counter, int) and not isinstance(curse_counter, bool):
         out["curse_of_knowledge_counter"] = curse_counter
+    # The move machine's state (#1181, ``AppendMoveMachineState`` in both C#
+    # producers): ``log`` (``StateLog`` ids), ``performed_first_move``,
+    # ``performed``. The engine restores the AI's move log from it, which the
+    # repeat rules and cooldowns read. Forwarded verbatim.
+    ai = enemy.get("ai")
+    if isinstance(ai, dict):
+        out["ai"] = ai
     # C# ``Creature.CombatId`` (newer mods): what a combat-log row names its
     # target by, so a co-op replay can find it (``coop_replay``).
     combat_id = enemy.get("combat_id")
@@ -757,6 +801,12 @@ def to_headless_combat_play(state: dict[str, Any]) -> dict[str, Any]:
     act = state.get("act")
     if isinstance(act, int) and not isinstance(act, bool):
         out["act"] = act
+    # The run-wide floor (the bridge's top-level ``floor``, C#
+    # ``RunState.TotalFloor``): ``translate`` forwards it as the wire's
+    # ``total_floor``, which v0.113.0's TheTower scales with (GH #1337).
+    floor = state.get("floor")
+    if isinstance(floor, int) and not isinstance(floor, bool):
+        out["context"]["total_floor"] = floor
 
     # Co-op teammates (PROTOCOL.md ``allies``), in the mod's order: an
     # ``AnyAlly`` card lands on the first living one, in the engine and in
@@ -894,7 +944,7 @@ def to_headless_combat_play(state: dict[str, Any]) -> dict[str, Any]:
     # build. Emitted only for a non-default build, so a v0.107.1 board (and any
     # board from a mod predating the field) yields the dict it always did.
     game_version = envelope_game_version(state)
-    if game_version != DEFAULT_GAME_VERSION:
+    if game_version != LEGACY_GAME_VERSION:
         out["game_version"] = game_version
 
     return out
@@ -1084,7 +1134,9 @@ def _reset_wire_unlock_latch() -> None:
 __all__ = [
     "CHARACTER_ID_TO_DISPLAY",
     "LIVE_LOCKED_EPOCHS",
+    "UnsupportedCharacterError",
     "character_display_name",
+    "check_supported_characters",
     "install_live_unlock_state",
     "install_unlock_state_from_wire",
     "locked_epochs_from_wire",

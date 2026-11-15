@@ -82,7 +82,7 @@ LOG = ROOT / "logs" / "import-game.log"
 # (sts2-rs/crates/sts2-workbench/data/game/<ver>/) — GH #801 — plus its display
 # tables: sts2-pycli/web/public/<ver>/{sfx_map,card_text}.json and
 # sts2-pycli/python/workbench/data/<ver>/card_db.json (GH #877).
-SUPPORTED_VERSIONS = ("v0.107.1", "v0.111.0")
+SUPPORTED_VERSIONS = ("v0.107.1", "v0.111.0", "v0.113.0")
 DEFAULT_VERSION = SUPPORTED_VERSIONS[0]
 
 TIERS = ["engine", "oracle", "workbench", "sound"]
@@ -101,10 +101,12 @@ STEAM_DEPOT = "2868841"
 DEPOT_MANIFESTS = {
     "v0.107.1": "4733892780027453168",
     "v0.111.0": "5661886308395090154",
+    "v0.113.0": "5756684179086186957",
 }
 DEPOT_BRANCHES = {
     "v0.107.1": "public",
     "v0.111.0": "public-beta",
+    "v0.113.0": "public-beta",
 }
 # What the import reads from a build; the rest (the ~0.9 GB executable) is skipped.
 DOWNLOAD_FILES = [
@@ -453,6 +455,22 @@ def copy_new_art(extracted: Path, shared: Path, overlay: Path) -> int:
     return copied
 
 
+def write_new_creature_scales(fresh: Path, shared: Path, out: Path) -> int:
+    """Write to `out` the `fresh` creature-scale rows whose slug `shared` lacks.
+
+    -> the number written. `fresh` is `extract_creature_bounds`' table for a
+    later build; `shared` is the art tree's creature_scales.json (the default
+    build's, with its hand-overridden scales). A creature both carry keeps the
+    shared row, like the shared art itself (`copy_new_art`).
+    """
+    rows = json.loads(fresh.read_text(encoding="utf-8"))
+    have = json.loads(shared.read_text(encoding="utf-8")) if shared.is_file() else {}
+    new = {k: rows[k] for k in sorted(rows) if k not in have}
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(new, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return len(new)
+
+
 def fmod_env(build: Path) -> dict[str, str]:
     """Environment for the sound step: the game's DLLs that `stage` put beside
     the staged pck, unless the user already pointed FMOD_LIB_DIR elsewhere.
@@ -578,15 +596,38 @@ def build_steps(build: Path, version: str) -> list[Step]:
 
     overlay = images / version
 
+    default_pck = BINARIES / DEFAULT_VERSION / "SlayTheSpire2.pck"
+
     def art_overlay():
         # images/<version>/ is what a <version> run's art resolver tries before
         # the shared tree (sts2-workbench assets.rs, workbench/assets.py), and
-        # the bundle step lists it in that build's art manifest. With no shared
-        # tree (only this build was imported) the whole atlas set lands here.
+        # the bundle step lists it in that build's art manifest. Every art
+        # extractor runs into a scratch tree and the files the shared tree
+        # lacks are copied over: atlases + sketch card art, card-frame tints
+        # and energy icons, rooms / events / HUD, and the creature rigs with the
+        # portraits rendered from them. With no shared tree (only this build
+        # was imported) the whole set lands here.
         with tempfile.TemporaryDirectory() as tmp:
             uv_python(["scripts/extract_images.py", pck, f"extracted/{version}", tmp], WIKI, wiki_env)
+            uv_python(["-m", "scripts.extract_card_template", pck, tmp], WIKI, wiki_env)
+            uv_python(["-m", "scripts.extract_rooms", pck, tmp], WIKI, wiki_env)
+            # Only the rigs this build ADDED: the shared tree's rigs keep their
+            # own slugs and atlas pages, and a file-level diff against them
+            # would pick up alias folders and stray pages (extract_rig.new_rigs).
+            rig_args = ["--new-since", str(default_pck)] if default_pck.is_file() else []
+            uv_python(["-m", "scripts.extract_rig", pck, "--all", tmp, *rig_args], WIKI, wiki_env)
+            for rigs in ("monster_rigs", "character_rigs"):
+                (Path(tmp) / rigs).mkdir(exist_ok=True)
+            uv_python(["-m", "scripts.render_portraits", tmp], WIKI, wiki_env)
             n = copy_new_art(Path(tmp), images, overlay)
-        log(f"art overlay: {n} files the shared art tree lacks -> {overlay.relative_to(ROOT)}/")
+            # The new creatures' authored scale + %Bounds box; the bundle step
+            # merges this over the shared creature_scales.json for this build.
+            bounds = Path(tmp) / "creature_bounds.json"
+            uv_python(["-m", "scripts.extract_creature_bounds", pck, str(bounds)], WIKI, wiki_env)
+            n_scales = write_new_creature_scales(bounds, images / "creature_scales.json",
+                                                 overlay / "creature_scales.json")
+        log(f"art overlay: {n} files the shared art tree lacks, {n_scales} new creature scales "
+            f"-> {overlay.relative_to(ROOT)}/")
 
     def scene_art():
         # Rooms, scenes, map, events, HUD chrome, boss icons, orbs, ancients.
@@ -611,8 +652,14 @@ def build_steps(build: Path, version: str) -> list[Step]:
         # what the browser fetches from /assets/vfx/; creature_scales.json
         # (hand-tuned scales + the authored %Bounds boxes) is the table the
         # Python workbench and the bundle build read from the art root.
+        # The art tree is shared by every build and describes the DEFAULT one,
+        # so its table comes from the default build's data whichever build is
+        # being imported (importing v0.113.0 into a fresh worktree once
+        # rewrote it with v0.113.0's bindings).
         (images / "vfx").mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(wiki_data / "vfx_bindings.json", images / "vfx/vfx_bindings.json")
+        default_bindings = WIKI / "data" / DEFAULT_VERSION / "vfx_bindings.json"
+        shutil.copyfile(default_bindings if default_bindings.is_file() else wiki_data / "vfx_bindings.json",
+                        images / "vfx/vfx_bindings.json")
         if not (images / "creature_scales.json").is_file():
             shutil.copyfile(RS / "crates/sts2-workbench/data/game/creature_scales.json", images / "creature_scales.json")
         log("copied vfx_bindings.json and creature_scales.json into the art tree")
@@ -642,10 +689,28 @@ def build_steps(build: Path, version: str) -> list[Step]:
     def portraits():
         uv_python(["-m", "scripts.render_portraits", "site/public/images"], WIKI, wiki_env)
 
+    # A later build's sound: its render is encoded beside the shared tree and
+    # only the events the shared tree lacks are copied in (the Fool's voice,
+    # the new monsters). The shared tree keeps the default build's renders, the
+    # way the art keeps the default build's images. This file marks it done.
+    sfx_merged = extracted / "audio" / ".merged_into_shared"
+
     def sfx():
         uv_python(["-m", "scripts.extract_sfx", pck, f"extracted/{version}", "--render"], WIKI,
                   {**wiki_env, **fmod_env(build)})
-        uv_python(["-m", "scripts.encode_sfx", f"extracted/{version}/audio", "site/public/audio"], WIKI, wiki_env)
+        if is_default:
+            uv_python(["-m", "scripts.encode_sfx", f"extracted/{version}/audio", "site/public/audio"], WIKI, wiki_env)
+        else:
+            with tempfile.TemporaryDirectory() as tmp:
+                # The whole render, not just the new events: encode_sfx sets the
+                # gain from the loudest cue in the tree it encodes, so a subset
+                # would come out at a different level than the shared sounds.
+                uv_python(["-m", "scripts.encode_sfx", f"extracted/{version}/audio", tmp], WIKI, wiki_env)
+                n = copy_new_art(Path(tmp), audio, audio)
+            log(f"sound: {n} events the shared audio tree lacks -> {audio.relative_to(ROOT)}/")
+            # This build's map now resolves the events just added.
+            uv_python(["-m", "scripts.build_sfx_map", f"decompiled/{version}", sfx_map_json], WIKI, wiki_env)
+            sfx_merged.write_text(f"{dt.datetime.now().isoformat()}\n", encoding="utf-8")
         # The map's `audioRev` is a hash of the audio tree it is served with
         # (the URLs' cache-buster). The committed map carries the maintainers'
         # hash; re-derive it for the audio just encoded. Only that line moves:
@@ -675,9 +740,11 @@ def build_steps(build: Path, version: str) -> list[Step]:
              # extract_images' ownerless sprites: an older import lacks them.
              and (images / "relic_atlas/yummy_cookie.png").is_file(), atlas_art, ("uv",)),
         *([] if is_default else [
+            # creature_scales.json is written last, so it marks a finished
+            # overlay (an older import wrote only the atlas sprites).
             Step(f"{version} art overlay (art the shared tree lacks) -> sts2-wiki/site/public/images/{version}/",
-                 "workbench", lambda: overlay.is_dir() and any(overlay.rglob("*.png")), art_overlay, ("uv",),
-                 versioned=True),
+                 "workbench", lambda: (overlay / "creature_scales.json").is_file(), art_overlay,
+                 ("uv", "node", "npm"), versioned=True),
         ]),
         Step("rooms, scenes, map, HUD + card frames -> sts2-wiki/site/public/images/", "workbench",
              lambda: (images / "rooms").is_dir() and (images / "ui/top_panel").is_dir()
@@ -709,7 +776,8 @@ def build_steps(build: Path, version: str) -> list[Step]:
              lambda: (bundle_dir / "wiki_cards.json").is_file(), workbench_data, versioned=True),
         Step("sound effects -> sts2-wiki/site/public/audio/ (FMOD: the game's own DLLs on Windows, else FMOD_SDK_ROOT)",
              "sound",
-             lambda: any(audio.rglob("*.webm")), sfx, ("uv", "ffmpeg")),
+             (lambda: any(audio.rglob("*.webm"))) if is_default else sfx_merged.is_file,
+             sfx, ("uv", "ffmpeg"), versioned=True),
     ]
 
 

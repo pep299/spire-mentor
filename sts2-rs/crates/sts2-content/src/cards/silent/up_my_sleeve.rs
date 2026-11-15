@@ -9,7 +9,9 @@ use super::prelude::*;
 ///
 /// Per-play cost decrement (`EnergyCost.AddThisCombat(-1)` at
 /// `UpMySleeve.cs:46`): each play of this instance shaves 1 energy off its
-/// cost for the rest of combat (2 → 1 → 0 → 0…). Bead `sts2-rs-dsljq`.
+/// cost for the rest of combat (2 → 1 → 0 → -1…, read as 0): a this-combat
+/// Relative modifier on the resolving card's cost model (`state.cards` is
+/// per-combat so it resets at next combat init). Bead `sts2-rs-dsljq`.
 ///
 /// The `TimesPlayedThisCombat` counter is purely cosmetic (hover-tip only at
 /// `UpMySleeve.cs:18-26`), so it stays unmodeled.
@@ -18,12 +20,11 @@ pub(crate) fn play_up_my_sleeve(state: &mut CombatState, _t: Option<CreatureUid>
     for _ in 0..count {
         let _ = spawn_shiv(state, PileKind::Hand);
     }
-    if let Some(idx) =
-        sts2_core::card_effects::resolving_card_uid(state).map(|u| u.0.get() as usize - 1)
-    {
-        if let Some(card) = state.cards.get_mut(idx) {
-            card.add_combat_cost(-1);
-        }
+    if let Some(uid) = sts2_core::card_effects::resolving_card_uid(state) {
+        // `EnergyCost.AddThisCombat(-1)` (UpMySleeve.cs:46): unclamped
+        // until the final cost read, so a later +1 (Modded-style) lands
+        // on the debt, not on 0.
+        state.add_card_cost_this_combat(uid, -1);
     }
     EffectResult::Resolved
 }

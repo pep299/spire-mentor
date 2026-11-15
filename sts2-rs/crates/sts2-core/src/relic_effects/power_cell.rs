@@ -16,7 +16,10 @@ pub(crate) fn on_before_side_turn_start_power_cell(
         .draw
         .iter()
         .copied()
-        .filter(|uid| crate::card_by_uid(&state.cards, *uid).is_some_and(|c| c.cost == 0))
+        .filter(|uid| {
+            crate::card_by_uid(&state.cards, *uid)
+                .is_some_and(|c| c.base_cost() >= 0 && c.local_cost() <= 0)
+        })
         .collect();
     if candidates.is_empty() {
         return EffectResult::NotImplemented;
@@ -26,8 +29,8 @@ pub(crate) fn on_before_side_turn_start_power_cell(
     //                         && c.EnergyCost.GetWithModifiers(Local) == 0)
     //       .ToList().StableShuffle(RunState.Rng.CombatCardSelection)
     //       .Take(DynamicVars.Cards = 2).
-    // X-cost cards (`is_x_cost` = `cost == -1`) are already excluded by the
-    // `c.cost == 0` filter above. `StableShuffle` (`ListExtensions.cs:10`) =
+    // `GetWithModifiers(Local)` clamps at 0 except for a negative base, so
+    // X-cost (base -1) and unplayable cards are excluded by `base_cost() >= 0`. `StableShuffle` (`ListExtensions.cs:10`) =
     // `Sort()` by `CardModel.CompareTo` (Entry ordinal, then upgrade level)
     // THEN `UnstableShuffle` on the `combat_card_selection` stream — reading
     // `candidates.len() - 1` times. The prior port used the legacy generic
@@ -40,12 +43,35 @@ pub(crate) fn on_before_side_turn_start_power_cell(
         let ia = a.0.get() as usize - 1;
         let ib = b.0.get() as usize - 1;
         let (ca, cb) = (&state.cards[ia], &state.cards[ib]);
-        crate::cards::card_model_compare(ca, cb)
+        crate::cards::card_model_compare_for(ca, cb, state.game_version)
     };
-    state
-        .run_rng
-        .combat_card_selection
-        .stable_shuffle_by(candidates_v.as_mut_slice(), &cmp);
+    if state.game_version >= crate::GameVersion::V0_113_0 {
+        // v0.113.0: the non-Innate candidates first, then the Innate ones,
+        // each list `StableShuffle`d on `CombatCardSelection` (both shuffles
+        // run before the `Take`) (decomp PowerCell.cs:25-28).
+        let (mut plain, mut innate): (Vec<crate::CardUid>, Vec<crate::CardUid>) =
+            candidates_v.iter().partition(|u| {
+                !crate::card_effects::card_innate_inst(&state.cards[u.0.get() as usize - 1])
+            });
+        state.run_rng.combat_card_selection.stable_shuffle_by_for(
+            state.game_version,
+            plain.as_mut_slice(),
+            &cmp,
+        );
+        state.run_rng.combat_card_selection.stable_shuffle_by_for(
+            state.game_version,
+            innate.as_mut_slice(),
+            &cmp,
+        );
+        plain.extend(innate);
+        candidates_v = plain;
+    } else {
+        state.run_rng.combat_card_selection.stable_shuffle_by_for(
+            state.game_version,
+            candidates_v.as_mut_slice(),
+            &cmp,
+        );
+    }
     let take = POWER_CELL_CARDS.min(candidates_v.len());
     let chosen: smallvec::SmallVec<[crate::CardUid; 2]> =
         candidates_v.into_iter().take(take).collect();

@@ -405,6 +405,21 @@ pub struct MonsterAi {
     pub after_death: Option<fn(&mut CombatState, CreatureUid, CreatureUid)>,
 }
 
+/// The per-instance move-machine state a wire dict carries (#1181), for
+/// [`MonsterAi::restore_wire_instance_state`]. `log` is in the wire
+/// convention ([`MonsterAi::wire_move_log`]). The C# producers send `log`,
+/// `performed_first_move` and `performed`; only the engine's own dicts carry
+/// `forced`, `counter` and `forced_next`.
+#[derive(Clone, Debug, Default)]
+pub struct WireInstanceState<'a> {
+    pub log: &'a [StateId],
+    pub performed_first_move: Option<bool>,
+    pub performed: Option<bool>,
+    pub forced: Option<bool>,
+    pub counter: Option<i32>,
+    pub forced_next: Option<StateId>,
+}
+
 impl MonsterAi {
     pub fn new(states: BTreeMap<StateId, MonsterState>, initial: StateId) -> Self {
         let mut ai = Self {
@@ -697,14 +712,41 @@ impl MonsterAi {
             );
             return;
         }
+        self.log_displaced_current();
+        self.force_current_state(target);
+        self.current_forced = true;
+    }
+
+    /// [`Self::force_current_state_unlogged`] by name: `false` (and no change)
+    /// when this AI has no move state `target`.
+    #[must_use]
+    pub fn force_current_state_by_name_unlogged(&mut self, target: &str) -> bool {
+        let Some(sid) = self.states.keys().copied().find(|k| *k == target) else {
+            return false;
+        };
+        if !self.states.get(sid).is_some_and(MonsterState::is_move) {
+            return false;
+        }
+        self.force_current_state_unlogged(sid);
+        true
+    }
+
+    /// The `StateLog` half of a C# `SetMoveImmediate` that displaces the
+    /// current move: C# logged that move when it ROLLED it, the engine logs
+    /// at perform time, so a rolled move that has not started yet is logged
+    /// now. A move already performed is logged already, and a forced one
+    /// (a stun) never is.
+    ///
+    /// [`Self::force_current_state_unlogged`] calls it. Call it directly where
+    /// the engine models the forced state without installing one: an
+    /// `IllusionPower` revive heals in place of C#'s `REVIVE_MOVE` (#1215).
+    pub fn log_displaced_current(&mut self) {
         if !self.current_forced
             && !self.performed_at_least_once
             && self.cur().should_appear_in_logs()
         {
             self.state_log.push(self.current);
         }
-        self.force_current_state(target);
-        self.current_forced = true;
     }
 
     /// Restore the current move-state from a serialized [`current_state_id`]
@@ -818,6 +860,102 @@ impl MonsterAi {
         // events). The mirror's own assignment survives here instead.
         if self.slot.is_none() {
             self.slot = carried.slot;
+        }
+    }
+
+    /// The move-state id `name` names on this machine: an exact id first,
+    /// else the one that matches with its `_MOVE` segment ignored (the C#
+    /// wire spells `"WRIGGLE_MOVE"` where the port has `"WRIGGLE"`; see
+    /// [`Self::force_current_state_by_name_relaxed`]).
+    #[must_use]
+    pub fn move_state_id_relaxed(&self, name: &str) -> Option<StateId> {
+        fn strip_move_segment(id: &str) -> String {
+            let stripped = id.strip_suffix("_MOVE").unwrap_or(id);
+            stripped.replace("_MOVE_", "_")
+        }
+        let moves = || {
+            self.states
+                .iter()
+                .filter(|(_, st)| st.is_move())
+                .map(|(k, _)| *k)
+        };
+        if let Some(sid) = moves().find(|k| *k == name) {
+            return Some(sid);
+        }
+        let want = strip_move_segment(name);
+        moves().find(|k| strip_move_segment(k) == want)
+    }
+
+    /// Whether the current move has been performed at least once since the
+    /// machine entered it (C# `MoveState._performedAtLeastOnce`).
+    #[must_use]
+    pub fn performed_at_least_once(&self) -> bool {
+        self.performed_at_least_once
+    }
+
+    /// Whether a `SetMoveImmediate` installed the current state (C# never
+    /// logs such a state).
+    #[must_use]
+    pub fn current_forced(&self) -> bool {
+        self.current_forced
+    }
+
+    /// The move log in the WIRE convention (#1181), which is C#'s
+    /// `MonsterMoveStateMachine.StateLog`: C# logs a move when it is ROLLED
+    /// (and the initial move at construction), the engine when it is
+    /// PERFORMED (`on_move_performed_state`). The two differ by the current
+    /// move exactly while it is rolled but not performed yet, so that move
+    /// is appended here. A forced state is in neither log.
+    #[must_use]
+    pub fn wire_move_log(&self) -> SmallVec<[StateId; 16]> {
+        let mut log = self.state_log.clone();
+        if !self.performed_at_least_once
+            && !self.current_forced
+            && self.cur().should_appear_in_logs()
+        {
+            log.push(self.current);
+        }
+        log
+    }
+
+    /// Restore the per-instance move-machine state a wire dict carries
+    /// (#1181): the inverse of [`Self::wire_move_log`] plus the flags.
+    /// Call it after the current state was set from the wire's
+    /// `move_state` ([`Self::force_current_state`]). A `None` keeps what the
+    /// force left.
+    pub fn restore_wire_instance_state(&mut self, s: &WireInstanceState<'_>) {
+        // C# sends no `forced`, but it logs every move it ROLLS, so a current
+        // move that is not the log's last entry was installed by a
+        // `SetMoveImmediate` (a stun, an enrage). Only for a non-empty log:
+        // C# logs the initial move at construction, so its log never is.
+        self.current_forced = match s.forced {
+            Some(forced) => forced,
+            None => s.log.last().is_some_and(|last| *last != self.current),
+        };
+        if let Some(performed) = s.performed {
+            self.performed_at_least_once = performed;
+        }
+        let mut log: SmallVec<[StateId; 16]> = s.log.iter().copied().collect();
+        if !self.performed_at_least_once
+            && !self.current_forced
+            && log.last() == Some(&self.current)
+        {
+            log.pop();
+        }
+        self.state_log = log;
+        if let Some(first) = s.performed_first_move {
+            self.performed_first_move = first;
+        }
+        // The producer resolved the opening telegraph already.
+        self.initial_resolved = true;
+        if let Some(counter) = s.counter {
+            self.counter = counter;
+        }
+        // Restored as sent, as `stun_immediate` queues it: a queued move is
+        // consumed exactly like the graph's follow-up (`roll_move*`), so one
+        // that equals the follow-up changes nothing.
+        if let Some(next) = s.forced_next {
+            self.forced_next_state = Some(next);
         }
     }
 
@@ -1052,6 +1190,11 @@ impl MonsterAi {
         }
     }
 
+    /// Placeholder for a logged move a wire names but this machine has no
+    /// state for ([`Self::restore_wire_instance_state`]): it keeps the log's
+    /// positions for the repeat rules and matches no branch.
+    pub const UNRESOLVED_LOGGED_MOVE: StateId = "<unresolved>";
+
     /// Id of the generic stun state [`Self::ensure_generic_stun_state`] adds.
     pub const GENERIC_STUN_STATE: StateId = "STUNNED";
 
@@ -1099,11 +1242,13 @@ impl MonsterAi {
     /// resume) before the first stun has run.
     ///
     /// `next_move` is `StunInternal`'s `nextMoveId`; `None` defaults to
-    /// `StateLog.Last().Id`, the move the machine last rolled. C# appends to
-    /// `StateLog` at roll time and never logs a forced stun, so that is the
+    /// `StateLog.Last().Id`, the move the machine last rolled (v0.107.1 and
+    /// v0.111.0 `Creature.cs` `StunInternal`). C# appends to `StateLog` at
+    /// roll time and never logs a `SetMoveImmediate`'d move, so that is the
     /// current move — unless the current move is `stun_state` itself (served
     /// this turn, not yet rolled away), in which case it is the move queued to
-    /// resume after it.
+    /// resume after it, or the current move was itself forced (Queen's
+    /// ENRAGE), in which case it is the last logged move.
     ///
     /// Returns whether the stun was installed.
     pub fn stun_immediate(&mut self, stun_state: StateId, next_move: Option<StateId>) -> bool {
@@ -1121,6 +1266,17 @@ impl MonsterAi {
             if self.current == stun_state {
                 self.forced_next_state
                     .or_else(|| self.current_move_opt().and_then(|m| m.follow_up))
+            } else if self.current_forced {
+                // A `SetMoveImmediate`'d move (Queen's ENRAGE when the
+                // Amalgam dies) is never logged, so C# resumes at the move
+                // rolled before it. The displaced rolled move was logged by
+                // `log_displaced_current`, and a forced perform is not
+                // logged, so the log's last move is that rolled move.
+                self.state_log
+                    .last()
+                    .copied()
+                    .filter(|s| self.states.get(s).is_some_and(MonsterState::is_move))
+                    .or(Some(self.current))
             } else {
                 Some(self.current)
             }
@@ -1448,12 +1604,20 @@ impl MonsterAi {
     }
 
     fn resolve_random_branch(&self, rb: &RandomBranchState, rng: &mut DotNetRng) -> StateId {
-        let weights: SmallVec<[f64; 4]> = rb
+        // C# works in `float` throughout (RandomBranchState.cs:114-128): the
+        // `Func<float>` weights, their `Sum`, `NextFloat(max)` and the
+        // `num -= weight` walk. A draw within an ulp of a branch boundary
+        // picks C#'s branch only in single precision.
+        #[allow(clippy::cast_possible_truncation)]
+        let weights: SmallVec<[f32; 4]> = rb
             .branches
             .iter()
-            .map(|b| b.effective_weight(&self.state_log))
+            .map(|b| b.effective_weight(&self.state_log) as f32)
             .collect();
-        let total: f64 = weights.iter().sum();
+        // .NET `Enumerable.Sum(Func<T, float>)` accumulates in double and
+        // casts the result to float once.
+        #[allow(clippy::cast_possible_truncation)]
+        let total = weights.iter().map(|&w| f64::from(w)).sum::<f64>() as f32;
         if total <= 0.0 {
             // Bead `sts2-rs-zdjjx`: C# `RandomBranchState.GetNextState`
             // (RandomBranchState.cs:114-128) ALWAYS calls `rng.NextFloat(max)`,
@@ -1467,7 +1631,7 @@ impl MonsterAi {
             // tick behind C# for the rest of combat. Draw the tick here to
             // stay aligned, then return the first branch (C#'s `num <= 0`
             // short-circuit picks `States[0]`).
-            let _ = rng.next_float(total.max(0.0));
+            let _ = rng.next_float_f32_max(total.max(0.0));
             return rb
                 .branches
                 .first()
@@ -1477,7 +1641,7 @@ impl MonsterAi {
         // C# RandomBranchState.GetNextState (RandomBranchState.cs:114-128)
         // draws one `rng.NextFloat(total)` tick on RunRng.MonsterAi. Mirror
         // it exactly — see bead `sts2-rs-5w76f`.
-        let roll = rng.next_float(total);
+        let roll = rng.next_float_f32_max(total);
         // C# does NOT skip zero-weight branches and uses an inclusive
         // boundary: it subtracts EVERY branch's weight in order and returns
         // the first branch where the running remainder is `<= 0`
@@ -1611,6 +1775,27 @@ mod tests {
         MonsterAi::new(states, "A")
     }
 
+    /// #1215: a by-name `SetMoveImmediate` logs the rolled move it displaces
+    /// (C# logged it at its roll) and never the forced state, even once that
+    /// state has run. An unknown name changes nothing.
+    #[test]
+    fn force_by_name_unlogged_keeps_the_displaced_move_and_skips_the_forced_one() {
+        let mut ai = make_linear_chain();
+        ai.on_move_performed(); // A
+        ai.roll_move_seeded(0); // → B, rolled, not yet run
+        assert!(!ai.force_current_state_by_name_unlogged("NOPE"));
+        assert_eq!(ai.move_history(), ["A"]);
+        assert_eq!(ai.current_state_id(), "B");
+
+        assert!(ai.force_current_state_by_name_unlogged("A"));
+        assert_eq!(ai.current_state_id(), "A");
+        assert!(ai.current_forced());
+        assert_eq!(ai.move_history(), ["A", "B"], "the displaced B is logged");
+        assert_eq!(ai.wire_move_log().as_slice(), ["A", "B"]);
+        ai.on_move_performed();
+        assert_eq!(ai.move_history(), ["A", "B"], "the forced A is not");
+    }
+
     /// A machine with no prebuilt stun gets C#'s synthesized must-perform
     /// STUNNED (Creature.cs:537-541): a stun landing mid-move holds through
     /// the end-of-move roll, then resumes the stunned move (seed 2566).
@@ -1691,6 +1876,26 @@ mod tests {
         assert_eq!(ai.roll_move_seeded(0).id, "S");
         ai.on_move_performed();
         assert_eq!(ai.roll_move_seeded(0).id, "A");
+    }
+
+    /// C# `StunInternal` resumes at `StateLog.Last().Id` (v0.111.0
+    /// Creature.cs:533-536), the last ROLLED move: a `SetMoveImmediate`'d
+    /// move (Queen's ENRAGE when the Amalgam dies) is never logged, so a stun
+    /// after it resumes the rolled move it displaced, not the forced one.
+    /// Random-loadout Silent v0.111.0 seed 6475.
+    #[test]
+    fn stun_after_a_forced_move_resumes_the_last_rolled_move() {
+        let mut ai = make_stunnable_chain();
+        ai.on_move_performed(); // A
+        assert_eq!(ai.roll_move_seeded(0).id, "B");
+        assert!(ai.force_current_state_by_name_unlogged("A"));
+        ai.on_move_performed(); // the forced A runs, unlogged
+        assert_eq!(ai.move_history(), ["A", "B"]);
+        assert!(ai.stun_immediate("S", None));
+        assert_eq!(ai.forced_next_state(), Some("B"), "not the forced A");
+        assert_eq!(ai.roll_move_seeded(0).id, "S");
+        ai.on_move_performed();
+        assert_eq!(ai.roll_move_seeded(0).id, "B");
     }
 
     /// #830 (#862) x #806 (#894): `begin_move` marks the move BEFORE its
@@ -3014,5 +3219,46 @@ mod tests {
             }),
         );
         MonsterAi::new(states, "loop1");
+    }
+
+    /// `RandomBranchState.GetNextState` (`RandomBranchState.cs:114-128`) is
+    /// float math: `float num = rng.NextFloat(max); num -= weight; if (num <=
+    /// 0f)`. Seed 1144774's first draw is 0.5000000137; times 2 that rounds
+    /// to the float 2.0 * 0.5 = 1.0f, so `1.0f - 1f <= 0f` picks branch 0.
+    /// The f64 remainder 1.0000000274 - 1 > 0 picked branch 1.
+    #[test]
+    fn random_branch_subtracts_in_f32() {
+        let branch = |id| WeightedBranch {
+            state_id: id,
+            repeat_type: MoveRepeatType::CanRepeatForever,
+            max_times: 1,
+            weight: 1.0,
+            cooldown: 0,
+        };
+        let mv = |id| {
+            MonsterState::Move(MoveState {
+                id,
+                effect: noop_effect,
+                intents: smallvec![Intent::Attack { damage: 5 }],
+                follow_up: Some("root"),
+                must_perform_once: false,
+            })
+        };
+        let mut states = BTreeMap::new();
+        states.insert(
+            "root",
+            MonsterState::RandomBranch(RandomBranchState {
+                id: "root",
+                branches: smallvec![branch("a"), branch("b")],
+            }),
+        );
+        states.insert("a", mv("a"));
+        states.insert("b", mv("b"));
+        states.insert("start", mv("start"));
+        // Start on a Move (the constructor resolves a branch initial state
+        // with a throwaway RNG), then roll into the branch.
+        let mut ai = MonsterAi::new(states, "start");
+        ai.on_move_performed();
+        assert_eq!(ai.roll_move_seeded(1_144_774).id, "a");
     }
 }
